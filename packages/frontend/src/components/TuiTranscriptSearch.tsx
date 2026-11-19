@@ -28,7 +28,7 @@ export function TuiTranscriptSearch({ workspaceId, paneTarget, conversations, vi
   }, [visible])
   if (!open) return null
   return (
-    <div className="absolute inset-0 flex flex-col bg-bg">
+    <div className="absolute inset-0 flex flex-col bg-sunken">
       <ReadOnlyTranscript
         workspaceId={workspaceId}
         conversations={conversations.filter((s) => s.mode !== 'acp')}

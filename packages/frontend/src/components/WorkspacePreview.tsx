@@ -1,9 +1,7 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
-import { Menu } from '@base-ui/react/menu'
 import { useFindChord } from '#components/ConversationFind'
-import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
+import { PaneFindBar, useFindQuery } from '#components/FindPanel'
 import { windowApi } from '#lib/platform'
 import { normalizePreviewNav } from '#lib/preview'
 import {
@@ -11,6 +9,7 @@ import {
   MoreIcon, HomeIcon, CopyIcon, DevToolsIcon, MobileIcon, TabletIcon, DesktopIcon,
   CheckIcon, CloseIcon,
 } from '#lib/icons'
+import { YButton, YChip, YInput, YMenu, YMenuItem, YMenuLabel, YMenuPopup, YMenuSeparator } from '#ui'
 
 /**
  * The part of Electron's WebviewTag API the preview uses. The element is
@@ -339,23 +338,23 @@ export function WorkspacePreview({
     setEditing(null)
   }
 
-  const iconBtn = 'flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-dim '
-    + 'transition hover:bg-surface-2 hover:text-text disabled:opacity-30 disabled:hover:bg-transparent'
   const activePreset = DEVICE_PRESETS.find((p) => p.width === deviceWidth)
 
   return (
     <div className="flex h-full flex-col bg-surface">
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-hairline px-1.5">
-        <button onClick={goBack} disabled={!canBack} title="Back" aria-label="Back" className={iconBtn}>
-          <NavBackIcon size={13} />
-        </button>
-        <button onClick={goForward} disabled={!canForward} title="Forward" aria-label="Forward" className={iconBtn}>
-          <NavForwardIcon size={13} />
-        </button>
-        <button onClick={reload} title="Reload" aria-label="Reload" className={iconBtn}>
-          <ReloadIcon size={12} />
-        </button>
-        <input
+      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-line px-1.5">
+        <YButton variant="ghost" size="sm" icon={NavBackIcon} onClick={goBack} disabled={!canBack} title="Back" aria-label="Back" />
+        <YButton
+          variant="ghost"
+          size="sm"
+          icon={NavForwardIcon}
+          onClick={goForward}
+          disabled={!canForward}
+          title="Forward"
+          aria-label="Forward"
+        />
+        <YButton variant="ghost" size="sm" icon={ReloadIcon} onClick={reload} title="Reload" aria-label="Reload" />
+        <YInput
           value={editing ?? address}
           onChange={(e) => setEditing(e.target.value)}
           onFocus={(e) => { setEditing(address); e.currentTarget.select() }}
@@ -366,65 +365,43 @@ export function WorkspacePreview({
           }}
           spellCheck={false}
           aria-label="Preview address"
-          className="min-w-0 flex-1 rounded bg-bg px-2 py-0.5 font-mono text-[11px] text-text-dim
-            outline-none focus:text-text"
+          className="flex-1 font-mono not-focus:text-muted"
         />
         {/* The active responsive width, clickable to reset to full. */}
         {activePreset && activePreset.width !== null && (
-          <button
-            onClick={() => setDeviceWidth(null)}
-            title="Reset to full width"
-            aria-label="Reset width"
-            className="flex shrink-0 items-center gap-1 rounded bg-surface-2 px-1.5 py-0.5
-              text-[10px] text-text-dim transition hover:text-text"
-          >
+          <YChip selected onClick={() => setDeviceWidth(null)} title="Reset to full width" aria-label="Reset width">
             {activePreset.label} {activePreset.width}
             <CloseIcon size={9} />
-          </button>
+          </YChip>
         )}
-        <button onClick={openExternal} title="Open in browser" aria-label="Open in browser" className={iconBtn}>
-          <OpenLinkIcon size={12} />
-        </button>
+        <YButton variant="ghost" size="sm" icon={OpenLinkIcon} onClick={openExternal} title="Open in browser" aria-label="Open in browser" />
 
-        <Menu.Root>
-          <Menu.Trigger aria-label="Preview menu" title="More" className={iconBtn}>
-            <MoreIcon size={14} />
-          </Menu.Trigger>
-          <MenuPopup side="bottom" align="end" sideOffset={6} className="min-w-[180px]">
-            <Menu.Item className={MENU_ITEM} onClick={goHome}>
-              <HomeIcon size={14} /> Home
-            </Menu.Item>
-            <Menu.Item className={MENU_ITEM} onClick={copyUrl}>
-              <CopyIcon size={14} /> Copy URL
-            </Menu.Item>
-            <div className="my-1 h-px bg-border" />
-            <div className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-text-faint">
-              Responsive
-            </div>
+        <YMenu.Root>
+          <YMenu.Trigger render={<YButton variant="ghost" size="sm" icon={MoreIcon} aria-label="Preview menu" title="More" />} />
+          <YMenuPopup side="bottom" align="end" sideOffset={6} className="min-w-[180px]">
+            <YMenuItem icon={HomeIcon} onClick={goHome}>Home</YMenuItem>
+            <YMenuItem icon={CopyIcon} onClick={copyUrl}>Copy URL</YMenuItem>
+            <YMenuSeparator />
+            <YMenuLabel>Responsive</YMenuLabel>
             {DEVICE_PRESETS.map((p) => (
-              <Menu.Item key={p.label} className={MENU_ITEM} onClick={() => setDeviceWidth(p.width)}>
-                <p.Icon size={14} />
+              <YMenuItem key={p.label} icon={p.Icon} onClick={() => setDeviceWidth(p.width)}>
                 <span className="flex-1">{p.label}{p.width ? ` · ${p.width}` : ''}</span>
                 {deviceWidth === p.width && <CheckIcon size={13} />}
-              </Menu.Item>
+              </YMenuItem>
             ))}
-            <div className="my-1 h-px bg-border" />
-            <Menu.Item className={MENU_ITEM} onClick={hardReload}>
-              <ReloadIcon size={13} /> Reload ignoring cache
-            </Menu.Item>
-            <Menu.Item className={MENU_ITEM} onClick={openDevTools}>
-              <DevToolsIcon size={14} /> Open DevTools
-            </Menu.Item>
+            <YMenuSeparator />
+            <YMenuItem icon={ReloadIcon} onClick={hardReload}>Reload ignoring cache</YMenuItem>
+            <YMenuItem icon={DevToolsIcon} onClick={openDevTools}>Open DevTools</YMenuItem>
             {onStopForwarding && url !== undefined && (
               <>
-                <div className="my-1 h-px bg-border" />
-                <Menu.Item className={MENU_ITEM} onClick={() => onStopForwarding(containerPort)}>
-                  <CloseIcon size={13} /> Stop forwarding :{containerPort}
-                </Menu.Item>
+                <YMenuSeparator />
+                <YMenuItem icon={CloseIcon} onClick={() => onStopForwarding(containerPort)}>
+                  Stop forwarding :{containerPort}
+                </YMenuItem>
               </>
             )}
-          </MenuPopup>
-        </Menu.Root>
+          </YMenuPopup>
+        </YMenu.Root>
       </div>
 
       {findOpen && (
@@ -437,34 +414,29 @@ export function WorkspacePreview({
           caseOnly
         />
       )}
-      <div className="relative min-h-0 flex-1 bg-bg">
-        {/* Center the device frame; bg-bg shows on the sides when narrowed. */}
+      <div className="relative min-h-0 flex-1 bg-sunken">
+        {/* Center the device frame; bg-sunken shows on the sides when narrowed. */}
         <div className="absolute inset-0 flex justify-center overflow-hidden">
           <div
             ref={hostRef}
             style={{ width: deviceWidth ?? '100%' }}
-            className={clsx('h-full bg-white', deviceWidth !== null && 'border-x border-border')}
+            className={clsx('h-full bg-white', deviceWidth !== null && 'border-x border-line-strong')}
           />
         </div>
         {url === undefined ? (
           <PreviewOverlay>
-            <LoadingIcon size={18} className="animate-spin text-text-faint" />
+            <LoadingIcon size={18} className="animate-spin text-subtle" />
             <span>Waiting for the dev server on :{containerPort}…</span>
           </PreviewOverlay>
         ) : failed ? (
           <PreviewOverlay>
-            <PreviewIcon size={20} className="text-text-faint" />
+            <PreviewIcon size={20} className="text-subtle" />
             <span>Couldn’t load the preview.</span>
-            <button
-              onClick={() => { setFailed(false); reload() }}
-              className="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-dim transition hover:text-text"
-            >
-              Retry
-            </button>
+            <YButton size="sm" onClick={() => { setFailed(false); reload() }}>Retry</YButton>
           </PreviewOverlay>
         ) : loading ? (
           <div className="pointer-events-none absolute right-2 top-2">
-            <LoadingIcon size={14} className="animate-spin text-text-faint/70" />
+            <LoadingIcon size={14} className="animate-spin text-subtle/70" />
           </div>
         ) : null}
       </div>
@@ -477,7 +449,7 @@ function PreviewOverlay({ children }: { children: ReactNode }): JSX.Element {
   return (
     <div className={clsx(
       'absolute inset-0 flex flex-col items-center justify-center gap-2 px-4 text-center',
-      'bg-surface text-xs text-text-dim',
+      'bg-surface text-md text-muted',
     )}>
       {children}
     </div>

@@ -1,7 +1,7 @@
 # Server health
 
-The **Server health** overlay in the webapp (the pulse icon above Servers
-and Settings in the rail, a row on the phone's projects screen) shows how
+The **Server health** overlay in the webapp (an item in the yaac menu at
+the foot of the rail, a row on the phone's projects screen) shows how
 loaded an install is. It covers total CPU, memory and disk, which
 infrastructure component uses what, and what each workspace uses, with an
 hour of history. Any user may open it, since every user can read

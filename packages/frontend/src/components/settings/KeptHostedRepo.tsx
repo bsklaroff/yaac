@@ -1,8 +1,7 @@
 import { useState, type JSX } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { hostedCloneUrl } from '@yaac/shared/hosted-git'
-import { SectionLabel } from '#components/settings/Field'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
+import { YButton, YSectionLabel } from '#ui'
 import { removeKeptHostedRepo } from '#lib/repoApi'
 
 /**
@@ -25,33 +24,33 @@ export function KeptHostedRepo({ repoId, remoteUrl, readOnly, onRemoved }: {
 
   return (
     <div>
-      <SectionLabel>yaac&apos;s old repository</SectionLabel>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
+      <YSectionLabel>yaac&apos;s old repository</YSectionLabel>
+      <p className="mt-0.5 text-sm leading-relaxed text-subtle">
         yaac still keeps the repository this repo was before it moved, read-only. The move pushed its
         branches and tags only; other refs and its reflog are here alone. Check that the new remote has
         what you need, for example by comparing:
       </p>
-      <div className="mt-2 flex flex-col gap-1 rounded-md bg-bg px-2.5 py-1.5">
+      <div className="mt-2 flex flex-col gap-1 bg-sunken px-2.5 py-1.5">
         {[kept, remoteUrl].map((url) => (
-          <code key={url} title={url} className="select-all truncate font-mono text-[11px] text-text-faint">
+          <code key={url} title={url} className="select-all truncate font-mono text-sm text-subtle">
             git ls-remote {url}
           </code>
         ))}
       </div>
       {!readOnly && (confirming ? (
-        <div className="mt-2 flex items-center gap-2 text-[11px] text-text-dim">
+        <div className="mt-2 flex items-center gap-2 text-sm text-muted">
           <span className="flex-1">Remove yaac&apos;s copy for good? It cannot be brought back.</span>
-          <button type="button" onClick={() => setConfirming(false)} className={TEXT_BUTTON}>Cancel</button>
-          <button type="button" onClick={() => remove.mutate()} disabled={remove.isPending} className={BUTTON}>
+          <YButton variant="ghost" size="sm" onClick={() => setConfirming(false)}>Cancel</YButton>
+          <YButton variant="danger" size="sm" onClick={() => remove.mutate()} disabled={remove.isPending}>
             {remove.isPending ? 'Removing…' : 'Remove'}
-          </button>
+          </YButton>
         </div>
       ) : (
-        <button type="button" onClick={() => setConfirming(true)} className={`mt-2 ${BUTTON}`}>
+        <YButton size="sm" onClick={() => setConfirming(true)} className="mt-2">
           Remove yaac&apos;s copy…
-        </button>
+        </YButton>
       ))}
-      {remove.error && <p className="mt-2 text-[11px] text-red-400">{remove.error.message}</p>}
+      {remove.error && <p className="mt-2 text-sm text-danger">{remove.error.message}</p>}
     </div>
   )
 }

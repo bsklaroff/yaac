@@ -13,6 +13,7 @@ import { useTranscriptPages } from '#lib/useTranscriptPages'
 import { ServerError } from '@yaac/shared/errors'
 import type { AcpEvent, AcpTranscriptPage } from '@yaac/shared/acp'
 import type { ConversationEntry, SessionEntry } from '@yaac/shared/types'
+import { YTabs } from '#ui'
 
 /** One empty list for every render without a transcript, so the view's
  *  memos and effects keyed on the events do not rerun each render. */
@@ -80,31 +81,29 @@ export function ReadOnlyTranscript({
     ?? viewable.at(-1)
 
   const tabs = selected !== undefined && viewable.length > 1 && (
-    <div className="flex shrink-0 flex-wrap gap-1 border-b border-hairline-soft px-3 py-1.5">
-      {viewable.map((s, i) => (
-        <button
-          key={s.conversationId}
-          type="button"
-          onClick={() => setPicked(s.conversationId)}
-          title={s.prompt ?? undefined}
-          className={clsx(
-            'flex max-w-52 items-center gap-1.5 rounded-md px-2 py-1 text-[11px] transition max-md:py-2',
-            s.conversationId === selected.conversationId
-              ? 'bg-surface-3 text-text'
-              : 'text-text-faint hover:bg-surface-2 hover:text-text-dim',
-          )}
-        >
-          {props.live === true && (
-            <StatusMark
-              status={sessionOf(props.liveSessions, s)?.status}
-              asking={sessionOf(props.liveSessions, s)?.asking === true}
-              {...(props.owner !== undefined ? { owner: props.owner } : {})}
-            />
-          )}
-          <span className="truncate">{s.prompt ?? `Conversation ${String(i + 1)}`}</span>
-        </button>
-      ))}
-    </div>
+    <YTabs
+      value={selected.conversationId}
+      onChange={setPicked}
+      className="flex-wrap border-b border-line px-3 py-1.5"
+      tabs={viewable.map((s, i) => ({
+        value: s.conversationId,
+        label: (
+          <>
+            {props.live === true && (
+              <StatusMark
+                status={sessionOf(props.liveSessions, s)?.status}
+                asking={sessionOf(props.liveSessions, s)?.asking === true}
+                {...(props.owner !== undefined ? { owner: props.owner } : {})}
+              />
+            )}
+            <span className="max-w-48 truncate" title={s.prompt ?? undefined}>
+              {s.prompt ?? `Conversation ${String(i + 1)}`}
+            </span>
+          </>
+        ),
+      }))}
+    />
+
   )
 
   // Keyed, so a conversation's stream, pages and open view start afresh.
@@ -201,20 +200,20 @@ function Conversation({
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {promptOnly ? (
-            <p className={clsx(column, 'whitespace-pre-wrap text-sm leading-relaxed text-text-dim')}>{prompt}</p>
+            <p className={clsx(column, 'whitespace-pre-wrap text-base leading-relaxed text-muted')}>{prompt}</p>
           ) : (
             <div className={column}>
-              {!streamed && isPending && <p className="text-xs text-text-faint">Loading the conversation…</p>}
+              {!streamed && isPending && <p className="text-md text-subtle">Loading the conversation…</p>}
               {/* Prefer the server's message, e.g. a conversation too large to send. */}
               {!streamed && isError && (
-                <p className="text-xs text-text-faint">
+                <p className="text-md text-subtle">
                   {error instanceof ServerError
                     ? `This conversation could not be shown: ${error.message}.`
                     : 'The conversation could not be read.'}
                 </p>
               )}
               {empty && pages.fromStart && pages.loading === undefined && (
-                <p className="text-xs text-text-faint">This conversation has no messages.</p>
+                <p className="text-md text-subtle">This conversation has no messages.</p>
               )}
               {empty && !pages.fromStart && pages.failed
                 ? <PageFailed onRetry={pages.retry} />

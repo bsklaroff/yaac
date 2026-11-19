@@ -1,12 +1,7 @@
 import { useState, type FormEvent, type JSX, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Menu } from '@base-ui/react/menu'
 import { ApprovalDetails } from '#components/ApprovalDetails'
-import { BAR_BUTTON } from '#components/WorkflowPane'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { api } from '#lib/api'
 import { MoreIcon, SiteIcon } from '#lib/icons'
 import { relativeAge } from '#lib/time'
@@ -21,8 +16,10 @@ import { formatCommits } from '@yaac/shared/steps'
 import type {
   ProjectSummary, SiteCommit, SiteDeployPhase, SiteEdge, SiteEdgeStatus, SiteEntry, SiteSummary, SiteTailnetState,
 } from '@yaac/shared/types'
-
-const INPUT = 'rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text outline-none focus:border-border-strong'
+import {
+  YBadge, YButton, YCheckbox, YConfirm, YEmptyState, YInput, YListRow, YMenu, YMenuItem, YMenuPopup, YPageBody, YSection, YSelect,
+  YSettingGroup, YSettingRow, YSwitch,
+} from '#ui'
 
 export const PHASE: Record<SiteDeployPhase, string> = {
   launching: 'creating release',
@@ -156,20 +153,21 @@ export function useSiteActions(site: SiteSummary): SiteActions {
     canEnd: admin || !readOnly,
     error: confirm === null && act.error ? act.error.message : null,
     dialog: (
-      <ConfirmDialog
+      <YConfirm
         open={confirm !== null}
         onOpenChange={(open) => { if (!open) { setConfirm(null); act.reset() } }}
         {...confirmText(confirm, site.name)}
         busy={act.isPending}
+        blocked={confirm === 'publish' && hostname.trim() === ''}
         error={act.error?.message ?? (confirm === 'approve' && reviewing === undefined ? 'Nothing is waiting for approval now' : undefined)}
         onConfirm={() => { if (confirm !== null) act.mutate(confirm) }}
       >
         {(confirm === 'deploy' || confirm === 'approve') && (
-          <p className="mt-3 text-[11px] text-text-faint">{site.edge !== undefined ? EDGE_REACH[site.edge] : UNPUBLISHED}</p>
+          <p className="mt-3 text-sm text-subtle">{site.edge !== undefined ? EDGE_REACH[site.edge] : UNPUBLISHED}</p>
         )}
         {confirm === 'approve' && reviewing !== undefined && (
           <>
-            <p className="mt-3 text-[11px] text-text-faint">
+            <p className="mt-3 text-sm text-subtle">
               {REQUESTER[reviewing.from]} asked to deploy this. Approving deploys exactly these commits with this
               workflow, approving them for this site&apos;s settings; it approves no branch.
               {reviewing.changes.length > 0 && ` It changes the live release's ${reviewing.changes.join(', ')}.`}
@@ -179,17 +177,17 @@ export function useSiteActions(site: SiteSummary): SiteActions {
         )}
         {confirm === 'publish' && (
           <>
-            <input
+            <YInput
               aria-label="Hostname"
               value={hostname}
               onChange={(e) => setHostname(e.target.value)}
               placeholder={siteDomain !== undefined ? `app.${siteDomain}` : 'app.example.com'}
-              className={`${INPUT} mt-3 w-full font-mono`}
+              className="mt-3 w-full font-mono"
             />
             {hostname.trim() !== '' && (
-              <p className="mt-2 text-[11px] text-text-faint">{EDGE_REACH[siteEdgeOf(hostname.trim(), siteDomain)]}</p>
+              <p className="mt-2 text-sm text-subtle">{EDGE_REACH[siteEdgeOf(hostname.trim(), siteDomain)]}</p>
             )}
-            <p className="mt-2 text-[11px] text-text-faint">
+            <p className="mt-2 text-sm text-subtle">
               {site.live !== undefined
                 ? <>It goes live serving release {short(site.live.commits)}, the one you can preview now.</>
                 : 'It serves nothing until it is deployed.'}
@@ -197,19 +195,19 @@ export function useSiteActions(site: SiteSummary): SiteActions {
           </>
         )}
         {confirm === 'deploy' && site.follow && (
-          <p className="mt-3 text-[11px] text-text-faint">It follows its branches, so it deploys their tips.</p>
+          <p className="mt-3 text-sm text-subtle">It follows its branches, so it deploys their tips.</p>
         )}
         {confirm === 'deploy' && !site.follow && entry?.repos.map((r) => (
-          <input
+          <YInput
             key={r.dir}
             aria-label={`Ref to deploy ${r.dir} at`}
             value={refs[r.dir] ?? ''}
             onChange={(e) => setRefs({ ...refs, [r.dir]: e.target.value })}
             placeholder={`${r.dir}: branch or commit (default: ${r.branch ?? r.commit?.slice(0, 8) ?? ''})`}
-            className={`${INPUT} mt-3 w-full font-mono`}
+            className="mt-3 w-full font-mono"
           />
         ))}
-      </ConfirmDialog>
+      </YConfirm>
     ),
   }
 }
@@ -282,17 +280,17 @@ export function SitePane({ project, site, editing, bar }: {
   }
   if (site === undefined || editing) {
     return (
-      <div className="h-full overflow-y-auto bg-bg px-4 py-6">
+      <div className="flex h-full flex-col bg-surface">
         {bar !== null && createPortal(
           <span className="titlebar-drag flex min-w-0 flex-1 items-center gap-1.5">
-            <SiteIcon size={12} className="shrink-0 text-text-faint" />
+            <SiteIcon size={12} className="shrink-0 text-subtle" />
             <h2 className="min-w-0 truncate font-medium text-text">{site !== undefined ? `Edit “${site.name}”` : 'New site'}</h2>
           </span>,
           bar,
         )}
-        <div className="mx-auto max-w-2xl">
+        <YPageBody>
           <SiteForm project={project} {...(site !== undefined ? { site: site.name } : {})} onDone={done} onCancel={() => done(site?.name)} />
-        </div>
+        </YPageBody>
       </div>
     )
   }
@@ -313,167 +311,189 @@ function SiteDetail({ site, bar }: { site: SiteSummary; bar: HTMLElement | null 
   })
   const { live, deploy, lastDeploy } = site
   const release = (workspaceId: string, commits: SiteCommit[]): JSX.Element => (
-    <button type="button" onClick={() => openWorkspace(site.projectId, workspaceId)} className="font-mono text-text-dim hover:text-text hover:underline">
+    <YButton variant="link" onClick={() => openWorkspace(site.projectId, workspaceId)} className="font-mono text-md">
       {short(commits)}
-    </button>
+    </YButton>
   )
 
   return (
-    <div className="h-full overflow-y-auto bg-bg px-4 py-6">
+    <div className="flex h-full flex-col bg-surface">
       {bar !== null && createPortal(
         <>
           <span className="titlebar-drag flex min-w-0 flex-1 items-center gap-1.5">
-            <SiteIcon size={12} className="shrink-0 text-text-faint" />
+            <SiteIcon size={12} className="shrink-0 text-subtle" />
             <h2 className="min-w-0 truncate font-medium text-text">{site.name}</h2>
             {actions.error !== null && <span className="truncate text-danger" title={actions.error}>{actions.error}</span>}
           </span>
           {actions.canDeploy && deploy === undefined && (
-            <button type="button" onClick={() => actions.ask('deploy')} className={BAR_BUTTON}>Deploy</button>
+            <YButton variant="ghost" size="sm" onClick={() => actions.ask('deploy')} className="no-drag">Deploy</YButton>
           )}
           {actions.canEnd && live !== undefined && (
-            <button type="button" onClick={() => actions.ask('stop')} className={BAR_BUTTON}>Stop</button>
+            <YButton variant="ghost" size="sm" onClick={() => actions.ask('stop')} className="no-drag">Stop</YButton>
           )}
           {actions.canDeploy && live === undefined && deploy === undefined && lastDeploy !== undefined && (
-            <button type="button" onClick={actions.start} className={BAR_BUTTON}>Start</button>
+            <YButton variant="ghost" size="sm" onClick={actions.start} className="no-drag">Start</YButton>
           )}
           {actions.canEnd && (
-            <Menu.Root>
-              <Menu.Trigger aria-label="Site actions" title="Site actions" className={BAR_BUTTON}>
-                <MoreIcon size={14} />
-              </Menu.Trigger>
-              <MenuPopup side="bottom" align="end" sideOffset={4} className="min-w-[140px]">
-                {actions.canDeploy && <Menu.Item className={MENU_ITEM} onClick={actions.edit}>Edit…</Menu.Item>}
+            <YMenu.Root>
+              <YMenu.Trigger
+                render={<YButton variant="ghost" size="sm" icon={MoreIcon} aria-label="Site actions" title="Site actions" className="no-drag" />}
+              />
+              <YMenuPopup side="bottom" align="end" sideOffset={4} className="min-w-[140px]">
+                {actions.canDeploy && <YMenuItem onClick={actions.edit}>Edit…</YMenuItem>}
                 {actions.canPublish && (
-                  <Menu.Item className={MENU_ITEM} onClick={() => actions.ask('publish')}>{site.published ? 'Move…' : 'Publish…'}</Menu.Item>
+                  <YMenuItem onClick={() => actions.ask('publish')}>{site.published ? 'Move…' : 'Publish…'}</YMenuItem>
                 )}
-                {site.published && <Menu.Item className={MENU_ITEM} onClick={() => actions.ask('unpublish')}>Unpublish…</Menu.Item>}
-                <Menu.Item className={MENU_ITEM} onClick={() => actions.ask('delete')}>Delete…</Menu.Item>
-              </MenuPopup>
-            </Menu.Root>
+                {site.published && <YMenuItem onClick={() => actions.ask('unpublish')}>Unpublish…</YMenuItem>}
+                <YMenuItem onClick={() => actions.ask('delete')}>Delete…</YMenuItem>
+              </YMenuPopup>
+            </YMenu.Root>
           )}
           {actions.dialog}
         </>,
         bar,
       )}
-      <div className="mx-auto flex max-w-2xl flex-col gap-5 text-xs">
-        <Section title="Address">
-          {site.hostname !== undefined && site.edge !== undefined ? <>
-            <a href={`https://${site.hostname}`} target="_blank" rel="noreferrer noopener" className="font-mono text-text hover:underline">
-              https://{site.hostname}
-            </a>
-            <p className="text-text-faint">{EDGE_REACH[site.edge]}</p>
-            {site.edge === 'public' && (
-              <p className="text-text-faint">
-                It answers once the install&apos;s Cloudflare tunnel has a public hostname{' '}
-                <code className="text-text-dim">{site.hostname}</code> whose service is the router
-                (<code className="text-text-dim">yaac-site-router</code>, port 8080).
-              </p>
-            )}
-            <EdgeStatus edge={edge} siteEdge={site.edge} />
-          </> : (
-            <p className="text-text-dim">
+      <YPageBody>
+        {site.hostname !== undefined && site.edge !== undefined ? (
+          <YSection title="Address" description={EDGE_REACH[site.edge]}>
+            <YSettingGroup>
+              <YSettingRow
+                label={(
+                  <a href={`https://${site.hostname}`} target="_blank" rel="noreferrer noopener" className="font-mono hover:underline">
+                    https://{site.hostname}
+                  </a>
+                )}
+                hint={site.edge === 'public' && <>
+                  It answers once the install&apos;s Cloudflare tunnel has a public hostname{' '}
+                  <code className="text-muted">{site.hostname}</code> whose service is the router
+                  (<code className="text-muted">yaac-site-router</code>, port 8080).
+                  {edge?.cloudflare === 'absent' && (
+                    <span className="mt-1 block text-warning">
+                      This install has no tunnel, so no site is reachable from the internet. Set one up with{' '}
+                      <code className="text-muted">CF_TUNNEL_TOKEN=… yaac cluster install</code>.
+                    </span>
+                  )}
+                </>}
+              >
+                {edge !== undefined && <EdgeBadge edge={edge} siteEdge={site.edge} />}
+              </YSettingRow>
+            </YSettingGroup>
+          </YSection>
+        ) : (
+          <YSection
+            title="Address"
+            description={<>
               {UNPUBLISHED} The project&apos;s agents may build and deploy it; once published, a deploy you did not
               make waits for your approval.
-            </p>
-          )}
-        </Section>
+            </>}
+          />
+        )}
 
-        <Section title="Releases">
-          <p className="text-text-dim">
-            {live !== undefined
-              ? <>Live {release(live.workspaceId, live.commits)} · {detail?.live?.running === false ? 'replacing' : `deployed ${relativeAge(live.since)}`}</>
-              : 'Not serving'}
-          </p>
-          {deploy !== undefined && (
-            <p className="text-text-dim">
-              {deploy.replacing ? 'Replacing the release at ' : 'Deploying '}{release(deploy.workspaceId, deploy.commits)} · {PHASE[deploy.phase]}
-            </p>
-          )}
-          {detail?.requested !== undefined && (
-            <p className="text-warning">
-              {REQUESTER[detail.requested.from]} asked to deploy {short(detail.requested.commits)}{' '}
-              {relativeAge(detail.requested.at)} · awaiting approval
-              {actions.canDeploy && deploy === undefined && (
-                <button type="button" onClick={() => actions.ask('approve')} className={`${TEXT_BUTTON} ml-2`}>Review…</button>
-              )}
-            </p>
-          )}
-          {lastDeploy !== undefined && (
-            <p className={lastDeploy.outcome === 'failed' ? 'text-danger' : 'text-text-dim'}>
-              Last deploy {release(lastDeploy.workspaceId, lastDeploy.commits)} {lastDeploy.outcome}{' '}
-              {relativeAge(lastDeploy.finishedAt)}{lastDeploy.error !== undefined && `: ${lastDeploy.error}`}
-            </p>
-          )}
-          {detail?.followPaused !== undefined && <p className="text-warning">Not following: {detail.followPaused}</p>}
-          {detail?.followSkipped !== undefined && (
-            <p className="text-text-faint">Not retrying {short(detail.followSkipped)}, whose deploy failed; deploy to retry it</p>
-          )}
-          {detail !== undefined && detail.releases.length > 0 && (
-            <ul className="mt-1 flex flex-col">
-              {detail.releases.map((r) => (
-                <li key={r.workspaceId}>
-                  <button
-                    type="button"
-                    onClick={() => openWorkspace(site.projectId, r.workspaceId)}
-                    className="flex w-full items-center gap-3 rounded-md px-1.5 py-1 text-left transition hover:bg-surface-2"
-                  >
-                    <span className="w-28 shrink-0 text-text-faint">{relativeAge(r.createdAt)}</span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-text-dim">{short(r.commits)}</span>
-                    <span className="shrink-0 text-text-faint">{r.stoppedAt !== undefined ? 'stopped' : 'running'}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Section>
+        <YSection title="Status">
+          <YSettingGroup>
+            <YSettingRow
+              label="Live"
+              hint={live !== undefined && (detail?.live?.running === false ? 'Replacing' : `Deployed ${relativeAge(live.since)}`)}
+            >
+              {live !== undefined ? release(live.workspaceId, live.commits) : <YBadge>Not serving</YBadge>}
+            </YSettingRow>
+            {deploy !== undefined && (
+              <YSettingRow label={deploy.replacing ? 'Replacing the release' : 'Deploying'} hint={PHASE[deploy.phase]}>
+                {release(deploy.workspaceId, deploy.commits)}
+              </YSettingRow>
+            )}
+            {detail?.requested !== undefined && (
+              <YSettingRow
+                label="Awaiting approval"
+                hint={`${REQUESTER[detail.requested.from]} asked to deploy this ${relativeAge(detail.requested.at)}`}
+              >
+                <span className="flex items-center gap-2">
+                  <span className="font-mono text-md text-warning">{short(detail.requested.commits)}</span>
+                  {actions.canDeploy && deploy === undefined && (
+                    <YButton size="sm" onClick={() => actions.ask('approve')}>Review…</YButton>
+                  )}
+                </span>
+              </YSettingRow>
+            )}
+            {lastDeploy !== undefined && (
+              <YSettingRow
+                label="Last deploy"
+                hint={(
+                  <span className={lastDeploy.outcome === 'failed' ? 'text-danger' : undefined}>
+                    {lastDeploy.outcome} {relativeAge(lastDeploy.finishedAt)}{lastDeploy.error !== undefined && `: ${lastDeploy.error}`}
+                  </span>
+                )}
+              >
+                {release(lastDeploy.workspaceId, lastDeploy.commits)}
+              </YSettingRow>
+            )}
+            {detail?.followPaused !== undefined && (
+              <YSettingRow label="Following" hint={detail.followPaused}><YBadge tone="warning">Paused</YBadge></YSettingRow>
+            )}
+            {detail?.followSkipped !== undefined && (
+              <YSettingRow label="Not retrying" hint={`${short(detail.followSkipped)}, whose deploy failed; deploy to retry it`} />
+            )}
+          </YSettingGroup>
+        </YSection>
 
         {detail !== undefined && (
-          <Section title="Settings">
-            <dl className="grid grid-cols-[96px_1fr] gap-x-2 gap-y-1">
-              <dt className="text-text-faint">Workflow</dt>
-              <dd className="text-text-dim">
-                {workflow !== undefined
-                  ? <button type="button" onClick={() => openObject(site.projectId, { kind: 'workflow', id: workflow.id })} className={TEXT_BUTTON}>{site.workflow}</button>
-                  : site.workflow}
-              </dd>
-              <dt className="text-text-faint">Port</dt>
-              <dd className="font-mono text-text-dim">{detail.port}{detail.adminPort !== undefined && ` · admin ${detail.adminPort}`}</dd>
-              <dt className="text-text-faint">Repos</dt>
-              <dd className="font-mono text-text-dim">{detail.repos.map((r) => `${r.dir}@${r.branch ?? r.commit?.slice(0, 8) ?? '?'}`).join(' ')}</dd>
-              <dt className="text-text-faint">Follows</dt>
-              <dd className="text-text-dim">{detail.follow ? 'Yes: it deploys whenever one of these branches moves' : 'No'}</dd>
-              {detail.volume !== undefined && <><dt className="text-text-faint">Volume</dt><dd className="text-text-dim">{detail.volume}</dd></>}
-            </dl>
-          </Section>
+          <YSection title="Releases" description="Newest first. Each opens its workspace.">
+            {detail.releases.length === 0 ? <YEmptyState compact title="No releases yet" className="py-4" /> : (
+              <div className="border-t border-line">
+                {detail.releases.map((r) => (
+                  <YListRow
+                    key={r.workspaceId}
+                    label={`Open the release of ${short(r.commits)}`}
+                    onSelect={() => openWorkspace(site.projectId, r.workspaceId)}
+                    leading={<span className="ml-1.5 w-28 shrink-0 text-md text-subtle">{relativeAge(r.createdAt)}</span>}
+                    title={<span className="font-mono">{short(r.commits)}</span>}
+                    sub={r.stoppedAt !== undefined ? <YBadge>stopped</YBadge> : <YBadge tone="success">running</YBadge>}
+                  />
+                ))}
+              </div>
+            )}
+          </YSection>
         )}
-      </div>
+
+        {detail !== undefined && (
+          <YSection title="Settings">
+            <YSettingGroup>
+              <Fact label="Workflow">
+                {workflow !== undefined
+                  ? (
+                    <YButton variant="link" onClick={() => openObject(site.projectId, { kind: 'workflow', id: workflow.id })} className="text-md">
+                      {site.workflow}
+                    </YButton>
+                  )
+                  : site.workflow}
+              </Fact>
+              <Fact label="Port"><span className="font-mono">{detail.port}</span></Fact>
+              {detail.adminPort !== undefined && <Fact label="Admin port"><span className="font-mono">{detail.adminPort}</span></Fact>}
+              <Fact label="Repos">
+                <span className="font-mono">{detail.repos.map((r) => `${r.dir}@${r.branch ?? r.commit?.slice(0, 8) ?? '?'}`).join(' ')}</span>
+              </Fact>
+              <Fact label="Follows">{detail.follow ? 'Yes: it deploys whenever one of these branches moves' : 'No'}</Fact>
+              {detail.volume !== undefined && <Fact label="Volume">{detail.volume}</Fact>}
+            </YSettingGroup>
+          </YSection>
+        )}
+      </YPageBody>
     </div>
   )
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }): JSX.Element {
-  return (
-    <section className="flex flex-col gap-1">
-      <h3 className="text-[11px] font-medium uppercase tracking-wide text-text-faint">{title}</h3>
-      {children}
-    </section>
-  )
+/** A read-only setting: its name, and its value on the right. */
+function Fact({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+  return <YSettingRow label={label}><span className="text-md text-muted">{children}</span></YSettingRow>
 }
 
 /** The state of the install's tunnel for a site of `siteEdge`. */
-function EdgeStatus({ edge, siteEdge }: { edge: SiteEdgeStatus | undefined; siteEdge: SiteEdge }): JSX.Element | null {
-  if (edge === undefined) return null
+function EdgeBadge({ edge, siteEdge }: { edge: SiteEdgeStatus; siteEdge: SiteEdge }): JSX.Element {
   if (siteEdge === 'tailnet') {
-    return <p className={edge.tailnet === 'ready' ? 'text-text-faint' : 'text-warning'}>{TAILNET_STATE[edge.tailnet]}</p>
+    return <YBadge tone={edge.tailnet === 'ready' ? 'success' : 'warning'}>{TAILNET_STATE[edge.tailnet]}</YBadge>
   }
-  return edge.cloudflare === 'absent' ? (
-    <p className="text-warning">
-      This install has no tunnel, so no site is reachable from the internet. Set one up with{' '}
-      <code className="text-text-dim">CF_TUNNEL_TOKEN=… yaac cluster install</code>.
-    </p>
-  ) : (
-    <p className={edge.cloudflare === 'connected' ? 'text-text-faint' : 'text-danger'}>Cloudflare tunnel {edge.cloudflare}</p>
-  )
+  if (edge.cloudflare === 'absent') return <YBadge tone="warning">No Cloudflare tunnel</YBadge>
+  return <YBadge tone={edge.cloudflare === 'connected' ? 'success' : 'danger'}>Cloudflare tunnel {edge.cloudflare}</YBadge>
 }
 
 /**
@@ -494,7 +514,7 @@ export function SiteForm({ project, site: editing, onDone, onCancel }: {
     queryFn: () => api.site.show.$get({ query: { project: project.id, name: editing ?? '' } }),
     enabled: editing !== undefined,
   })
-  if (editing !== undefined && site === undefined) return <p className="text-xs text-text-faint">Loading…</p>
+  if (editing !== undefined && site === undefined) return <p className="text-md text-subtle">Loading…</p>
   return <SiteFields project={project} {...(site !== undefined ? { site } : {})} onDone={onDone} {...(onCancel !== undefined ? { onCancel } : {})} />
 }
 
@@ -556,85 +576,82 @@ function SiteFields({ project, site, onDone, onCancel }: {
   }
 
   return (
-    <form onSubmit={submit} className="flex flex-col gap-3 text-xs">
-      {site === undefined && (
-        <Labelled label="Name">
-          <input aria-label="Site name" value={name} onChange={(e) => setName(e.target.value)} placeholder="app" className={INPUT} />
-        </Labelled>
-      )}
-      <div className="flex gap-3">
-        <Labelled label="Port">
-          <input aria-label="Port" value={port} onChange={(e) => setPort(e.target.value)} placeholder="3000" inputMode="numeric" className={`${INPUT} w-24`} />
-        </Labelled>
-        <Labelled label="Admin port">
-          <input
+    <form onSubmit={submit} className="flex flex-col gap-3">
+      <YSettingGroup>
+        {site === undefined && (
+          <YSettingRow label="Name">
+            <YInput aria-label="Site name" value={name} onChange={(e) => setName(e.target.value)} placeholder="app" className="w-56" />
+          </YSettingRow>
+        )}
+        <YSettingRow label="Port" hint="The port each release serves.">
+          <YInput aria-label="Port" value={port} onChange={(e) => setPort(e.target.value)} placeholder="3000" inputMode="numeric" className="w-24" />
+        </YSettingRow>
+        <YSettingRow label="Admin port" hint="A port of each release that only you can reach, as a preview or with yaac forward.">
+          <YInput
             aria-label="Admin port"
             value={adminPort}
             onChange={(e) => setAdminPort(e.target.value)}
             placeholder="none"
-            title="A port of each release that only you can reach, as a preview or with yaac forward"
             inputMode="numeric"
-            className={`${INPUT} w-24`}
+            className="w-24"
           />
-        </Labelled>
-        <Labelled label="Volume">
-          <select aria-label="Volume" value={volume} onChange={(e) => setVolume(e.target.value)} className={`${INPUT} w-36`}>
+        </YSettingRow>
+        <YSettingRow label="Volume">
+          <YSelect aria-label="Volume" value={volume} onChange={(e) => setVolume(e.target.value)} className="w-36">
             <option value="">No volume</option>
             {volumes?.map((v) => <option key={v.name} value={v.name}>{v.name}</option>)}
-          </select>
-        </Labelled>
-      </div>
-      <Labelled label="Workflow" hint="Each release runs its steps; one must be a service serving the port.">
-        <select
-          aria-label="Workflow"
-          value={workflow}
-          onChange={(e) => {
-            if (e.target.value === NEW_WORKFLOW) openObject(projectId, { kind: 'workflow', id: '' })
-            else setWorkflow(e.target.value)
-          }}
-          className={INPUT}
-        >
-          <option value="" disabled>Pick a workflow</option>
-          {workflows.map((w) => <option key={w.id} value={w.name}>{w.name}</option>)}
-          <option value={NEW_WORKFLOW}>+ New workflow…</option>
-        </select>
-      </Labelled>
-      <fieldset className="flex flex-col gap-1">
-        <legend className="mb-1 font-medium text-text">Repos</legend>
-        <p className="text-[11px] text-text-faint">What each release starts with: one at its root, several in their folders.</p>
-        {selection.rows.map((row) => (
-          <div key={row.repo.id} className="flex items-center gap-2">
-            <label className="flex w-28 shrink-0 items-center gap-1.5 truncate font-mono text-text">
-              <input
-                type="checkbox"
-                aria-label={`Include ${row.repo.dir}`}
-                checked={row.included}
-                onChange={(e) => pick(row.repo.id, { included: e.target.checked })}
-              />
-              {row.repo.dir}
-            </label>
-            {row.included && <>
-              <input
-                aria-label={`Branch or commit of ${row.repo.dir}`}
-                value={row.branch}
-                onChange={(e) => pick(row.repo.id, { branch: e.target.value })}
-                placeholder="branch or full commit"
-                list={`site-branches-${row.repo.id}`}
-                className={`${INPUT} min-w-0 flex-1 font-mono`}
-              />
-              <datalist id={`site-branches-${row.repo.id}`}>
-                {row.branches?.map((b) => <option key={b} value={b} />)}
-              </datalist>
-            </>}
+          </YSelect>
+        </YSettingRow>
+        <YSettingRow label="Workflow" hint="Each release runs its steps; one must be a service serving the port.">
+          <YSelect
+            aria-label="Workflow"
+            value={workflow}
+            onChange={(e) => {
+              if (e.target.value === NEW_WORKFLOW) openObject(projectId, { kind: 'workflow', id: '' })
+              else setWorkflow(e.target.value)
+            }}
+            className="w-56"
+          >
+            <option value="" disabled>Pick a workflow</option>
+            {workflows.map((w) => <option key={w.id} value={w.name}>{w.name}</option>)}
+            <option value={NEW_WORKFLOW}>+ New workflow…</option>
+          </YSelect>
+        </YSettingRow>
+        <YSettingRow stacked label="Repos" hint="What each release starts with: one at its root, several in their folders.">
+          <div role="group" aria-label="Repos" className="flex flex-col gap-1">
+            {selection.rows.map((row) => (
+              <div key={row.repo.id} className="flex items-center gap-2">
+                <YCheckbox
+                  aria-label={`Include ${row.repo.dir}`}
+                  checked={row.included}
+                  onCheckedChange={(included) => pick(row.repo.id, { included })}
+                  className="w-28 shrink-0 truncate font-mono"
+                >
+                  {row.repo.dir}
+                </YCheckbox>
+                {row.included && <>
+                  <YInput
+                    aria-label={`Branch or commit of ${row.repo.dir}`}
+                    value={row.branch}
+                    onChange={(e) => pick(row.repo.id, { branch: e.target.value })}
+                    placeholder="branch or full commit"
+                    list={`site-branches-${row.repo.id}`}
+                    className="flex-1 font-mono"
+                  />
+                  <datalist id={`site-branches-${row.repo.id}`}>
+                    {row.branches?.map((b) => <option key={b} value={b} />)}
+                  </datalist>
+                </>}
+              </div>
+            ))}
           </div>
-        ))}
-      </fieldset>
-      <label className="flex items-center gap-2 text-text">
-        <input type="checkbox" role="switch" checked={follow} onChange={() => setFollow(!follow)} />
-        Follow: deploy whenever a branch above moves
-      </label>
-      <p className="text-[11px] leading-relaxed text-text-faint">
-        Steps that use the volume need <code className="text-text-dim">{'"volume"'}</code>, and run only once the old
+        </YSettingRow>
+        <YSettingRow label="Follow" hint="Deploy whenever a branch above moves.">
+          <YSwitch aria-label="Follow" checked={follow} onCheckedChange={setFollow} />
+        </YSettingRow>
+      </YSettingGroup>
+      <p className="text-sm leading-relaxed text-subtle">
+        Steps that use the volume need <code className="text-muted">{'"volume"'}</code>, and run only once the old
         release has let it go. An admin port is one only you can open, as the release&apos;s preview; the internet
         never reaches it. A new site is unpublished until you publish it at a hostname. A following site deploys
         whenever one of its branches moves, so once it is published, whoever can push one, the project&apos;s agents
@@ -642,12 +659,12 @@ function SiteFields({ project, site, onDone, onCancel }: {
         new settings, so a published site&apos;s next deploy waits for your approval. What fails to deploy leaves
         the last good release serving.
       </p>
-      {save.error && <p className="text-red-400">{save.error.message}</p>}
+      {save.error && <p className="text-md text-danger">{save.error.message}</p>}
       <div className="flex justify-end gap-2">
-        {onCancel !== undefined && <button type="button" onClick={onCancel} className={TEXT_BUTTON}>Cancel</button>}
-        <button type="submit" disabled={save.isPending || blocked !== null} title={blocked ?? undefined} className={BUTTON}>
+        {onCancel !== undefined && <YButton variant="ghost" onClick={onCancel}>Cancel</YButton>}
+        <YButton variant="primary" type="submit" disabled={save.isPending || blocked !== null} title={blocked ?? undefined}>
           {save.isPending ? 'Saving…' : site !== undefined ? 'Save' : 'Create site'}
-        </button>
+        </YButton>
       </div>
     </form>
   )
@@ -655,13 +672,3 @@ function SiteFields({ project, site, onDone, onCancel }: {
 
 /** The workflow picker's "+ New workflow…" option. */
 const NEW_WORKFLOW = '\u0000new'
-
-function Labelled({ label, hint, children }: { label: string; hint?: string | undefined; children: ReactNode }): JSX.Element {
-  return (
-    <label className="flex flex-col gap-1">
-      <span className="font-medium text-text">{label}</span>
-      {children}
-      {hint !== undefined && <span className="text-[11px] text-text-faint">{hint}</span>}
-    </label>
-  )
-}

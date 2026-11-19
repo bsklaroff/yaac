@@ -1,32 +1,31 @@
 import type { JSX } from 'react'
-import { Popover } from '@base-ui/react/popover'
-import { PopoverPopup } from '#components/ui/menu'
+import clsx from 'clsx'
 import { useSnapshot } from '#lib/useSnapshot'
 import { CONTAINERLESS_REACH } from '@yaac/shared/setup-copy'
+import { BADGE_TRIGGER } from '#components/ActionsBadge'
+import { YPopover, YPopoverPopup } from '#ui'
 
 /**
- * Workspace-bar warning that this server runs workspaces on its machine with
- * no sandbox (docs/containerless-driver.md), drawn by every workspace header,
- * live or read-only, and by nothing under k8s. The driver is the server's, so
+ * Warning that this server runs workspaces on its machine with no sandbox
+ * (docs/containerless-driver.md), drawn in a live workspace's Details pane
+ * and a read-only workspace's header, and by nothing under k8s. The driver is the server's, so
  * a client of a remote containerless server sees it too. The popover says
  * what the agent can reach and where isolation comes from.
  */
 export function ContainerlessBadge(): JSX.Element | null {
   if (useSnapshot()?.driver !== 'containerless') return null
   return (
-    <Popover.Root>
-      <Popover.Trigger
+    <YPopover.Root>
+      <YPopover.Trigger
         aria-label="Containerless workspace: not sandboxed"
         title="Not sandboxed: click for details"
-        className="flex shrink-0 items-center rounded bg-warning/15 px-1 py-0.5 text-xs font-semibold
-          uppercase tracking-wide text-warning ring-1 ring-warning/40 transition hover:bg-warning/25
-          data-[popup-open]:bg-warning/25"
+        className={clsx(BADGE_TRIGGER, 'bg-warning-soft text-warning hover:bg-warning/25 data-[popup-open]:bg-warning/25')}
       >
         containerless
-      </Popover.Trigger>
-      <PopoverPopup side="bottom" align="end" sideOffset={4} className="max-w-xs">
-        <div className="px-2 pb-1 pt-1 text-xs font-medium text-warning">Not sandboxed</div>
-        <div className="flex flex-col gap-1.5 px-2 pb-1.5 text-xs leading-relaxed text-text-dim">
+      </YPopover.Trigger>
+      <YPopoverPopup side="bottom" align="end" sideOffset={4} className="max-w-xs">
+        <div className="px-2 pb-1 pt-1 text-md font-medium text-warning">Not sandboxed</div>
+        <div className="flex flex-col gap-1.5 px-2 pb-1.5 text-md leading-relaxed text-muted">
           <p>
             This server runs workspaces directly on its machine, with no container. The agent
             acts as the account the yaac server runs as:
@@ -42,7 +41,7 @@ export function ContainerlessBadge(): JSX.Element | null {
             podman and kind.
           </p>
         </div>
-      </PopoverPopup>
-    </Popover.Root>
+      </YPopoverPopup>
+    </YPopover.Root>
   )
 }

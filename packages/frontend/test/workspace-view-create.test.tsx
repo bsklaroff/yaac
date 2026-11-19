@@ -74,7 +74,7 @@ describe('WorkspaceView around a create', () => {
     useUiStore.setState({ activeProjectId: 'proj', selectedWorkspaceId: null })
     show()
     expect(screen.getByLabelText<HTMLTextAreaElement>('Prompt').placeholder).toBe('Message the agent…')
-    expect(screen.getByRole('heading').textContent).toBe('New workspace')
+    expect(screen.getByRole('heading', { name: 'New workspace' })).toBeTruthy()
   })
 
   // Drawn as the chat it becomes: the prompt, then the spinner with the

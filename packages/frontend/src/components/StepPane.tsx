@@ -9,9 +9,7 @@ import { isLocked, stepLive, stepLogFile } from '#lib/steps'
 import { useReadOnly } from '#lib/viewer'
 import { stepSettled, type WorkspaceStep } from '@yaac/shared/steps'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
-
-const ACTION = 'flex h-6 items-center gap-1 rounded px-1.5 text-[11px] text-text-dim transition '
-  + 'hover:bg-surface-2 hover:text-text disabled:opacity-50'
+import { YButton } from '#ui'
 
 /** A step's state as a short line: `failed (exit 2)`. */
 export function stepStateText(step: Pick<WorkspaceStep, 'state' | 'exitCode'>): string {
@@ -36,7 +34,7 @@ export function StepPane({ workspace, name, visible, focusKey }: {
   const step = workspace.steps?.find((s) => s.name === name)
   if (step === undefined) {
     return (
-      <p className="flex h-full items-center justify-center bg-bg text-xs text-text-faint">
+      <p className="flex h-full items-center justify-center bg-sunken text-md text-subtle">
         This run of the workspace has no step “{name}”.
       </p>
     )
@@ -50,16 +48,17 @@ export function StepPane({ workspace, name, visible, focusKey }: {
   }
   const { life, file } = stepLogFile(step)
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden rounded-md bg-bg">
-      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline px-2 text-[11px]">
-        <span className="min-w-0 truncate font-mono text-text-dim" title={step.spec.run.join('\n')}>{name}</span>
-        <span className={clsx(step.state === 'failed' ? 'text-danger' : 'text-text-faint')}>{stepStateText(step)}</span>
+    <div className="flex h-full w-full flex-col overflow-hidden rounded-md bg-sunken">
+      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-line px-2 text-sm">
+        <span className="min-w-0 truncate font-mono text-muted" title={step.spec.run.join('\n')}>{name}</span>
+        <span className={clsx(step.state === 'failed' ? 'text-danger' : 'text-subtle')}>{stepStateText(step)}</span>
         {error !== null && <span className="min-w-0 truncate text-danger" title={error}>{error}</span>}
         {!readOnly && !isLocked(workspace) && (
           <span className="ml-auto flex items-center">
             {stepSettled(step.state)
-              ? <button type="button" onClick={() => act('rerun')} className={ACTION}><RestartIcon size={11} />Rerun</button>
-              : <button type="button" onClick={() => act('cancel')} className={ACTION}><StopIcon size={11} />Cancel</button>}
+              ? <YButton variant="ghost" size="sm" icon={RestartIcon} onClick={() => act('rerun')}>Rerun</YButton>
+              : <YButton variant="ghost" size="sm" icon={StopIcon} onClick={() => act('cancel')}>Cancel</YButton>}
+
           </span>
         )}
       </div>

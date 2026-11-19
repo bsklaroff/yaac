@@ -4,7 +4,7 @@ import { addColumn, isPaneLayout, paneTargets, removeTarget, renameTargets, sing
 import { previewTarget } from '#lib/preview'
 import { stepTarget } from '#lib/steps'
 import { CHANGES_TARGET, FILES_TARGET, changesTarget, fileKey, fileTarget, placeFile, type ChangesRange } from '#lib/files'
-import { HISTORY_TARGET } from '#lib/panes'
+import { DETAILS_TARGET, HISTORY_TARGET } from '#lib/panes'
 import { COMMITS_TARGET } from '#lib/commits'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, type ThemePref } from '#lib/theme'
@@ -175,16 +175,6 @@ const oneOf = <T extends string>(key: string, values: readonly T[]): Persisted<T
   parse: (raw) => values.find((v) => v === raw),
 })
 
-/** A JSON array, keeping the `values` it holds, in their order. */
-const someOf = <T extends string>(key: string, values: readonly T[]): Persisted<T[]> => ({
-  key,
-  parse: (raw) => {
-    const parsed: unknown = JSON.parse(raw)
-    return Array.isArray(parsed) ? values.filter((v) => parsed.includes(v)) : undefined
-  },
-  serialize: JSON.stringify,
-})
-
 const number = (key: string, clamp: (n: number) => number): Persisted<number> => ({
   key,
   parse: (raw) => (raw.trim() !== '' && Number.isFinite(Number(raw)) ? clamp(Number(raw)) : undefined),
@@ -234,12 +224,6 @@ function isChatDraft(v: unknown): v is ChatDraft {
 export const FILE_DIFF_MODES = ['plain', 'added', 'inline', 'changes'] as const
 export type FileDiffMode = typeof FILE_DIFF_MODES[number]
 
-/** The statuses the sidebar's filter can narrow its rows to, in menu order.
- *  `background` is an agent between turns with background work live, and
- *  `idle` a running workspace with no session running. */
-export const SIDEBAR_STATUSES = ['waiting', 'running', 'background', 'idle', 'stopped'] as const
-export type SidebarStatus = typeof SIDEBAR_STATUSES[number]
-
 /** The store fields saved across reloads. */
 const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   // A restart keeps the workspace id, so its layout survives it.
@@ -247,6 +231,7 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   viewMode: oneOf('yaac.viewmode.v1', ['tiles', 'tabs']),
   pinnedUsageMetric: { key: 'yaac.pinnedusage.v1', parse: (raw) => raw || undefined, serialize: (v) => v },
   soundEnabled: flag('yaac.sound.v1'),
+  homeOpen: flag('yaac.home.v1'),
   chatDrafts: {
     ...jsonRecord('yaac.chatdrafts.v1', isChatDraft),
     serialize: (drafts) => JSON.stringify(Object.fromEntries(Object.entries(drafts).filter(([, d]) =>
@@ -263,7 +248,6 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   mobileScreen: oneOf('yaac.mobilescreen.v1', ['projects', 'workspaces', 'pane']),
   sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),
   stoppedExpanded: flag('yaac.stoppedexpanded.v1'),
-  sidebarStatuses: someOf('yaac.sidebarstatuses.v1', SIDEBAR_STATUSES),
   editorFontSize: number('yaac.editorfontsize.v1', clampFontSize),
   filesFontSize: number('yaac.filesfontsize.v1', clampFontSize),
   fileDiffMode: oneOf('yaac.filediffmode.v1', FILE_DIFF_MODES),
@@ -571,6 +555,8 @@ interface UiState {
    *  is open already, close this one and focus it. */
   retargetRange: (workspaceId: string, from: string, to: string) => void
   openCommits: (workspaceId: string) => void
+  /** Open (or focus) the workspace's Details pane. */
+  openDetails: (workspaceId: string) => void
   /** Open or focus a workspace's file explorer. */
   openFiles: (workspaceId: string) => void
   /** Open or focus a workspace's History pane. */
@@ -775,13 +761,6 @@ interface UiState {
   /** Groups the user collapsed; groups start expanded. */
   collapsedGroups: string[]
   setGroupCollapsed: (groupId: string, collapsed: boolean) => void
-  /** The statuses the sidebar's filter shows; empty shows every row.
-   *  Saved. */
-  sidebarStatuses: SidebarStatus[]
-  setSidebarStatuses: (statuses: SidebarStatus[]) => void
-  /** The sidebar search box's text. Cleared when the project changes. */
-  sidebarQuery: string
-  setSidebarQuery: (query: string) => void
   /** Add an optimistic provisioning row (deduplicated by id). */
   addOptimisticProvisioning: (entry: ProvisioningWorkspaceEntry) => void
   /** Update an optimistic row's message or error, if it exists. */
@@ -801,6 +780,18 @@ interface UiState {
    */
   receiveSnapshot: (snapshot: ServerSnapshot) => void
   setActiveProject: (projectId: string | null) => void
+  /** Home: the inbox in the pane and every project's sessions in the
+   *  sidebar. A project tile, or anything that opens a project's own pane
+   *  (an object, the new-workspace form, a jump to a workspace), leaves it;
+   *  picking a session from the sidebar keeps it. */
+  homeOpen: boolean
+  /** Open Home on its inbox (no session selected). */
+  openHome: () => void
+  /** Open a session picked on Home: its project becomes active, Home stays. */
+  selectHomeWorkspace: (projectId: string, workspaceId: string) => void
+  /** Whether the command palette is showing. */
+  paletteOpen: boolean
+  setPaletteOpen: (open: boolean) => void
   /** Like `setActiveProject`, for when App picks a project itself. Leaves
    *  the mobile screen alone (see MobileScreen). */
   restoreActiveProject: (projectId: string) => void
@@ -929,12 +920,13 @@ export const useUiStore = create<UiState>((set, get) => ({
   snapshot: undefined,
   viewedUserId: null,
   viewUser: (userId, projectId) => navigate(() => set({
-    viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null, selectedObject: null, sidebarQuery: '',
+    viewedUserId: userId, activeProjectId: projectId, selectedWorkspaceId: null, selectedObject: null,
   })),
   activeProjectId: initialSelection.projectId,
   selectedWorkspaceId: initialSelection.workspaceId,
   selectedObject: null,
   openObject: (projectId, object) => navigate(() => set((s) => ({
+    homeOpen: false,
     activeProjectId: projectId,
     selectedWorkspaceId: null,
     selectedObject: object,
@@ -964,7 +956,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   chatDrafts: {},
   newWorkspace: null,
   stoppedExpanded: false,
-  sidebarStatuses: [],
   paneView: {},
   // Every saved field's default goes above this line, so a loaded value wins.
   ...loadPersisted(),
@@ -999,6 +990,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   setNewWorkspace: (newWorkspace) => set({ newWorkspace }),
   openNewWorkspace: (opts) => {
     const show = (form: NewWorkspaceForm | null): void => set((s) => ({
+      homeOpen: false,
       activeProjectId: opts.projectId,
       selectedWorkspaceId: null,
       selectedObject: null,
@@ -1063,9 +1055,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   setGroupCollapsed: (groupId, collapsed) => set((s) => ({
     collapsedGroups: toggled(s.collapsedGroups, groupId, collapsed),
   })),
-  setSidebarStatuses: (sidebarStatuses) => set({ sidebarStatuses }),
-  sidebarQuery: '',
-  setSidebarQuery: (sidebarQuery) => set({ sidebarQuery }),
 
   addOptimisticProvisioning: (entry) => set((s) => (
     s.optimisticProvisioning.some((e) => e.workspaceId === entry.workspaceId)
@@ -1138,19 +1127,38 @@ export const useUiStore = create<UiState>((set, get) => ({
   }),
   // Switching projects clears the selection. On mobile it shows the
   // project's workspace list, or the project list when cleared.
+  homeOpen: false,
+  openHome: () => navigate(() => set({
+    homeOpen: true,
+    selectedWorkspaceId: null,
+    selectedObject: null,
+    newWorkspace: null,
+    mobileScreen: 'workspaces',
+  })),
+  selectHomeWorkspace: (projectId, workspaceId) => navigate(() => set((s) => ({
+    homeOpen: true,
+    activeProjectId: projectId,
+    selectedWorkspaceId: workspaceId,
+    selectedObject: null,
+    newWorkspace: null,
+    focusNonce: s.focusNonce + 1,
+    mobileScreen: 'pane',
+  }))),
+  paletteOpen: false,
+  setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setActiveProject: (projectId) => {
     const go = (): void => set({
+      homeOpen: false,
       activeProjectId: projectId,
       selectedWorkspaceId: null,
       selectedObject: null,
-      sidebarQuery: '',
       mobileScreen: projectId ? 'workspaces' : 'projects',
     })
     if (projectId === get().activeProjectId) go()
     else navigate(go)
   },
   restoreActiveProject: (projectId) => set({
-    activeProjectId: projectId, selectedWorkspaceId: null, selectedObject: null, sidebarQuery: '',
+    activeProjectId: projectId, selectedWorkspaceId: null, selectedObject: null,
   }),
   // A deselect (null) doesn't change the mobile screen.
   selectWorkspace: (id) => {
@@ -1165,6 +1173,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
   autoSelectWorkspace: (id) => set((s) => ({ selectedWorkspaceId: id, selectedObject: null, focusNonce: s.focusNonce + 1 })),
   openWorkspace: (projectId, workspaceId) => navigate(() => set((s) => ({
+    homeOpen: false,
     activeProjectId: projectId,
     selectedWorkspaceId: workspaceId,
     selectedObject: null,
@@ -1201,6 +1210,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   openFiles: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, FILES_TARGET)),
   openHistory: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, HISTORY_TARGET)),
   openCommits: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, COMMITS_TARGET)),
+  openDetails: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, DETAILS_TARGET)),
   openStep: (workspaceId, name) => set((s) => openSpecialPane(s, workspaceId, stepTarget(name))),
   openFile: (workspaceId, path, line) => set((s) => {
     const target = fileTarget(path)

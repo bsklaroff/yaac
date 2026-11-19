@@ -9,8 +9,8 @@ export type RowStatus = ChangeStatus | 'conflicted'
 
 const GREEN = 'text-success'
 const YELLOW = 'text-warning'
-const RED = 'text-error'
-const BLUE = 'text-link'
+const RED = 'text-danger'
+const BLUE = 'text-info'
 const PURPLE = 'text-purple'
 
 /** The color a file's name (or a folder's dot) takes for its status. */
@@ -21,7 +21,7 @@ export const ROW_STATUS: Record<RowStatus, string> = {
   deleted: RED,
   renamed: BLUE,
   copied: BLUE,
-  typechange: 'text-text-dim',
+  typechange: 'text-muted',
 }
 
 /** Strongest first: a folder shows the strongest status among what it holds. */

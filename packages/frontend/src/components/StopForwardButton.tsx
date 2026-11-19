@@ -1,5 +1,6 @@
 import type { JSX } from 'react'
 import { CloseIcon } from '#lib/icons'
+import { YButton } from '#ui'
 
 /**
  * The × that stops forwarding a port, shown while its `group` parent (the
@@ -8,24 +9,21 @@ import { CloseIcon } from '#lib/icons'
  */
 export function StopForwardButton({
   containerPort,
-  iconSize,
   onStop,
 }: {
   containerPort: number
-  iconSize: number
   onStop: (containerPort: number) => void
 }): JSX.Element {
   return (
-    <button
+    <YButton
+      variant="ghost"
+      size="sm"
+      icon={CloseIcon}
       onClick={(e) => { e.stopPropagation(); onStop(containerPort) }}
       onMouseUp={(e) => e.stopPropagation()}
       title={`Stop forwarding port ${containerPort}`}
       aria-label={`Stop forwarding port ${containerPort}`}
-      className="-ml-0.5 mr-0.5 flex items-center text-text-faint opacity-0 transition
-        hover:text-text focus-visible:opacity-100 group-hover:opacity-100
-        group-data-[highlighted]:opacity-100"
-    >
-      <CloseIcon size={iconSize - 2} />
-    </button>
+      className="opacity-0 focus-visible:opacity-100 group-hover:opacity-100 group-data-[highlighted]:opacity-100"
+    />
   )
 }

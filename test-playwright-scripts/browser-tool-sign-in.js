@@ -50,9 +50,10 @@ async function main() {
   browser = await chromium.launch()
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   await page.goto(origin)
-  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('button', { name: 'yaac menu' }).click()
+  await page.getByRole('menuitem', { name: 'Settings' }).click()
   await page.getByRole('button', { name: 'Credentials' }).click()
-  const row = (tool) => page.locator('div.rounded-md', { has: page.locator(`span:text-matches("^${tool}")`) }).first()
+  const row = (tool) => page.locator(`[data-tool="${tool}"]`)
 
   console.log('\n1. Claude, with a pasted code')
   await row('claude').getByRole('button', { name: 'Sign in' }).click()

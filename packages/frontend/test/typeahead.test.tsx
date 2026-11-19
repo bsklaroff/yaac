@@ -1,25 +1,25 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, cleanup, fireEvent, within } from '@testing-library/react'
-import { Typeahead, type TypeaheadItem } from '#components/ui/Typeahead'
 import { typeInto } from './harness'
+import { YTypeahead, type YTypeaheadItem } from '#ui'
 
 
-const MODELS: TypeaheadItem[] = [
+const MODELS: YTypeaheadItem[] = [
   { value: 'claude-opus-5-5', label: 'Opus 5.5', detail: 'claude-opus-5-5' },
   { value: 'claude-sonnet-5', label: 'Sonnet 5', detail: 'claude-sonnet-5' },
 ]
 
-function field(props: Partial<Parameters<typeof Typeahead>[0]> = {}): { onSelect: ReturnType<typeof vi.fn> } {
+function field(props: Partial<Parameters<typeof YTypeahead>[0]> = {}): { onSelect: ReturnType<typeof vi.fn> } {
   const onSelect = vi.fn()
   render(
-    <Typeahead items={MODELS} query="" onQueryChange={() => {}} onSelect={onSelect} showList ariaLabel="Model" {...props} />,
+    <YTypeahead items={MODELS} query="" onQueryChange={() => {}} onSelect={onSelect} showList ariaLabel="Model" {...props} />,
   )
   return { onSelect }
 }
 
 const rows = (): string[] => within(screen.getByRole('listbox')).getAllByRole('option').map((b) => b.textContent ?? '')
 
-describe('Typeahead', () => {
+describe('YTypeahead', () => {
   it('finds an item by its label or its value, and shows both', () => {
     field({ query: 'sonnet' })
     expect(rows()).toEqual(['Sonnet 5claude-sonnet-5'])
@@ -36,7 +36,7 @@ describe('Typeahead', () => {
     const onSelect = vi.fn()
     render(
       <div onKeyDown={(e) => { if (e.key === 'Enter') formKey() }}>
-        <Typeahead items={MODELS} query="" onQueryChange={() => {}} onSelect={onSelect} showList ariaLabel="Model" />
+        <YTypeahead items={MODELS} query="" onQueryChange={() => {}} onSelect={onSelect} showList ariaLabel="Model" />
       </div>,
     )
     const input = screen.getByLabelText('Model')

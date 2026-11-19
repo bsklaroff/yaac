@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type JSX, type RefObject } from 'react'
 import { groupFindText, type Found, type Group } from '#components/AcpTranscript'
-import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
+import { PaneFindBar, useFindQuery } from '#components/FindPanel'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { COUNT_DEBOUNCE_MS, MatchCounter, NO_MATCHES, type Matches, type QuerySpec } from '#lib/matchCount'
 import { chordMatches, claimChord, findChord } from '#lib/shortcuts'

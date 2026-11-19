@@ -330,9 +330,11 @@ An `acp` conversation has no UI of its own, so yaac does two things:
 - **It tells the adapter** the posture over `session/set_mode` once the
   handshake has a session. This decides which questions are asked at all;
   without it the adapter asks about everything.
-- **It forwards the remaining asks** to the chat pane. The JSON-RPC request
-  is held open with no timeout, because answering for the user after a delay
-  would be the auto-approval the posture exists to prevent.
+- **It forwards the remaining asks** to the chat pane, which docks each
+  unanswered one above the composer (`PendingAsks`) and marks where it was
+  asked in the transcript with one line. The JSON-RPC request is held open
+  with no timeout, because answering for the user after a delay would be
+  the auto-approval the posture exists to prevent.
 
 Under `bypass` yaac answers asks itself, because an adapter still honors a
 user-configured `permissions.ask` rule in bypass mode. An adapter that won't

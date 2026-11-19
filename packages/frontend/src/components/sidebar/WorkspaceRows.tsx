@@ -8,14 +8,11 @@ import {
 } from 'react'
 import clsx from 'clsx'
 import { useMutation } from '@tanstack/react-query'
-import { Dialog } from '@base-ui/react/dialog'
 import { CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon, TimeoutIcon } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
 import { StatusMark } from '#components/StatusMark'
 import { StopWorkspaceDialog } from '#components/StopWorkspaceDialog'
-import { RowMenu } from '#components/sidebar/RowMenu'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { Modal } from '#components/ui/Modal'
+import { SidebarRow } from '#components/sidebar/SidebarRow'
 import { agentLabel, workspaceAgentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { dismissProvisioning } from '#lib/createWorkspace'
@@ -38,6 +35,7 @@ import type {
   WorkspaceGroupSummary,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
+import { YButton, YConfirm, YDialog, YDialogClose, YDialogDescription, YDialogTitle, YInput, YStatus } from '#ui'
 
 /** Whether a workspace is stopping, per the server or an optimistic stop in
  *  flight. Its row stays in place but is greyed out and can't be selected
@@ -72,54 +70,38 @@ export function ProvisioningRow({ entry }: { entry: ProvisioningWorkspaceEntry }
     if (selectedWorkspaceId === entry.workspaceId) selectWorkspace(null)
   }
 
+  const title = entry.kind === 'restart' ? 'Restarting workspace' : entry.title ?? 'New workspace'
   return (
-    <div className="group relative mx-2">
-      <button
-        onClick={() => selectWorkspace(entry.workspaceId)}
-        className={clsx(
-          'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition hover:bg-surface-2/60',
-          selectedWorkspaceId === entry.workspaceId && 'bg-surface-2 hover:bg-surface-2',
-        )}
-      >
-        {/* Leave room for the button: on hover, and always on touch. */}
-        <span className={clsx('flex items-center gap-2', !entry.stopping && 'group-hover:pr-6 max-md:pr-9')}>
-          <span className="truncate font-medium text-text-dim">
-            {entry.kind === 'restart' ? 'Restarting workspace' : entry.title ?? 'New workspace'}
-          </span>
-          <span className="ml-auto shrink-0 text-xs text-text-faint">{agentLabel(entry.tool, entry)}</span>
-        </span>
-        <span className="flex items-center gap-1.5 text-xs text-text-faint">
-          {entry.error ? (
-            <span className="text-danger">failed</span>
-          ) : (
-            <>
-              <LoadingIcon size={11} className="animate-spin" />
-              <span className="truncate">{entry.message || 'starting…'}</span>
-            </>
-          )}
-        </span>
-      </button>
-
-      {!entry.stopping && !readOnly && (
-        <button
+    <SidebarRow
+      label={title}
+      onSelect={() => selectWorkspace(entry.workspaceId)}
+      selected={selectedWorkspaceId === entry.workspaceId}
+      mark={entry.error ? <YStatus kind="fail" /> : <LoadingIcon size={11} className="animate-spin text-subtle" />}
+      title={title}
+      meta={(
+        <>
+          {entry.error ? <span className="text-danger">failed</span> : <span className="truncate">{entry.message || 'starting…'}</span>}
+          <span className="ml-auto shrink-0">{agentLabel(entry.tool, entry)}</span>
+        </>
+      )}
+      actions={!entry.stopping && !readOnly && (
+        <YButton
+          variant="ghost"
+          size="sm"
+          icon={CloseIcon}
           onClick={entry.error ? dismiss : () => stopProvisioning(entry.workspaceId)}
           title={entry.error ? 'Dismiss' : 'Stop'}
           aria-label={entry.error ? 'Dismiss' : 'Stop'}
-          className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-            opacity-0 transition hover:bg-surface-3 hover:text-text group-hover:opacity-100
-            max-md:h-7 max-md:w-7 max-md:opacity-100"
-        >
-          <CloseIcon size={14} />
-        </button>
+          className="max-md:size-7"
+        />
       )}
-    </div>
+    />
   )
 }
 
 /**
  * A workspace title truncated with an ellipsis. On row hover it scrolls to
- * reveal the hidden tail; the distance is measured at the hovered width, so
- * titles that fit don't move.
+ * reveal the hidden tail; titles that fit don't move.
  */
 function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JSX.Element {
   const ref = useRef<HTMLSpanElement>(null)
@@ -142,13 +124,14 @@ function MarqueeTitle({ text, hovered }: { text: string; hovered: boolean }): JS
     el.style.animation = `marquee ${duration}ms ease-in-out infinite`
   }, [hovered, text])
 
-  return (
-    <span className="relative min-w-0 flex-1 overflow-hidden">
-      <span ref={ref} className={clsx('block font-medium', hovered ? 'whitespace-nowrap' : 'truncate')}>
-        {text}
-      </span>
-    </span>
-  )
+  return <span ref={ref} className={clsx('block', hovered ? 'whitespace-nowrap' : 'truncate')}>{text}</span>
+}
+
+/** Whether a press on a row landed on one of its own controls (its menu,
+ *  the blocked-hosts badge) rather than on the row, so it is not a drag. */
+function onControl(e: ReactPointerEvent): boolean {
+  const hit = e.target instanceof Element ? e.target.closest('button') : null
+  return hit !== null && hit.parentElement !== e.currentTarget
 }
 
 export function WorkspaceRow({
@@ -192,33 +175,26 @@ export function WorkspaceRow({
     stopWorkspaceOptimistic(workspace, rowIds)
   }
 
+  const title = workspace.title || workspace.prompt || 'New workspace'
+
   // A stopping row is a greyed, inert placeholder until the snapshot drops it.
   if (stopping) {
     return (
-      <div className="mx-2">
-        <div
-          aria-disabled="true"
-          className="flex w-full cursor-default flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm opacity-60"
-        >
-          <span className="flex items-center gap-2">
-            <LoadingIcon size={11} className="shrink-0 animate-spin text-text-faint" />
-            <span className="truncate font-medium text-text-dim">
-              {workspace.title || workspace.prompt || 'New workspace'}
-            </span>
-          </span>
-          <span className="flex items-center gap-2 text-xs text-text-faint">
-            <span className="truncate">stopping…</span>
-            <span className="ml-auto shrink-0">{workspaceAgentLabel(workspace)}</span>
-          </span>
-        </div>
-      </div>
+      <SidebarRow
+        label={title}
+        rowProps={{ 'aria-disabled': true }}
+        className="cursor-default opacity-60"
+        mark={<LoadingIcon size={11} className="animate-spin text-subtle" />}
+        title={title}
+        meta={<><span className="truncate">stopping…</span><span className="ml-auto shrink-0">{workspaceAgentLabel(workspace)}</span></>}
+      />
     )
   }
 
-  // The age, timeout, agent count and tool line, shown under the title or
-  // rename input.
-  const metaLine = (
-    <span className="flex items-center gap-2 text-xs text-text-faint">
+  // The age, timeout, and agent count and tool, or the blocked-hosts badge
+  // in their place.
+  const meta = (
+    <>
       <span className="shrink-0">{relativeAge(workspace.createdAt)}</span>
       {workspace.deadline !== undefined && (
         <span role="img" aria-label={`Stops in ${timeUntil(workspace.deadline, now)}`}
@@ -227,97 +203,65 @@ export function WorkspaceRow({
         </span>
       )}
       {/* Several sessions are counted here and listed under the row; one is
-          named by its agent. Hidden when the blocked-hosts badge takes the
-          spot. */}
-      {workspace.blockedHosts.length === 0 && (
+          named by its agent. */}
+      {workspace.blockedHosts.length > 0 ? (
+        <BlockedHostsBadge
+          hosts={workspace.blockedHosts}
+          workspaceId={workspace.workspaceId}
+          iconSize={11}
+          className="pointer-events-auto ml-auto hover:bg-danger/25"
+        />
+      ) : (
         <span className="ml-auto shrink-0">
           {workspace.sessions.length > 1 ? `${String(workspace.sessions.length)} sessions` : workspaceAgentLabel(workspace)}
         </span>
       )}
-    </span>
+    </>
   )
+  const select = (): void => selectWorkspace(workspace.workspaceId)
 
   return (
-    <div
-      className="group relative mx-2"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
+    <div>
       {editingTitle ? (
-        <div className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm">
-          <span className="flex items-center gap-2">
-            <input
-              ref={inputRef}
-              aria-label="Workspace row title"
-              defaultValue={seed}
-              placeholder="Workspace name"
-              onKeyDown={handleRenameKeyDown}
-              onBlur={handleRenameBlur}
-              className="min-w-0 flex-1 rounded border border-border-strong bg-bg px-1.5 py-0.5
-                text-sm font-medium text-text outline-none"
-            />
-          </span>
-          {metaLine}
+        <div className="flex flex-col gap-0.5 px-2.5 py-2">
+          <YInput
+            ref={inputRef}
+            aria-label="Workspace row title"
+            defaultValue={seed}
+            placeholder="Workspace name"
+            onKeyDown={handleRenameKeyDown}
+            onBlur={handleRenameBlur}
+            className="font-medium"
+          />
+          <span className="flex items-center gap-2 pl-6 text-sm text-subtle">{meta}</span>
         </div>
       ) : (
-        <>
-          <button
+        <SidebarRow
+          label={title}
+          onSelect={select}
+          selected={selectedWorkspaceId === workspace.workspaceId}
+          rowProps={{
             // A mouse press may become a drag; if not, the list calls the
-            // select callback. Touch uses onClick.
-            onPointerDown={(e) => drag.start(e, workspace, () => selectWorkspace(workspace.workspaceId))}
-            onClick={() => selectWorkspace(workspace.workspaceId)}
-            className={clsx(
-              'flex w-full flex-col gap-0.5 rounded-lg px-2.5 text-left text-sm transition hover:bg-surface-2/60',
-              // Taller on touch.
-              'py-2 max-md:py-2.5',
-              'cursor-grab active:cursor-grabbing max-md:cursor-pointer',
-              drag.activeId === workspace.workspaceId && 'opacity-60',
-              selectedWorkspaceId === workspace.workspaceId && 'bg-surface-2 hover:bg-surface-2',
-            )}
-          >
-            {/* On hover (always on mobile) the title insets to clear the
-                actions menu. */}
-            <span className="flex items-center gap-2 group-hover:pr-8 max-md:pr-10">
-              <StatusMark
-                status={workspace.status}
-                asking={workspace.asking === true}
-                unread={unread}
-                {...(teammate !== undefined ? { owner: teammate } : {})}
-              />
-              <MarqueeTitle
-                text={workspace.title || workspace.prompt || 'New workspace'}
-                hovered={hovered && !isMobile}
-              />
-            </span>
-            {metaLine}
-          </button>
-
-          {/* A sibling, since a button can't nest in the row button. Only the
-              badge itself takes clicks. */}
-          {workspace.blockedHosts.length > 0 && (
-            <span className="pointer-events-none absolute bottom-1.5 right-1.5 flex items-center gap-1">
-              <BlockedHostsBadge
-                hosts={workspace.blockedHosts}
-                workspaceId={workspace.workspaceId}
-                iconSize={11}
-                className="pointer-events-auto hover:bg-danger/25"
-              />
-            </span>
+            // select callback. Touch uses the row's click.
+            onPointerDown: (e) => { if (!onControl(e)) drag.start(e, workspace, select) },
+            onMouseEnter: () => setHovered(true),
+            onMouseLeave: () => setHovered(false),
+          }}
+          className={clsx('cursor-grab active:cursor-grabbing max-md:cursor-pointer',
+            drag.activeId === workspace.workspaceId && 'opacity-60')}
+          mark={(
+            <StatusMark
+              status={workspace.status}
+              asking={workspace.asking === true}
+              {...(teammate !== undefined ? { owner: teammate } : {})}
+            />
           )}
-
-          {/* A sibling of the row button, inert until hover so it doesn't
-              take clicks meant for the row. Always shown on mobile. */}
-          {workspace.sessions.length > 1 && (
-            <div className="flex flex-col pb-1 pl-5">
-              {workspace.sessions.map((s) => (
-                <SessionRow key={s.sessionId} workspace={workspace} session={s} />
-              ))}
-            </div>
-          )}
-
-          <RowMenu
-            label="Workspace actions"
-            items={[
+          title={<MarqueeTitle text={title} hovered={hovered && !isMobile} />}
+          strong={unread || workspace.asking === true}
+          meta={meta}
+          menu={{
+            label: 'Workspace actions',
+            items: [
               ...isLocked(workspace) ? [] : [{
                 label: 'New session…',
                 onSelect: () => openNewWorkspace({ projectId: workspace.projectId, inWorkspace: workspace.workspaceId }),
@@ -330,10 +274,13 @@ export function WorkspaceRow({
               },
               // A site's release is stopped only through its site.
               ...workspace.site !== undefined ? [] : ['separator' as const, { label: 'Stop…', onSelect: () => setConfirmDelete(true) }],
-            ]}
-          />
-        </>
+            ],
+          }}
+        />
       )}
+      {workspace.sessions.length > 1 && workspace.sessions.map((s) => (
+        <SessionRow key={s.sessionId} workspace={workspace} session={s} />
+      ))}
 
       <GroupDialog
         open={grouping}
@@ -352,8 +299,8 @@ export function WorkspaceRow({
 
 /**
  * One of a workspace's sessions, listed under its row when it has several:
- * its own status and unread dot, its title or opening message, and its
- * agent. Clicking it opens the workspace on that session's pane.
+ * its own status (a bold title while unread), its title or opening message,
+ * and its agent. Clicking it opens the workspace on that session's pane.
  */
 function SessionRow({ workspace, session }: { workspace: WorkspaceListEntry; session: SessionEntry }): JSX.Element {
   const me = useWhoami()?.userId
@@ -366,23 +313,25 @@ function SessionRow({ workspace, session }: { workspace: WorkspaceListEntry; ses
   }
   const name = session.title ?? session.prompt?.split('\n')[0] ?? agentLabel(session.tool, session)
   return (
-    <button
-      type="button"
-      onClick={open}
-      className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition hover:bg-surface-2/60
-        max-md:py-1.5"
-    >
-      <StatusMark
-        status={session.exited === true ? undefined : session.status}
-        asking={session.asking === true}
-        unread={isSessionUnread(session, me)}
-        {...(teammate !== undefined ? { owner: teammate } : {})}
-      />
-      <span className="min-w-0 flex-1 truncate text-text-dim">{name}</span>
-      <span className="shrink-0 text-text-faint">
-        {session.exited === true ? 'exited' : agentLabel(session.tool, session)}
-      </span>
-    </button>
+    <SidebarRow
+      depth={1}
+      label={name}
+      onSelect={open}
+      mark={(
+        <StatusMark
+          status={session.exited === true ? undefined : session.status}
+          asking={session.asking === true}
+          {...(teammate !== undefined ? { owner: teammate } : {})}
+        />
+      )}
+      title={name}
+      strong={isSessionUnread(session, me) || session.asking === true}
+      trailing={(
+        <span className="ml-auto shrink-0 text-subtle">
+          {session.exited === true ? 'exited' : agentLabel(session.tool, session)}
+        </span>
+      )}
+    />
   )
 }
 
@@ -422,76 +371,56 @@ function GroupDialog({
   const others = shownGroups.filter((g) => g.groupId !== workspace.groupId)
 
   return (
-    <Modal
+    <YDialog
       open={open}
       onOpenChange={(next) => { if (!busy) { move.reset(); onOpenChange(next) } }}
       variant="form"
       className="w-[380px]"
     >
-      <Dialog.Title className="text-sm font-semibold">Add to group</Dialog.Title>
-      <Dialog.Description className="mt-1 text-xs text-text-dim">
+      <YDialogTitle className="text-base font-semibold">Add to group</YDialogTitle>
+      <YDialogDescription className="mt-1 text-md text-muted">
         Groups collect workspaces at the bottom of the sidebar. Drag rows between them,
         and pin one to keep it when nothing inside is running.
-      </Dialog.Description>
+      </YDialogDescription>
       <form onSubmit={create} className="mt-4 flex flex-col gap-3">
-        <input
-          name="name"
-          autoFocus
-          placeholder="New group name"
-          maxLength={MAX_TITLE_LENGTH}
-          className="rounded-md border border-border bg-bg px-3 py-2 text-xs text-text outline-none
-            focus:border-border-strong"
-        />
-        {move.error && <p className="text-xs text-red-400">{move.error.message}</p>}
+        <YInput name="name" autoFocus placeholder="New group name" maxLength={MAX_TITLE_LENGTH} />
+        {move.error && <p className="text-md text-danger">{move.error.message}</p>}
         <div className="flex justify-end gap-2">
-          <Dialog.Close
-            disabled={busy}
-            className="flex h-8 items-center rounded-md px-3 text-xs text-text-dim transition
-              hover:bg-surface-3 hover:text-text disabled:opacity-50"
-          >
-            Cancel
-          </Dialog.Close>
-          <button
-            type="submit"
-            disabled={busy}
-            className="flex h-8 items-center rounded-md bg-accent px-3 text-xs font-medium text-bg transition
-              hover:brightness-110 disabled:opacity-50"
-          >
-            {busy ? 'Creating…' : 'Create group'}
-          </button>
+          <YDialogClose disabled={busy} render={<YButton variant="ghost" />}>Cancel</YDialogClose>
+          <YButton type="submit" variant="primary" disabled={busy}>{busy ? 'Creating…' : 'Create group'}</YButton>
         </div>
       </form>
 
       {(others.length > 0 || workspace.groupId !== undefined) && (
-        <div className="mt-4 border-t border-border pt-3">
-          <p className="text-[11px] uppercase tracking-wide text-text-faint">Or move it to</p>
+        <div className="mt-4 border-t border-line-strong pt-3">
+          <p className="text-sm uppercase tracking-wide text-subtle">Or move it to</p>
           <div className="mt-2 flex flex-col">
             {others.map((g) => (
-              <button
+              <YButton
+                variant="bare"
                 key={g.groupId}
                 disabled={busy}
                 onClick={() => moveTo(g.groupId)}
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-dim
-                  transition hover:bg-surface-3 hover:text-text disabled:opacity-50"
+                className="flex items-center gap-2 px-2 py-1.5 text-left text-md text-muted transition hover:bg-hover hover:text-text"
               >
                 <span className="truncate">{g.name}</span>
-              </button>
+              </YButton>
             ))}
             {workspace.groupId !== undefined && (
-              <button
+              <YButton
+                variant="bare"
                 disabled={busy}
                 onClick={() => moveTo(null)}
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-dim
-                  transition hover:bg-surface-3 hover:text-text disabled:opacity-50"
+                className="flex items-center gap-2 px-2 py-1.5 text-left text-md text-muted transition hover:bg-hover hover:text-text"
               >
                 <GroupRemoveIcon size={12} className="shrink-0" />
                 <span>Remove from group</span>
-              </button>
+              </YButton>
             )}
           </div>
         </div>
       )}
-    </Modal>
+    </YDialog>
   )
 }
 
@@ -521,52 +450,45 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
     : `${entry.stepsOutcome ?? (entry.endedAtNextRun ? 'ended at next run' : entry.timedOut ? 'timed out' : 'stopped')} `
       + relativeAge(entry.stoppedAt)
 
+  const title = entry.title || entry.prompt || 'New workspace'
+
   return (
-    <div className="group relative mx-2">
-      <button
-        type="button"
-        onClick={() => selectWorkspace(entry.workspaceId)}
-        title="Read this workspace's conversation"
-        className={clsx(
-          'flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-2 text-left text-sm transition',
-          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-border-strong',
-          selected
-            ? 'bg-surface-2'
-            : unseen ? 'bg-amber-500/10 opacity-80 hover:bg-amber-500/15' : 'opacity-60 hover:bg-surface-2/50 hover:opacity-90',
+    <>
+      <SidebarRow
+        label={title}
+        onSelect={() => selectWorkspace(entry.workspaceId)}
+        selected={selected}
+        rowProps={{ title: 'Read this workspace\'s conversation' }}
+        className={selected ? undefined : unseen ? 'bg-warning/10 opacity-80 hover:bg-warning/15' : 'opacity-60 hover:opacity-90'}
+        mark={unseen ? <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-warning" /> : null}
+        title={title}
+        meta={(
+          <>
+            <span className={clsx('truncate', entry.stepsOutcome === 'failed' && 'text-danger')}>{stopLine}</span>
+            <span className="ml-auto shrink-0">{workspaceAgentLabel(entry)}</span>
+          </>
         )}
-      >
-        <span className="flex items-center gap-2 group-hover:pr-6 max-md:pr-9">
-          {unseen && <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500" />}
-          <span className="truncate font-medium text-text-dim">
-            {entry.title || entry.prompt || 'New workspace'}
-          </span>
-        </span>
-        <span className="flex items-center gap-2 text-xs text-text-faint">
-          <span className={clsx('truncate', entry.stepsOutcome === 'failed' && 'text-danger')}>{stopLine}</span>
-          <span className="ml-auto shrink-0">{workspaceAgentLabel(entry)}</span>
-        </span>
-      </button>
+        actions={!readOnly && entry.site === undefined && (
+          <YButton
+            variant="ghost"
+            size="sm"
+            icon={RestartIcon}
+            onClick={() => setConfirmRestart(true)}
+            title={reruns ? 'Rerun its steps in a new workspace' : 'Restart workspace'}
+            aria-label={reruns ? 'Rerun workspace' : 'Restart workspace'}
+            className="max-md:size-7"
+          />
+        )}
+      />
 
-      {!readOnly && entry.site === undefined && <button
-        onClick={() => setConfirmRestart(true)}
-        title={reruns ? 'Rerun its steps in a new workspace' : 'Restart workspace'}
-        aria-label={reruns ? 'Rerun workspace' : 'Restart workspace'}
-        className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-          group-hover:pointer-events-auto group-hover:opacity-100
-          max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100"
-      >
-        <RestartIcon size={13} />
-      </button>}
-
-      <ConfirmDialog
+      <YConfirm
         open={confirmRestart}
         onOpenChange={setConfirmRestart}
         destructive={false}
         title={reruns ? 'Rerun this workspace’s steps?' : 'Restart this workspace?'}
         description={reruns
           ? 'A new non-interactive workspace runs them again at the commit this one ran at.'
-          : entry.title || entry.prompt || 'New workspace'}
+          : title}
         confirmLabel={reruns ? 'Rerun' : 'Restart'}
         onConfirm={() => {
           setConfirmRestart(false)
@@ -574,6 +496,6 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
           else restart(entry)
         }}
       />
-    </div>
+    </>
   )
 }

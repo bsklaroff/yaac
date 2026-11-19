@@ -32,7 +32,7 @@ function Harness(): JSX.Element {
   const op = useUiStore((s) => s.projectOps.find((o) => o.id === s.activeProjectId))
   return (
     <>
-      <NewProjectButton />
+      <NewProjectButton variant="row" />
       <AddProjectDialog />
       {op && <ProjectOpPane op={op} />}
     </>
@@ -47,7 +47,7 @@ function snapshotLists(...projectIds: string[]): void {
 /** Render, open the dialog, type the remote, and wait for credentials. */
 async function openWith(url: string): Promise<void> {
   renderWithClient(<Harness />)
-  fireEvent.click(screen.getByRole('button', { name: 'New project' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Add project' }))
   fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: url } })
   await waitFor(() => expect(server.called(AUTH_LIST).length).toBeGreaterThan(0))
 }
@@ -89,7 +89,7 @@ describe('NewProjectButton', () => {
 
     // The user starts a second add before the first finishes. Its host key
     // waits for the form to close rather than replacing it.
-    fireEvent.click(screen.getByRole('button', { name: 'New project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add project' }))
     fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'git@github.com:o/two.git' } })
     act(() => finishClone())
     await waitFor(() => expect(useUiStore.getState().trustedHostKeys).toHaveLength(1))
@@ -162,8 +162,8 @@ describe('NewProjectButton', () => {
       ? serverError('INTERNAL', 'Failed to create the repository: disk full', 500)
       : { id: 'id-my-app', name: 'my-app', remoteUrl: 'http://yaac.internal/api/workspace/git/id-my-app.git', addedAt: '' }))
     renderWithClient(<Harness />)
-    fireEvent.click(screen.getByRole('button', { name: 'New project' }))
-    fireEvent.click(screen.getByRole('radio', { name: 'New project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add project' }))
+    fireEvent.click(screen.getByRole('button', { name: 'New project', pressed: false }))
     expect(screen.queryByLabelText('Repository URL')).toBeNull()
 
     // The name the server will derive shows before the project exists.

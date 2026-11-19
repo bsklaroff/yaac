@@ -5,7 +5,7 @@ import { projectBuildFilesApi, type BuildFileEntry } from '#lib/buildFilesApi'
 import { mockFetch, renderWithClient, serverError, type FetchCall } from './harness'
 
 // Same stub as file-editor.test.tsx: CodeMirror doesn't run under jsdom.
-vi.mock('#components/ui/CodeEditor', () => ({
+vi.mock('#components/CodeEditor', () => ({
   CodeEditor: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
     <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />
   ),

@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 import clsx from 'clsx'
 import { PortIcon } from '#lib/icons'
 import { api } from '#lib/api'
-import { ActionsBadge } from '#components/ui/ActionsBadge'
+import { ActionsBadge } from '#components/ActionsBadge'
 
 /**
  * Badge for ports listening inside the workspace that are not forwarded. Its
@@ -31,11 +31,11 @@ export function UnforwardedPortsBadge({
     <ActionsBadge
       label={`${ports.length} detected port${ports.length === 1 ? '' : 's'}`}
       icon={<PortIcon size={iconSize} />}
-      className={clsx('bg-surface-2 text-text-dim', className)}
+      className={clsx('bg-selected text-muted', className)}
       header={(
         <>
-          <div className="px-2 pb-0.5 pt-1 text-[11px] font-medium text-text-faint">Detected ports</div>
-          <div className="px-2 pb-1 text-[11px] text-text-faint">
+          <div className="px-2 pb-0.5 pt-1 text-sm font-medium text-subtle">Detected ports</div>
+          <div className="px-2 pb-1 text-sm text-subtle">
             Servers listening in the workspace. Forwarding makes them reachable from the
             desktop and iPhone apps&rsquo; preview, and from
             {' '}

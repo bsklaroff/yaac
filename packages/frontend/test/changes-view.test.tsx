@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { act, screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import { WORKTREE_REF, type WorkspaceChanges, type WorkspaceComparison, type WorkspaceFiles as WorkspaceFilesData } from '@yaac/shared/types'
 import { WorkspaceFiles } from '#components/WorkspaceFiles'
-import { GitStatusBar } from '#components/GitStatusBar'
+import { GitStatusRows, GitTopBarSummary } from '#components/GitStatus'
 import { CHANGES_TARGET, FILES_TARGET, changesTarget, type ChangesRange } from '#lib/files'
 import { useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -15,7 +15,7 @@ import {
 import { intersect, intersection, observedElements } from './setup'
 
 /**
- * The Changes pane and the status bar's way into it: the files changed
+ * The Changes pane and the git status summaries' ways into it: the files changed
  * since the diff base, their line counts, diffs and stages, and find across
  * the diffs. The explorer shows the same counts and stages in its tree.
  */
@@ -398,10 +398,10 @@ describe('WorkspaceFiles changes, at scale', () => {
 
   // Every reader of a workspace's changes shares one query, which carries
   // the diff body while any of them shows it.
-  it('polls once for the status bar, the explorer and the Changes pane together', async () => {
+  it('polls once for the top bar, the explorer and the Changes pane together', async () => {
     useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ALL_PATHS })
     const client = testQueryClient()
-    renderWithClient(<><GitStatusBar workspaceId="s1" />{explorer}{changesPane}</>, client)
+    renderWithClient(<><GitTopBarSummary workspaceId="s1" />{explorer}{changesPane}</>, client)
     await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
     const active = client.getQueryCache().findAll({ queryKey: ['changes', 's1'], type: 'active' })
     expect(active.map((q) => q.queryKey)).toEqual([['changes', 's1']])
@@ -418,7 +418,7 @@ describe('WorkspaceFiles changes, at scale', () => {
       return null
     }
     const client = testQueryClient()
-    const view = renderWithClient(<><GitStatusBar workspaceId="s1" /><HiddenPane /></>, client)
+    const view = renderWithClient(<><GitTopBarSummary workspaceId="s1" /><HiddenPane /></>, client)
     await waitFor(() => expect(seen).toBeDefined())
     view.rerender(<QueryClientProvider client={client}><HiddenPane /></QueryClientProvider>)
     await new Promise((r) => setTimeout(r, 50))
@@ -518,44 +518,54 @@ describe('WorkspaceFiles changes, find at scale', () => {
   })
 })
 
-describe('GitStatusBar changes', () => {
+describe('git status changes', () => {
+  /** The top bar's summary beside the Details pane's rows, as a workspace shows both. */
+  const bothSummaries = <><GitTopBarSummary workspaceId="s1" /><GitStatusRows workspaceId="s1" /></>
+
+  // The top bar puts it in few words, the Details pane in a sentence; both
+  // open the Changes pane.
   it('says where HEAD stands, totals the changed lines and opens the changes view', async () => {
     server.route(CHANGES, reply({ ...PAYLOAD, comparison: { ref: 'origin/main', ahead: 2, behind: 0 } }))
-    renderWithClient(<GitStatusBar workspaceId="s1" />)
+    renderWithClient(bothSummaries)
     const button = await screen.findByTitle('Review changes')
     expect(button.textContent).toBe('+4 −5')
-    expect(screen.getByText(/2 commits ahead of/)).toBeTruthy()
+    expect(screen.getByTitle('Review commits').textContent).toBe('2 ahead of origin/main')
+    expect(screen.getByText(/2 commits ahead of/).textContent).toBe('2 commits ahead of origin/main')
     fireEvent.click(button)
     expect(useUiStore.getState().activeTabs.s1).toBe(CHANGES_TARGET)
     expect(useUiStore.getState().findPending).toBe(CHANGES_TARGET)
+
+    useUiStore.setState({ activeTabs: {}, findPending: null })
+    fireEvent.click(screen.getByRole('button', { name: 'Changes' }))
+    expect(useUiStore.getState().activeTabs.s1).toBe(CHANGES_TARGET)
   })
 
   // A reload (a server switch in the desktop shell) starts with an empty
   // query cache; the bar shows the last answer, muted, until a read lands.
   it('shows the last answer saved across a reload until a read lands', async () => {
     server.route(CHANGES, reply({ ...PAYLOAD, comparison: { ref: 'origin/main', ahead: 2, behind: 0 } }))
-    renderWithClient(<GitStatusBar workspaceId="s1" />)
+    renderWithClient(<GitTopBarSummary workspaceId="s1" />)
     expect((await screen.findByTitle('Review changes')).parentElement!.className).not.toContain('opacity-60')
     cleanup()
 
     server.route(CHANGES, () => new Promise(() => {}))
-    renderWithClient(<GitStatusBar workspaceId="s1" />)
+    renderWithClient(<GitTopBarSummary workspaceId="s1" />)
     expect(screen.getByTitle('Review changes').textContent).toBe('+4 −5')
     expect(screen.getByTitle('Review changes').parentElement!.className).toContain('opacity-60')
-    expect(screen.getByText(/2 commits ahead of/)).toBeTruthy()
+    expect(screen.getByTitle('Review commits').textContent).toBe('2 ahead of origin/main')
   })
 
-  // A failed poll keeps the last answer in the cache; neither reader may
-  // pass it off as current.
+  // A failed poll keeps the last answer in the cache; no reader may pass
+  // it off as current.
   it('says when a poll fails instead of showing the last answer', async () => {
     const client = testQueryClient()
-    const view = renderWithClient(<><GitStatusBar workspaceId="s1" />{explorer}</>, client)
+    const view = renderWithClient(<>{bothSummaries}{explorer}</>, client)
     await screen.findByTitle('Review changes')
     await waitFor(() => expect(screen.getByText('README.md')).toBeTruthy())
 
     server.route(CHANGES, () => serverError('INTERNAL', 'origin/main does not resolve', 500))
     await act(() => client.refetchQueries({ queryKey: ['changes', 's1'] }))
-    await waitFor(() => expect(screen.getByText(/Git status unavailable/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByText('Git status unavailable: origin/main does not resolve')).toBeTruthy())
     expect(screen.queryByTitle('Review changes')).toBeNull()
     expect(screen.getByText(/Not up to date: origin\/main does not resolve/)).toBeTruthy()
 
@@ -563,22 +573,23 @@ describe('GitStatusBar changes', () => {
     await act(() => client.refetchQueries({ queryKey: ['changes', 's1'] }))
     await waitFor(() => expect(screen.queryByText(/Not up to date/)).toBeNull())
     await screen.findByTitle('Review changes')
+    expect(screen.queryByText(/Git status unavailable/)).toBeNull()
 
     // The diffs a failed fetch never brought are not shown as loading.
     server.route(CHANGES, (call: { query: URLSearchParams }) => (
       call.query.get('diff') === '1' ? serverError('INTERNAL', 'exec failed', 500) : reply(PAYLOAD)(call)
     ))
     act(() => useUiStore.getState().setPaneView(CHANGES_VIEW, { openDiffs: ALL_PATHS }))
-    view.rerender(<QueryClientProvider client={client}><GitStatusBar workspaceId="s1" />{changesPane}</QueryClientProvider>)
+    view.rerender(<QueryClientProvider client={client}><GitTopBarSummary workspaceId="s1" />{changesPane}</QueryClientProvider>)
     await waitFor(() => expect(screen.getAllByText('Diff not loaded')).toHaveLength(3))
     expect(screen.queryByText('Loading diff…')).toBeNull()
   })
 
-  // The bar's one poll also keeps the explorer's paths ready before it
+  // The top bar's one poll also keeps the explorer's paths ready before it
   // opens, and the server leaves them out while they hold still.
   it('carries the listing in its own poll, sent again only when it changed', async () => {
     const client = testQueryClient()
-    renderWithClient(<GitStatusBar workspaceId="s1" />, client)
+    renderWithClient(<GitTopBarSummary workspaceId="s1" />, client)
     await waitFor(() => expect(client.getQueryData(['files', 's1'])).toEqual(LISTING))
     expect(server.called(CHANGES)[0].query.get('listing')).toBe('paths')
 
@@ -603,7 +614,7 @@ describe('a Changes pane on a range', () => {
     const target = changesTarget(range)
     useUiStore.setState({ layouts: { s1: [{ tabs: [target], active: target }] } })
     useUiStore.getState().setPaneView(paneViewKey('s1', target), { openDiffs: ['src/app.ts'] })
-    renderWithClient(<><GitStatusBar workspaceId="s1" /><WorkspaceFiles workspaceId="s1" changedOnly range={range} /></>)
+    renderWithClient(<><GitTopBarSummary workspaceId="s1" /><WorkspaceFiles workspaceId="s1" changedOnly range={range} /></>)
   }
   const tabs = (): string[] => useUiStore.getState().layouts.s1.flatMap((g) => g.tabs)
   beforeEach(() => {
@@ -611,7 +622,7 @@ describe('a Changes pane on a range', () => {
     server.route('GET /api/repo/repo-1/branches', { branches: ['main', 'dev'], defaultBranch: 'main' })
   })
 
-  // Two refs compare through their own route, and the status bar's poll
+  // Two refs compare through their own route, and the top bar's poll
   // stays the workspace's own, without the body only the range shows. An
   // end picked here retargets this pane in place.
   it('compares two refs, and retargets in place when an end is picked', async () => {
@@ -637,7 +648,7 @@ describe('a Changes pane on a range', () => {
   })
 
   // Ending at the working tree is the workspace's changes read against
-  // another base, polled apart from the status bar's.
+  // another base, polled apart from the top bar's.
   it('reads a range ending at the working tree as changes against its start', async () => {
     renderRange({ from: 'dev', to: WORKTREE_REF })
     await waitFor(() => expect(screen.getByText('needle1')).toBeTruthy())
@@ -695,7 +706,7 @@ describe('git views by checkout', () => {
 
   it('shows the checkout the workspace\'s cwd is in, and switches every view together', async () => {
     nested('web')
-    renderWithClient(<><GitStatusBar workspaceId="s1" />{changesPane}</>)
+    renderWithClient(<><GitStatusRows workspaceId="s1" />{changesPane}</>)
     await waitFor(() => expect(row('web/src/app.ts')).toBeTruthy())
     // Asked of the one checkout, and placed under its folder.
     expect(server.called(CHANGES).every((c) => c.query.get('repo') === 'web')).toBe(true)
@@ -718,20 +729,21 @@ describe('git views by checkout', () => {
 
   // The answer saved across a reload describes one checkout, so it is not
   // shown for another.
-  it('empties the bar on a switch until the picked checkout answers', async () => {
+  it('empties the summaries on a switch until the picked checkout answers', async () => {
     nested('web')
-    renderWithClient(<GitStatusBar workspaceId="s1" />)
+    renderWithClient(<GitTopBarSummary workspaceId="s1" />)
     await screen.findByTitle('Review changes')
     cleanup()
 
-    renderWithClient(<GitStatusBar workspaceId="s1" />)
-    expect(screen.getByTitle('Review commits').textContent).toContain('web-base')
+    renderWithClient(<><GitTopBarSummary workspaceId="s1" /><GitStatusRows workspaceId="s1" /></>)
+    expect(screen.getByText(/web-base/)).toBeTruthy()
     await waitFor(() => expect(screen.getByTitle('Review changes').parentElement!.className).not.toContain('opacity-60'))
     server.route(CHANGES, () => new Promise(() => {}))
     fireEvent.change(switcher(), { target: { value: 'api' } })
     expect(switcher().value).toBe('api')
-    expect(screen.queryByTitle('Review commits')).toBeNull()
+    expect(screen.queryByText(/web-base/)).toBeNull()
     expect(screen.queryByTitle('Review changes')).toBeNull()
+    expect(screen.queryByText('No uncommitted changes')).toBeNull()
   })
 
   it('colors the whole workspace\'s tree with the shown checkout\'s changes', async () => {
@@ -746,9 +758,9 @@ describe('git views by checkout', () => {
     expect(within(row('api')).queryByLabelText('modified')).toBeNull()
   })
 
-  it('says a workspace with no repos has none, in the bar and the Changes pane', async () => {
+  it('says a workspace with no repos has none, in the Details pane and the Changes pane', async () => {
     useUiStore.getState().receiveSnapshot(serverSnapshot({ workspaces: [workspaceEntry({ repos: [] })] }))
-    renderWithClient(<><GitStatusBar workspaceId="s1" />{changesPane}</>)
+    renderWithClient(<><GitStatusRows workspaceId="s1" />{changesPane}</>)
     expect(screen.getByText('No repos')).toBeTruthy()
     await waitFor(() => expect(screen.getByText('This workspace has no repos')).toBeTruthy())
     expect(screen.queryByRole('combobox', { name: 'Repo' })).toBeNull()

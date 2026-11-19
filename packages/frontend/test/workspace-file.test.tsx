@@ -8,7 +8,7 @@ import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 // text it was given stands in for the one it creates, so a test can read
 // where the cursor went.
 const cm = vi.hoisted(() => ({ headless: false, view: null as EditorView | null, mounted: new WeakSet<Element>() }))
-vi.mock('#components/ui/CodeEditor', async () => {
+vi.mock('#components/CodeEditor', async () => {
   const { EditorView } = await vi.importActual<typeof CodeMirror>('@uiw/react-codemirror')
   return {
     CodeEditor: ({ value, onChange, fontSize, extensions, onCreateEditor }: {

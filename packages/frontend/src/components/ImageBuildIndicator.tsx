@@ -2,6 +2,7 @@ import { useState, type JSX } from 'react'
 import { CheckIcon, LoadingIcon, WarningIcon } from '#lib/icons'
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
 import { useSnapshot } from '#lib/useSnapshot'
+import { YButton } from '#ui'
 
 /**
  * Sidebar-header pill for image builds: running, failed, or finished ones not
@@ -21,38 +22,20 @@ export function ImageBuildIndicator({ projectId }: { projectId: string | null })
   return (
     <>
       {running > 0 ? (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          aria-label="Show image build progress"
-          className="flex shrink-0 items-center gap-1 rounded bg-surface-2 px-1 py-0.5 text-xs font-medium
-            text-text-dim transition hover:bg-surface-3 hover:text-text"
-        >
+        <YButton variant="ghost" size="sm" onClick={() => setOpen(true)} aria-label="Show image build progress">
           <LoadingIcon size={11} className="animate-spin" />
           building{running > 1 ? ` ${running}` : ''}
-        </button>
+        </YButton>
       ) : failed > 0 ? (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          aria-label="Show failed image builds"
-          className="flex shrink-0 items-center gap-1 rounded bg-danger/15 px-1 py-0.5 text-xs font-medium
-            text-danger transition hover:bg-danger/25"
-        >
+        <YButton variant="danger" size="sm" onClick={() => setOpen(true)} aria-label="Show failed image builds">
           <WarningIcon size={11} />
           build failed
-        </button>
+        </YButton>
       ) : builds.length > 0 ? (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          aria-label="Show image build history"
-          className="flex shrink-0 items-center gap-1 rounded bg-surface-2 px-1 py-0.5 text-xs font-medium
-            text-text-faint transition hover:bg-surface-3 hover:text-text-dim"
-        >
-          <CheckIcon size={11} className="text-emerald-400/70" />
+        <YButton variant="ghost" size="sm" onClick={() => setOpen(true)} aria-label="Show image build history">
+          <CheckIcon size={11} className="text-success/70" />
           builds{builds.length > 1 ? ` ${builds.length}` : ''}
-        </button>
+        </YButton>
       ) : null}
       <ImageBuildsOverlay open={open} onOpenChange={setOpen} builds={builds} />
     </>

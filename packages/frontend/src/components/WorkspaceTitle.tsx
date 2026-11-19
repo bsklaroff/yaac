@@ -1,13 +1,15 @@
 import { useEffect, type JSX, type ReactNode } from 'react'
 import { RenameIcon } from '#lib/icons'
 import { oneLine, useInlineRename } from '#lib/useInlineRename'
+import { YButton, YInput } from '#ui'
 
 export { oneLine }
 
 /**
  * The workspace header's title: a selectable label with a pencil button that
  * turns it into an inline editor (Enter or blur commits, Escape reverts). A
- * blank value clears the title.
+ * blank value clears the title. It keeps a minimum width, so the step chips
+ * beside it on a phone's bar shrink and scroll before it disappears.
  *
  * In Electron the wrapper is a window-drag region; the interactive children
  * opt out with `.no-drag`, which also keeps the label's text selectable.
@@ -31,17 +33,16 @@ export function WorkspaceTitle({ workspaceId, title, prompt, after }: {
   useEffect(() => { setEditing(false) }, [workspaceId, setEditing])
 
   return (
-    <div className="titlebar-drag flex min-w-0 flex-1 items-center gap-0.5">
+    <div className="titlebar-drag flex min-w-24 flex-1 items-center gap-0.5">
       {editing ? (
-        <input
+        <YInput
           ref={inputRef}
           aria-label="Workspace title"
           defaultValue={seed}
           placeholder="Workspace name"
           onKeyDown={handleKeyDown}
           onBlur={handleBlur}
-          className="no-drag min-w-0 flex-1 rounded border border-border-strong bg-bg px-1.5 py-0.5
-            text-xs font-medium text-text outline-none"
+          className="no-drag flex-1 font-medium"
         />
       ) : (
         <>
@@ -55,15 +56,15 @@ export function WorkspaceTitle({ workspaceId, title, prompt, after }: {
           >
             {title || prompt || 'New workspace'}
           </span>
-          <button
+          <YButton
+            variant="ghost"
+            size="sm"
+            icon={RenameIcon}
             onClick={start}
             title="Rename workspace"
             aria-label="Rename workspace"
-            className="no-drag flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint
-              transition hover:bg-surface-2 hover:text-text"
-          >
-            <RenameIcon size={12} />
-          </button>
+            className="no-drag"
+          />
           {after}
         </>
       )}

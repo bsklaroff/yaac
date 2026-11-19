@@ -99,7 +99,7 @@ describe('SkillsSettings', () => {
     expect(within(rows[2]).getByText('Claude uses the /push under Claude instead.')).toBeTruthy()
     expect(within(rows[3]).getByText('OpenCode uses the /push under Repo .claude/skills instead.')).toBeTruthy()
     // Still loaded by some agent, so neither is dimmed.
-    expect(within(rows[2]).getByText('/push').className).toContain('text-text-dim')
+    expect(within(rows[2]).getByText('/push').className).toContain('text-muted')
     // Codex loads both /shared copies rather than picking one.
     expect(within(rows[0]).getByText('Codex also loads the /shared under Codex, so $shared is ambiguous there.')).toBeTruthy()
   })
@@ -119,8 +119,8 @@ describe('SkillsSettings', () => {
       '# yaac built-in All agents', '/yaac-welcome',
     ])
     const [repoPush, personalPush] = screen.getAllByText('/push')
-    expect(repoPush.className).toContain('text-text-faint')
-    expect(personalPush.className).toContain('text-text-dim')
+    expect(repoPush.className).toContain('text-subtle')
+    expect(personalPush.className).toContain('text-muted')
   })
 
   it('shows the picked skill\'s SKILL.md from the same branch, and follows a project switch', async () => {

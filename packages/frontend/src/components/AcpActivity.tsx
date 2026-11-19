@@ -4,6 +4,7 @@ import {
   active, MAX_TOOL_OUTPUT_CHARS, MessageTime, StateMark, subagentCategory, taskCategory, ToolRow, type ActivityCategory,
 } from '#components/AcpTranscript'
 import { NavBackIcon, StopIcon } from '#lib/icons'
+import { YButton, YChip } from '#ui'
 import type { TaskOutput } from '#lib/acp'
 import { stripAnsi } from '@yaac/shared/ansi'
 import type { AcpEvent, AcpSubagent, AcpTask, AcpToolCall } from '@yaac/shared/acp'
@@ -79,27 +80,22 @@ export function ActivityBar({
         const { plural, label } = members[0].category
         return (
           <div key={label} role="group" aria-label={plural} className="flex min-w-0 flex-wrap items-center gap-1">
-            <span className="px-0.5 text-[10px] font-medium uppercase tracking-wide text-text-faint">
-              {plural} <span className="tabular-nums text-text-dim">{members.length}</span>
+            <span className="px-0.5 text-xs font-medium uppercase tracking-wide text-subtle">
+              {plural} <span className="tabular-nums text-muted">{members.length}</span>
             </span>
             {members.map(({ kind, id, name, category: { icon: Icon, tint }, state }) => (
-              <button
+              <YChip
                 key={`${kind}:${id}`}
-                type="button"
                 onClick={() => onOpen({ kind, id })}
                 title={name}
                 aria-label={`${label}: ${name}`}
-                className={clsx(
-                  'flex max-w-60 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] max-md:py-1.5',
-                  current?.kind === kind && current.id === id
-                    ? 'border-border-strong bg-surface-3 text-text'
-                    : 'border-hairline bg-surface text-text-dim hover:bg-surface-2 hover:text-text',
-                )}
+                selected={current?.kind === kind && current.id === id}
+                className="max-w-60"
               >
                 <Icon size={12} className={clsx('shrink-0', tint)} />
                 <span className="truncate">{name}</span>
                 <StateMark state={state} live />
-              </button>
+              </YChip>
             ))}
           </div>
         )
@@ -130,19 +126,13 @@ export function ActivityTitleBar({
   controls?: ReactNode
 }): JSX.Element {
   return (
-    <div className="text-xs">
+    <div className="text-md">
       <div className="flex items-center gap-2 p-2">
-        <button
-          type="button"
-          onClick={onBack}
-          title="Back to the conversation (Esc)"
-          className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-text-dim hover:bg-surface-2 hover:text-text"
-        >
-          <NavBackIcon size={13} />
+        <YButton variant="ghost" size="sm" icon={NavBackIcon} onClick={onBack} title="Back to the conversation (Esc)">
           Back
-        </button>
+        </YButton>
         <Icon size={14} className={clsx('shrink-0', tint)} />
-        <span className="shrink-0 text-text-faint" title={hint}>{label}</span>
+        <span className="shrink-0 text-subtle" title={hint}>{label}</span>
         <span className="min-w-0 flex-1 wrap-anywhere text-text">{title}</span>
         {children}
         <StateMark state={state} live={live} />
@@ -155,7 +145,7 @@ export function ActivityTitleBar({
 /** When the subagent or task shown began, atop its view. */
 export function ActivityStarted({ at }: { at: number }): JSX.Element {
   return (
-    <div className="mb-3 flex gap-x-1 px-1 text-[11px] text-text-faint">
+    <div className="mb-3 flex gap-x-1 px-1 text-sm text-subtle">
       <span>Started</span>
       <MessageTime at={at} />
     </div>
@@ -167,8 +157,8 @@ export function ActivityStarted({ at }: { at: number }): JSX.Element {
 export function SubagentPrompt({ task }: { task: string }): JSX.Element | null {
   if (task === '') return null
   return (
-    <div className="mb-4 flex flex-col items-start gap-0.5 text-sm">
-      <span className="px-1 text-[11px] text-text-faint">Subagent instructions:</span>
+    <div className="mb-4 flex flex-col items-start gap-0.5 text-base">
+      <span className="px-1 text-sm text-subtle">Subagent instructions:</span>
       <p className="max-h-40 max-w-[85%] overflow-y-auto whitespace-pre-wrap rounded-xl border border-accent/20
         bg-accent/10 px-3 py-2 text-text">
         {task}
@@ -222,15 +212,15 @@ export function TaskView({
   }, [task.id, polling, readable])
 
   return (
-    <div className="space-y-3 text-xs">
+    <div className="space-y-3 text-md">
       {task.description !== '' && task.description !== task.name && (
-        <p className="text-text-dim">{task.description}</p>
+        <p className="text-muted">{task.description}</p>
       )}
       {call !== undefined && <ToolRow workspaceId={workspaceId} call={call} defaultOpen />}
-      {task.summary !== undefined && <p className="text-text-dim">{task.summary}</p>}
+      {task.summary !== undefined && <p className="text-muted">{task.summary}</p>}
       {readable ? (
         output?.error !== undefined ? (
-          <p className="text-text-faint">The output could not be read: {output.error}.</p>
+          <p className="text-subtle">The output could not be read: {output.error}.</p>
         ) : (
           <OutputView text={output === undefined ? 'Reading the output…' : output.text ?? ''} />
         )
@@ -243,8 +233,8 @@ export function TaskView({
 
 function OutputView({ text }: { text: string }): JSX.Element {
   return (
-    <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-hairline bg-surface px-2.5 py-1.5
-      font-mono text-[11px] leading-snug text-text-dim">
+    <pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-line bg-surface px-2.5 py-1.5
+      font-mono text-sm leading-snug text-muted">
       {stripAnsi(text) || '(no output yet)'}
     </pre>
   )
@@ -253,14 +243,10 @@ function OutputView({ text }: { text: string }): JSX.Element {
 /** Stop a running task; shown in its title bar. */
 export function StopTaskButton({ onStop }: { onStop: () => void }): JSX.Element {
   return (
-    <button
-      type="button"
-      onClick={onStop}
-      className="flex shrink-0 items-center gap-1 rounded-md border border-border px-2 py-0.5 text-text-dim
-        hover:bg-surface-2 hover:text-text"
-    >
+    <YButton size="sm" onClick={onStop}>
       <StopIcon size={10} fill="currentColor" />
       Stop
-    </button>
+    </YButton>
+
   )
 }

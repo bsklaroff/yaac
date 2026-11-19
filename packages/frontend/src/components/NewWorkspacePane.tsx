@@ -1,18 +1,14 @@
-import { useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
-import clsx from 'clsx'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChatIcon, CloseIcon, RenameIcon, RunIcon, SendIcon, SiteIcon, TerminalIcon, TOOL_LABEL, WorkflowIcon } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
 import { AgentSettings, PermissionModeSelect } from '#components/ComposerSettings'
-import { ChatBottomBar, COMPOSER_INPUT, ROUND_BUTTON } from '#components/ConversationView'
+import { ChatBottomBar, COMPOSER_INPUT } from '#components/ConversationView'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { PaneBarActions, PaneOverflowMenu } from '#components/PaneBar'
 import { SiteForm } from '#components/SitePane'
 import { StepList } from '#components/WorkflowPane'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { NumberInput } from '#components/ui/NumberInput'
-import { Typeahead } from '#components/ui/Typeahead'
 import { api } from '#lib/api'
 import { openSession } from '#lib/createWorkspace'
 import { sessionTarget } from '#lib/panes'
@@ -53,24 +49,16 @@ import type {
   ToolCreateDefaults,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
+import {
+  cn, YButton, YCheckbox, YChip, YConfirm, YEmptyState, YInput, YNumberInput, YPageBody, YSection, YSelect, YSettingGroup,
+  YSettingRow, YTabs, YTextArea, YTypeahead,
+} from '#ui'
 
 const MODE_COPY: Record<AgentMode, string> = { tui: 'Terminal', acp: 'Chat' }
-const MODE_HELP: Record<AgentMode, string> = {
-  tui: 'The agent\'s own terminal UI, in a terminal pane.',
-  acp: 'The agent driven over the Agent Client Protocol, in a chat pane.',
-}
 
-const SELECT = 'min-w-0 flex-1 rounded-md border border-border bg-surface-2 h-[26px] px-1 text-xs text-text '
-  + 'outline-none hover:bg-surface-3'
-
-const INPUT = 'h-[26px] min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2 text-xs text-text '
-  + 'outline-none placeholder:text-text-faint focus:border-border-strong'
-
-/** A note under a form row, lined up with the controls. */
-const NOTE = '-mt-1 mb-1 pl-[92px] text-[11px] text-text-faint'
-
-const PRIMARY = 'flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-bg transition '
-  + 'hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 max-md:py-2.5'
+/** A control's width in a setting row; full width on a phone, where the
+ *  row stacks. */
+const CONTROL = 'w-64 max-md:w-full'
 
 /** The tabs: what the pane starts. */
 const KINDS: Array<{ value: 'agent' | 'workflow' | 'site'; label: string; help: string; Icon: typeof ChatIcon }> = [
@@ -82,9 +70,6 @@ const KINDS: Array<{ value: 'agent' | 'workflow' | 'site'; label: string; help: 
 /** The workflow pickers' "+ New workflow…" option. */
 const NEW_WORKFLOW = '\u0000new-workflow'
 
-const BUTTON = 'flex items-center justify-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs '
-  + 'text-text-dim outline-none transition hover:bg-surface-3 hover:text-text disabled:cursor-not-allowed '
-  + 'disabled:opacity-50 max-md:py-2.5'
 
 /** A parent's settings, used to fill untouched fields when Start names it.
  *  Absent for "Now", which uses the project's remembered defaults. */
@@ -701,20 +686,22 @@ export function NewWorkspacePane({ projectId, bar }: {
   const routineGone = form.editRoutineId !== undefined && editingRoutine === undefined
   if ((form.editId !== undefined && editing === undefined) || routineGone) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 bg-bg px-6 text-center">
-        <p className="text-sm font-medium text-text-dim">{routineGone ? 'Routine gone' : 'Queued workspace gone'}</p>
-        <p className="text-xs text-text-faint">
-          {routineGone ? 'It has been deleted.' : 'It has already started or been discarded.'}
-        </p>
-        <button type="button" onClick={() => setForm(null)} className={BUTTON}>Start a new workspace</button>
-      </div>
+      <YEmptyState
+        title={routineGone ? 'Routine gone' : 'Queued workspace gone'}
+        description={routineGone ? 'It has been deleted.' : 'It has already started or been discarded.'}
+        action={<YButton variant="primary" onClick={() => setForm(null)}>Start a new workspace</YButton>}
+        className="h-full bg-surface"
+      />
     )
   }
 
   const sendTitle = blocked ?? (text === '' && !noAgent ? 'Type a prompt' : `${submitLabel} (Enter)`)
   const fresh = form.editId === undefined && form.editRoutineId === undefined && form.draftId === undefined
-  const hasSites = snapshot?.driver !== 'containerless'
+  // Unknown until the first snapshot, so the Site tab never flashes on containerless.
+  const hasSites = snapshot !== undefined && snapshot.driver !== 'containerless'
   const initWorkflows = workflows.filter((w) => w.init).map((w) => w.name)
+  const showVolumes = !storesEntry && volumes !== undefined && volumes.length > 0
+  const originNote = queued && selection.included.length > 0 ? 'Latest from origin when it starts' : undefined
   /** Pick the workflow it runs, ticking the repos it needs; "+ New
    *  workflow…" opens a new workflow's form instead. */
   const pickWorkflow = (name: string): void => {
@@ -731,7 +718,7 @@ export function NewWorkspacePane({ projectId, bar }: {
   }
 
   return (
-    <div onKeyDown={onKeyDown} className="@container flex h-full w-full flex-col bg-bg">
+    <div onKeyDown={onKeyDown} className="@container flex h-full w-full flex-col bg-surface">
       {bar !== null && createPortal(
         <>
           <span className="titlebar-drag flex min-w-0 flex-1 items-center gap-0.5">
@@ -740,7 +727,7 @@ export function NewWorkspacePane({ projectId, bar }: {
             ) : kind === 'site' ? (
               <h2 className="min-w-0 truncate font-medium text-text">New site</h2>
             ) : titleEdit.editing ? (
-              <input
+              <YInput
                 ref={titleEdit.inputRef}
                 aria-label={routineMode ? 'Routine name' : 'Workspace title'}
                 defaultValue={titleEdit.seed}
@@ -752,22 +739,20 @@ export function NewWorkspacePane({ projectId, bar }: {
                   titleEdit.handleKeyDown(e)
                 }}
                 onBlur={titleEdit.handleBlur}
-                className="no-drag min-w-0 flex-1 rounded border border-border-strong bg-bg px-1.5 py-0.5
-                  font-medium text-text outline-none placeholder:font-normal placeholder:text-text-faint"
+                className="no-drag flex-1 font-medium placeholder:font-normal"
               />
             ) : (
               <>
                 <h2 className="min-w-0 truncate font-medium text-text">{shownTitle}</h2>
-                <button
-                  type="button"
+                <YButton
+                  variant="ghost"
+                  size="sm"
+                  icon={RenameIcon}
                   onClick={titleEdit.start}
                   title={routineMode ? 'Name routine' : 'Rename workspace'}
                   aria-label={routineMode ? 'Name routine' : 'Rename workspace'}
-                  className="no-drag flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint
-                    transition hover:bg-surface-2 hover:text-text"
-                >
-                  <RenameIcon size={12} />
-                </button>
+                  className="no-drag"
+                />
               </>
             )}
           </span>
@@ -799,389 +784,356 @@ export function NewWorkspacePane({ projectId, bar }: {
         </>,
         bar,
       )}
-      <div className="flex-1 overflow-y-auto px-4 py-6">
-        <div className="mx-auto flex w-full max-w-4xl flex-col items-center gap-6 @4xl:flex-row @4xl:items-start @4xl:justify-center">
-        <div className="w-full max-w-xl">
-          {fresh && !inWorkspace && (
-            <div role="tablist" aria-label="What to start" className="mb-5 flex w-fit rounded-lg bg-surface-2 p-0.5">
-              {KINDS.filter((k) => k.value !== 'site' || hasSites).map((k) => (
-                <button
-                  key={k.value}
-                  type="button"
-                  role="tab"
-                  aria-selected={(kind ?? 'agent') === k.value}
-                  title={k.help}
-                  onClick={() => update({ kind: k.value === 'agent' ? undefined : k.value })}
-                  className={clsx('flex items-center gap-1.5 rounded-md px-3 py-1 text-xs transition max-md:py-2',
-                    (kind ?? 'agent') === k.value ? 'bg-surface font-medium text-text shadow-sm' : 'text-text-dim hover:text-text')}
+      <YPageBody className="gap-5 py-4">
+        {fresh && !inWorkspace && (
+          <YTabs
+            ariaLabel="What to start"
+            value={kind ?? 'agent'}
+            onChange={(v) => update({ kind: v === 'agent' ? undefined : v })}
+            tabs={KINDS.filter((k) => k.value !== 'site' || hasSites).map((k) => ({
+              value: k.value,
+              icon: k.Icon,
+              label: <span title={k.help}>{k.label}</span>,
+            }))}
+          />
+        )}
+        {kind === 'site' && project !== undefined ? (
+          <SiteForm project={project} onDone={(name) => { setForm(null); useUiStore.getState().openObject(projectId, { kind: 'site', id: name }) }} />
+        ) : <>
+          {unattended && (
+            <YSection title="Workflow">
+              <YSettingGroup>
+                <YSettingRow
+                  dense
+                  label="Runs"
+                  hint={workflow !== undefined && workflow.secrets.length > 0 && <>
+                    Gets {workflow.secrets.join(', ')}; {routineMode ? 'saving approves the branch or commit each run starts at'
+                      : queued ? 'when it starts, it approves the commit it runs' : 'running approves the commit it runs'}{' '}
+                    for {workflow.secrets.length === 1 ? 'it' : 'them'}
+                  </>}
                 >
-                  <k.Icon size={12} />
-                  {k.label}
-                </button>
-              ))}
-            </div>
-          )}
-          {kind === 'site' && project !== undefined ? (
-            <SiteForm project={project} onDone={(name) => { setForm(null); useUiStore.getState().openObject(projectId, { kind: 'site', id: name }) }} />
-          ) : <>
-          {unattended && <>
-            <Heading>Workflow</Heading>
-            <Row label="Runs" title="The named workflow it runs, unattended, with the run secrets it names">
-              <select
-                aria-label="Workflow"
-                value={workflow?.name ?? ''}
-                onChange={(e) => pickWorkflow(e.target.value)}
-                className={SELECT}
-              >
-                <option value="" disabled>Pick a workflow</option>
-                {workflows.map((w) => <option key={w.id} value={w.name}>{w.name}</option>)}
-                <option value={NEW_WORKFLOW}>+ New workflow…</option>
-              </select>
-            </Row>
-            {workflow !== undefined && workflow.secrets.length > 0 && (
-              <div className={NOTE}>
-                Gets {workflow.secrets.join(', ')}; {routineMode ? 'saving approves the branch or commit each run starts at'
-                  : queued ? 'when it starts, it approves the commit it runs' : 'running approves the commit it runs'}{' '}
-                for {workflow.secrets.length === 1 ? 'it' : 'them'}
-              </div>
-            )}
-          </>}
-          <Heading>Start</Heading>
-          {fresh && live.length > 0 && !unattended && (
-            <Row label="Where" title="A new workspace, or another agent session in a running one, on its checkout">
-              <select
-                aria-label="Where"
-                value={inTarget?.workspaceId ?? ''}
-                onChange={(e) => update({ inWorkspace: e.target.value === '' ? undefined : e.target.value })}
-                className={SELECT}
-              >
-                <option value="">New workspace</option>
-                {live.map((w) => <option key={w.workspaceId} value={w.workspaceId}>In “{workspaceName(w)}”</option>)}
-              </select>
-            </Row>
-          )}
-          {!inWorkspace && !noAgent && (
-            <Row label="When">
-              <select aria-label="Start" value={start} onChange={(e) => update({ start: e.target.value })} className={SELECT}>
-                {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-            </Row>
-          )}
-          {start === START_AT && (
-            <Row label="Time">
-              <input
-                type="datetime-local"
-                aria-label={`Start time (${zone})`}
-                value={form.startAt !== undefined ? zonedInputValue(form.startAt, zone) : ''}
-                onChange={(e) => update({ startAt: zonedInputInstant(e.target.value, zone) })}
-                className={INPUT}
-              />
-              <span className="shrink-0 pt-[5px] text-text-faint">{zone}</span>
-            </Row>
-          )}
-          {start === START_IN && (
-            <Row label="Delay">
-              <input
-                aria-label="Delay"
-                value={form.startIn ?? ''}
-                onChange={(e) => update({ startIn: e.target.value })}
-                placeholder="e.g. 2h30m"
-                className={INPUT}
-              />
-            </Row>
-          )}
-          {routineMode && (
-            <RoutineSchedule
-              cron={cron}
-              custom={form.customCron === true}
-              timeZone={routineZone}
-              upcoming={upcoming}
-              error={scheduleError}
-              onChange={update}
-            />
+                  <YSelect aria-label="Workflow" value={workflow?.name ?? ''} onChange={(e) => pickWorkflow(e.target.value)} className={CONTROL}>
+                    <option value="" disabled>Pick a workflow</option>
+                    {workflows.map((w) => <option key={w.id} value={w.name}>{w.name}</option>)}
+                    <option value={NEW_WORKFLOW}>+ New workflow…</option>
+                  </YSelect>
+                </YSettingRow>
+                {workflow !== undefined && (
+                  <YSettingRow dense label="Steps" stacked>
+                    <aside aria-label="Its steps" className="text-md"><StepList steps={workflow.steps} /></aside>
+                  </YSettingRow>
+                )}
+              </YSettingGroup>
+            </YSection>
           )}
 
-          {!inWorkspace && <>
-          <Row label="Group">
-            {newGroup === null ? (
-              <select
-                aria-label="Group"
-                value={ownGroup ? OWN_GROUP : groupId ?? ''}
-                onChange={(e) => {
-                  if (e.target.value === NEW_GROUP) setNewGroup('')
-                  else if (e.target.value === OWN_GROUP) update({ groupId: undefined })
-                  else update({ groupId: e.target.value === '' ? null : e.target.value })
-                }}
-                className={SELECT}
-              >
-                {ownGroupOffered && (
-                  <option value={OWN_GROUP}>
-                    {routineMode ? `New group: ${titleText || 'the routine’s name'}` : `The workflow’s own: ${workflow?.name ?? 'its name'}`}
-                  </option>
-                )}
-                <option value="">None</option>
-                {offeredGroups.map((g) => <option key={g.groupId} value={g.groupId}>{g.name}</option>)}
-                <option value={NEW_GROUP}>+ New group</option>
-              </select>
-            ) : (
-              <div className="flex min-w-0 flex-1 items-center gap-1">
-                <input
-                  ref={newGroupRef}
-                  aria-label="New group name"
-                  value={newGroup}
-                  maxLength={MAX_TITLE_LENGTH}
-                  onChange={(e) => setNewGroup(e.target.value)}
-                  onKeyDown={(e) => {
-                    // Escape goes back to the dropdown.
-                    if (e.key !== 'Escape') return
-                    e.preventDefault()
-                    e.stopPropagation()
-                    setNewGroup(null)
-                  }}
-                  placeholder="New group name"
-                  className={INPUT}
+          <YSection title="Start">
+            <YSettingGroup>
+              {fresh && live.length > 0 && !unattended && (
+                <YSettingRow dense label="Where">
+                  <YSelect
+                    aria-label="Where"
+                    value={inTarget?.workspaceId ?? ''}
+                    onChange={(e) => update({ inWorkspace: e.target.value === '' ? undefined : e.target.value })}
+                    className={CONTROL}
+                  >
+                    <option value="">New workspace</option>
+                    {live.map((w) => <option key={w.workspaceId} value={w.workspaceId}>In “{workspaceName(w)}”</option>)}
+                  </YSelect>
+                </YSettingRow>
+              )}
+              {!inWorkspace && !noAgent && (
+                <YSettingRow dense label="When">
+                  <YSelect aria-label="Start" value={start} onChange={(e) => update({ start: e.target.value })} className={CONTROL}>
+                    {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </YSelect>
+                </YSettingRow>
+              )}
+              {start === START_AT && (
+                <YSettingRow dense label="Time" hint={`In ${zone}`}>
+                  <YInput
+                    type="datetime-local"
+                    aria-label={`Start time (${zone})`}
+                    value={form.startAt !== undefined ? zonedInputValue(form.startAt, zone) : ''}
+                    onChange={(e) => update({ startAt: zonedInputInstant(e.target.value, zone) })}
+                    className={CONTROL}
+                  />
+                </YSettingRow>
+              )}
+              {start === START_IN && (
+                <YSettingRow dense label="Delay">
+                  <YInput
+                    aria-label="Delay"
+                    value={form.startIn ?? ''}
+                    onChange={(e) => update({ startIn: e.target.value })}
+                    placeholder="e.g. 2h30m"
+                    className={CONTROL}
+                  />
+                </YSettingRow>
+              )}
+              {routineMode && (
+                <RoutineSchedule
+                  cron={cron}
+                  custom={form.customCron === true}
+                  timeZone={routineZone}
+                  upcoming={upcoming}
+                  error={scheduleError}
+                  onChange={update}
                 />
-                <button
-                  type="button"
-                  onClick={() => setNewGroup(null)}
-                  title="Pick an existing group"
-                  aria-label="Pick an existing group"
-                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-text-faint transition
-                    hover:bg-surface-3 hover:text-text"
+              )}
+              {!inWorkspace && <>
+                <YSettingRow dense label="Group">
+                  {newGroup === null ? (
+                    <YSelect
+                      aria-label="Group"
+                      value={ownGroup ? OWN_GROUP : groupId ?? ''}
+                      onChange={(e) => {
+                        if (e.target.value === NEW_GROUP) setNewGroup('')
+                        else if (e.target.value === OWN_GROUP) update({ groupId: undefined })
+                        else update({ groupId: e.target.value === '' ? null : e.target.value })
+                      }}
+                      className={CONTROL}
+                    >
+                      {ownGroupOffered && (
+                        <option value={OWN_GROUP}>
+                          {routineMode ? `New group: ${titleText || 'the routine’s name'}` : `The workflow’s own: ${workflow?.name ?? 'its name'}`}
+                        </option>
+                      )}
+                      <option value="">None</option>
+                      {offeredGroups.map((g) => <option key={g.groupId} value={g.groupId}>{g.name}</option>)}
+                      <option value={NEW_GROUP}>+ New group</option>
+                    </YSelect>
+                  ) : (
+                    <div className={cn(CONTROL, 'flex items-center gap-1')}>
+                      <YInput
+                        ref={newGroupRef}
+                        aria-label="New group name"
+                        value={newGroup}
+                        maxLength={MAX_TITLE_LENGTH}
+                        onChange={(e) => setNewGroup(e.target.value)}
+                        onKeyDown={(e) => {
+                          // Escape goes back to the dropdown.
+                          if (e.key !== 'Escape') return
+                          e.preventDefault()
+                          e.stopPropagation()
+                          setNewGroup(null)
+                        }}
+                        placeholder="New group name"
+                        className="flex-1"
+                      />
+                      <YButton
+                        variant="ghost"
+                        size="sm"
+                        icon={CloseIcon}
+                        onClick={() => setNewGroup(null)}
+                        title="Pick an existing group"
+                        aria-label="Pick an existing group"
+                      />
+                    </div>
+                  )}
+                </YSettingRow>
+                <YSettingRow
+                  dense
+                  label="Timeout"
+                  {...(overlaps ? { hint: <span className="text-warning">Runs may overlap</span> } : {})}
                 >
-                  <CloseIcon size={12} />
-                </button>
-              </div>
-            )}
-          </Row>
+                  <YInput
+                    aria-label="Timeout"
+                    value={form.timeout ?? ''}
+                    onChange={(e) => update({ timeout: e.target.value })}
+                    placeholder={routineMode ? 'until next run' : 'No limit'}
+                    className={CONTROL}
+                  />
+                </YSettingRow>
+              </>}
+            </YSettingGroup>
+          </YSection>
 
-          <Row label="Timeout">
-            <input
-              aria-label="Timeout"
-              value={form.timeout ?? ''}
-              onChange={(e) => update({ timeout: e.target.value })}
-              placeholder={routineMode ? 'until next run' : 'No limit'}
-              className={INPUT}
-            />
-          </Row>
-          {overlaps && <div className={NOTE}>Runs may overlap</div>}
-
-          <Heading>Code</Heading>
-          {selection.rows.map((row, i) => {
-            const lone = selection.rows.length === 1
-            if (lone && !row.included) return null
-            const { repo } = row
-            return (
-              <Row key={repo.id} label={lone ? 'Base branch' : i === 0 ? 'Repos' : ''}>
-                {!lone && (
-                  <label className="flex h-[26px] w-[112px] shrink-0 items-center gap-1.5 truncate" title={repo.remoteUrl}>
-                    <input
-                      type="checkbox"
-                      aria-label={`Include ${repo.dir}`}
-                      checked={row.included}
-                      onChange={(e) => setRepoPick(repo.id, { included: e.target.checked })}
-                    />
-                    <span className="truncate font-mono text-text">{repo.dir}</span>
-                  </label>
+          {!inWorkspace && (selection.rows.length > 0 || showVolumes || !unattended) && (
+            <YSection title="Code">
+              <YSettingGroup>
+                {selection.rows.length === 1 ? selection.rows[0].included && (
+                  <YSettingRow dense label="Base branch" hint={originNote}>
+                    <div className={CONTROL}>
+                      <RepoBranch row={selection.rows[0]} lone onQuery={setBranchQuery} onPick={setRepoPick} />
+                    </div>
+                  </YSettingRow>
+                ) : selection.rows.length > 1 && (
+                  <YSettingRow dense label="Repos" hint={originNote} stacked>
+                    <div className="flex flex-col gap-1.5">
+                      {selection.rows.map((row) => (
+                        <div key={row.repo.id} className="flex items-center gap-2">
+                          <label className="flex h-control-sm w-40 shrink-0 items-center gap-1.5 truncate text-md" title={row.repo.remoteUrl}>
+                            <YCheckbox checked={row.included} onCheckedChange={(included) => setRepoPick(row.repo.id, { included })} />
+                            <span className="truncate font-mono text-text"><span className="sr-only">Include</span> {row.repo.dir}</span>
+                          </label>
+                          {row.included && (
+                            <div className="min-w-0 flex-1">
+                              <RepoBranch row={row} lone={false} onQuery={setBranchQuery} onPick={setRepoPick} />
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </YSettingRow>
                 )}
-                {row.included && <div className="min-w-0 flex-1"><RepoBranch row={row} lone={lone} onQuery={setBranchQuery} onPick={setRepoPick} /></div>}
-              </Row>
-            )
-          })}
-          {selection.rows.length > 0 && (selection.rows.length === 1 || selection.included.length === 1) && (
-            <Row label="Checkout" title="Where the repo's checkout sits in the workspace">
-              <select
-                aria-label="Checkout"
-                value={selection.included.length === 0 ? 'none' : selection.nested ? 'nested' : 'root'}
-                onChange={(e) => {
-                  const [only] = selection.rows
-                  if (selection.rows.length === 1) setRepoPick(only.repo.id, { included: e.target.value !== 'none' })
-                  if (e.target.value !== 'none') update({ nested: e.target.value === 'nested' })
-                }}
-                className={SELECT}
-              >
-                <option value="root">At the workspace root</option>
-                <option value="nested">In {(selection.included[0] ?? selection.rows[0]).repo.dir}/</option>
-                {selection.rows.length === 1 && <option value="none">No repo</option>}
-              </select>
-            </Row>
-          )}
-          {selection.nested && (
-            <Row label="Start in" title="The directory the agent starts in">
-              <select
-                aria-label="Start in"
-                value={selection.cwd}
-                onChange={(e) => update({ cwd: e.target.value })}
-                className={SELECT}
-              >
-                <option value=".">Workspace root</option>
-                {selection.included.map((r) => <option key={r.repo.id} value={r.repo.id}>{r.repo.dir}/</option>)}
-              </select>
-            </Row>
-          )}
-          {queued && selection.included.length > 0 && <div className={NOTE}>latest from origin when it starts</div>}
-
-          {!storesEntry && volumes !== undefined && volumes.length > 0 && (
-            <Row label="Volume" title="Project storage to attach, which one running workspace at a time can have">
-              <select
-                aria-label="Volume"
-                value={volume ?? ''}
-                onChange={(e) => update({ volume: e.target.value || undefined })}
-                className={SELECT}
-              >
-                <option value="">None</option>
-                {volumes.map((v) => (
-                  <option key={v.name} value={v.name} disabled={v.holder !== undefined}>
-                    {v.name}{v.holder !== undefined
-                      ? ` (attached to “${clip(v.holder.title || v.holder.workspaceId.slice(0, 8), 40)}”)`
-                      : ''}
-                  </option>
-                ))}
-              </select>
-            </Row>
-          )}
-          </>}
-
-          {!inWorkspace && !unattended && (
-            <Row label="Steps" title="What runs in the workspace beside its agent (docs/workflows.md)">
-              <select
-                aria-label="Steps"
-                value={workflow?.name ?? ''}
-                onChange={(e) => pickWorkflow(e.target.value)}
-                className={SELECT}
-              >
-                <option value="">{initWorkflows.length > 0 ? `Init workflows: ${initWorkflows.join(', ')}` : 'Init workflows (none)'}</option>
-                {workflows.map((w) => <option key={w.id} value={w.name}>Workflow {w.name}, in their place</option>)}
-              </select>
-            </Row>
+                {selection.rows.length > 0 && (selection.rows.length === 1 || selection.included.length === 1) && (
+                  <YSettingRow dense label="Checkout">
+                    <YSelect
+                      aria-label="Checkout"
+                      value={selection.included.length === 0 ? 'none' : selection.nested ? 'nested' : 'root'}
+                      onChange={(e) => {
+                        const [only] = selection.rows
+                        if (selection.rows.length === 1) setRepoPick(only.repo.id, { included: e.target.value !== 'none' })
+                        if (e.target.value !== 'none') update({ nested: e.target.value === 'nested' })
+                      }}
+                      className={CONTROL}
+                    >
+                      <option value="root">At the workspace root</option>
+                      <option value="nested">In {(selection.included[0] ?? selection.rows[0]).repo.dir}/</option>
+                      {selection.rows.length === 1 && <option value="none">No repo</option>}
+                    </YSelect>
+                  </YSettingRow>
+                )}
+                {selection.nested && (
+                  <YSettingRow dense label="Start in">
+                    <YSelect aria-label="Start in" value={selection.cwd} onChange={(e) => update({ cwd: e.target.value })} className={CONTROL}>
+                      <option value=".">Workspace root</option>
+                      {selection.included.map((r) => <option key={r.repo.id} value={r.repo.id}>{r.repo.dir}/</option>)}
+                    </YSelect>
+                  </YSettingRow>
+                )}
+                {showVolumes && (
+                  <YSettingRow dense label="Volume">
+                    <YSelect
+                      aria-label="Volume"
+                      value={volume ?? ''}
+                      onChange={(e) => update({ volume: e.target.value || undefined })}
+                      className={CONTROL}
+                    >
+                      <option value="">None</option>
+                      {volumes.map((v) => (
+                        <option key={v.name} value={v.name} disabled={v.holder !== undefined}>
+                          {v.name}{v.holder !== undefined
+                            ? ` (attached to “${clip(v.holder.title || v.holder.workspaceId.slice(0, 8), 40)}”)`
+                            : ''}
+                        </option>
+                      ))}
+                    </YSelect>
+                  </YSettingRow>
+                )}
+                {!unattended && (
+                  <YSettingRow dense label="Steps">
+                    <YSelect aria-label="Steps" value={workflow?.name ?? ''} onChange={(e) => pickWorkflow(e.target.value)} className={CONTROL}>
+                      <option value="">{initWorkflows.length > 0 ? `Init workflows: ${initWorkflows.join(', ')}` : 'Init workflows (none)'}</option>
+                      {workflows.map((w) => <option key={w.id} value={w.name}>Workflow {w.name}, in their place</option>)}
+                    </YSelect>
+                  </YSettingRow>
+                )}
+              </YSettingGroup>
+            </YSection>
           )}
 
-          {sessionCwds.length > 0 && (
-            <Row label="Start in" title="The directory the agent starts in">
-              <select
-                aria-label="Start in"
-                value={sessionCwd}
-                onChange={(e) => update({ sessionCwd: e.target.value })}
-                className={SELECT}
-              >
-                {sessionCwds.map((p) => <option key={p} value={p}>{checkoutLabel(p)}</option>)}
-              </select>
-            </Row>
+          {!unattended && (
+            <YSection title="Agent">
+              <YSettingGroup>
+                {sessionCwds.length > 0 && (
+                  <YSettingRow dense label="Start in">
+                    <YSelect aria-label="Start in" value={sessionCwd} onChange={(e) => update({ sessionCwd: e.target.value })} className={CONTROL}>
+                      {sessionCwds.map((p) => <option key={p} value={p}>{checkoutLabel(p)}</option>)}
+                    </YSelect>
+                  </YSettingRow>
+                )}
+                <YSettingRow dense label="Agent">
+                  <YSelect
+                    aria-label="Agent"
+                    value={noAgent ? '' : tool}
+                    onChange={(e) => {
+                      if (e.target.value === '') {
+                        update({ noAgent: true })
+                        return
+                      }
+                      // A different agent brings its own remembered defaults.
+                      const next = e.target.value as AgentTool
+                      update({ noAgent: undefined, tool: next, picked: { tool: next, picks: {} } })
+                    }}
+                    className={CONTROL}
+                  >
+                    {AGENT_TOOLS.map((t) => (
+                      <option key={t} value={t}>
+                        {TOOL_LABEL[t]}{defaults.configured.has(t) ? '' : ' (sign in)'}
+                      </option>
+                    ))}
+                    {fresh && !inWorkspace && <option value="">None</option>}
+                  </YSelect>
+                </YSettingRow>
+                {noAgent ? null : needsGitAuth !== undefined && !inWorkspace ? (
+                  <YSettingRow dense label={`${needsGitAuth.dir} has no git credential`}>
+                    <YButton onClick={() => openSettings('repos', undefined, needsGitAuth.id)}>Add git authentication…</YButton>
+                  </YSettingRow>
+                ) : !defaults.ready || signedIn ? (
+                  <YSettingRow dense label="UI">
+                    <YSelect aria-label="UI" value={mode} onChange={(e) => setPicks({ mode: e.target.value as AgentMode })} className={CONTROL}>
+                      {(['tui', 'acp'] as const).map((m) => <option key={m} value={m}>{MODE_COPY[m]}</option>)}
+                    </YSelect>
+                  </YSettingRow>
+                ) : (
+                  <YSettingRow dense label={`${TOOL_LABEL[tool]} has no credentials`}>
+                    <YButton onClick={() => openSettings('credentials', tool)}>Sign in to {TOOL_LABEL[tool]}…</YButton>
+                  </YSettingRow>
+                )}
+              </YSettingGroup>
+            </YSection>
           )}
 
-          {!unattended && <>
-          <Heading>Agent</Heading>
-          <Row label="Agent">
-            <select
-              aria-label="Agent"
-              value={noAgent ? '' : tool}
-              onChange={(e) => {
-                if (e.target.value === '') {
-                  update({ noAgent: true })
-                  return
-                }
-                // A different agent brings its own remembered defaults.
-                const next = e.target.value as AgentTool
-                update({ noAgent: undefined, tool: next, picked: { tool: next, picks: {} } })
-              }}
-              className={SELECT}
-            >
-              {AGENT_TOOLS.map((t) => (
-                <option key={t} value={t}>
-                  {TOOL_LABEL[t]}{defaults.configured.has(t) ? '' : ' (sign in)'}
-                </option>
-              ))}
-              {fresh && !inWorkspace && <option value="">None</option>}
-            </select>
-          </Row>
-
-          {noAgent ? null : needsGitAuth !== undefined && !inWorkspace ? (
-            <Notice
-              text={`${needsGitAuth.dir} has no git credential`}
-              action="Add git authentication…"
-              onClick={() => openSettings('repos', undefined, needsGitAuth.id)}
-            />
-          ) : !defaults.ready || signedIn ? (
-            <Row label="UI" title={MODE_HELP[mode]}>
-              <select
-                aria-label="UI"
-                value={mode}
-                onChange={(e) => setPicks({ mode: e.target.value as AgentMode })}
-                className={SELECT}
-              >
-                {(['tui', 'acp'] as const).map((m) => <option key={m} value={m}>{MODE_COPY[m]}</option>)}
-              </select>
-            </Row>
-          ) : (
-            <Notice
-              text={`${TOOL_LABEL[tool]} has no credentials`}
-              action={`Sign in to ${TOOL_LABEL[tool]}…`}
-              onClick={() => openSettings('credentials', tool)}
-            />
-          )}
-
-          </>}
-
-          {editing === undefined && editingRoutine === undefined && !unattended && (
-            <div className="mt-3 flex gap-2 px-1 max-md:flex-col">
-              {!queued && !noAgent && (
-                <button
-                  type="button"
+          {editing === undefined && editingRoutine === undefined && !unattended && !noAgent && (
+            <div className="flex gap-2 max-md:flex-col">
+              {!queued && (
+                <YButton
+                  icon={mode === 'tui' ? TerminalIcon : ChatIcon}
                   onClick={() => startNow()}
                   disabled={busy || blocked !== null || text !== ''}
                   title={blocked ?? (text !== ''
                     ? 'A prompt is typed: send it instead'
                     : `Start the ${MODE_COPY[mode].toLowerCase()} with nothing sent to the agent`)}
-                  className={BUTTON}
                 >
-                  {mode === 'tui' ? <TerminalIcon size={12} /> : <ChatIcon size={12} />}
                   Start without a prompt
-                </button>
+                </YButton>
               )}
-              {!inWorkspace && !noAgent && (
-                <button
-                  type="button"
+              {!inWorkspace && (
+                <YButton
                   onClick={() => { if (pending !== null) run(keepDraft(pending)) }}
                   disabled={busy || pending === null}
                   title={pending !== null ? undefined : text === '' ? 'Type a prompt to save a draft' : 'No changes to save'}
-                  className={BUTTON}
                 >
                   Save draft
-                </button>
+                </YButton>
               )}
             </div>
           )}
-          </>}
-        </div>
-        {unattended && workflow !== undefined && (
-          <aside aria-label="Its steps" className="w-full max-w-xl text-xs @4xl:sticky @4xl:top-0 @4xl:w-72 @4xl:shrink-0">
-            <h3 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-faint">Its steps</h3>
-            <StepList steps={workflow.steps} />
-          </aside>
-        )}
-        </div>
-      </div>
+        </>}
+      </YPageBody>
 
       {kind === 'site' ? null : unattended ? (
-        <div className="flex shrink-0 items-center justify-end gap-3 border-t border-hairline-soft px-4 py-2.5">
-          {error !== null && <span className="mr-auto min-w-0 truncate text-xs text-danger" title={error}>{error}</span>}
-          {error === null && routineMode && <span className="mr-auto truncate text-[11px] text-text-faint">Each run starts unattended.</span>}
-          <button
-            type="button"
+        <div className="flex shrink-0 items-center justify-end gap-3 border-t border-line px-4 py-2.5">
+          {error !== null && <span className="mr-auto min-w-0 truncate text-md text-danger" title={error}>{error}</span>}
+          {error === null && routineMode && <span className="mr-auto truncate text-sm text-subtle">Each run starts unattended.</span>}
+          <YButton
+            variant="primary"
+            {...(!queued && editing === undefined ? { icon: RunIcon } : {})}
             onClick={() => submit()}
             disabled={busy || blocked !== null}
             title={blocked ?? `${submitLabel} (Enter)`}
-            className={PRIMARY}
           >
-            {!queued && editing === undefined && <RunIcon size={12} />}
             {submitLabel}
-          </button>
+          </YButton>
         </div>
       ) : <ChatBottomBar
-        above={error !== null && <div className="mb-1.5 px-1 text-xs text-danger">{error}</div>}
+        above={error !== null && <div className="mb-1.5 px-1 text-md text-danger">{error}</div>}
         onClick={(e) => { if (e.target === e.currentTarget) promptRef.current?.focus() }}
       >
-        <textarea
+        <YTextArea
+          bare
           ref={promptRef}
           aria-label="Prompt"
           rows={1}
@@ -1224,19 +1176,17 @@ export function NewWorkspacePane({ projectId, bar }: {
               />
             )}
             {routineMode && (
-              <span className="ml-1 truncate text-[11px] text-text-faint" title={UNATTENDED}>{UNATTENDED}</span>
+              <span className="ml-1 truncate text-sm text-subtle" title={UNATTENDED}>{UNATTENDED}</span>
             )}
           </div>
-          <button
-            type="button"
+          <YButton
+            variant="primary"
+            icon={SendIcon}
             aria-label={submitLabel}
             title={sendTitle}
             onClick={() => submit()}
             disabled={busy || blocked !== null || (text === '' && !noAgent)}
-            className={ROUND_BUTTON}
-          >
-            <SendIcon size={15} strokeWidth={2.5} />
-          </button>
+          />
         </div>
       </ChatBottomBar>}
     </div>
@@ -1254,8 +1204,6 @@ const REPEAT_COPY: Record<RepeatKind, string> = {
   monthly: 'Monthly',
 }
 
-const SMALL_INPUT = 'h-[26px] w-14 shrink-0 rounded-md border border-border bg-surface-2 px-1.5 text-xs text-text '
-  + 'outline-none focus:border-border-strong'
 
 /** Every zone this browser knows, for the routine zone picker. */
 const ZONES = [...new Set(['UTC', ...Intl.supportedValuesOf('timeZone')])].map((z) => ({ value: z, label: z }))
@@ -1278,7 +1226,7 @@ function RoutineSchedule({ cron, custom, timeZone, upcoming, error, onChange }: 
   const set = (patch: Partial<Repeat>): void => onChange({ cron: compileRepeat({ ...(repeat ?? DEFAULT_REPEAT), ...patch }) })
   /** A number input that ignores values outside `min`–`max`. */
   const num = (label: string, value: number, min: number, max: number, apply: (n: number) => void): JSX.Element => (
-    <NumberInput
+    <YNumberInput
       aria-label={label}
       min={min}
       max={max}
@@ -1287,7 +1235,7 @@ function RoutineSchedule({ cron, custom, timeZone, upcoming, error, onChange }: 
         const n = Number(e.target.value)
         if (Number.isInteger(n) && n >= min && n <= max) apply(n)
       }}
-      className="h-[26px] w-14 shrink-0 bg-surface-2"
+      className="w-14 shrink-0"
     />
   )
   const pad = (n: number): string => String(n).padStart(2, '0')
@@ -1298,89 +1246,95 @@ function RoutineSchedule({ cron, custom, timeZone, upcoming, error, onChange }: 
 
   return (
     <>
-      <Row label="Repeats">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-          <select
-            aria-label="Repeats"
-            value={repeat?.kind ?? 'custom'}
-            onChange={(e) => {
-              const kind = e.target.value
-              if (kind === 'custom') onChange({ customCron: true })
-              else onChange({ customCron: false, cron: compileRepeat({ ...(parseRepeat(cron) ?? DEFAULT_REPEAT), kind: kind as RepeatKind }) })
-            }}
-            className={SELECT}
-          >
-            {REPEAT_KINDS.map((k) => <option key={k} value={k}>{REPEAT_COPY[k]}</option>)}
-            <option value="custom">Custom (cron)</option>
-          </select>
-          {repeat === undefined ? (
-            <input
-              aria-label="Cron expression"
-              value={cron}
-              onChange={(e) => onChange({ cron: e.target.value })}
-              placeholder="0 9 * * 1-5"
-              className={clsx(INPUT, 'font-mono')}
-            />
-          ) : repeat.kind === 'minutes' ? (
-            <select
-              aria-label="Minutes between runs"
-              value={repeat.every}
-              onChange={(e) => set({ every: Number(e.target.value) })}
-              className={SELECT}
+      <YSettingRow dense label="Repeats" stacked>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            <YSelect
+              aria-label="Repeats"
+              value={repeat?.kind ?? 'custom'}
+              onChange={(e) => {
+                const kind = e.target.value
+                if (kind === 'custom') onChange({ customCron: true })
+                else onChange({ customCron: false, cron: compileRepeat({ ...(parseRepeat(cron) ?? DEFAULT_REPEAT), kind: kind as RepeatKind }) })
+              }}
+              className="w-44"
             >
-              {EVERY_MINUTES.map((n) => <option key={n} value={n}>{n}</option>)}
-            </select>
-          )
-            : repeat.kind === 'hourly' ? num('Minute past the hour', repeat.minute, 0, 59, (minute) => set({ minute }))
-            : (
-              <>
-                {repeat.kind === 'weekly' && WEEK.map((d) => {
-                  const on = repeat.days.includes(d.day)
-                  return (
-                    <button
-                      key={d.day}
-                      type="button"
-                      aria-label={d.name}
-                      aria-pressed={on}
-                      // The last day stays on: a week of no days never runs.
-                      onClick={() => { if (!on || repeat.days.length > 1) set({ days: on ? repeat.days.filter((x) => x !== d.day) : [...repeat.days, d.day] }) }}
-                      className={clsx('h-[26px] w-6 shrink-0 rounded-md border text-[11px]', on
-                        ? 'border-border-strong bg-surface-3 text-text'
-                        : 'border-border text-text-faint hover:text-text-dim')}
-                    >
-                      {d.short}
-                    </button>
-                  )
-                })}
-                {repeat.kind === 'monthly' && num('Day of month', repeat.day, 1, 31, (day) => set({ day }))}
-                <input
-                  type="time"
-                  aria-label="Time of day"
-                  value={`${pad(repeat.hour)}:${pad(repeat.minute)}`}
-                  onChange={(e) => {
-                    const [hour, minute] = e.target.value.split(':').map(Number)
-                    if (Number.isInteger(hour) && Number.isInteger(minute)) set({ hour, minute })
-                  }}
-                  className={clsx(SMALL_INPUT, 'w-auto')}
-                />
-              </>
+              {REPEAT_KINDS.map((k) => <option key={k} value={k}>{REPEAT_COPY[k]}</option>)}
+              <option value="custom">Custom (cron)</option>
+            </YSelect>
+            {repeat === undefined ? (
+              <YInput
+                aria-label="Cron expression"
+                value={cron}
+                onChange={(e) => onChange({ cron: e.target.value })}
+                placeholder="0 9 * * 1-5"
+                className="flex-1 font-mono"
+              />
+            ) : repeat.kind === 'minutes' ? (
+              <YSelect
+                aria-label="Minutes between runs"
+                value={repeat.every}
+                onChange={(e) => set({ every: Number(e.target.value) })}
+                className="w-20"
+              >
+                {EVERY_MINUTES.map((n) => <option key={n} value={n}>{n}</option>)}
+              </YSelect>
+            )
+              : repeat.kind === 'hourly' ? num('Minute past the hour', repeat.minute, 0, 59, (minute) => set({ minute }))
+              : (
+                <>
+                  {repeat.kind === 'weekly' && WEEK.map((d) => {
+                    const on = repeat.days.includes(d.day)
+                    return (
+                      <YChip
+                        key={d.day}
+                        aria-label={d.name}
+                        aria-pressed={on}
+                        selected={on}
+                        // The last day stays on: a week of no days never runs.
+                        onClick={() => { if (!on || repeat.days.length > 1) set({ days: on ? repeat.days.filter((x) => x !== d.day) : [...repeat.days, d.day] }) }}
+                      >
+                        {d.short}
+                      </YChip>
+                    )
+                  })}
+                  {repeat.kind === 'monthly' && num('Day of month', repeat.day, 1, 31, (day) => set({ day }))}
+                  <YInput
+                    type="time"
+                    aria-label="Time of day"
+                    value={`${pad(repeat.hour)}:${pad(repeat.minute)}`}
+                    onChange={(e) => {
+                      const [hour, minute] = e.target.value.split(':').map(Number)
+                      if (Number.isInteger(hour) && Number.isInteger(minute)) set({ hour, minute })
+                    }}
+                    className="shrink-0"
+                  />
+                </>
+              )}
+            <YChip
+              onClick={() => setZoneQuery('')}
+              title="Change the time zone it runs in"
+              aria-label={`Time zone: ${timeZone}`}
+            >
+              {timeZone}
+            </YChip>
+          </div>
+          <div className="text-sm text-subtle">
+            {repeat !== undefined && (
+              <YButton variant="link" onClick={() => onChange({ customCron: true })} title="Edit it as cron" className="block font-mono">
+                cron: {cron}
+              </YButton>
             )}
-          <button
-            type="button"
-            onClick={() => setZoneQuery('')}
-            title="Change the time zone it runs in"
-            aria-label={`Time zone: ${timeZone}`}
-            className="h-[26px] shrink-0 rounded-md bg-surface-2 px-2 text-[11px] text-text-dim transition
-              hover:bg-surface-3 hover:text-text"
-          >
-            {timeZone}
-          </button>
+            <p role="status" className={cn(error !== undefined && 'text-danger')}>
+              {error ?? `Next: ${upcoming.slice(0, 3).map((d) => formatInZone(d, timeZone)).join(' · ')}`}
+            </p>
+          </div>
         </div>
-      </Row>
+      </YSettingRow>
       {zoneQuery !== null && (
-        <Row label="Time zone">
-          <div ref={picker} className="min-w-0 flex-1">
-            <Typeahead
+        <YSettingRow dense label="Time zone">
+          <div ref={picker} className={CONTROL}>
+            <YTypeahead
               items={ZONES}
               query={zoneQuery}
               onQueryChange={setZoneQuery}
@@ -1392,23 +1346,8 @@ function RoutineSchedule({ cron, custom, timeZone, upcoming, error, onChange }: 
               onDismiss={() => setZoneQuery(null)}
             />
           </div>
-        </Row>
+        </YSettingRow>
       )}
-      <div className={NOTE}>
-        {repeat !== undefined && (
-          <button
-            type="button"
-            onClick={() => onChange({ customCron: true })}
-            title="Edit it as cron"
-            className="block font-mono hover:text-text-dim"
-          >
-            cron: {cron}
-          </button>
-        )}
-        <p role="status" className={clsx(error !== undefined && 'text-danger')}>
-          {error ?? `Next: ${upcoming.slice(0, 3).map((d) => formatInZone(d, timeZone)).join(' · ')}`}
-        </p>
-      </div>
     </>
   )
 }
@@ -1443,32 +1382,6 @@ function RepoBranch({ row, lone, onQuery, onPick }: {
   )
 }
 
-/** A form row: fixed-width label, then the control (which has its own
- *  aria-label). */
-/** A heading over a group of the form's rows. */
-function Heading({ children }: { children: ReactNode }): JSX.Element {
-  return <div className="mb-1.5 mt-5 pl-1 text-[11px] font-medium uppercase tracking-wide text-text-faint">{children}</div>
-}
-
-function Row({ label, title, children }: { label: string; title?: string; children: ReactNode }): JSX.Element {
-  return (
-    <div className="mb-1 flex items-start gap-2 px-1 py-0.5 text-xs text-text-dim" title={title}>
-      <span className="w-[76px] shrink-0 pt-[5px]">{label}</span>
-      {children}
-    </div>
-  )
-}
-
-/** What stops the form from creating, with the way to fix it. */
-function Notice({ text, action, onClick }: { text: string; action: string; onClick: () => void }): JSX.Element {
-  return (
-    <div className="mb-1 flex items-center gap-2 px-1 py-0.5 text-xs text-text-faint">
-      <span className="flex-1">{text}</span>
-      <button type="button" onClick={onClick} className={BUTTON}>{action}</button>
-    </div>
-  )
-}
-
 /**
  * Asks, when the user navigates away from the new-workspace pane with a
  * typed prompt (`navigate` in the store), whether to save it as a draft.
@@ -1484,7 +1397,7 @@ export function LeaveNewWorkspaceDialog(): JSX.Element {
   if (leaving !== null) last.current = leaving
   const editing = last.current?.draft.id !== undefined
   return (
-    <ConfirmDialog
+    <YConfirm
       open={leaving !== null}
       onOpenChange={(next) => { if (!next) { save.reset(); stay() } }}
       destructive={false}

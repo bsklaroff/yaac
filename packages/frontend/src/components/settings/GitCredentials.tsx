@@ -1,16 +1,14 @@
-import { useState, type FormEvent, type JSX, type ReactNode } from 'react'
-import clsx from 'clsx'
+import { useState, type FormEvent, type JSX } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { GitCredentialPicker, INPUT, PublicKey, type GitCredentialKind } from '#components/GitCredentialPicker'
+import { GitCredentialPicker, PublicKey, type GitCredentialKind } from '#components/GitCredentialPicker'
 import { AffectsBanner } from '#components/settings/AffectsBanner'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { api } from '#lib/api'
 import { refreshRepos } from '#lib/repoApi'
 import { useAuthList } from '#lib/useAuthList'
 import { useInlineEdit } from '#lib/useInlineRename'
 import { useUiStore } from '#lib/store'
 import type { GitCredentialSummary } from '@yaac/shared/types'
+import { YButton, YConfirm, YInput, YRowFrame, YSection, YSegmented, YSettingGroup, YSettingRow } from '#ui'
 
 /**
  * The git credentials section (docs/git-credentials.md): the caller's
@@ -38,67 +36,55 @@ export function GitCredentials(): JSX.Element {
   const credentials = auth?.gitCredentials ?? []
 
   return (
-    <>
-      <Group
-        label="Git credentials"
-        hint="An HTTPS token the proxy injects, or an SSH key yaac generated. One credential can serve several repos; replace it to rotate it for all of them."
-      >
-        <div className="space-y-2 text-xs">
-          {failure && <p className="text-[11px] text-red-400">{failure}</p>}
-          {credentials.map((c) => (
-            <div key={c.id} data-credential={c.id} className="flex flex-col gap-1.5 rounded-md bg-bg px-2.5 py-1.5">
-              <div className="flex items-center gap-2">
-                <CredentialLabel credential={c} />
-                <span className="shrink-0 text-[11px] text-text-faint">
-                  {c.repos.length === 0 ? 'unused' : `${c.repos.length} repo${c.repos.length === 1 ? '' : 's'}`}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setEditing((e) => (e === c.id ? null : c.id))}
-                  className={clsx(TEXT_BUTTON, 'ml-auto')}
-                >
+    <YSection
+      title="Git credentials"
+      description="HTTPS tokens and SSH keys for your repos."
+      actions={(
+        <YButton size="sm" onClick={() => setSection('repos')}>Assign to repos</YButton>
+      )}
+    >
+      {failure && <p className="text-sm text-danger">{failure}</p>}
+      <YSettingGroup className="text-md">
+        {credentials.map((c) => (
+          <div key={c.id} data-credential={c.id} className="flex flex-col gap-1.5 px-4 py-2">
+            <YRowFrame
+              label={c.name}
+              actionsShown
+              actions={(
+                <YButton variant="secondary" size="sm" onClick={() => setEditing((e) => (e === c.id ? null : c.id))}>
                   Edit credential
-                </button>
-              </div>
-              {editing === c.id && (
-                <CredentialEditor
-                  credential={c}
-                  newKey={newKeys[c.id]}
-                  onClose={() => setEditing(null)}
-                  onReplaced={(id, publicKey) => {
-                    if (publicKey !== undefined) setNewKeys((k) => ({ ...k, [id]: publicKey }))
-                    setEditing(id)
-                    setFailure(null)
-                    void refresh()
-                  }}
-                  onChanged={() => { setFailure(null); void refresh() }}
-                  onFailed={(message) => { setFailure(message); void refresh() }}
-                />
+                </YButton>
               )}
-            </div>
-          ))}
-          {auth && credentials.length === 0 && <p className="text-text-faint">No git credentials yet.</p>}
-          <button type="button" onClick={() => setSection('repos')} className={TEXT_BUTTON}>
-            Assign credentials to repos in Repos…
-          </button>
-        </div>
-      </Group>
-
-      <Group label="Add git credential" hint="Stored without a repo; you can assign it to repos after creation.">
-        <AddCredential key={addKey} onDone={() => { setAddKey((k) => k + 1); void refresh() }} />
-      </Group>
-    </>
-  )
-}
-
-/** A labeled sub-section of the credentials pane. */
-function Group({ label, hint, children }: { label: string; hint: string; children: ReactNode }): JSX.Element {
-  return (
-    <div className="mt-6">
-      <div className="text-xs font-medium text-text">{label}</div>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">{hint}</p>
-      <div className="mt-2">{children}</div>
-    </div>
+              className="min-h-7"
+            >
+              <CredentialLabel credential={c} />
+              <span className="shrink-0 text-sm text-subtle">
+                {c.repos.length === 0 ? 'unused' : `${c.repos.length} repo${c.repos.length === 1 ? '' : 's'}`}
+              </span>
+            </YRowFrame>
+            {editing === c.id && (
+              <CredentialEditor
+                credential={c}
+                newKey={newKeys[c.id]}
+                onClose={() => setEditing(null)}
+                onReplaced={(id, publicKey) => {
+                  if (publicKey !== undefined) setNewKeys((k) => ({ ...k, [id]: publicKey }))
+                  setEditing(id)
+                  setFailure(null)
+                  void refresh()
+                }}
+                onChanged={() => { setFailure(null); void refresh() }}
+                onFailed={(message) => { setFailure(message); void refresh() }}
+              />
+            )}
+          </div>
+        ))}
+        {auth && credentials.length === 0 && <p className="px-4 py-3 text-subtle">No git credentials yet.</p>}
+        <YSettingRow stacked label="Add git credential" hint="Assign it to repos afterwards.">
+          <AddCredential key={addKey} onDone={() => { setAddKey((k) => k + 1); void refresh() }} />
+        </YSettingRow>
+      </YSettingGroup>
+    </YSection>
   )
 }
 
@@ -107,8 +93,8 @@ function CredentialLabel({ credential: c }: { credential: GitCredentialSummary }
   return (
     <span className="flex min-w-0 items-center gap-2">
       <span className="truncate font-medium text-text">{c.name}</span>
-      <span className="shrink-0 font-mono text-text-faint">{c.kind}</span>
-      {c.kind === 'https' && <span className="shrink-0 font-mono text-text-faint">{c.preview}</span>}
+      <span className="shrink-0 font-mono text-subtle">{c.kind}</span>
+      {c.kind === 'https' && <span className="shrink-0 font-mono text-subtle">{c.preview}</span>}
     </span>
   )
 }
@@ -161,7 +147,7 @@ function CredentialEditor({ credential: c, newKey, onClose, onReplaced, onChange
 
   const using = c.repos.join(', ')
   return (
-    <div data-credential-editor={c.id} className="flex flex-col gap-2 rounded-md border border-hairline-soft p-2.5">
+    <div data-credential-editor={c.id} className="mb-1 flex flex-col gap-2 border-t border-line pt-2.5">
       <AffectsBanner
         lead="Used by"
         names={c.repos}
@@ -170,75 +156,74 @@ function CredentialEditor({ credential: c, newKey, onClose, onReplaced, onChange
       />
       <div className="flex items-center gap-2">
         {rename.editing ? (
-          <input
+          <YInput
             ref={rename.inputRef}
             aria-label="Rename credential"
             defaultValue={rename.seed}
             maxLength={100}
             onKeyDown={rename.handleKeyDown}
             onBlur={rename.handleBlur}
-            className="min-w-0 flex-1 rounded border border-border bg-surface px-1.5 py-0.5 text-xs text-text
-              outline-none focus:border-border-strong"
+            className="flex-1"
           />
         ) : (
-          <button
-            type="button"
+          <YButton
+            variant="bare"
             onClick={rename.start}
             title="Rename"
-            className="min-w-0 truncate text-left font-medium text-text"
+            className="min-w-0 truncate text-left font-medium text-text hover:underline"
           >
             {c.name}
-          </button>
+          </YButton>
         )}
-        <span className="shrink-0 font-mono text-text-faint">{c.kind}</span>
+        <span className="shrink-0 font-mono text-subtle">{c.kind}</span>
         <span className="ml-auto flex shrink-0">
           {!replacingToken && (
-            <button
-              type="button"
+            <YButton
+              variant="secondary"
+              size="sm"
               onClick={() => (c.kind === 'https' ? setReplacingToken(true) : setConfirm('replace'))}
-              className={TEXT_BUTTON}
             >
               Replace
-            </button>
+            </YButton>
           )}
-          <button type="button" onClick={() => setConfirm('delete')} className={TEXT_BUTTON}>
+          <YButton variant="danger" size="sm" onClick={() => setConfirm('delete')}>
             Delete
-          </button>
-          <button type="button" onClick={onClose} className={TEXT_BUTTON}>
+          </YButton>
+          <YButton variant="ghost" size="sm" onClick={onClose}>
             Close
-          </button>
+          </YButton>
         </span>
       </div>
       {replacingToken && (
         <form onSubmit={submitToken} className="flex items-center gap-2">
-          <input
+          <YInput
             aria-label="New token"
             type="password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
             placeholder="new token"
             autoFocus
-            className={INPUT}
+            className="flex-1 font-mono"
           />
-          <button type="submit" disabled={busy || token.trim() === ''} className={BUTTON}>
+          <YButton variant="primary" size="sm" type="submit" disabled={busy || token.trim() === ''}>
             {busy ? 'Replacing…' : 'Replace'}
-          </button>
-          <button type="button" onClick={() => { setReplacingToken(false); setToken('') }} className={BUTTON}>
+          </YButton>
+          <YButton variant="ghost" size="sm" onClick={() => { setReplacingToken(false); setToken('') }}>
             Cancel
-          </button>
+          </YButton>
         </form>
       )}
       {newKey !== undefined ? (
-        <div className="flex flex-col gap-1.5 rounded-md border border-accent/20 bg-accent/5 p-2.5">
-          <p className="text-[11px] leading-relaxed text-text-dim">
+        <div className="flex flex-col gap-1.5 bg-info-soft p-2.5">
+          <p className="text-sm leading-relaxed text-muted">
             A new key replaced the old one. Register this public key with your git host — as a deploy
             key for the repo, or on your account — before its repos&apos; git works again.
           </p>
           <PublicKey publicKey={newKey} wrap />
         </div>
       ) : c.publicKey !== undefined && <PublicKey publicKey={c.publicKey} />}
-      {renaming.error && <p className="text-[11px] text-red-400">{renaming.error.message}</p>}
-      <ConfirmDialog
+      {renaming.error && <p className="text-sm text-danger">{renaming.error.message}</p>}
+      <YConfirm
         open={confirm === 'delete'}
         onOpenChange={(open) => { if (!open) setConfirm(null) }}
         title={`Delete ${c.name}?`}
@@ -252,7 +237,7 @@ function CredentialEditor({ credential: c, newKey, onClose, onReplaced, onChange
           onChanged()
         })}
       />
-      <ConfirmDialog
+      <YConfirm
         open={confirm === 'replace'}
         onOpenChange={(open) => { if (!open) setConfirm(null) }}
         title={`Generate a new key for ${c.name}?`}
@@ -274,20 +259,19 @@ function AddCredential({ onDone }: { onDone: () => void }): JSX.Element {
   const [kind, setKind] = useState<GitCredentialKind>('https')
   return (
     <div className="flex flex-col gap-2">
-      <select
-        aria-label="Credential kind"
+      <YSegmented
+        ariaLabel="Credential kind"
+        size="sm"
         value={kind}
-        onChange={(e) => setKind(e.target.value === 'ssh' ? 'ssh' : 'https')}
-        className="w-fit rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text outline-none"
-      >
-        <option value="https">HTTPS token</option>
-        <option value="ssh">SSH key</option>
-      </select>
+        onChange={setKind}
+        options={[{ value: 'https', label: 'HTTPS token' }, { value: 'ssh', label: 'SSH key' }]}
+      />
       <GitCredentialPicker
         key={kind}
         kind={kind}
         projectName=""
         offerExisting={false}
+        inline
         actionLabel={kind === 'ssh' ? 'Done' : 'Save'}
         onSubmit={() => { onDone(); return Promise.resolve() }}
       />

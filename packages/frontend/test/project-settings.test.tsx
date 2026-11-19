@@ -3,14 +3,14 @@ import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-libra
 import type { ProjectEnvVar, ProjectRunSecret, ProjectSummary } from '@yaac/shared/types'
 
 // CodeMirror doesn't run under jsdom; each file editor gets a textarea.
-vi.mock('#components/ui/CodeEditor', () => ({
+vi.mock('#components/CodeEditor', () => ({
   CodeEditor: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
     <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />
   ),
 }))
 
 import { ProjectSettings } from '#components/settings/ProjectSettings'
-import { SettingsButton } from '#components/SettingsButton'
+import { SettingsButton, SettingsDialog } from '#components/SettingsButton'
 import { useUiStore, type ProjectPage } from '#lib/store'
 import {
   mockFetch, projectRepo, renderWithClient, repoSummary, serverSnapshot, testQueryClient, TEST_USER_ID,
@@ -57,7 +57,7 @@ function renderAlpha(page: ProjectPage, vars: ProjectEnvVar[] = []): FetchMock {
 function openProjectSettings(driver: 'k8s' | 'containerless'): void {
   useUiStore.setState({ activeProjectId: 'id-alpha', settingsOpen: true, settingsSection: 'project-general' })
   mockFetch({ 'GET /api/repo/list': [] })
-  renderWithClient(<SettingsButton />, testQueryClient(undefined, serverSnapshot({
+  renderWithClient(<><SettingsButton /><SettingsDialog /></>, testQueryClient(undefined, serverSnapshot({
     driver,
     projects: [project('alpha', 'https://github.com/o/alpha.git'), project('beta', 'git@gitlab.com:o/beta.git')],
   })))
@@ -311,7 +311,10 @@ describe('ProjectSettings', () => {
       await waitFor(() => expect(server.called('PATCH /api/project/id-alpha/repo/repo-api').map((c) => c.body))
         .toEqual([{ dir: 'backend' }]))
 
-      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Move api up' }).disabled).toBe(true)
+      // Only the moves that go somewhere are offered.
+      expect(screen.queryByRole('button', { name: 'Move api up' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Move web down' })).toBeNull()
+      expect(screen.getByRole('button', { name: 'Move api down' })).toBeTruthy()
       fireEvent.click(screen.getByRole('button', { name: 'Move web up' }))
       await waitFor(() => expect(server.called('PUT /api/project/id-alpha/repo-order').map((c) => c.body))
         .toEqual([{ repos: ['repo-web', 'repo-api'] }]))
@@ -328,13 +331,13 @@ describe('ProjectSettings', () => {
         'PUT /api/project/id-alpha/repo/repo-api/gh-token': () => undefined,
       })
       const row = (id: string): HTMLElement => document.querySelector<HTMLElement>(`[data-repo="${id}"]`)!
-      const box = (id: string, name: RegExp): HTMLInputElement | null =>
-        within(row(id)).queryByRole<HTMLInputElement>('checkbox', { name })
+      const box = (id: string, name: RegExp): HTMLElement | null => within(row(id)).queryByRole('checkbox', { name })
       // An ssh remote has no token to offer.
-      expect(box('repo-web', /Read-only/)?.checked).toBe(true)
+      expect(box('repo-web', /Read-only/)?.getAttribute('aria-checked')).toBe('true')
       expect(box('repo-web', /GH_TOKEN/)).toBeNull()
       // Read-only turns the token off, with why, whatever was stored.
-      expect(box('repo-ro', /GH_TOKEN/)).toMatchObject({ checked: false, disabled: true })
+      const ghToken = box('repo-ro', /GH_TOKEN/)
+      expect([ghToken?.getAttribute('aria-checked'), ghToken?.getAttribute('aria-disabled')]).toEqual(['false', 'true'])
       expect(row('repo-ro').textContent).toContain('off while read-only')
 
       fireEvent.click(box('repo-api', /GH_TOKEN/)!)
@@ -374,6 +377,8 @@ describe('ProjectSettings', () => {
       }
       // Its own unlinked repos and the ones shared with its owner, no others.
       const what = await open()
+      // A lone repo has no order to change.
+      expect(screen.queryByRole('button', { name: /^Move api/ })).toBeNull()
       await waitFor(() => expect([...what.options].map((o) => o.value))
         .toEqual(['url', 'repo-docs', 'repo-hers', 'hosted']))
 
@@ -403,7 +408,7 @@ describe('ProjectSettings', () => {
 
     fireEvent.change(screen.getByPlaceholderText('NAME'), { target: { value: 'TOKEN' } })
     fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: 's3cret' } })
-    fireEvent.click(screen.getByRole('radio', { name: 'Secret' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Secret' }))
     fireEvent.change(screen.getByLabelText('hosts'), { target: { value: 'api.example.com' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
 
@@ -489,7 +494,7 @@ describe('ProjectSettings', () => {
     await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(2))
     expect(screen.queryByRole('button', { name: 'Add forwarded port' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Add cache volume' })).toBeNull()
-    expect(screen.getAllByRole<HTMLInputElement>('checkbox').every((c) => c.disabled)).toBe(true)
+    expect(screen.getAllByRole('checkbox').every((c) => c.getAttribute('aria-disabled') === 'true')).toBe(true)
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Upload files' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Rename init.lua' })).toBeNull()
@@ -498,7 +503,7 @@ describe('ProjectSettings', () => {
     // Only the viewed user's projects are offered.
     cleanup()
     useUiStore.setState({ settingsOpen: true, settingsSection: 'project-general' })
-    renderWithClient(<SettingsButton />, testQueryClient(undefined, snapshot))
+    renderWithClient(<><SettingsButton /><SettingsDialog /></>, testQueryClient(undefined, snapshot))
     const picker = within(screen.getByRole('group', { name: 'Project' })).getByRole<HTMLSelectElement>('combobox')
     expect([...picker.options].map((o) => o.value)).toEqual(['id-hers'])
   })

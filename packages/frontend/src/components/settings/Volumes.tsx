@@ -5,13 +5,8 @@ import { DeleteIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
 import { relativeAge } from '#lib/time'
 import { useVolumes, volumesKey } from '#lib/volumes'
-import { SectionLabel } from '#components/settings/Field'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import type { VolumeEntry } from '@yaac/shared/types'
-
-export const INPUT = 'rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text outline-none '
-  + 'placeholder:text-text-faint focus:border-border-strong'
+import { YButton, YConfirm, YInput, YSettingRow } from '#ui'
 
 /**
  * A project's workspace volumes (docs/workspace-volumes.md): each
@@ -56,18 +51,19 @@ export function Volumes({ projectId, readOnly }: { projectId: string; readOnly: 
   const error = create.error ?? resize.error
 
   return (
-    <div>
-      <SectionLabel>Volumes</SectionLabel>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
+    <YSettingRow
+      stacked
+      label="Volumes"
+      hint={<>
         Named storage that outlives any one workspace, for data an app keeps between runs. One
         running workspace at a time attaches a volume, picked when it is created, and sees it at{' '}
-        <code className="text-text-dim">$YAAC_VOLUME_DIR</code>. A stopped workspace attaches its
+        <code className="text-muted">$YAAC_VOLUME_DIR</code>. A stopped workspace attaches its
         volume again when restarted. The size is enforced only where the cluster gives each volume
         its own disk.
-      </p>
-
+      </>}
+    >
       {volumes !== undefined && (
-        <div className="mt-3 space-y-1">
+        <div className="divide-y divide-line">
           {volumes.map((v) => (
             <VolumeRow
               key={v.name}
@@ -81,35 +77,35 @@ export function Volumes({ projectId, readOnly }: { projectId: string; readOnly: 
               onDelete={() => { remove.reset(); setDeleting(v.name) }}
             />
           ))}
-          {volumes.length === 0 && <p className="text-[11px] text-text-faint">No volumes yet.</p>}
+          {volumes.length === 0 && <p className="text-md text-subtle">No volumes yet.</p>}
         </div>
       )}
 
       {!readOnly && (
-        <form onSubmit={submit} className="mt-3 flex gap-2">
-          <input
+        <form onSubmit={submit} className="mt-2 flex gap-2">
+          <YInput
             aria-label="Volume name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="name (a-z, 0-9, -)"
             maxLength={40}
-            className={`${INPUT} min-w-0 flex-1`}
+            className="flex-1 font-mono"
           />
-          <input
+          <YInput
             aria-label="Volume size"
             value={size}
             onChange={(e) => setSize(e.target.value)}
             placeholder="10Gi"
-            className={`${INPUT} w-20`}
+            className="w-20 font-mono"
           />
-          <button type="submit" disabled={create.isPending || name.trim() === ''} className={BUTTON}>
+          <YButton type="submit" disabled={create.isPending || name.trim() === ''}>
             {create.isPending ? 'Creating…' : 'Create'}
-          </button>
+          </YButton>
         </form>
       )}
-      {error && <p className="mt-2 text-xs text-red-400">{error.message}</p>}
+      {error && <p className="mt-2 text-md text-danger">{error.message}</p>}
 
-      <ConfirmDialog
+      <YConfirm
         open={deleting !== null}
         onOpenChange={(open) => { if (!open) setDeleting(null) }}
         title={`Delete volume “${deleting ?? ''}”?`}
@@ -118,7 +114,7 @@ export function Volumes({ projectId, readOnly }: { projectId: string; readOnly: 
         error={remove.error?.message}
         onConfirm={() => { if (deleting !== null) remove.mutate(deleting) }}
       />
-    </div>
+    </YSettingRow>
   )
 }
 
@@ -135,13 +131,13 @@ function VolumeRow({ projectId, volume, readOnly, resizing, onResizing, onResize
 }): JSX.Element {
   const { holder, stoppedWorkspaces } = volume
   return (
-    <div className="rounded-md bg-bg px-2.5 py-1.5 text-xs">
+    <div data-volume={volume.name} className="py-1.5 text-md">
       <div className="flex items-center gap-2">
         <span className="flex-1 truncate font-mono text-text">{volume.name}</span>
         {resizing === null ? (
-          <span className="shrink-0 font-mono text-[11px] text-text-faint">{volume.size}</span>
+          <span className="shrink-0 font-mono text-sm text-subtle">{volume.size}</span>
         ) : (
-          <input
+          <YInput
             autoFocus
             aria-label={`New size of ${volume.name}`}
             value={resizing}
@@ -150,29 +146,28 @@ function VolumeRow({ projectId, volume, readOnly, resizing, onResizing, onResize
               if (e.key === 'Enter') onResize()
               if (e.key === 'Escape') onResizing(null)
             }}
-            className={`${INPUT} h-6 w-20 py-0`}
+            className="h-6 w-20 font-mono"
           />
         )}
         {!readOnly && (resizing === null ? (
-          <button type="button" onClick={() => onResizing(volume.size)} className={TEXT_BUTTON}>Resize</button>
+          <YButton variant="secondary" size="sm" onClick={() => onResizing(volume.size)}>Resize</YButton>
         ) : (
           <>
-            <button type="button" onClick={onResize} disabled={resizePending} className={TEXT_BUTTON}>Save</button>
-            <button type="button" onClick={() => onResizing(null)} className={TEXT_BUTTON}>Cancel</button>
+            <YButton variant="ghost" size="sm" onClick={onResize} disabled={resizePending}>Save</YButton>
+            <YButton variant="ghost" size="sm" onClick={() => onResizing(null)}>Cancel</YButton>
           </>
         ))}
         {!readOnly && (
-          <button
-            type="button"
+          <YButton
+            variant="ghost"
+            size="sm"
+            icon={DeleteIcon}
             onClick={onDelete}
             aria-label={`Delete volume ${volume.name}`}
-            className="shrink-0 text-text-faint transition hover:text-text"
-          >
-            <DeleteIcon size={12} />
-          </button>
+          />
         )}
       </div>
-      <div className="mt-0.5 text-[11px] text-text-faint">
+      <div className="mt-0.5 text-sm text-subtle">
         {holder !== undefined ? (
           <>
             Attached to running <WorkspaceLink projectId={projectId} {...holder} />{' '}
@@ -181,7 +176,7 @@ function VolumeRow({ projectId, volume, readOnly, resizing, onResizing, onResize
         ) : 'Free'}
         {stoppedWorkspaces.length > 0 && (
           <>
-            {' · restarts with it: '}
+            {'. Restarts with it: '}
             {stoppedWorkspaces.map((w, i) => (
               <span key={w.workspaceId}>
                 {i > 0 && ', '}
@@ -202,16 +197,15 @@ export function WorkspaceLink({ projectId, workspaceId, title }: {
   title?: string
 }): JSX.Element {
   return (
-    <button
-      type="button"
+    <YButton
+      variant="link"
       onClick={() => {
         const st = useUiStore.getState()
         st.closeSettings()
         st.openWorkspace(projectId, workspaceId)
       }}
-      className="text-text-dim hover:text-text hover:underline"
     >
       {title || workspaceId.slice(0, 8)}
-    </button>
+    </YButton>
   )
 }

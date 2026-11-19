@@ -7,7 +7,7 @@ import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 const snapshot = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
 
-import { SettingsButton } from '#components/SettingsButton'
+import { SettingsButton, SettingsDialog } from '#components/SettingsButton'
 import { useUiStore } from '#lib/store'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { mockFetch, renderWithClient, serverError, testQueryClient, type FetchMock } from './harness'
@@ -57,7 +57,7 @@ beforeEach(() => {
 
 function renderSettings(): void {
   client = testQueryClient()
-  renderWithClient(<SettingsButton />, client)
+  renderWithClient(<><SettingsButton /><SettingsDialog /></>, client)
 }
 
 /** Open the settings modal onto the Credentials section and let the list
@@ -79,9 +79,7 @@ function serveLogin(tool: string, view: ToolLoginView): void {
 
 /** The credential row containing the tool's name. */
 function toolRow(tool: string): HTMLElement {
-  // A span, since the endpoints' tool switches also start with the name.
-  const label = screen.getAllByText(new RegExp(`^${tool}`)).find((el) => el.tagName === 'SPAN')
-  const row = label?.closest('div.rounded-md')
+  const row = document.querySelector(`[data-tool="${tool}"]`)
   if (!(row instanceof HTMLElement)) throw new Error(`no credential row for ${tool}`)
   return row
 }
@@ -157,7 +155,7 @@ describe('Settings → Credentials', () => {
     await waitFor(() => expect(server.called('PUT /api/auth/pi').map((c) => c.body)).toEqual([{
       kind: 'api-key', apiKey: '', provider: 'custom', endpointId: LLAMA.id,
     }]))
-    expect(await within(toolRow('pi')).findByText('pi · custom · llama')).toBeTruthy()
+    expect(await within(toolRow('pi')).findByText('llama endpoint')).toBeTruthy()
     expect(within(toolRow('pi')).getByText(LLAMA.baseUrl)).toBeTruthy()
   })
 
@@ -383,7 +381,7 @@ describe('Settings → Credentials → git', () => {
     fireEvent.click(within(editor()).getByRole('button', { name: 'View' }))
     expect(shown.className).toContain('break-all')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Assign credentials to repos in Repos…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Assign to repos' }))
     expect(useUiStore.getState().settingsSection).toBe('repos')
   })
 
@@ -485,7 +483,7 @@ describe('Settings → Credentials → git', () => {
     await openCredentials()
     await waitFor(() => expect(row('c-key')).toBeTruthy())
 
-    fireEvent.change(screen.getByLabelText('Credential kind'), { target: { value: 'ssh' } })
+    fireEvent.click(within(screen.getByRole('group', { name: 'Credential kind' })).getByRole('button', { name: 'SSH key' }))
     const name = screen.getByLabelText<HTMLInputElement>('Credential name')
     expect(name.value).toBe('git-key-2')
     fireEvent.click(screen.getByRole('button', { name: 'Generate key' }))
@@ -592,9 +590,9 @@ describe('Settings → Credentials → custom endpoints', () => {
     expect(within(panel).getByText('qwen3 [low medium* high] → qwen3 [low medium* high xhigh]')).toBeTruthy()
     // New and changed start checked; a model the endpoint no longer lists,
     // perhaps added by hand, does not.
-    expect(within(panel).getByLabelText<HTMLInputElement>('New llama4').checked).toBe(true)
-    expect(within(panel).getByLabelText<HTMLInputElement>('Changed qwen3').checked).toBe(true)
-    expect(within(panel).getByLabelText<HTMLInputElement>('Gone mine').checked).toBe(false)
+    expect(within(panel).getByLabelText('New llama4').getAttribute('aria-checked')).toBe('true')
+    expect(within(panel).getByLabelText('Changed qwen3').getAttribute('aria-checked')).toBe('true')
+    expect(within(panel).getByLabelText('Gone mine').getAttribute('aria-checked')).toBe('false')
     fireEvent.click(within(panel).getByLabelText('New llama4'))
     fireEvent.click(within(panel).getByRole('button', { name: 'Apply selected' }))
 
@@ -628,13 +626,13 @@ describe('Settings → Credentials → custom endpoints', () => {
     fireEvent.click(refetch())
     let panel = await screen.findByRole('region', { name: 'Fetched changes' })
     fireEvent.click(within(panel).getByLabelText('New first'))
-    expect(within(panel).getByLabelText<HTMLInputElement>('New first').checked).toBe(false)
+    expect(within(panel).getByLabelText('New first').getAttribute('aria-checked')).toBe('false')
     // A second fetch's new model starts picked, whatever the first's were.
     server.route('POST /api/auth/endpoints/discover', { models: [...LLAMA.models, { id: 'first' }, { id: 'second' }], skipped: [] })
     fireEvent.click(refetch())
     await waitFor(() => expect(within(screen.getByRole('region', { name: 'Fetched changes' })).getByLabelText('New second')).toBeTruthy())
     panel = screen.getByRole('region', { name: 'Fetched changes' })
-    expect(within(panel).getByLabelText<HTMLInputElement>('New first').checked).toBe(true)
+    expect(within(panel).getByLabelText('New first').getAttribute('aria-checked')).toBe('true')
 
     // JSON that stops parsing while the review is open blocks Apply.
     fireEvent.change(models(), { target: { value: '[' } })

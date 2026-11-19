@@ -10,9 +10,9 @@ import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, serverSnapshot, workspaceEntry, type FetchMock } from './harness'
 
 /*
- * A routine's pane in the main view, and the workspace header's ties to
- * routines and timeouts: the "from" link back to the routine a run came
- * from, and the chip that moves or clears its deadline. The sidebar's
+ * A routine's pane in the main view, and a workspace's ties to routines
+ * and timeouts: the header's "from" link back to the routine a run came
+ * from, and the Details pane's chip that moves or clears its deadline. The sidebar's
  * routine rows are workspace-list.test.tsx's; the form is
  * new-workspace-pane.test.tsx's.
  */
@@ -79,7 +79,7 @@ describe('the routine pane', () => {
     expect(screen.getByRole('heading', { name: 'Nightly triage' })).toBeTruthy()
     // The schedule and its next runs read in the routine's own zone.
     expect(screen.getByText('At 09:00, Monday through Friday')).toBeTruthy()
-    expect(screen.getByText('Next: Mon Oct 26 09:00 · Tue Oct 27 09:00 · Wed Oct 28 09:00')).toBeTruthy()
+    expect(screen.getByText('Mon Oct 26 09:00, Tue Oct 27 09:00, Wed Oct 28 09:00')).toBeTruthy()
     for (const fact of ['Claude · Opus 5.5', 'Chat', 'Accept edits', 'Triage runs', 'after 1h 30m']) {
       expect(screen.getByText(fact)).toBeTruthy()
     }
@@ -99,24 +99,25 @@ describe('the routine pane', () => {
     await waitFor(() => expect(posted('POST /api/routine/pause')).toEqual([{ id: 'r1' }]))
     await waitFor(() => expect(posted('POST /api/routine/run')).toEqual([{ id: 'r1' }]))
 
-    fireEvent.click(screen.getByText('timed out'))
+    fireEvent.click(screen.getByRole('button', { name: 'Open the run of Wed Oct 21 03:00' }))
     expect(useUiStore.getState()).toMatchObject({ selectedWorkspaceId: 'w3', selectedObject: null })
   })
 
   it('falls back to a new workspace once its routine is gone', () => {
     useUiStore.setState({ activeProjectId: 'proj', selectedObject: { kind: 'routine', id: 'r-gone' } })
     show(serverSnapshot({ routines: [ROUTINE] }))
-    expect(screen.getByRole('heading').textContent).toBe('New workspace')
+    expect(screen.getByRole('heading', { name: 'New workspace' })).toBeTruthy()
   })
 })
 
-describe('a workspace header', () => {
+describe('a workspace', () => {
   it('links a run back to its routine, and moves, sets or clears its timeout', async () => {
     useUiStore.setState({ activeProjectId: 'proj', selectedWorkspaceId: 'w5' })
     const run = workspaceEntry({ workspaceId: 'w5', projectId: 'proj', title: 'A run', routineId: 'r1', deadline: inMinutes(42) })
     show(serverSnapshot({ routines: [ROUTINE], workspaces: [run] }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stops in 42m' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Stops in 42m' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: '+30m' }))
     await waitFor(() => expect(posted('POST /api/workspace/timeout')).toEqual([{ workspaceId: 'w5', timeout: 72 }]))
     fireEvent.click(screen.getByRole('button', { name: 'Stops in 42m' }))

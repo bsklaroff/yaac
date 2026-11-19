@@ -1,17 +1,18 @@
 import { useState, type JSX } from 'react'
-import clsx from 'clsx'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
-import { Popover } from '@base-ui/react/popover'
-import { BranchIcon, ChevronIcon, TOOL_LABEL } from '#lib/icons'
+import { BranchIcon, TOOL_LABEL } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
 import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
-import { EmptyState } from '#components/ui/EmptyState'
-import { MasterDetail } from '#components/ui/MasterDetail'
-import { PopoverPopup } from '#components/ui/menu'
+import { SettingsPageTitle } from '#components/settings/SettingsPage'
+import { MasterDetail } from '#components/MasterDetail'
 import { api } from '#lib/api'
 import { useRepoBranches } from '#lib/repoApi'
 import { useIsMobile } from '#lib/viewport'
 import { AGENT_TOOLS, type AgentTool, type ProjectRepo, type SkillSummary } from '@yaac/shared/types'
+import {
+  cn, YBadge, YButton, YChip, YEmptyState, YInput, YListSection, YPopover, YPopoverPopup, YSegmented, YSelect,
+  type YSegmentedOption,
+} from '#ui'
 
 /** The list section a skill sits under, one per skill dir (an agent's
  *  plugins share one); the server sorts rows by section. */
@@ -24,6 +25,11 @@ function groupLabel(s: SkillSummary): string {
     case 'yaac': return 'yaac built-in'
   }
 }
+
+const AGENT_FILTER: YSegmentedOption<AgentTool | 'all'>[] = [
+  { value: 'all', label: 'All agents' },
+  ...AGENT_TOOLS.map((t) => ({ value: t, label: TOOL_LABEL[t] })),
+]
 
 /** A section's full name: repo sections also name their dir. */
 function groupTitle(s: SkillSummary): string {
@@ -60,16 +66,12 @@ function clashNote(skill: SkillSummary, all: SkillSummary[]): string | null {
   return notes.length > 0 ? notes.join(' ') : null
 }
 
-/** The agents that read a section's dir, as small pills. */
+/** The agents that read a section's dir, as badges. */
 function AgentPills({ agents }: { agents: AgentTool[] }): JSX.Element {
   const labels = agents.length === AGENT_TOOLS.length ? ['All agents'] : agents.map((t) => TOOL_LABEL[t])
   return (
     <span className="flex flex-wrap items-center gap-1">
-      {labels.map((l) => (
-        <span key={l} className="rounded bg-surface-3 px-1.5 py-0.5 text-[10px] font-normal normal-case tracking-normal text-text-dim">
-          {l}
-        </span>
-      ))}
+      {labels.map((l) => <YBadge key={l} className="font-normal">{l}</YBadge>)}
     </span>
   )
 }
@@ -94,33 +96,30 @@ function SkillDetailPane(
     ...(skill.userInvocable ? [] : ['model only']),
   ]
   return (
-    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-hairline-soft bg-bg/50 p-4
-      max-md:border-0 max-md:bg-transparent max-md:p-0">
+    <div className="flex min-h-0 flex-1 flex-col border-l border-line pl-4 max-md:border-0 max-md:pl-0">
       {/* Only the body may shrink; otherwise a long SKILL.md clips the title
           on a short phone screen. */}
-      <h3 className="shrink-0 text-sm font-semibold text-text max-md:text-[0.9375rem]">/{skill.name}</h3>
+      <h3 className="shrink-0 text-base font-semibold text-text max-md:text-[0.9375rem]">/{skill.name}</h3>
       <div className="mt-1 flex shrink-0 flex-wrap items-center gap-1">
-        {tags.map((t) => (
-          <span key={t} className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-faint">{t}</span>
-        ))}
+        {tags.map((t) => <YBadge key={t} className="font-normal text-subtle">{t}</YBadge>)}
       </div>
-      <div className="mt-2 flex shrink-0 items-center gap-2 text-[11px] text-text-faint">
+      <div className="mt-2 flex shrink-0 items-center gap-2 text-sm text-subtle">
         Read by <AgentPills agents={skill.agents} />
       </div>
-      {note && <p className="mt-2 shrink-0 text-[11px] text-text-faint">{note}</p>}
+      {note && <p className="mt-2 shrink-0 text-sm text-subtle">{note}</p>}
       {skill.description && (
-        <p className="mt-3 shrink-0 text-xs leading-relaxed text-text-dim">{skill.description}</p>
+        <p className="mt-3 shrink-0 text-md leading-relaxed text-muted">{skill.description}</p>
       )}
       {skill.allowedTools && skill.allowedTools.length > 0 && (
-        <p className="mt-2 shrink-0 text-[11px] text-text-faint">
-          allowed-tools: <span className="text-text-dim">{skill.allowedTools.join(', ')}</span>
+        <p className="mt-2 shrink-0 text-sm text-subtle">
+          allowed-tools: <span className="text-muted">{skill.allowedTools.join(', ')}</span>
         </p>
       )}
-      <div className="mt-3 min-h-0 flex-1 overflow-y-auto rounded bg-bg/80 p-3">
-        {isLoading && <p className="text-xs text-text-faint">Loading…</p>}
-        {isError && <p className="text-xs text-red-400">Could not load this skill.</p>}
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto bg-sunken p-3">
+        {isLoading && <p className="text-md text-subtle">Loading…</p>}
+        {isError && <p className="text-md text-danger">Could not load this skill.</p>}
         {data && (
-          <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-text-dim">
+          <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-relaxed text-muted">
             {data.body.trim() || '(no body)'}
           </pre>
         )}
@@ -186,50 +185,39 @@ function SkillsBrowser({ projectId, repos }: { projectId: string; repos: Project
   const unused = (s: SkillSummary): boolean =>
     (agent ? s.overriddenFor.includes(agent) : s.overriddenFor.length === s.agents.length)
 
-  const chip = (on: boolean): string => clsx(
-    'rounded px-2.5 py-1.5 text-[11px] leading-none transition max-md:h-9 max-md:px-3',
-    on ? 'bg-surface-2 font-medium text-text' : 'text-text-faint hover:text-text-dim',
-  )
-
   return (
     <>
       <div className="flex shrink-0 flex-wrap items-center gap-2">
-        <div role="group" aria-label="Filter by agent" className="flex shrink-0 items-center gap-0.5 rounded-md bg-bg p-0.5">
-          <button type="button" aria-pressed={agent === null} onClick={() => setAgent(null)} className={chip(agent === null)}>
-            All agents
-          </button>
-          {AGENT_TOOLS.map((t) => (
-            <button key={t} type="button" aria-pressed={agent === t} onClick={() => setAgent(t)} className={chip(agent === t)}>
-              {TOOL_LABEL[t]}
-            </button>
-          ))}
-        </div>
+        <YSegmented
+          ariaLabel="Filter by agent"
+          options={AGENT_FILTER}
+          value={agent ?? 'all'}
+          onChange={(v) => setAgent(v === 'all' ? null : v)}
+        />
         {repos.length > 1 && (
-          <select
+          <YSelect
             aria-label="Repo skills are read from"
             value={repo?.id ?? ''}
             onChange={(e) => { setRepoPick(e.target.value); setBranch(null) }}
-            className="rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-[11px] text-text outline-none max-md:h-10"
+            className="font-mono text-sm max-md:h-10"
           >
             {repos.map((r) => <option key={r.id} value={r.id}>{r.dir}/</option>)}
-          </select>
+          </YSelect>
         )}
-        {repo !== undefined && <Popover.Root
+        {repo !== undefined && <YPopover.Root
           open={pickerOpen}
           onOpenChange={(o) => { setPickerOpen(o); if (!o) setPickerQuery('') }}
         >
-          <Popover.Trigger
+          <YPopover.Trigger
             title="Choose the origin branch repo skills are read from"
-            className="flex min-w-0 items-center gap-1.5 rounded-md bg-bg px-2.5 py-1.5 text-[11px] text-text-dim
-              outline-none transition hover:text-text data-[popup-open]:text-text max-md:h-10"
+            render={<YChip dropdown className="max-md:h-10" />}
           >
-            <span className="shrink-0 text-text-faint">Repo branch</span>
-            <BranchIcon size={11} className="shrink-0 text-text-faint" />
+            <span className="shrink-0 text-subtle">Repo branch</span>
+            <BranchIcon size={11} className="shrink-0 text-subtle" />
             <span className="max-w-[180px] truncate font-mono">{effectiveBranch ?? '…'}</span>
-            <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
-          </Popover.Trigger>
-          <PopoverPopup side="bottom" align="start" sideOffset={6} className="w-[240px]">
-            <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Repo skills branch</div>
+          </YPopover.Trigger>
+          <YPopoverPopup side="bottom" align="start" sideOffset={6} className="w-[240px]">
+            <div className="px-2 pb-1 pt-1 text-sm text-subtle">Repo skills branch</div>
             <BranchPicker
               branches={branchData?.branches ?? []}
               defaultBranch={defaultBranch}
@@ -241,12 +229,12 @@ function SkillsBrowser({ projectId, repos }: { projectId: string; repos: Project
               ariaLabel="Repo skills branch"
               className="px-1 pb-1"
             />
-          </PopoverPopup>
-        </Popover.Root>}
+          </YPopoverPopup>
+        </YPopover.Root>}
       </div>
 
       {!isLoading && all.length === 0 ? (
-        <EmptyState
+        <YEmptyState
           className="flex-1"
           title="No skills found"
           description="Repo, agent, plugin, and built-in SKILL.md files show up here."
@@ -258,16 +246,15 @@ function SkillsBrowser({ projectId, repos }: { projectId: string; repos: Project
           backLabel="Back to skills"
           master={
             <>
-              <input
+              <YInput
                 value={queryText}
                 onChange={(e) => setQueryText(e.target.value)}
                 placeholder="Search skills…"
-                className="shrink-0 rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
-                  outline-none focus:border-border-strong max-md:py-2.5"
+                className="shrink-0 max-md:h-10"
               />
               <ul className="min-h-0 flex-1 overflow-y-auto">
                 {rows.length === 0 && (
-                  <li className="px-2 py-2 text-xs text-text-faint">
+                  <li className="px-2 py-2 text-md text-subtle">
                     {isLoading ? 'Loading…' : 'No matches.'}
                   </li>
                 )}
@@ -276,31 +263,31 @@ function SkillsBrowser({ projectId, repos }: { projectId: string; repos: Project
                   return (
                     <li key={s.id}>
                       {(i === 0 || groupTitle(rows[i - 1]) !== groupTitle(s)) && (
-                        <div className="flex items-center gap-2 px-2 pb-1 pt-3 text-[10px] font-semibold uppercase
-                          tracking-wide text-text-faint">
-                          <span className="shrink-0">{groupLabel(s)}</span>
-                          {s.source === 'repo' && (
-                            <span className="min-w-0 truncate font-mono font-normal normal-case tracking-normal">{s.sourceLabel}</span>
-                          )}
-                          <span className="ml-auto shrink-0"><AgentPills agents={s.agents} /></span>
-                        </div>
+                        <YListSection
+                          label={<>
+                            <span className="shrink-0">{groupLabel(s)}</span>
+                            {s.source === 'repo' && <span className="min-w-0 truncate font-mono">{s.sourceLabel}</span>}
+                          </>}
+                          actions={<AgentPills agents={s.agents} />}
+                        />
                       )}
-                      <button
-                        type="button"
+                      <YButton
+                        variant="bare"
                         onClick={() => setSelectedId(s.id)}
-                        className={clsx(
-                          'flex w-full flex-col gap-0.5 rounded-md px-2.5 py-1.5 text-left transition max-md:py-2.5',
-                          selected?.id === s.id ? 'bg-surface-2' : 'hover:bg-surface-2/50',
+                        aria-current={selected?.id === s.id || undefined}
+                        className={cn(
+                          'flex w-full flex-col gap-0.5 px-2.5 py-1.5 text-left max-md:py-2.5',
+                          selected?.id === s.id ? 'bg-selected' : 'hover:bg-hover',
                         )}
                       >
-                        <span className={clsx('truncate text-sm font-medium', unused(s) ? 'text-text-faint' : 'text-text-dim')}>
+                        <span className={cn('truncate text-md font-medium', unused(s) ? 'text-subtle' : 'text-muted')}>
                           /{s.name}
                         </span>
                         {s.description && (
-                          <span className="truncate text-[11px] text-text-faint">{s.description}</span>
+                          <span className="truncate text-sm text-subtle">{s.description}</span>
                         )}
-                        {note && <span className="text-[11px] italic text-text-faint">{note}</span>}
-                      </button>
+                        {note && <span className="text-sm italic text-subtle">{note}</span>}
+                      </YButton>
                     </li>
                   )
                 })}
@@ -332,20 +319,21 @@ export function SkillsSettings(): JSX.Element {
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-3">
       <div className="shrink-0">
-        <h2 className="text-sm font-semibold">Skills</h2>
-        {selected && <>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-text-dim">
-            Skills available in
-            <ProjectSelect projects={projects} value={selected.id} onChange={pick} />
-          </div>
-          <p className="mt-1 text-[11px] leading-relaxed text-text-faint">
-            Each project has its own repo and agent config, so its skills differ from other projects&apos;.
-          </p>
-        </>}
+        <SettingsPageTitle title="Skills">
+          {selected && <>
+            <div className="flex flex-wrap items-center gap-2">
+              Skills available in
+              <ProjectSelect projects={projects} value={selected.id} onChange={pick} />
+            </div>
+            <p className="mt-1 text-sm text-subtle">
+              Each project has its own repo and agent config, so its skills differ from other projects&apos;.
+            </p>
+          </>}
+        </SettingsPageTitle>
       </div>
       {selected
         ? <SkillsBrowser key={selected.id} projectId={selected.id} repos={selected.repos} />
-        : <p className="text-xs text-text-faint">No projects yet. Add one from the rail first.</p>}
+        : <p className="text-md text-subtle">No projects yet. Add one from the rail first.</p>}
     </section>
   )
 }

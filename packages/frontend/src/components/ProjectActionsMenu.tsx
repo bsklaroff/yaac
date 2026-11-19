@@ -1,14 +1,11 @@
 import { useState, type JSX } from 'react'
-import clsx from 'clsx'
-import { Menu } from '@base-ui/react/menu'
 import { DeleteIcon, SettingsIcon } from '#lib/icons'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { removeProjectInBackground } from '#lib/projectOps'
 import { useUiStore } from '#lib/store'
 import { useReadOnly } from '#lib/viewer'
 import { useVolumes } from '#lib/volumes'
 import type { ProjectSummary } from '@yaac/shared/types'
+import { YConfirm, YMenu, YMenuItem, YMenuPopup } from '#ui'
 
 /** The project name as a menu trigger: Project settings, which opens the
  *  settings modal on this project's General page, and Remove, which asks
@@ -30,27 +27,18 @@ export function ProjectActionsMenu({ project }: { project: ProjectSummary }): JS
 
   return (
     <>
-      <Menu.Root>
-        <Menu.Trigger className="-ml-2 flex min-w-0 items-center rounded-md px-2 py-1 font-semibold
-          tracking-tight text-text outline-none transition hover:bg-surface-2 data-[popup-open]:bg-surface-2">
+      <YMenu.Root>
+        <YMenu.Trigger className="-ml-2 flex min-w-0 items-center rounded-md px-2 py-1 font-semibold
+          tracking-tight text-text outline-none transition hover:bg-hover data-[popup-open]:bg-selected">
           <span className="truncate">{name}</span>
-        </Menu.Trigger>
-        <MenuPopup side="bottom" align="start" sideOffset={6} className="min-w-[170px]">
-          <Menu.Item className={MENU_ITEM} onClick={openProjectSettings}>
-            <SettingsIcon size={14} />
-            Project settings…
-          </Menu.Item>
-          <Menu.Item
-            className={clsx(MENU_ITEM, 'text-danger data-[highlighted]:bg-[#c94a4a]/15 data-[highlighted]:text-danger')}
-            onClick={() => setConfirm(true)}
-          >
-            <DeleteIcon size={14} />
-            Remove project
-          </Menu.Item>
-        </MenuPopup>
-      </Menu.Root>
+        </YMenu.Trigger>
+        <YMenuPopup side="bottom" align="start" sideOffset={6} className="min-w-[170px]">
+          <YMenuItem icon={SettingsIcon} onClick={openProjectSettings}>Project settings…</YMenuItem>
+          <YMenuItem icon={DeleteIcon} danger onClick={() => setConfirm(true)}>Remove project</YMenuItem>
+        </YMenuPopup>
+      </YMenu.Root>
 
-      <ConfirmDialog
+      <YConfirm
         open={confirm}
         onOpenChange={setConfirm}
         title="Remove project?"

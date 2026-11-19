@@ -41,6 +41,7 @@ function emptySnapshot(): ServerSnapshot {
   return {
     driver: 'k8s',
     feedbackHost: null,
+    startedAtMs: 0,
     workspaces: [], workspaceGroups: [], stale: [], projects: [], provisioning: [], projectAdds: [], gitAuthFailures: {},
     queuedWorkspaces: [], heldWorkspaces: [], draftWorkspaces: [], routines: [], workflows: [], sites: [],
     imageBuilds: [],
@@ -203,6 +204,12 @@ describe('buildSnapshot', () => {
     expect(Array.isArray(snap.imageBuilds)).toBe(true)
     expect(snap.planUsage).toEqual({})
     expect(snap.codexPlanUsage).toEqual({})
+  })
+
+  it('carries when the server started, the same in every snapshot', async () => {
+    const first = (await buildSnapshot()).startedAtMs
+    expect(first).toBeLessThanOrEqual(Date.now())
+    expect((await buildSnapshot()).startedAtMs).toBe(first)
   })
 
   it('names the feedback endpoint\'s host only when the server has one', async () => {

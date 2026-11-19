@@ -1,15 +1,14 @@
 import { useEffect, useRef, useState, type FormEvent, type JSX } from 'react'
-import clsx from 'clsx'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
+import { TOOL_LABEL } from '#lib/icons'
 import { useUiStore } from '#lib/store'
+import { useSnapshot } from '#lib/useSnapshot'
 import { isElectron, windowApi } from '#lib/platform'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { CustomEndpoints } from '#components/settings/CustomEndpoints'
 import { GitCredentials } from '#components/settings/GitCredentials'
-import { Field } from '#components/settings/Field'
-import { filterSuggestions, Typeahead, type TypeaheadItem } from '#components/ui/Typeahead'
+import { SettingsPageTitle } from '#components/settings/SettingsPage'
 import {
   CUSTOM_PROVIDER,
   OMP_DEFAULT_PROVIDER,
@@ -19,6 +18,9 @@ import {
   PI_DEFAULT_PROVIDER,
   PI_PROVIDERS,
 } from '@yaac/shared/tool-providers'
+import {
+  filterSuggestions, YButton, YCallout, YInput, YRowFrame, YSection, YSelect, YSettingGroup, YTypeahead, type YTypeaheadItem,
+} from '#ui'
 import { AGENT_TOOLS, type AgentTool, type CustomEndpointSummary, type LoginTool, type ToolAuthSummary, type ToolLoginView } from '@yaac/shared/types'
 
 /**
@@ -26,8 +28,8 @@ import { AGENT_TOOLS, type AgentTool, type CustomEndpointSummary, type LoginTool
  * is for, as a picker item whose value is the provider id, and the one
  * picked to begin with. Unlisted tools have no provider.
  */
-const providerItem = (p: { id: string; label: string }): TypeaheadItem => ({ value: p.id, label: p.label, detail: p.id })
-const PROVIDER_OPTIONS: Partial<Record<AgentTool, TypeaheadItem[]>> = {
+const providerItem = (p: { id: string; label: string }): YTypeaheadItem => ({ value: p.id, label: p.label, detail: p.id })
+const PROVIDER_OPTIONS: Partial<Record<AgentTool, YTypeaheadItem[]>> = {
   opencode: OPENCODE_PROVIDERS.map(providerItem),
   pi: PI_PROVIDERS.map(providerItem),
   omp: OMP_PROVIDERS.map(providerItem),
@@ -37,9 +39,6 @@ const DEFAULT_PROVIDER: Partial<Record<AgentTool, string>> = {
   pi: PI_DEFAULT_PROVIDER,
   omp: OMP_DEFAULT_PROVIDER,
 }
-
-const INPUT = 'rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs text-text outline-none '
-  + 'focus:border-border-strong'
 
 /**
  * Per-tool sign-in, custom endpoints and git credentials. claude and codex
@@ -51,16 +50,27 @@ const INPUT = 'rounded-md border border-border bg-surface px-2.5 py-1.5 font-mon
 export function CredentialsPane(): JSX.Element {
   const auth = useAuthList()
   const focusTool = useUiStore((s) => s.settingsFocusTool)
+  const containerless = useSnapshot()?.driver === 'containerless'
   const queryClient = useQueryClient()
   const refresh = (): void => {
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
   }
 
   return (
-    <section>
-      <h2 className="text-sm font-semibold">Credentials</h2>
-      <Field label="Agent tools" hint="Sign in to create workspaces with a tool. Keys stay on this machine — containers only ever see placeholders.">
-        <div className="space-y-2 text-xs">
+    <>
+      <SettingsPageTitle title="Credentials" />
+      {containerless && (
+        <YCallout title="This server runs workspaces directly on the host">
+          Workspaces use these credentials as they are: an agent can read the real keys and tokens, not placeholders.
+        </YCallout>
+      )}
+      <YSection
+        title="Agent tools"
+        description={containerless
+          ? 'Sign in to create workspaces with a tool.'
+          : 'Sign in to create workspaces with a tool. Workspaces only ever see placeholders.'}
+      >
+        <YSettingGroup>
           {AGENT_TOOLS.map((t) => (
             <ToolAuthRow
               key={t}
@@ -71,12 +81,21 @@ export function CredentialsPane(): JSX.Element {
               onChanged={refresh}
             />
           ))}
-        </div>
-      </Field>
+        </YSettingGroup>
+      </YSection>
       <CustomEndpoints />
       <GitCredentials />
-    </section>
+    </>
   )
+}
+
+/** How a tool is signed in, in words: "OAuth", "OpenRouter API key", or
+ *  the custom endpoint it uses. */
+function signInText(tool: AgentTool, summary: ToolAuthSummary): string {
+  if (summary.endpoint) return `${summary.endpoint.name} endpoint`
+  if (summary.kind === 'oauth') return 'OAuth'
+  const provider = summary.opencodeProvider ?? summary.piProvider ?? summary.ompProvider
+  return provider ? apiKeyLabel(tool, provider) : 'API key'
 }
 
 /** What the key-paste input asks for, per tool (and api-key tool provider). */
@@ -96,7 +115,7 @@ const PROVIDER_VISIBLE_LIMIT = 50
  * tagged.
  */
 function ProviderCombobox({ options, value, onChange }: {
-  options: TypeaheadItem[]
+  options: YTypeaheadItem[]
   value: string
   onChange: (id: string) => void
 }): JSX.Element {
@@ -104,7 +123,7 @@ function ProviderCombobox({ options, value, onChange }: {
   const hidden = filterSuggestions(options, query, Infinity).length - PROVIDER_VISIBLE_LIMIT
   return (
     <div>
-      <Typeahead
+      <YTypeahead
         items={options}
         query={query}
         onQueryChange={setQuery}
@@ -116,7 +135,7 @@ function ProviderCombobox({ options, value, onChange }: {
         tag={(item) => item.value === value && 'selected'}
       />
       {hidden > 0 && (
-        <p className="px-2 py-1 text-[10px] text-text-faint">+{hidden} more — keep typing to narrow.</p>
+        <p className="px-2 py-1 text-xs text-subtle">+{hidden} more — keep typing to narrow.</p>
       )}
     </div>
   )
@@ -179,48 +198,46 @@ function ToolAuthRow({ tool, summary, endpoints, autoExpand, onChanged }: {
   }
 
   return (
-    <div className="rounded-md bg-bg px-2.5 py-1.5">
-      <div className="flex items-center justify-between">
-        <span className="truncate font-mono text-text-dim">
-          {tool}
-          {summary && ` · ${(() => {
-            const p = summary.opencodeProvider ?? summary.piProvider ?? summary.ompProvider
-            return p ? `${p} · ` : ''
-          })()}${summary.endpoint?.name ?? summary.kind}`}
-        </span>
-        {summary ? (
-          <span className="ml-2 flex shrink-0 items-center gap-2">
-            <span className="truncate font-mono text-text-faint">
-              {summary.endpoint?.baseUrl ?? summary.keyPreview}
-            </span>
-            <button
-              onClick={() => change.mutate({
-                kind: 'signout',
-                run: () => api.auth.clear.$post({ json: { service: tool } }),
-              })}
-              disabled={busy !== null}
-              className={TEXT_BUTTON}
-            >
-              {busy === 'signout' ? 'Signing out…' : 'Sign out'}
-            </button>
-          </span>
+    <div data-tool={tool} className="px-4 py-2 text-md">
+      <YRowFrame
+        label={tool}
+        actionsShown
+        actions={summary ? (
+          <YButton
+            variant="danger"
+            size="sm"
+            onClick={() => change.mutate({
+              kind: 'signout',
+              run: () => api.auth.clear.$post({ json: { service: tool } }),
+            })}
+            disabled={busy !== null}
+          >
+            {busy === 'signout' ? 'Signing out…' : 'Sign out'}
+          </YButton>
         ) : (
-          <button onClick={() => { change.reset(); setExpanded((e) => !e) }} className={clsx(BUTTON, 'ml-2')}>
+          <YButton size="sm" onClick={() => { change.reset(); setExpanded((e) => !e) }}>
             Sign in
-          </button>
+          </YButton>
         )}
-      </div>
+        className="min-h-8"
+      >
+        <span className="w-24 shrink-0 font-medium text-text">{TOOL_LABEL[tool]}</span>
+        <span className="min-w-0 flex-1 truncate text-muted">{summary ? signInText(tool, summary) : 'Not signed in'}</span>
+        {summary && (
+          <span className="truncate pr-2 font-mono text-sm text-subtle">{summary.endpoint?.baseUrl ?? summary.keyPreview}</span>
+        )}
+      </YRowFrame>
 
       {justSignedIn && (
-        <p className="mt-1 text-[11px] text-emerald-400">Signed in successfully.</p>
+        <p className="mb-1 text-sm text-success">Signed in successfully.</p>
       )}
 
       {!summary && expanded && (
-        <div className="mt-2 flex flex-col gap-2 border-t border-hairline-soft pt-2">
+        <div className="mt-1.5 mb-1 flex flex-col gap-2 border-t border-line pt-2.5">
           {!providerOptions && (
             <>
               <VendorSignIn tool={tool} onDone={() => { setJustSignedIn(true); onChanged() }} />
-              <p className="text-[11px] text-text-faint">
+              <p className="text-sm text-subtle">
                 …or paste an API key:
               </p>
             </>
@@ -234,37 +251,37 @@ function ToolAuthRow({ tool, summary, endpoints, autoExpand, onChanged }: {
           )}
           <form onSubmit={saveKey} className="flex flex-col gap-2">
             {custom && endpoints.length === 0 ? (
-              <p className="text-[11px] text-text-faint">
+              <p className="text-sm text-subtle">
                 Add a custom endpoint under &quot;Custom endpoints&quot; below, then pick it here.
               </p>
             ) : (
               <div className="flex items-center gap-2">
                 {custom ? (
-                  <select name="endpointId" aria-label="Custom endpoint" className={clsx(INPUT, 'flex-1')}>
+                  <YSelect name="endpointId" aria-label="Custom endpoint" className="flex-1 font-mono">
                     {endpoints.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.baseUrl})</option>)}
-                  </select>
+                  </YSelect>
                 ) : (
-                  <input
+                  <YInput
                     name="apiKey"
                     type="password"
                     placeholder={apiKeyLabel(tool, provider)}
-                    className={clsx(INPUT, 'flex-1')}
+                    className="flex-1 font-mono"
                   />
                 )}
-                <button type="submit" disabled={busy !== null} className={BUTTON}>
+                <YButton size="sm" type="submit" disabled={busy !== null}>
                   {busy === 'save' ? 'Saving…' : 'Save'}
-                </button>
+                </YButton>
               </div>
             )}
           </form>
         </div>
       )}
-      {change.error && <p className="mt-1.5 text-[11px] text-red-400">{change.error.message}</p>}
+      {change.error && <p className="mb-1 text-sm text-danger">{change.error.message}</p>}
     </div>
   )
 }
 
-const LINK = 'break-all font-medium text-accent underline decoration-accent/40 hover:decoration-accent'
+const LINK = 'break-all font-medium text-info underline underline-offset-2'
 
 /**
  * Browser sign-in through the vendor's OAuth page, which the server runs
@@ -333,14 +350,15 @@ function VendorSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void })
   if (!flow) {
     return (
       <div className="flex flex-col gap-1">
-        <button
+        <YButton
+          size="sm"
           onClick={() => { doneRef.current = false; begin.mutate() }}
           disabled={begin.isPending}
-          className={BUTTON}
+          className="self-start"
         >
           {begin.isPending ? 'Starting…' : tool === 'claude' ? 'Sign in with Claude' : 'Sign in with ChatGPT'}
-        </button>
-        {abort.error && <p className="text-[11px] text-red-400">Cancel failed: {abort.error.message}</p>}
+        </YButton>
+        {abort.error && <p className="text-sm text-danger">Cancel failed: {abort.error.message}</p>}
       </div>
     )
   }
@@ -348,10 +366,10 @@ function VendorSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void })
   if (flow.status === 'error') {
     return (
       <div className="flex flex-col gap-1.5">
-        <p className="text-[11px] text-red-400">{flow.error ?? 'sign-in failed'}</p>
-        <button onClick={reset} className={BUTTON}>
+        <p className="text-sm text-danger">{flow.error ?? 'sign-in failed'}</p>
+        <YButton size="sm" onClick={reset} className="self-start">
           Try again
-        </button>
+        </YButton>
       </div>
     )
   }
@@ -371,9 +389,9 @@ function VendorSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void })
   )
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-accent/20 bg-accent/5 p-2.5">
+    <div className="flex flex-col gap-2 bg-info-soft p-2.5">
       <div className="flex items-start gap-2.5">
-        <p className="flex-1 text-[11px] leading-relaxed text-text-dim">
+        <p className="flex-1 text-sm leading-relaxed text-muted">
           {flow.userCode ? (
             <>Open {link('the ChatGPT sign-in page')}, sign in, and enter this code:</>
           ) : flow.acceptsCode ? (
@@ -382,27 +400,27 @@ function VendorSignIn({ tool, onDone }: { tool: AgentTool; onDone: () => void })
             <>Finish signing in in your browser. No window? {link('Open the sign-in page')}.</>
           )}
         </p>
-        <button onClick={reset} className={BUTTON}>
+        <YButton variant="ghost" size="sm" onClick={reset}>
           Cancel
-        </button>
+        </YButton>
       </div>
       {flow.userCode && (
-        <p className="select-all text-center font-mono text-base tracking-widest text-text">{flow.userCode}</p>
+        <p className="select-all text-center font-mono text-lg tracking-widest text-text">{flow.userCode}</p>
       )}
       {flow.acceptsCode && (
         <>
           <form onSubmit={submitCode} className="flex items-center gap-2">
-            <input
+            <YInput
               name="text"
               autoComplete="off"
               placeholder="paste the code here"
-              className={clsx(INPUT, 'min-w-0 flex-1')}
+              className="flex-1 font-mono"
             />
-            <button type="submit" disabled={sendCode.isPending} className={BUTTON}>
+            <YButton size="sm" type="submit" disabled={sendCode.isPending}>
               {sendCode.isPending ? 'Signing in…' : 'Send'}
-            </button>
+            </YButton>
           </form>
-          {sendCode.error && <p className="text-[11px] text-red-400">{sendCode.error.message}</p>}
+          {sendCode.error && <p className="text-sm text-danger">{sendCode.error.message}</p>}
         </>
       )}
     </div>

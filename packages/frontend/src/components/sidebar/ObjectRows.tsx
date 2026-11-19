@@ -16,7 +16,7 @@ export function useWorkflowRow(workflow: WorkflowSummary): ObjectRowProps {
     detail: (
       <>
         <span className="truncate">{workflow.repos.length > 0 ? workflow.repos.join(', ') : 'no repo'}</span>
-        {workflow.init && <span className="ml-auto shrink-0 rounded bg-surface-3 px-1 text-[10px]" title="Runs at workspace start">at start</span>}
+        {workflow.init && <span className="ml-auto shrink-0 rounded bg-line-strong px-1 text-xs" title="Runs at workspace start">at start</span>}
       </>
     ),
     object: { kind: 'workflow', id: workflow.id },

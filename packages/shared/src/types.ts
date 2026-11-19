@@ -2689,6 +2689,11 @@ export interface ServerSnapshot {
   /** The host this server forwards feedback to (docs/feedback.md), which
    *  the form names; null when it has no endpoint, which hides the form. */
   feedbackHost: string | null
+  /** Epoch ms when this server process started. A waiting spell stamped
+   *  soon after it began at the restart rather than when the agent stopped
+   *  (`WorkspaceListEntry.waitingSinceMs` is kept in memory), so a client
+   *  shows no age for it. */
+  startedAtMs: number
   workspaces: WorkspaceListEntry[]
   /** Every project's sidebar groups, hidden ones included (the client
    *  decides visibility from the members). */

@@ -1,26 +1,19 @@
-import { useState, type FormEvent, type JSX, type ReactNode } from 'react'
+import { useState, type FormEvent, type JSX } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Menu } from '@base-ui/react/menu'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { useRunSecrets } from '#components/settings/ProjectRunSecrets'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { api } from '#lib/api'
-import { MoreIcon, RunIcon, WorkflowIcon } from '#lib/icons'
+import { MoreIcon, RoutineIcon, RunIcon, SiteIcon, WorkflowIcon } from '#lib/icons'
 import { parseSteps } from '#lib/steps'
 import { useCreateWorkspace } from '#lib/useCreateDefaults'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
 import { useReadOnly } from '#lib/viewer'
 import type { ProjectSummary, WorkflowSummary } from '@yaac/shared/types'
-
-export const BAR_BUTTON = 'no-drag flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-text-dim '
-  + 'transition hover:bg-surface-2 hover:text-text'
-
-const INPUT = 'rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text outline-none '
-  + 'focus:border-border-strong'
+import {
+  YBadge, YButton, YCallout, YCheckbox, YConfirm, YInput, YListRow, YMenu, YMenuItem, YMenuPopup, YPageBody, YSection, YSettingGroup, YSettingRow, YSwitch, YTextArea,
+} from '#ui'
 
 /** What can be done to a named workflow, from its sidebar row or its pane. */
 export interface WorkflowActions {
@@ -65,7 +58,7 @@ export function useWorkflowActions(workflow: WorkflowSummary): WorkflowActions {
     remove: () => setConfirmDelete(true),
     error,
     dialog: (
-      <ConfirmDialog
+      <YConfirm
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
         title={`Delete workflow “${name}”?`}
@@ -117,17 +110,17 @@ export function WorkflowPane({ projectId, workflow, editing, bar }: {
 
   if (workflow === undefined || editing) {
     return (
-      <div className="h-full overflow-y-auto bg-bg px-4 py-6">
+      <div className="flex h-full flex-col bg-surface">
         {bar !== null && createPortal(
           <span className="titlebar-drag flex min-w-0 flex-1 items-center gap-1.5">
-            <WorkflowIcon size={12} className="shrink-0 text-text-faint" />
+            <WorkflowIcon size={12} className="shrink-0 text-subtle" />
             <h2 className="min-w-0 truncate font-medium text-text">
               {workflow !== undefined ? `Edit “${workflow.name}”` : 'New workflow'}
             </h2>
           </span>,
           bar,
         )}
-        <div className="mx-auto max-w-2xl">
+        <YPageBody>
           {project !== undefined && (
             <WorkflowForm
               key={workflow?.id ?? ''}
@@ -137,7 +130,7 @@ export function WorkflowPane({ projectId, workflow, editing, bar }: {
               onCancel={() => done()}
             />
           )}
-        </div>
+        </YPageBody>
       </div>
     )
   }
@@ -171,104 +164,135 @@ function WorkflowDetail({ workflow, readOnly, bar }: {
     : [...detail.approvedCommits.map((c) => c.slice(0, 12)), ...detail.approvedBranches.map((b) => `branch ${b}`)]
 
   return (
-    <div className="h-full overflow-y-auto bg-bg px-4 py-6">
+    <div className="flex h-full flex-col bg-surface">
       {bar !== null && createPortal(
         <>
           <span className="titlebar-drag flex min-w-0 flex-1 items-center gap-1.5">
-            <WorkflowIcon size={12} className="shrink-0 text-text-faint" />
+            <WorkflowIcon size={12} className="shrink-0 text-subtle" />
             <h2 className="min-w-0 truncate font-medium text-text">{name}</h2>
             {actions.error !== null && <span className="truncate text-danger" title={actions.error}>{actions.error}</span>}
           </span>
           <ContainerlessBadge />
           {!readOnly && <>
-            <button type="button" onClick={actions.runNow} title="Run it unattended now, on its repos' default branches" className={BAR_BUTTON}>
-              <RunIcon size={11} /> Run now
-            </button>
-            <button type="button" onClick={() => actions.openRun()} title="Pick branches, a start time or a group first" className={BAR_BUTTON}>
+            <YButton
+              variant="ghost"
+              size="sm"
+              icon={RunIcon}
+              onClick={actions.runNow}
+              title="Run it unattended now, on its repos' default branches"
+              className="no-drag"
+            >
+              Run now
+            </YButton>
+            <YButton
+              variant="ghost"
+              size="sm"
+              onClick={() => actions.openRun()}
+              title="Pick branches, a start time or a group first"
+              className="no-drag"
+            >
               Run…
-            </button>
-            <Menu.Root>
-              <Menu.Trigger aria-label="Workflow actions" title="Workflow actions" className={BAR_BUTTON}>
-                <MoreIcon size={14} />
-              </Menu.Trigger>
-              <MenuPopup side="bottom" align="end" sideOffset={4} className="min-w-[170px]">
-                <Menu.Item className={MENU_ITEM} onClick={actions.edit}>Edit…</Menu.Item>
-                <Menu.Item className={MENU_ITEM} onClick={() => actions.openRun(true)}>Schedule…</Menu.Item>
-                <Menu.Item className={MENU_ITEM} onClick={actions.runInteractively}>Run interactively…</Menu.Item>
-                <Menu.Item className={MENU_ITEM} onClick={actions.remove}>Delete…</Menu.Item>
-              </MenuPopup>
-            </Menu.Root>
+            </YButton>
+            <YMenu.Root>
+              <YMenu.Trigger
+                render={<YButton variant="ghost" size="sm" icon={MoreIcon} aria-label="Workflow actions" title="Workflow actions" className="no-drag" />}
+              />
+              <YMenuPopup side="bottom" align="end" sideOffset={4} className="min-w-[170px]">
+                <YMenuItem onClick={actions.edit}>Edit…</YMenuItem>
+                <YMenuItem onClick={() => actions.openRun(true)}>Schedule…</YMenuItem>
+                <YMenuItem onClick={actions.runInteractively}>Run interactively…</YMenuItem>
+                <YMenuItem onClick={actions.remove}>Delete…</YMenuItem>
+              </YMenuPopup>
+            </YMenu.Root>
             {actions.dialog}
           </>}
         </>,
         bar,
       )}
-      <div className="mx-auto flex max-w-2xl flex-col gap-5 text-xs">
-        <Section title="Steps">
+      <YPageBody>
+        <YSection title="Steps">
           <StepList steps={workflow.steps} />
-        </Section>
+        </YSection>
 
-        <Section title="Runs in">
-          <p className="text-text-dim">
-            {workflow.repos.length === 0 ? 'The workspace’s working directory: it names no repo.'
-              : workflow.repos.length === 1 ? <>The checkout of <code className="text-text">{workflow.repos[0]}</code>.</>
-              : <>The workspace root, beside {workflow.repos.map((r) => <code key={r} className="mr-1 text-text">{r}</code>)}</>}
-          </p>
-          <label className="mt-1 flex w-fit items-center gap-2 text-text-dim">
-            <input
-              type="checkbox"
-              role="switch"
-              checked={setInit.isPending ? setInit.variables : workflow.init}
-              disabled={readOnly || setInit.isPending}
-              onChange={(e) => setInit.mutate(e.target.checked)}
-            />
-            Run at workspace start, in every workspace with its repos that brings no steps of its own
-          </label>
-          {setInit.error && <p className="text-danger">{setInit.error.message}</p>}
-        </Section>
+        <YSection
+          title="Runs in"
+          description={workflow.repos.length === 0 ? 'The workspace’s working directory: it names no repo.'
+            : workflow.repos.length === 1 ? <>The checkout of <code className="text-text">{workflow.repos[0]}</code>.</>
+            : <>The workspace root, beside {workflow.repos.map((r) => <code key={r} className="mr-1 text-text">{r}</code>)}</>}
+        >
+          <YSettingGroup>
+            <YSettingRow
+              label="Run at workspace start"
+              hint={<>
+                In every workspace with its repos that brings no steps of its own.
+                {setInit.error && <span className="block text-danger">{setInit.error.message}</span>}
+              </>}
+            >
+              <YSwitch
+                aria-label="Run at workspace start"
+                checked={setInit.isPending ? setInit.variables : workflow.init}
+                disabled={readOnly || setInit.isPending}
+                onCheckedChange={(on) => setInit.mutate(on)}
+              />
+            </YSettingRow>
+          </YSettingGroup>
+        </YSection>
 
-        <Section title="Run secrets">
-          {workflow.secrets.length === 0 ? <p className="text-text-faint">None.</p> : (
-            <>
-              <p className="font-mono text-text">{workflow.secrets.join(', ')}</p>
-              <p className="text-text-faint">
-                An unattended run gets them only on commits a person approved for exactly this content. Running it
-                by hand, or a run a person queued, approves the commits it runs; saving a routine approves the
-                branch or commit it starts at. The project&apos;s agents may write workflows too.
-              </p>
-              {workflow.writtenByAgent === true && (
-                <p className="text-warning">
-                  Written by an agent: its runs with secrets wait for your review, and saving it here approves it.
-                </p>
-              )}
-              {approved !== undefined && (
-                <p className="text-text-dim">Approved: {approved.length > 0 ? <span className="font-mono">{approved.join(', ')}</span> : 'nothing yet'}</p>
-              )}
-            </>
+        <YSection
+          title="Run secrets"
+          description={workflow.secrets.length > 0 && <>
+            An unattended run gets them only on commits a person approved for exactly this content. Running it by
+            hand, or a run a person queued, approves the commits it runs; saving a routine approves the branch or
+            commit it starts at. The project&apos;s agents may write workflows too.
+          </>}
+        >
+          {workflow.writtenByAgent === true && (
+            <YCallout title="Written by an agent">
+              Its runs with secrets wait for your review, and saving it here approves it.
+            </YCallout>
           )}
-        </Section>
+          {workflow.secrets.length === 0 ? <p className="text-md text-subtle">None.</p> : (
+            <YSettingGroup>
+              <YSettingRow label="Secrets">
+                <span className="font-mono text-md text-text">{workflow.secrets.join(', ')}</span>
+              </YSettingRow>
+              {approved !== undefined && (
+                <YSettingRow label="Approved">
+                  {approved.length > 0 ? <span className="font-mono text-md text-muted">{approved.join(', ')}</span>
+                    : <span className="text-md text-subtle">Nothing yet</span>}
+                </YSettingRow>
+              )}
+            </YSettingGroup>
+          )}
+        </YSection>
 
         {(routines.length > 0 || sites.length > 0) && (
-          <Section title="Run by">
-            <ul className="flex flex-col">
+          <YSection title="Run by">
+            <div className="border-t border-line">
               {routines.map((r) => (
-                <li key={r.id}>
-                  <button type="button" onClick={() => openObject(projectId, { kind: 'routine', id: r.id })} className={TEXT_BUTTON}>
-                    Routine {r.name}
-                  </button>
-                </li>
+                <YListRow
+                  key={r.id}
+                  label={`Routine ${r.name}`}
+                  onSelect={() => openObject(projectId, { kind: 'routine', id: r.id })}
+                  leading={<RoutineIcon size={14} aria-hidden className="ml-1.5 shrink-0 text-subtle" />}
+                  title={r.name}
+                  sub="Routine"
+                />
               ))}
               {sites.map((s) => (
-                <li key={s.id}>
-                  <button type="button" onClick={() => openObject(projectId, { kind: 'site', id: s.id })} className={TEXT_BUTTON}>
-                    Site {s.name}
-                  </button>
-                </li>
+                <YListRow
+                  key={s.id}
+                  label={`Site ${s.name}`}
+                  onSelect={() => openObject(projectId, { kind: 'site', id: s.id })}
+                  leading={<SiteIcon size={14} aria-hidden className="ml-1.5 shrink-0 text-subtle" />}
+                  title={s.name}
+                  sub="Site"
+                />
               ))}
-            </ul>
-          </Section>
+            </div>
+          </YSection>
         )}
-      </div>
+      </YPageBody>
     </div>
   )
 }
@@ -277,34 +301,25 @@ function WorkflowDetail({ workflow, readOnly, bar }: {
  *  for. */
 export function StepList({ steps }: { steps: WorkflowSummary['steps'] }): JSX.Element {
   const names = Object.keys(steps)
-  if (names.length === 0) return <p className="text-text-faint">No steps.</p>
+  if (names.length === 0) return <p className="text-md text-subtle">No steps.</p>
   return (
-    <ul className="flex flex-col gap-1.5">
+    <ul className="flex flex-col divide-y divide-line border-y border-line text-md">
       {names.map((n) => {
         const spec = steps[n]
         return (
-          <li key={n} className="rounded-md bg-surface px-2.5 py-1.5">
+          <li key={n} className="px-1.5 py-2">
             <div className="flex items-center gap-2">
               <span className="font-mono font-medium text-text">{n}</span>
-              {spec.service === true && <span className="rounded bg-surface-3 px-1 text-[10px] text-text-dim">service</span>}
+              {spec.service === true && <YBadge>service</YBadge>}
               {spec.needs !== undefined && spec.needs.length > 0 && (
-                <span className="text-text-faint">after {spec.needs.join(', ')}</span>
+                <span className="text-subtle">after {spec.needs.join(', ')}</span>
               )}
             </div>
-            <pre className="mt-0.5 whitespace-pre-wrap break-words font-mono text-[11px] text-text-dim">{spec.run.join('\n')}</pre>
+            <pre className="mt-0.5 whitespace-pre-wrap break-words font-mono text-sm text-muted">{spec.run.join('\n')}</pre>
           </li>
         )
       })}
     </ul>
-  )
-}
-
-function Section({ title, children }: { title: string; children: ReactNode }): JSX.Element {
-  return (
-    <section className="flex flex-col gap-1">
-      <h3 className="text-[11px] font-medium uppercase tracking-wide text-text-faint">{title}</h3>
-      {children}
-    </section>
   )
 }
 
@@ -345,75 +360,78 @@ function WorkflowForm({ project, workflow, onDone, onCancel }: {
   }
 
   return (
-    <form onSubmit={submit} className="flex flex-col gap-3 text-xs">
-      {workflow === undefined && (
-        <label className="flex flex-col gap-1">
-          <span className="font-medium text-text">Name</span>
-          <input
-            aria-label="Workflow name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="deploy"
-            className={INPUT}
+    <form onSubmit={submit} className="flex flex-col gap-3">
+      <YSettingGroup>
+        {workflow === undefined && (
+          <YSettingRow label="Name">
+            <YInput
+              aria-label="Workflow name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="deploy"
+              className="w-56 font-mono"
+            />
+          </YSettingRow>
+        )}
+        <YSettingRow
+          stacked
+          label="Steps"
+          hint={<>
+            JSON: each step <code className="text-muted">{'{"run": "<cmd>" or ["<cmd>", …], "needs": [...]}'}</code>, with{' '}
+            <code className="text-muted">{'"service": true'}</code> and a <code className="text-muted">ready</code> check for one
+            that keeps running.
+          </>}
+        >
+          <YTextArea
+            aria-label="Workflow steps"
+            value={steps}
+            onChange={(e) => setSteps(e.target.value)}
+            placeholder={'{\n  "install": { "run": "pnpm install" },\n  "deploy": { "run": "pnpm deploy", "needs": ["install"] }\n}'}
+            rows={12}
+            spellCheck={false}
+            className="block w-full resize-y font-mono"
           />
-        </label>
-      )}
-      <label className="flex flex-col gap-1">
-        <span className="font-medium text-text">Steps</span>
-        <span className="text-[11px] text-text-faint">
-          JSON: each step <code className="text-text-dim">{'{"run": "<cmd>" or ["<cmd>", …], "needs": [...]}'}</code>, with{' '}
-          <code className="text-text-dim">{'"service": true'}</code> and a <code className="text-text-dim">ready</code> check for one
-          that keeps running.
-        </span>
-        <textarea
-          aria-label="Workflow steps"
-          value={steps}
-          onChange={(e) => setSteps(e.target.value)}
-          placeholder={'{\n  "install": { "run": "pnpm install" },\n  "deploy": { "run": "pnpm deploy", "needs": ["install"] }\n}'}
-          rows={12}
-          spellCheck={false}
-          className={`${INPUT} block w-full resize-y`}
-        />
-      </label>
-      {project.repos.length > 0 && (
-        <fieldset className="flex flex-col gap-1">
-          <legend className="mb-1 font-medium text-text">Repos</legend>
-          <p className="text-[11px] text-text-faint">
-            Its steps start in their checkout (the workspace root for several), and it runs only in a workspace with each.
-          </p>
-          {[...new Set([...project.repos.map((r) => r.dir), ...chosen])].map((dir) => (
-            <label key={dir} className="flex items-center gap-2 font-mono text-text">
-              <input type="checkbox" checked={chosen.includes(dir)} onChange={() => setChosen(toggle(chosen, dir))} />
-              {dir}
-            </label>
-          ))}
-        </fieldset>
-      )}
-      <label className="flex items-center gap-2 text-text">
-        <input type="checkbox" role="switch" checked={atStart} onChange={() => setAtStart(!atStart)} />
-        Run at workspace start
-      </label>
-      {offered.length > 0 && (
-        <fieldset className="flex flex-col gap-1">
-          <legend className="mb-1 font-medium text-text">Run secrets it gets</legend>
-          {offered.map((s) => (
-            <label key={s} className="flex items-center gap-2 font-mono text-text">
-              <input type="checkbox" checked={secrets.includes(s)} onChange={() => setSecrets(toggle(secrets, s))} />
-              {s}
-            </label>
-          ))}
-        </fieldset>
-      )}
-      {save.error && <p className="text-red-400">{save.error.message}</p>}
+        </YSettingRow>
+        {project.repos.length > 0 && (
+          <YSettingRow
+            stacked
+            label="Repos"
+            hint="Its steps start in their checkout (the workspace root for several), and it runs only in a workspace with each."
+          >
+            <div role="group" aria-label="Repos" className="flex flex-col gap-1">
+              {[...new Set([...project.repos.map((r) => r.dir), ...chosen])].map((dir) => (
+                <YCheckbox key={dir} checked={chosen.includes(dir)} onCheckedChange={() => setChosen(toggle(chosen, dir))} className="font-mono">
+                  {dir}
+                </YCheckbox>
+              ))}
+            </div>
+          </YSettingRow>
+        )}
+        <YSettingRow label="Run at workspace start">
+          <YSwitch aria-label="Run at workspace start" checked={atStart} onCheckedChange={setAtStart} />
+        </YSettingRow>
+        {offered.length > 0 && (
+          <YSettingRow stacked label="Run secrets it gets">
+            <div role="group" aria-label="Run secrets it gets" className="flex flex-col gap-1">
+              {offered.map((s) => (
+                <YCheckbox key={s} checked={secrets.includes(s)} onCheckedChange={() => setSecrets(toggle(secrets, s))} className="font-mono">
+                  {s}
+                </YCheckbox>
+              ))}
+            </div>
+          </YSettingRow>
+        )}
+      </YSettingGroup>
+      {save.error && <p className="text-md text-danger">{save.error.message}</p>}
       <div className="flex justify-end gap-2">
-        <button type="button" onClick={onCancel} className={TEXT_BUTTON}>Cancel</button>
-        <button
+        <YButton variant="ghost" onClick={onCancel}>Cancel</YButton>
+        <YButton
+          variant="primary"
           type="submit"
           disabled={save.isPending || (workflow === undefined && name.trim() === '')}
-          className={BUTTON}
         >
           {save.isPending ? 'Saving…' : workflow !== undefined ? 'Save workflow' : 'Create workflow'}
-        </button>
+        </YButton>
       </div>
     </form>
   )

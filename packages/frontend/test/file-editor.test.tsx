@@ -5,7 +5,7 @@ import { renderWithClient } from './harness'
 
 // Replace CodeMirror, which doesn't work under jsdom, with a textarea. This
 // suite tests FileEditor's load, save and dirty handling only.
-vi.mock('#components/ui/CodeEditor', () => ({
+vi.mock('#components/CodeEditor', () => ({
   CodeEditor: ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
     <textarea aria-label="editor" value={value} onChange={(e) => onChange(e.target.value)} />
   ),

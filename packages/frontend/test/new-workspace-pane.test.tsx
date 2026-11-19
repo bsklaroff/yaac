@@ -216,7 +216,8 @@ const modelShown = (): string => settingsPill().firstElementChild?.textContent ?
 const select = (label: string): HTMLSelectElement => screen.getByLabelText<HTMLSelectElement>(label)
 const option = (label: string, text: string): HTMLOptionElement =>
   [...select(label).options].find((o) => o.textContent?.startsWith(text))!
-const heading = (): string => screen.getByRole('heading').textContent ?? ''
+/** The title in the header bar (the form's sections have headings too). */
+const heading = (): string => within(document.querySelector('header')!).getByRole('heading').textContent ?? ''
 const posture = (): string => screen.getByRole('button', { name: 'Permission mode' }).textContent ?? ''
 /** The effort the settings pill shows, after the model; '' for none. */
 const effortShown = (): string => settingsPill().textContent?.split('· ')[1] ?? ''
@@ -404,10 +405,10 @@ describe('NewWorkspacePane', () => {
     setSnapshot(project({ createDefaults: { claude: { agentOptions: { idleCompaction: true } } } }))
     await openReady()
     fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
-    const item = await screen.findByRole<HTMLInputElement>('checkbox', { name: /Compact when idle/ })
-    expect(item.checked).toBe(true)
+    const item = await screen.findByRole('checkbox', { name: /Compact when idle/ })
+    expect(item.getAttribute('aria-checked')).toBe('true')
     fireEvent.click(item)
-    await waitFor(() => expect(item.checked).toBe(false))
+    await waitFor(() => expect(item.getAttribute('aria-checked')).toBe('false'))
     typePrompt('go')
     fireEvent.click(sendButton())
     expect(sent(CREATE).at(-1)).toMatchObject({ tool: 'claude', agentOptions: { idleCompaction: false } })
@@ -800,7 +801,7 @@ describe('NewWorkspacePane', () => {
       expect(modelShown()).toBe('GPT-5.5')
       expect(posture()).toBe('Accept edits')
       await waitFor(() => expect(branchInput().value).toBe('dev'))
-      expect(screen.getByText('latest from origin when it starts')).toBeTruthy()
+      expect(screen.getByText('Latest from origin when it starts')).toBeTruthy()
       // A bare terminal can only start now.
       expect(screen.queryByRole('button', { name: 'Start without a prompt' })).toBeNull()
       // Nor can the bar's pane buttons, which start one now.
@@ -1519,7 +1520,8 @@ describe('NewWorkspacePane repos', () => {
     const snapshot = project(memory, 'k8s', extra)
     return { ...snapshot, projects: [{ ...snapshot.projects[0], repos }] }
   }
-  const include = (dir: string): HTMLInputElement => screen.getByRole<HTMLInputElement>('checkbox', { name: `Include ${dir}` })
+  const include = (dir: string): HTMLElement => screen.getByRole('checkbox', { name: `Include ${dir}` })
+  const included = (dir: string): boolean => include(dir).getAttribute('aria-checked') === 'true'
   const branchOf = (dir: string): HTMLInputElement => screen.getByLabelText<HTMLInputElement>(`Base branch of ${dir}`)
 
   beforeEach(() => {
@@ -1529,7 +1531,7 @@ describe('NewWorkspacePane repos', () => {
   it('starts with the repos last included, each on its own branch, in folders, the agent where it last started', async () => {
     setSnapshot(linking([api, web, docs], { lastCwd: 'repo-web' }))
     await openReady()
-    expect([include('api').checked, include('web').checked, include('docs').checked]).toEqual([true, true, false])
+    expect([included('api'), included('web'), included('docs')]).toEqual([true, true, false])
     await waitFor(() => expect([branchOf('api').value, branchOf('web').value]).toEqual(['dev', 'main']))
     // A repo left out has no branch to pick, and its branches are not read.
     expect(screen.queryByLabelText('Base branch of docs')).toBeNull()
@@ -1609,7 +1611,7 @@ describe('NewWorkspacePane repos', () => {
     server.route(AUTH_LIST, SIGNED_IN)
     await openReady()
     fireEvent.change(select('Start'), { target: { value: 'w-parent' } })
-    expect([include('api').checked, include('web').checked]).toEqual([false, true])
+    expect([included('api'), included('web')]).toEqual([false, true])
     await waitFor(() => expect(branchOf('web').value).toBe('release/2.x'))
     expect(select('Checkout').value).toBe('nested')
     expect(select('Start in').value).toBe('repo-web')

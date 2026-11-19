@@ -74,7 +74,8 @@ describe('ImageBuildsOverlay', () => {
     expect(screen.getByText('RUN apt-get update')).toBeTruthy()
     expect(screen.getByText('user layer')).toBeTruthy()
     expect(screen.getByText('registry down')).toBeTruthy()
-    expect(screen.getAllByText(/^widgets · prewarm/)).toHaveLength(2)
+    expect(screen.getAllByText('widgets')).toHaveLength(2)
+    expect(screen.getAllByText('prewarm')).toHaveLength(2)
   })
 
   it('defaults the log pane to the newest running build and polls it', async () => {
@@ -111,7 +112,7 @@ describe('ImageBuildsOverlay', () => {
     render(<ImageBuildsOverlay open onOpenChange={() => {}} builds={builds} />)
     await waitFor(() => expect(logFetches()).toEqual(['running-build']))
 
-    fireEvent.click(screen.getByText('yaac-tools:def'))
+    fireEvent.click(screen.getByRole('button', { name: 'base layer yaac-tools:def' }))
     await waitFor(() => expect(logFetches()).toEqual(['running-build', 'old-failed']))
   })
 

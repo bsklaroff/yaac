@@ -1,6 +1,5 @@
 import { useRef, type JSX } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { QueuedIcon } from '#lib/icons'
 import { agentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
@@ -8,6 +7,7 @@ import { clip, queuedChildren, queuedTitle } from '#lib/queued'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
 import type { QueuedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
+import { YButton, YConfirm } from '#ui'
 
 /**
  * Confirm stopping a workspace (the row menu's Stop… and Alt+D).
@@ -18,7 +18,7 @@ import type { QueuedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/type
  * they start when that parent stops.
  *
  * The confirm button takes initial focus, so Alt+D then Enter stops
- * (ConfirmDialog).
+ * (YConfirm).
  */
 export function StopWorkspaceDialog({
   workspace,
@@ -48,30 +48,26 @@ export function StopWorkspaceDialog({
   const renderEntry = (entry: QueuedWorkspaceEntry, depth: number): JSX.Element => (
     <li key={entry.id}>
       <div className="flex items-center gap-2 py-1" style={{ paddingLeft: depth * 12 }}>
-        <QueuedIcon size={11} className="shrink-0 text-text-faint" />
+        <QueuedIcon size={11} className="shrink-0 text-subtle" />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs text-text">{queuedTitle(entry)}</span>
-          <span className="block truncate text-[11px] text-text-faint">
+          <span className="block truncate text-md text-text">{queuedTitle(entry)}</span>
+          <span className="block truncate text-sm text-subtle">
             {agentLabel(entry.tool, entry)}{depth > 0 ? ' · waits for its parent' : ''}
           </span>
         </span>
-        <button
-          type="button"
+        <YButton
+          variant="ghost"
+          size="sm"
           onClick={() => {
             onOpenChange(false)
             openNewWorkspace({ projectId: entry.projectId, editId: entry.id })
           }}
-          className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-text-dim transition hover:bg-surface-3 hover:text-text"
         >
           Edit
-        </button>
-        <button
-          type="button"
-          onClick={() => discard.mutate(entry.id)}
-          className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-text-dim transition hover:bg-surface-3 hover:text-text"
-        >
+        </YButton>
+        <YButton variant="ghost" size="sm" onClick={() => discard.mutate(entry.id)}>
           Discard
-        </button>
+        </YButton>
       </div>
       {(children.get(entry.id) ?? []).length > 0 && (
         <ul>{(children.get(entry.id) ?? []).map((c) => renderEntry(c, depth + 1))}</ul>
@@ -80,7 +76,7 @@ export function StopWorkspaceDialog({
   )
 
   return (
-    <ConfirmDialog
+    <YConfirm
       open={workspace !== null}
       onOpenChange={onOpenChange}
       title={`Stop “${name}”?`}
@@ -92,11 +88,11 @@ export function StopWorkspaceDialog({
     >
       {direct.length > 0 && (
         <div className="mt-3">
-          <p className="text-[11px] uppercase tracking-wide text-text-faint">Starts when this stops</p>
+          <p className="text-sm uppercase tracking-wide text-subtle">Starts when this stops</p>
           <ul className="mt-1 max-h-[240px] overflow-y-auto">{direct.map((e) => renderEntry(e, 0))}</ul>
         </div>
       )}
-      {discard.error && <p className="mt-2 text-xs text-danger">Discard failed: {discard.error.message}</p>}
-    </ConfirmDialog>
+      {discard.error && <p className="mt-2 text-md text-danger">Discard failed: {discard.error.message}</p>}
+    </YConfirm>
   )
 }

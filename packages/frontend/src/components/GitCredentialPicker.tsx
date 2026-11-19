@@ -1,6 +1,5 @@
 import { useState, type FormEvent, type JSX } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import { useSnapshot } from '#lib/useSnapshot'
@@ -8,6 +7,7 @@ import { repoHostToAllow } from '@yaac/shared/allowed-hosts'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { projectNameFor } from '@yaac/shared/project-name'
 import type { EgressAllowlist } from '@yaac/shared/types'
+import { YButton, YInput, YSelect } from '#ui'
 
 export type GitCredentialKind = 'https' | 'ssh'
 
@@ -43,9 +43,6 @@ export function defaultCredentialName(kind: GitCredentialKind, projectName: stri
 
 const NEW = 'new'
 
-export const INPUT = 'min-w-0 flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text '
-  + 'outline-none focus:border-border-strong'
-
 /**
  * Pick a project's git credential: an existing one of the right kind, or a
  * new one. A new HTTPS token is stored on submit. A new SSH key is generated
@@ -55,6 +52,8 @@ export const INPUT = 'min-w-0 flex-1 rounded-md border border-border bg-bg px-2.
  * A credential created here is kept even if `onSubmit` fails, and is then
  * offered as existing so a retry reuses it. `offerExisting={false}` shows only
  * the new-credential form; `exclude` hides the project's current credential.
+ * `inline` puts the submit button at the end of the new credential's fields
+ * rather than on a line of its own, for a form with nothing to cancel.
  */
 export function GitCredentialPicker({
   kind,
@@ -65,6 +64,7 @@ export function GitCredentialPicker({
   onCancel,
   disabled = false,
   offerExisting = true,
+  inline = false,
 }: {
   kind: GitCredentialKind
   /** The project's name, for the default credential name ('' when there is
@@ -78,6 +78,7 @@ export function GitCredentialPicker({
   /** The caller's own precondition (e.g. no URL yet). */
   disabled?: boolean
   offerExisting?: boolean
+  inline?: boolean
 }): JSX.Element {
   const auth = useAuthList()
   const queryClient = useQueryClient()
@@ -149,24 +150,40 @@ export function GitCredentialPicker({
     choose.mutate()
   }
 
+  const submitButton = (
+    <YButton variant="primary" size={inline ? 'md' : 'sm'} type="submit" disabled={!ready}>
+      {busy === 'submit' ? `${actionLabel}…` : actionLabel}
+    </YButton>
+  )
+  const submitRow = (
+    <div className="flex justify-end gap-2">
+      {onCancel && (
+        <YButton variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </YButton>
+      )}
+      {submitButton}
+    </div>
+  )
+  // The new credential's fields end with the submit button when inline.
+  const fieldsRow = inline && choice === NEW && key === null && !onCancel
   return (
-    <form onSubmit={submit} className="flex flex-col gap-2 text-xs">
+    <form onSubmit={submit} className="flex flex-col gap-2 text-md">
       {offerExisting && (
-        <select
+        <YSelect
           aria-label="Git credential"
           value={choice}
           onChange={(e) => { setPick(e.target.value); clearError() }}
-          className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text outline-none"
         >
           {choice === '' && <option value="" disabled>Choose a git credential…</option>}
           {existing.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           <option value={NEW}>{kind === 'ssh' ? 'New SSH key…' : 'New HTTPS token…'}</option>
-        </select>
+        </YSelect>
       )}
 
       {choice === NEW && (key !== null ? (
-        <div className="flex flex-col gap-1.5 rounded-md border border-accent/20 bg-accent/5 p-2.5">
-          <p className="text-[11px] leading-relaxed text-text-dim">
+        <div className="flex flex-col gap-1.5 bg-info-soft p-2.5">
+          <p className="text-sm leading-relaxed text-muted">
             Register this public key with your git host — as a deploy key for the repo, or on your
             account — then continue.
           </p>
@@ -174,46 +191,33 @@ export function GitCredentialPicker({
         </div>
       ) : (
         <div className="flex items-center gap-2">
-          <input
+          <YInput
             aria-label="Credential name"
             value={shownName}
             onChange={(e) => setName(e.target.value)}
             maxLength={100}
-            className={INPUT}
+            className="flex-1 font-mono"
           />
           {kind === 'https' ? (
-            <input
+            <YInput
               aria-label="Token"
               type="password"
               value={token}
               onChange={(e) => setToken(e.target.value)}
               placeholder="token"
-              className={INPUT}
+              className="flex-1 font-mono"
             />
           ) : (
-            <button
-              type="button"
-              onClick={generate}
-              disabled={busy !== null || shownName.trim() === ''}
-              className={BUTTON}
-            >
+            <YButton size={inline ? 'md' : 'sm'} onClick={generate} disabled={busy !== null || shownName.trim() === ''}>
               {busy === 'generate' ? 'Generating…' : 'Generate key'}
-            </button>
+            </YButton>
           )}
+          {fieldsRow && submitButton}
         </div>
       ))}
 
-      <div className="flex justify-end gap-2">
-        {onCancel && (
-          <button type="button" onClick={onCancel} className={BUTTON}>
-            Cancel
-          </button>
-        )}
-        <button type="submit" disabled={!ready} className={BUTTON}>
-          {busy === 'submit' ? `${actionLabel}…` : actionLabel}
-        </button>
-      </div>
-      {error && <p className="text-[11px] text-red-400">{error}</p>}
+      {!fieldsRow && submitRow}
+      {error && <p className="text-sm text-danger">{error}</p>}
     </form>
   )
 }
@@ -230,22 +234,22 @@ export function PublicKey({ publicKey, wrap = false }: { publicKey: string; wrap
   }
   return (
     <div className="flex min-w-0 items-start gap-2">
-      <span className="shrink-0 text-[11px] text-text-dim">Public key:</span>
+      <span className="shrink-0 text-sm text-muted">Public key:</span>
       <code
         title={publicKey}
-        className={`min-w-0 flex-1 select-all font-mono text-[11px] text-text-faint ${wrap || shown ? 'break-all' : 'truncate'}`}
+        className={`min-w-0 flex-1 select-all font-mono text-sm text-subtle ${wrap || shown ? 'break-all' : 'truncate'}`}
       >
         {publicKey}
       </code>
       <span className="flex shrink-0">
         {!wrap && (
-          <button type="button" onClick={() => setShown((s) => !s)} className={TEXT_BUTTON}>
+          <YButton variant="secondary" size="sm" onClick={() => setShown((s) => !s)}>
             {shown ? 'Hide' : 'View'}
-          </button>
+          </YButton>
         )}
-        <button type="button" onClick={copy} className={TEXT_BUTTON}>
+        <YButton variant="ghost" size="sm" onClick={copy}>
           {copied ? 'Copied' : 'Copy'}
-        </button>
+        </YButton>
       </span>
     </div>
   )
@@ -255,8 +259,8 @@ export function PublicKey({ publicKey, wrap = false }: { publicKey: string; wrap
  *  compare against the fingerprints the host publishes. */
 export function TrustedHostKey({ entry }: { entry: string }): JSX.Element {
   return (
-    <p className="break-all font-mono text-[11px] text-text-faint">
-      <span className="font-sans text-text-dim">Host key trusted: </span>{entry}
+    <p className="break-all font-mono text-sm text-subtle">
+      <span className="font-sans text-muted">Host key trusted: </span>{entry}
     </p>
   )
 }
@@ -275,7 +279,7 @@ export function AllowlistAddNotice({ remoteUrl, allowlist }: {
   const host = mediatedEgress && allowlist ? repoHostToAllow(allowlist, remoteUrl) : null
   if (host === null) return null
   return (
-    <p className="text-[11px] text-text-dim">
+    <p className="text-sm text-muted">
       <span className="font-mono">{host}</span> is not in the project&apos;s egress allowlist. Adding the repo adds
       it, so workspaces can reach the repo.
     </p>

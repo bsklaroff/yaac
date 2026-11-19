@@ -1,14 +1,9 @@
 import { useMemo, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { ContextMenu } from '@base-ui/react/context-menu'
-import { Popover } from '@base-ui/react/popover'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_LOG_COMMITS, WORKTREE_REF, type GitLogCommit } from '@yaac/shared/types'
 import { BranchPicker } from '#components/BranchPicker'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { MENU_ITEM, POPUP, PopoverPopup } from '#components/ui/menu'
-import { Tip, WithTip } from '#components/ui/Tooltip'
 import { api } from '#lib/api'
 import { COMMITS_TARGET, layoutGraph, refName, type GraphEdge, type GraphRow } from '#lib/commits'
 import {
@@ -20,6 +15,7 @@ import { useSavedScroll } from '#lib/useSavedScroll'
 import { useRepoBranches } from '#lib/repoApi'
 import { useCheckout } from '#lib/checkouts'
 import { CheckoutSwitcher } from '#components/CheckoutSwitcher'
+import { POPUP, YButton, YCheckbox, YChip, YConfirm, YContextMenu, YMenuItem, YPopover, YPopoverPopup, YTip, YTooltip } from '#ui'
 
 /** Commits fetched at first, and added by each "load older". */
 const PAGE = 200
@@ -28,7 +24,7 @@ const ROW = 28
 const LANE = 14
 /** Lane colors, by the graph's color index. Theme tokens, so both themes
  *  keep them readable. */
-const PALETTE = ['link', 'accent', 'success', 'purple', 'warning', 'danger'].map((c) => `var(--color-${c})`)
+const PALETTE = ['info', 'accent', 'success', 'purple', 'warning', 'danger'].map((c) => `var(--${c})`)
 const laneX = (lane: number): number => lane * LANE + LANE / 2
 const paint = (color: number): string => PALETTE[color % PALETTE.length]
 
@@ -95,14 +91,14 @@ export function WorkspaceCommits({ workspaceId }: { workspaceId: string }): JSX.
   // often the way out (one sharing no history with HEAD).
   if (known && repos.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center bg-surface text-xs text-text-dim">
+      <div className="flex h-full items-center justify-center bg-surface text-md text-muted">
         This workspace has no repos.
       </div>
     )
   }
   if (log.isError && !data && log.error instanceof ServerError && log.error.code === 'CONFLICT') {
     return (
-      <div className="flex h-full items-center justify-center bg-surface text-xs text-text-dim">
+      <div className="flex h-full items-center justify-center bg-surface text-md text-muted">
         Start the workspace to see its commits.
       </div>
     )
@@ -115,50 +111,46 @@ export function WorkspaceCommits({ workspaceId }: { workspaceId: string }): JSX.
       >
         {older !== undefined && (
           <span className="flex shrink-0 items-center">
-            <button
+            <YButton
+              variant="ghost"
+              size="sm"
               onClick={() => openRange(workspaceId, { from: older, to: newer })}
               title="Diff the two ticked commits"
-              className="rounded px-1.5 py-0.5 transition hover:bg-surface-2 hover:text-text"
             >
-              Compare <span className="font-mono">{older.slice(0, 7)}</span> → <span className="font-mono">{newer.slice(0, 7)}</span>
-            </button>
-            <button
-              onClick={() => setPicked([])}
-              aria-label="Clear the ticked commits"
-              className="rounded p-1 text-text-faint transition hover:bg-surface-2 hover:text-text"
-            >
-              <CloseIcon size={11} />
-            </button>
+              <span>
+                Compare <span className="font-mono">{older.slice(0, 7)}</span> → <span className="font-mono">{newer.slice(0, 7)}</span>
+              </span>
+            </YButton>
+            <YButton variant="ghost" size="sm" icon={CloseIcon} onClick={() => setPicked([])} aria-label="Clear the ticked commits" />
           </span>
         )}
         {bodied.length > 0 && (
-          <WithTip tip={<Tip title={anyOpen ? 'Collapse all messages' : 'Show all messages'} />}>
-            <button
+          <YTooltip tip={<YTip title={anyOpen ? 'Collapse all messages' : 'Show all messages'} />}>
+            <YButton
+              variant="ghost"
+              size="sm"
+              icon={anyOpen ? CollapseAllIcon : ExpandAllIcon}
               onClick={() => setPaneView(viewKey, { openCommits: anyOpen ? [] : bodied.map((c) => c.sha) })}
               aria-label={anyOpen ? 'Collapse all messages' : 'Show all messages'}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-                hover:bg-surface-2 hover:text-text"
-            >
-              {anyOpen ? <CollapseAllIcon size={13} /> : <ExpandAllIcon size={13} />}
-            </button>
-          </WithTip>
+            />
+          </YTooltip>
         )}
       </CommitsStrip>
       {log.isError && !data ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-xs text-text-dim">
-          <WarningIcon size={18} className="text-text-faint" />
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-md text-muted">
+          <WarningIcon size={18} className="text-subtle" />
           <span>Couldn’t load commits.</span>
-          <span className="max-w-full truncate px-4 text-[11px] text-text-faint">{log.error.message}</span>
+          <span className="max-w-full truncate px-4 text-sm text-subtle">{log.error.message}</span>
         </div>
       ) : !data ? (
-        <div className="flex flex-1 items-center justify-center text-text-dim">
+        <div className="flex flex-1 items-center justify-center text-muted">
           <LoadingIcon size={18} className="animate-spin" />
         </div>
       ) : data.commits.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-xs text-text-dim">No commits yet.</div>
+        <div className="flex flex-1 items-center justify-center text-md text-muted">No commits yet.</div>
       ) : (
-        <ContextMenu.Root>
-          <ContextMenu.Trigger
+        <YContextMenu.Root>
+          <YContextMenu.Trigger
             ref={setList}
             onScroll={onListScroll}
             className="min-h-0 flex-1 overflow-auto"
@@ -181,44 +173,37 @@ export function WorkspaceCommits({ workspaceId }: { workspaceId: string }): JSX.
               />
             ))}
             {data.more && (limit < MAX_LOG_COMMITS ? (
-              <button
+              <YButton
+                size="sm"
                 onClick={() => setLimit((n) => Math.min(n + PAGE, MAX_LOG_COMMITS))}
                 disabled={log.isFetching}
-                className="m-2 rounded bg-surface-2 px-2 py-1 text-[11px] text-text-dim transition hover:text-text
-                  disabled:opacity-50"
+                className="m-2"
               >
                 Load older commits
-              </button>
+              </YButton>
             ) : (
-              <div className="p-2 text-[11px] text-text-faint">
+              <div className="p-2 text-sm text-subtle">
                 Showing the newest {MAX_LOG_COMMITS.toLocaleString()} commits.
               </div>
             ))}
-          </ContextMenu.Trigger>
+          </YContextMenu.Trigger>
           {menuCommit && (
-            <ContextMenu.Portal>
-              <ContextMenu.Positioner>
-                <ContextMenu.Popup className={clsx('min-w-[180px]', POPUP)}>
-                  <ContextMenu.Item className={MENU_ITEM} onClick={() => openRange(workspaceId, { to: menuCommit.sha })}>
-                    Show commit
-                  </ContextMenu.Item>
-                  <ContextMenu.Item
-                    className={MENU_ITEM}
-                    onClick={() => openRange(workspaceId, { from: menuCommit.sha, to: WORKTREE_REF })}
-                  >
+            <YContextMenu.Portal>
+              <YContextMenu.Positioner>
+                <YContextMenu.Popup className={clsx('min-w-[180px]', POPUP)}>
+                  <YMenuItem onClick={() => openRange(workspaceId, { to: menuCommit.sha })}>Show commit</YMenuItem>
+                  <YMenuItem onClick={() => openRange(workspaceId, { from: menuCommit.sha, to: WORKTREE_REF })}>
                     Compare with working tree
-                  </ContextMenu.Item>
-                  <ContextMenu.Item className={MENU_ITEM} onClick={() => openRange(workspaceId, { from: menuCommit.sha, to: 'HEAD' })}>
+                  </YMenuItem>
+                  <YMenuItem onClick={() => openRange(workspaceId, { from: menuCommit.sha, to: 'HEAD' })}>
                     Compare with HEAD
-                  </ContextMenu.Item>
-                  <ContextMenu.Item className={MENU_ITEM} onClick={() => void navigator.clipboard.writeText(menuCommit.sha)}>
-                    Copy commit id
-                  </ContextMenu.Item>
-                </ContextMenu.Popup>
-              </ContextMenu.Positioner>
-            </ContextMenu.Portal>
+                  </YMenuItem>
+                  <YMenuItem onClick={() => void navigator.clipboard.writeText(menuCommit.sha)}>Copy commit id</YMenuItem>
+                </YContextMenu.Popup>
+              </YContextMenu.Positioner>
+            </YContextMenu.Portal>
           )}
-        </ContextMenu.Root>
+        </YContextMenu.Root>
       )}
     </div>
   )
@@ -265,25 +250,25 @@ function CommitsStrip({ workspaceId, error, children }: {
     ? [baseBranch, ...names.filter((n) => n !== baseBranch)]
     : names
   return (
-    <div className="flex h-8 shrink-0 items-center gap-2 border-b border-hairline px-1.5 text-[11px] text-text-dim">
+    <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line px-1.5 text-sm text-muted">
       <CheckoutSwitcher workspaceId={workspaceId} />
-      <span className="shrink-0 whitespace-nowrap pl-1 text-text-faint">Based on</span>
-      <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) setQuery('') }}>
-        <Popover.Trigger
-          title="Choose the branch this workspace is based on"
-          className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 outline-none transition
-            hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text"
-        >
-          {baseBranch === undefined && startCommit !== undefined
-            ? <CommitsIcon size={11} className="shrink-0 text-text-faint" />
-            : <BranchIcon size={11} className="shrink-0 text-text-faint" />}
-          <span className="max-w-[220px] truncate font-mono">
-            {baseBranch !== undefined ? `origin/${baseBranch}` : startCommit !== undefined ? refName(startCommit) : 'none'}
-          </span>
-          <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
-        </Popover.Trigger>
-        <PopoverPopup side="bottom" align="start" sideOffset={6} className="w-[260px]">
-          <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Base on</div>
+      <span className="shrink-0 whitespace-nowrap pl-1 text-subtle">Based on</span>
+      <YPopover.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) setQuery('') }}>
+        <YPopover.Trigger
+          render={(
+            <YChip
+              dropdown
+              icon={baseBranch === undefined && startCommit !== undefined ? CommitsIcon : BranchIcon}
+              title="Choose the branch this workspace is based on"
+            >
+              <span className="max-w-[220px] truncate font-mono">
+                {baseBranch !== undefined ? `origin/${baseBranch}` : startCommit !== undefined ? refName(startCommit) : 'none'}
+              </span>
+            </YChip>
+          )}
+        />
+        <YPopoverPopup side="bottom" align="start" sideOffset={6} className="w-[260px]">
+          <div className="px-2 pb-1 pt-1 text-sm uppercase tracking-wide text-subtle">Base on</div>
           <BranchPicker
             branches={branches}
             defaultBranch={listed.data?.defaultBranch}
@@ -302,13 +287,13 @@ function CommitsStrip({ workspaceId, error, children }: {
             ariaLabel="Base branch"
             className="px-1 pb-1"
           />
-        </PopoverPopup>
-      </Popover.Root>
+        </YPopoverPopup>
+      </YPopover.Root>
       <span className="ml-auto min-w-0 truncate text-warning" title={error}>
         {error !== undefined && `Couldn’t refresh: ${error}`}
       </span>
       {children}
-      <ConfirmDialog
+      <YConfirm
         open={picked !== null}
         onOpenChange={(o) => { if (!o) setPicked(null) }}
         title={`Base this workspace on origin/${picked ?? ''}?`}
@@ -353,48 +338,48 @@ function CommitRow({
   const when = new Date(commit.time * 1000)
   const graph = { width: width * LANE, maxWidth: '30%' }
   return (
-    <div className={clsx('group', picked && 'bg-surface-2')} onContextMenu={onContextMenu}>
+    <div className={clsx('group', picked && 'bg-selected')} onContextMenu={onContextMenu}>
       <div
         onClick={(e) => (e.metaKey || e.ctrlKey ? onTogglePick() : onShow())}
         title="Show this commit"
-        className={clsx('flex cursor-pointer items-center gap-2 pr-2 text-xs hover:bg-surface-2',
-          theirs ? 'text-text-faint' : 'text-text')}
+        className={clsx('flex cursor-pointer items-center gap-2 pr-2 text-md hover:bg-hover',
+          theirs ? 'text-subtle' : 'text-text')}
         style={{ height: ROW }}
       >
         <span className="flex w-5 shrink-0 justify-end">
-          <input
-            type="checkbox"
+          <YCheckbox
             checked={picked}
-            onChange={onTogglePick}
+            onCheckedChange={onTogglePick}
             onClick={(e) => e.stopPropagation()}
             aria-label={`Pick ${commit.sha.slice(0, 7)} to compare`}
-            className={clsx('h-3 w-3 cursor-pointer accent-accent',
+            className={clsx('cursor-pointer',
               picking ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100')}
           />
         </span>
         <GraphCell row={row} width={width} merge={commit.parents.length > 1} />
         <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
           {commit.body !== '' ? (
-            <button
+            <YButton
+              variant="bare"
               onClick={(e) => {
                 e.stopPropagation()
                 onToggleOpen()
               }}
               aria-label={open ? 'Hide the message' : 'Show the message'}
               aria-expanded={open}
-              className="-mx-0.5 shrink-0 rounded p-0.5 text-text-faint hover:text-text"
+              className="-mx-0.5 shrink-0 rounded p-0.5 text-subtle hover:text-text"
             >
               <ChevronIcon size={10} className={clsx('transition', open && 'rotate-90')} />
-            </button>
+            </YButton>
           ) : <span className="w-3.5 shrink-0" />}
           {refs.map((r) => <RefPill key={r} name={r} />)}
           <span className="min-w-16 truncate" title={commit.subject}>{commit.subject}</span>
         </span>
-        <span className="shrink-0 truncate text-text-dim max-md:hidden" style={{ maxWidth: 140 }}>{commit.author}</span>
-        <span className="w-16 shrink-0 whitespace-nowrap text-right text-text-faint" title={when.toLocaleString()}>
+        <span className="shrink-0 truncate text-muted max-md:hidden" style={{ maxWidth: 140 }}>{commit.author}</span>
+        <span className="w-16 shrink-0 whitespace-nowrap text-right text-subtle" title={when.toLocaleString()}>
           {relativeAge(when.toISOString())}
         </span>
-        <span className="shrink-0 select-all font-mono text-[11px] text-text-dim" title={commit.sha}>
+        <span className="shrink-0 select-all font-mono text-sm text-muted" title={commit.sha}>
           {commit.sha.slice(0, 7)}
         </span>
       </div>
@@ -406,7 +391,7 @@ function CommitRow({
               <div key={lane} className="absolute inset-y-0" style={{ left: laneX(lane) - 0.75, width: 1.5, background: paint(color) }} />
             ))}
           </div>
-          <div className="min-w-0 flex-1 whitespace-pre-wrap break-words pb-2 pl-5 text-[11px] text-text-dim">{commit.body}</div>
+          <div className="min-w-0 flex-1 whitespace-pre-wrap break-words pb-2 pl-5 text-sm text-muted">{commit.body}</div>
         </div>
       )}
     </div>
@@ -421,9 +406,9 @@ function RefPill({ name }: { name: string }): JSX.Element {
   const label = head ? 'HEAD' : name.replace(/^tag: /, '')
   const tone = head
     ? 'border-accent/60 text-accent'
-    : name.startsWith('tag: ') ? 'border-warning/50 text-warning' : 'border-link/40 text-link'
+    : name.startsWith('tag: ') ? 'border-warning/50 text-warning' : 'border-info/40 text-info'
   return (
-    <span className={clsx('min-w-0 max-w-[160px] truncate rounded border px-1 font-mono text-[10px] leading-4', tone)} title={name}>
+    <span className={clsx('min-w-0 max-w-[160px] truncate rounded border px-1 font-mono text-xs leading-4', tone)} title={name}>
       {label}
     </span>
   )
@@ -454,7 +439,7 @@ function GraphCell({ row, width, merge }: { row: GraphRow; width: number; merge:
           cx={x}
           cy={mid}
           r={merge ? 3 : 4}
-          fill={merge ? 'var(--color-surface)' : paint(row.color)}
+          fill={merge ? 'var(--bg-surface)' : paint(row.color)}
           stroke={paint(row.color)}
           strokeWidth={1.5}
         />

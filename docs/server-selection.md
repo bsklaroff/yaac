@@ -150,8 +150,8 @@ window shows it in three cases, all the same page:
   back: Connect, or Start for a stopped install;
 - a Mac with no `yaac`, or with no install and nothing selected: it leads
   with the two installs to set up;
-- the user opens it, from the SPA's Servers button in the rail, the server
-  badge in the sidebar header, or the tray: it covers the server's page,
+- the user opens it, from the yaac menu's Servers item, the server badge
+  in the sidebar header, or the tray: it covers the server's page,
   whose events and forwards keep running, and "Back to" that server
   uncovers it as it was, without reloading it.
 

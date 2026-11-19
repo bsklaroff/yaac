@@ -1,15 +1,15 @@
 import type { JSX } from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
+import { YConfirm } from '#ui'
 
 
 const URL = 'https://github.com/acme/widgets.git'
 
-function renderDialog(props: Partial<Parameters<typeof ConfirmDialog>[0]> = {}): { onConfirm: ReturnType<typeof vi.fn> } {
+function renderDialog(props: Partial<Parameters<typeof YConfirm>[0]> = {}): { onConfirm: ReturnType<typeof vi.fn> } {
   const onConfirm = vi.fn()
   render(
-    <ConfirmDialog
+    <YConfirm
       open
       onOpenChange={() => {}}
       title="Remove?"
@@ -21,7 +21,7 @@ function renderDialog(props: Partial<Parameters<typeof ConfirmDialog>[0]> = {}):
   return { onConfirm }
 }
 
-describe('ConfirmDialog', () => {
+describe('YConfirm', () => {
   it('confirms directly when no confirmText is set', () => {
     const { onConfirm } = renderDialog()
     const confirm = screen.getByRole<HTMLButtonElement>('button', { name: 'Delete' })
@@ -76,12 +76,12 @@ describe('ConfirmDialog', () => {
       confirmText: URL,
       onConfirm,
     }
-    const { rerender } = render(<ConfirmDialog open {...props} />)
+    const { rerender } = render(<YConfirm open {...props} />)
     fireEvent.change(screen.getByRole('textbox'), { target: { value: URL } })
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Delete' }).disabled).toBe(false)
 
-    rerender(<ConfirmDialog open={false} {...props} />)
-    rerender(<ConfirmDialog open {...props} />)
+    rerender(<YConfirm open={false} {...props} />)
+    rerender(<YConfirm open {...props} />)
     expect(screen.getByRole<HTMLInputElement>('textbox').value).toBe('')
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Delete' }).disabled).toBe(true)
   })
@@ -93,7 +93,7 @@ describe('ConfirmDialog', () => {
         <>
           <button type="button">A</button>
           {withB && <button type="button">B</button>}
-          <ConfirmDialog open={open} {...props} />
+          <YConfirm open={open} {...props} />
         </>
       )
     }

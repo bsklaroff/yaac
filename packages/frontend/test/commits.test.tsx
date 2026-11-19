@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import { MAX_LOG_COMMITS, type GitLogCommit, type WorkspaceChanges, type WorkspaceGitLog } from '@yaac/shared/types'
 import { WorkspaceCommits } from '#components/WorkspaceCommits'
-import { GitStatusBar } from '#components/GitStatusBar'
+import { GitStatusRows, GitTopBarSummary } from '#components/GitStatus'
 import { COMMITS_TARGET, layoutGraph } from '#lib/commits'
 import { changesTarget } from '#lib/files'
 import { useUiStore } from '#lib/store'
@@ -13,7 +13,7 @@ import {
 
 /**
  * The Commits pane: the graph's lanes, the list beside it, the base branch
- * picker, and the git status strip's way into it.
+ * picker, and the git status summaries' ways into it.
  */
 
 const COMMITS = 'GET /api/workspace/s1/commits'
@@ -148,9 +148,9 @@ describe('WorkspaceCommits', () => {
     expect(screen.queryByTitle('main')).toBeNull()
     expect(screen.queryByTitle('origin/agent/y')).toBeNull()
     const row = (subject: string): HTMLElement => screen.getByTitle(subject).closest<HTMLElement>('div')!
-    expect(row('landed on main').className).toContain('text-text-faint')
-    expect(row('first of ours').className).not.toContain('text-text-faint')
-    expect(row('the fork point').className).not.toContain('text-text-faint')
+    expect(row('landed on main').className).toContain('text-subtle')
+    expect(row('first of ours').className).not.toContain('text-subtle')
+    expect(row('the fork point').className).not.toContain('text-subtle')
     expect(within(row('second of ours')).getByText('a200000')).toBeTruthy()
 
     // Older pages up to the cap the route takes, and no further.
@@ -238,16 +238,24 @@ describe('WorkspaceCommits', () => {
   })
 })
 
-describe('GitStatusBar', () => {
+describe('git status summaries', () => {
+  // The top bar says it in few words, the Details pane in a sentence; both
+  // open the Commits pane.
   it('opens the Commits pane from how far HEAD is from its base', async () => {
     const changes: WorkspaceChanges = {
       base: 'f', work: 'w', baseResolved: true, files: [], truncated: false, readMs: 0,
       branch: 'main', comparison: { ref: 'origin/main', ahead: 2, behind: 1 },
     }
     server.route('GET /api/workspace/s1/changes', changes)
-    renderWithClient(<GitStatusBar workspaceId="s1" />)
-    await waitFor(() => expect(screen.getByTitle('Review commits').textContent).toContain('2 commits ahead of, 1 commit behind origin/main'))
+    renderWithClient(<><GitTopBarSummary workspaceId="s1" /><GitStatusRows workspaceId="s1" /></>)
+    await waitFor(() => expect(screen.getByTitle('Review commits').textContent).toBe('2 ahead, 1 behind origin/main'))
+    expect(screen.getByText(/2 commits ahead of/).textContent).toBe('2 commits ahead of, 1 commit behind origin/main')
+    expect(screen.getByText('No uncommitted changes')).toBeTruthy()
     fireEvent.click(screen.getByTitle('Review commits'))
+    expect(useUiStore.getState().activeTabs.s1).toBe(COMMITS_TARGET)
+
+    useUiStore.setState({ activeTabs: {} })
+    fireEvent.click(screen.getByRole('button', { name: 'Commits' }))
     expect(useUiStore.getState().activeTabs.s1).toBe(COMMITS_TARGET)
   })
 
@@ -257,7 +265,8 @@ describe('GitStatusBar', () => {
       base: start, work: 'w', baseResolved: true, files: [], truncated: false, readMs: 0,
       branch: start, comparison: { ref: start, ahead: 3, behind: 0 },
     } satisfies WorkspaceChanges)
-    renderWithClient(<GitStatusBar workspaceId="s1" />)
-    await waitFor(() => expect(screen.getByTitle('Review commits').textContent).toBe('3 commits ahead of f000000'))
+    renderWithClient(<><GitTopBarSummary workspaceId="s1" /><GitStatusRows workspaceId="s1" /></>)
+    await waitFor(() => expect(screen.getByTitle('Review commits').textContent).toBe('3 ahead of f000000'))
+    expect(screen.getByText(/3 commits ahead of/).textContent).toBe('3 commits ahead of f000000')
   })
 })

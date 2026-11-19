@@ -2,10 +2,7 @@ import { useState, type FormEvent, type JSX } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { DeleteIcon } from '#lib/icons'
 import { api } from '#lib/api'
-import { SectionLabel } from '#components/settings/Field'
-
-const ROW = 'flex items-center gap-2 rounded-md bg-bg px-2.5 py-1.5 font-mono text-xs'
-const INPUT = 'rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text outline-none focus:border-border-strong'
+import { YButton, YInput, YRowFrame, YSettingRow } from '#ui'
 
 /**
  * A project's cache volumes: named directories that persist across its
@@ -33,60 +30,62 @@ export function CacheVolumes({ projectId, volumes, readOnly }: {
   const entries = Object.entries(volumes)
 
   return (
-    <div>
-      <SectionLabel>Cache volumes</SectionLabel>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-        Directories that persist across workspaces, such as a package manager&apos;s cache, each
-        mounted at an absolute path in the workspace. Applies to workspaces created after saving.
-      </p>
-
-      <div className="mt-3 space-y-1">
-        {entries.length === 0 && <div className={ROW}><span className="text-text-faint">None</span></div>}
+    <YSettingRow
+      stacked
+      label="Cache volumes"
+      hint={'Directories that persist across workspaces, such as a package manager\'s cache, each '
+        + 'mounted at an absolute path in the workspace. Applies to workspaces created after saving.'}
+    >
+      {entries.length === 0 && <p className="text-md text-subtle">None</p>}
+      <div className="divide-y divide-line">
         {entries.map(([key, path]) => (
-          <div key={key} className={ROW}>
-            <span className="shrink-0 text-text">{key}</span>
-            <span className="flex-1 truncate text-text-faint">{path}</span>
-            {!readOnly && (
-              <button
+          <YRowFrame
+            key={key}
+            label={key}
+            actionsShown
+            actions={!readOnly && (
+              <YButton
+                variant="ghost"
+                size="sm"
+                icon={DeleteIcon}
                 onClick={() => save.mutate(Object.fromEntries(entries.filter(([k]) => k !== key)))}
                 disabled={save.isPending}
                 aria-label={`Remove ${key}`}
-                className="shrink-0 text-text-faint transition hover:text-text disabled:opacity-50"
-              >
-                <DeleteIcon size={12} />
-              </button>
+              />
             )}
-          </div>
+            className="min-h-8 font-mono text-md"
+          >
+            <span className="shrink-0 text-text">{key}</span>
+            <span className="flex-1 truncate text-subtle">{path}</span>
+          </YRowFrame>
         ))}
       </div>
 
-      {!readOnly && <form onSubmit={submit} className="mt-3 flex gap-2">
-        <input
+      {!readOnly && <form onSubmit={submit} className="mt-2 flex gap-2">
+        <YInput
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="pip-cache"
           aria-label="Cache volume name"
-          className={`w-32 ${INPUT}`}
+          className="w-32 font-mono"
         />
-        <input
+        <YInput
           value={at}
           onChange={(e) => setAt(e.target.value)}
           placeholder="/home/yaac/.cache/pip"
           aria-label="Cache volume path"
-          className={`flex-1 ${INPUT}`}
+          className="flex-1 font-mono"
         />
-        <button
+        <YButton
           type="submit"
           aria-label="Add cache volume"
           disabled={save.isPending || name.trim() === '' || at.trim() === ''}
-          className="rounded-md bg-surface-3 px-3 py-1 text-xs font-medium text-text transition
-            hover:bg-border-strong disabled:opacity-50"
         >
           Add
-        </button>
+        </YButton>
       </form>}
 
-      {save.error && <p className="mt-2 text-xs text-red-400">{save.error.message}</p>}
-    </div>
+      {save.error && <p className="mt-2 text-md text-danger">{save.error.message}</p>}
+    </YSettingRow>
   )
 }

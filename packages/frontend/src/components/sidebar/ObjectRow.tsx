@@ -1,9 +1,11 @@
 import type { JSX, ReactNode } from 'react'
 import clsx from 'clsx'
 import { ChevronIcon, RunIcon, type Icon } from '#lib/icons'
-import { RowMenu, type RowMenuItem } from '#components/sidebar/RowMenu'
+import type { RowMenuItem } from '#components/sidebar/RowMenu'
+import { SidebarRow } from '#components/sidebar/SidebarRow'
 import { useUiStore, type SelectedObject } from '#lib/store'
 import { useReadOnly } from '#lib/viewer'
+import { YButton } from '#ui'
 
 const KIND_LABEL: Record<SelectedObject['kind'], string> = { routine: 'Routine', workflow: 'Workflow', site: 'Site' }
 
@@ -49,59 +51,57 @@ export function ObjectRow({ icon: RowIcon, name, detail, object, projectId, item
   const openObject = useUiStore((s) => s.openObject)
   const readOnly = useReadOnly()
   return (
-    <div className="group relative mx-2">
-      {runs !== undefined && (
-        <button
-          type="button"
-          onClick={() => runs.onToggle(!runs.expanded)}
-          aria-label={runs.expanded ? `Hide ${name}'s runs` : `Show ${name}'s runs`}
-          aria-expanded={runs.expanded}
-          className="absolute left-0 top-1.5 flex h-5 w-4 items-center justify-center text-text-faint transition hover:text-text"
-        >
-          <ChevronIcon size={11} className={clsx('transition-transform', runs.expanded && 'rotate-90')} />
-        </button>
-      )}
-      <button
-        type="button"
-        onClick={() => openObject(projectId, object)}
-        disabled={readOnly && object.kind === 'routine'}
-        className={clsx('flex w-full flex-col gap-0.5 rounded-lg py-1.5 pl-4 pr-2.5 text-left text-sm transition',
-          selected ? 'bg-surface-2' : 'hover:bg-surface-2/60')}
-      >
-        <span className={clsx('flex items-center gap-2 max-md:pr-16', action !== undefined ? 'group-hover:pr-14' : 'group-hover:pr-8')}>
-          <RowIcon size={11} className="shrink-0 text-text-faint" />
-          <span className="truncate text-text-dim">{name}</span>
-          {failure !== undefined && (
-            <span role="img" aria-label={`Last run failed: ${failure}`} title={failure} className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger" />
-          )}
-          {runs !== undefined && (runs.live > 0 || runs.limit !== undefined) && (
-            <span
-              className={clsx('shrink-0 text-xs', runs.limit !== undefined && runs.live >= runs.limit ? 'text-amber-400/80' : 'text-text-faint/70')}
-              title={runs.limit !== undefined ? `${runs.live} running of a limit of ${runs.limit}` : `${runs.live} running`}
-            >
-              ({runs.live}{runs.limit !== undefined && `/${runs.limit}`})
-            </span>
-          )}
-          {runs !== undefined && runs.died > 0 && <span className="shrink-0 text-xs text-danger">· {runs.died} died</span>}
-        </span>
-        <span className="flex items-center gap-2 text-xs text-text-faint">{detail}</span>
-      </button>
-      {action !== undefined && !readOnly && (
-        <button
-          type="button"
-          onClick={action.onClick}
-          title={action.label}
-          aria-label={`${action.label}: ${name}`}
-          className="pointer-events-none absolute right-8 top-2 flex h-5 w-5 items-center justify-center rounded text-text-faint
-            opacity-0 transition hover:bg-surface-3 hover:text-accent group-hover:pointer-events-auto group-hover:opacity-100
-            focus-visible:pointer-events-auto focus-visible:opacity-100 max-md:pointer-events-auto max-md:right-10 max-md:h-7
-            max-md:w-7 max-md:opacity-100"
-        >
-          <RunIcon size={12} />
-        </button>
-      )}
-      <RowMenu label={`${KIND_LABEL[object.kind]} actions`} items={items} />
+    <>
+      <SidebarRow
+        label={name}
+        onSelect={readOnly && object.kind === 'routine' ? undefined : () => openObject(projectId, object)}
+        selected={selected}
+        className="pl-4"
+        lead={runs !== undefined && (
+          <YButton
+            variant="bare"
+            onClick={() => runs.onToggle(!runs.expanded)}
+            aria-label={runs.expanded ? `Hide ${name}'s runs` : `Show ${name}'s runs`}
+            aria-expanded={runs.expanded}
+            className="pointer-events-auto absolute -left-4 -top-0.5 flex h-5 w-4 items-center justify-center text-subtle
+              transition hover:text-text"
+          >
+            <ChevronIcon size={11} className={clsx('transition-transform', runs.expanded && 'rotate-90')} />
+          </YButton>
+        )}
+        mark={<RowIcon size={11} className="text-subtle" />}
+        title={name}
+        trailing={(
+          <>
+            {failure !== undefined && (
+              <span role="img" aria-label={`Last run failed: ${failure}`} title={failure} className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger" />
+            )}
+            {runs !== undefined && (runs.live > 0 || runs.limit !== undefined) && (
+              <span
+                className={clsx('shrink-0', runs.limit !== undefined && runs.live >= runs.limit ? 'text-warning/80' : 'text-subtle/70')}
+                title={runs.limit !== undefined ? `${runs.live} running of a limit of ${runs.limit}` : `${runs.live} running`}
+              >
+                ({runs.live}{runs.limit !== undefined && `/${runs.limit}`})
+              </span>
+            )}
+            {runs !== undefined && runs.died > 0 && <span className="shrink-0 text-danger">{runs.died} died</span>}
+          </>
+        )}
+        meta={detail}
+        actions={action !== undefined && !readOnly && (
+          <YButton
+            variant="ghost"
+            size="sm"
+            icon={RunIcon}
+            onClick={action.onClick}
+            title={action.label}
+            aria-label={`${action.label}: ${name}`}
+            className="max-md:size-7"
+          />
+        )}
+        menu={{ label: `${KIND_LABEL[object.kind]} actions`, items }}
+      />
       {dialogs}
-    </div>
+    </>
   )
 }

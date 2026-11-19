@@ -20,10 +20,12 @@ const project = (id: string): ProjectSummary =>
   ({ id, name: id, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [], scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true })
 
 const NAMES = ['alpha', 'beta', 'gamma']
-const chips = (): HTMLElement[] => screen.getAllByRole('button').filter((b) => NAMES.includes(b.title))
-const shown = (): string[] => chips().map((b) => b.title)
+/** The project tiles, each a button named for its project. */
+const chips = (): HTMLElement[] => screen.getAllByRole('button').filter((b) => NAMES.includes(b.ariaLabel ?? ''))
+const shown = (): string[] => chips().map((b) => b.ariaLabel ?? '')
+const tile = (name: string): HTMLElement => screen.getByRole('button', { name })
 
-/** jsdom lays nothing out, so each chip gets a 40px box by its current place
+/** jsdom lays nothing out, so each tile gets a 40px box by its current place
  *  in the rail, 8px apart, and the rail a 64px-wide column. */
 function stubLayout(): void {
   for (const chip of chips()) {
@@ -36,9 +38,9 @@ function stubLayout(): void {
   if (rail) rail.getBoundingClientRect = () => ({ top: 0, bottom: 600, left: 0, right: 64, x: 0, y: 0, width: 64, height: 600, toJSON: () => ({}) })
 }
 
-/** Press `name`'s chip, then move to and release at `clientY`. */
+/** Press `name`'s tile, then move to and release at `clientY`. */
 function drag(name: string, clientY: number): void {
-  fireEvent.pointerDown(screen.getByTitle(name), { pointerType: 'mouse', button: 0, clientX: 30, clientY: chips().findIndex((c) => c.title === name) * 48 + 20 })
+  fireEvent.pointerDown(tile(name), { pointerType: 'mouse', button: 0, clientX: 30, clientY: shown().indexOf(name) * 48 + 20 })
   fireEvent.pointerMove(window, { clientX: 30, clientY })
   fireEvent.pointerUp(window, { clientX: 30, clientY })
 }
@@ -49,7 +51,8 @@ describe('ProjectRail', () => {
     const client = testQueryClient()
     const onSelect = vi.fn()
     const rail = (ids: string[]): JSX.Element => (
-      <ProjectRail projects={ids.map(project)} ops={[]} activeProjectId="alpha" attentionByProject={{}} onSelect={onSelect} />
+      <ProjectRail projects={ids.map(project)} ops={[]} activeProjectId="alpha" attentionByProject={{}} tiles={{}}
+        homeActive={false} onHome={() => {}} onSelect={onSelect} />
     )
     const { rerender } = renderWithClient(rail(NAMES), client)
     const snapshot = (ids: string[]): void => rerender(<QueryClientProvider client={client}>{rail(ids)}</QueryClientProvider>)
@@ -67,10 +70,10 @@ describe('ProjectRail', () => {
     // Dropped in its own slot, nothing is saved, and the click the browser
     // fires on release does not select. A keyboard click does.
     drag('alpha', 50)
-    fireEvent.click(screen.getByTitle('alpha'), { detail: 1 })
+    fireEvent.click(tile('alpha'), { detail: 1 })
     expect(fetch.called(ORDER)).toHaveLength(1)
     expect(onSelect).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByTitle('alpha'), { detail: 0 })
+    fireEvent.click(tile('alpha'), { detail: 0 })
     expect(onSelect).toHaveBeenCalledWith('alpha')
 
     // Two quick drops: the second save waits for the first, and the first

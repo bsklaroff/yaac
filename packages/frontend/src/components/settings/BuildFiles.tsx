@@ -5,6 +5,7 @@ import { FileEditor } from '#components/settings/FileEditor'
 import { languageForPath } from '#lib/highlight'
 import { DeleteIcon, RenameIcon } from '#lib/icons'
 import type { BuildFilesApi } from '#lib/buildFilesApi'
+import { YButton, YFileInput, YInput } from '#ui'
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -98,104 +99,81 @@ export function BuildFiles({ filesApi, title, readOnly = false }: {
   }
 
   if (files === undefined && !loadError) {
-    return <p className="text-xs text-text-faint">Loading…</p>
+    return <p className="text-md text-subtle">Loading…</p>
   }
 
   return (
-    <div className="flex flex-col gap-2 text-xs">
+    <div className="flex flex-col gap-2 text-md">
       {files !== undefined && files.length > 0 && (
-        <div className="overflow-hidden rounded-md border border-hairline-soft">
+        <div className="divide-y divide-line">
           {files.map((f) => (
             <div
               key={f.path}
-              className={clsx(
-                'flex items-center gap-2 px-2.5 py-1.5 transition',
-                f.path === selected ? 'bg-surface-3' : 'hover:bg-surface-2/60',
-              )}
+              className={clsx('flex min-h-8 items-center gap-2', f.path === selected ? 'bg-selected' : !f.binary && 'hover:bg-hover')}
             >
-              <button
-                type="button"
+              <YButton
+                variant="bare"
                 disabled={f.binary}
                 onClick={() => setSelected(f.path === selected ? null : f.path)}
                 title={f.binary ? 'Binary files can be replaced by re-uploading' : `Open ${f.path}`}
                 className={clsx(
-                  'min-w-0 flex-1 truncate text-left font-mono',
-                  f.binary ? 'cursor-default text-text-faint' : 'text-text-dim hover:text-text',
+                  'min-h-8 min-w-0 flex-1 self-stretch truncate text-left font-mono disabled:opacity-100',
+                  f.binary ? 'text-subtle' : f.path === selected ? 'text-text' : 'text-muted',
                 )}
               >
                 {f.path}
-              </button>
-              <span className="shrink-0 font-mono text-[10px] text-text-faint">
+              </YButton>
+              <span className="shrink-0 font-mono text-xs text-subtle">
                 {f.binary && 'binary · '}{formatSize(f.size)}
               </span>
-              {!readOnly && <><button
-                type="button"
+              {!readOnly && <><YButton
+                variant="ghost"
+                size="sm"
+                icon={RenameIcon}
                 onClick={() => renameFile(f.path)}
                 title={`Rename ${f.path}`}
                 aria-label={`Rename ${f.path}`}
-                className="shrink-0 rounded p-0.5 text-text-faint transition hover:text-text"
-              >
-                <RenameIcon size={12} />
-              </button>
-              <button
-                type="button"
+              />
+              <YButton
+                variant="ghost"
+                size="sm"
+                icon={DeleteIcon}
                 onClick={() => removeFile(f.path)}
                 title={`Delete ${f.path}`}
                 aria-label={`Delete ${f.path}`}
-                className="shrink-0 rounded p-0.5 text-text-faint transition hover:text-red-400"
-              >
-                <DeleteIcon size={12} />
-              </button></>}
+              /></>}
             </div>
           ))}
         </div>
       )}
       {files !== undefined && files.length === 0 && (
-        <p className="text-text-faint">No files yet.</p>
+        <p className="text-subtle">No files yet.</p>
       )}
 
       {!readOnly && <><div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={op.isPending}
-          className="rounded-md bg-surface-3 px-2.5 py-1 text-[11px] font-medium text-text transition
-            hover:bg-border-strong disabled:opacity-50"
-        >
+        <YButton size="sm" onClick={() => fileInputRef.current?.click()} disabled={op.isPending}>
           Upload files
-        </button>
-        <button
-          type="button"
-          onClick={() => folderInputRef.current?.click()}
-          disabled={op.isPending}
-          className="rounded-md bg-surface-3 px-2.5 py-1 text-[11px] font-medium text-text transition
-            hover:bg-border-strong disabled:opacity-50"
-        >
+        </YButton>
+        <YButton size="sm" onClick={() => folderInputRef.current?.click()} disabled={op.isPending}>
           Upload folder
-        </button>
-        {progress && <span className="text-[11px] text-text-faint">{progress}</span>}
-        <input
+        </YButton>
+        {progress && <span className="text-sm text-subtle">{progress}</span>}
+        <YFileInput
           ref={fileInputRef}
-          type="file"
           multiple
-          hidden
           aria-label="Upload files"
           onChange={(e) => onPickFiles(e.currentTarget, (f) => f.name)}
         />
-        <input
+        <YFileInput
           ref={folderInputRef}
-          type="file"
-          hidden
+          directory
           aria-label="Upload folder"
-          // Non-standard but universal: makes the picker select a directory,
-          // with each file carrying its folder-relative path.
-          {...{ webkitdirectory: '' }}
           onChange={(e) => onPickFiles(e.currentTarget, (f) => f.webkitRelativePath || f.name)}
         />
       </div>
       {/* A web page cannot make the OS picker show dotfiles, so tell the
           user how. Folder uploads include hidden files anyway. */}
-      <p className="text-[10px] leading-relaxed text-text-faint">
+      <p className="text-xs leading-relaxed text-subtle">
         Dotfiles are hidden in the file picker — press{' '}
         <kbd className="font-mono">⌘⇧.</kbd> (macOS) or <kbd className="font-mono">Ctrl+H</kbd>{' '}
         (Linux) there to show them, or type the name. Folder uploads include hidden files
@@ -203,23 +181,16 @@ export function BuildFiles({ filesApi, title, readOnly = false }: {
       </p>
 
       <form onSubmit={createFile} className="flex gap-2">
-        <input
+        <YInput
           name="path"
           placeholder="new file path, e.g. nvim/init.lua"
           autoComplete="off"
-          className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono
-            text-xs text-text outline-none focus:border-border-strong"
+          className="flex-1 font-mono"
         />
-        <button
-          type="submit"
-          className="shrink-0 rounded-md bg-surface-3 px-2.5 text-[11px] font-medium text-text transition
-            hover:bg-border-strong"
-        >
-          New file
-        </button>
+        <YButton type="submit">New file</YButton>
       </form></>}
 
-      {error && <p className="whitespace-pre-wrap text-red-400">{error.message}</p>}
+      {error && <p className="whitespace-pre-wrap text-danger">{error.message}</p>}
 
       {selected && (
         <FileEditor

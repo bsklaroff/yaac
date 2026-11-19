@@ -2,9 +2,9 @@ import {
   useId, useLayoutEffect, useRef, useState,
   type JSX, type KeyboardEvent, type RefObject, type TextareaHTMLAttributes,
 } from 'react'
-import { filterSuggestions, suggestionId, SuggestionList, type TypeaheadItem } from '#components/ui/Typeahead'
 import { useIsMobile } from '#lib/viewport'
 import type { AcpCommand, AcpEvent, AcpModel } from '@yaac/shared/acp'
+import { filterSuggestions, suggestionId, YSuggestionList, type YTypeaheadItem } from '#ui'
 
 /**
  * The chat composer's completion menu, as a TUI offers one: typing `/` lists
@@ -82,7 +82,7 @@ const MODEL_COMMAND: AcpCommand = { name: 'model', description: 'Switch the mode
 /** A command as a row. Its value drops a `$`, so the typed query ranks it as
  *  a prefix match; the menu lists one sigil's commands at a time, so values
  *  stay unique. */
-function commandItem(c: AcpCommand): TypeaheadItem {
+function commandItem(c: AcpCommand): YTypeaheadItem {
   return {
     value: c.name.replace(/^\$/, ''),
     label: commandText(c.name),
@@ -90,7 +90,7 @@ function commandItem(c: AcpCommand): TypeaheadItem {
   }
 }
 
-export function modelItem(m: AcpModel): TypeaheadItem {
+export function modelItem(m: AcpModel): YTypeaheadItem {
   const detail = m.name !== undefined ? m.id : m.description
   return { value: m.id, label: m.name ?? m.id, ...(detail !== undefined ? { detail } : {}) }
 }
@@ -216,14 +216,14 @@ export function useComposerMenu({
 
   const menu = open
     ? (
-      <div className="mb-2 rounded-xl border border-border bg-surface p-1 shadow-sm">
-        <SuggestionList
+      <div className="mb-2 rounded-xl border border-line-strong bg-surface p-1 shadow-sm">
+        <YSuggestionList
           id={listId}
           rows={rows}
           active={active}
           onSelect={pick}
           onHover={(index) => setHighlight({ key, index })}
-          {...(at.kind === 'model' ? { tag: (item: TypeaheadItem) => item.value === models.current && 'current' } : {})}
+          {...(at.kind === 'model' ? { tag: (item: YTypeaheadItem) => item.value === models.current && 'current' } : {})}
           className="max-h-60"
         />
       </div>

@@ -1,8 +1,6 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
 import { useMutation } from '@tanstack/react-query'
-import { Popover } from '@base-ui/react/popover'
-import { PopoverPopup } from '#components/ui/menu'
 import { WarningIcon } from '#lib/icons'
 import { api } from '#lib/api'
 import { restartWorkspace } from '#lib/createWorkspace'
@@ -10,6 +8,8 @@ import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { useTeammateView } from '#lib/viewer'
 import { useSnapshot } from '#lib/useSnapshot'
 import type { ProjectSummary, ScratchDirSettings, WorkspaceListEntry } from '@yaac/shared/types'
+import { BADGE_TRIGGER } from '#components/ActionsBadge'
+import { YButton, YCheckbox, YPopover, YPopoverPopup } from '#ui'
 
 /**
  * Workspace-bar warning that some of the project's scratch dirs are
@@ -30,8 +30,7 @@ export function TrackedScratchDirsBadge({ workspace, project, className }: {
   const readOnly = useTeammateView()
   const provision = useProvisionWorkspace()
   const containerless = useSnapshot()?.driver === 'containerless'
-  const { ignoredTracked } = project.scratchDirs
-  const paths = (workspace.trackedScratchDirs ?? []).filter((p) => !ignoredTracked.includes(p))
+  const paths = shownScratchDirs(workspace, project)
   const update = useMutation({
     mutationFn: (json: Partial<ScratchDirSettings>) =>
       api.project[':projectId']['scratch-dirs'].$put({ param: { projectId: project.id }, json }),
@@ -58,26 +57,23 @@ export function TrackedScratchDirsBadge({ workspace, project, className }: {
     })
   }
   const ignore = (): void => {
-    update.mutate({ ignoredTracked: [...ignoredTracked, ...paths] })
+    update.mutate({ ignoredTracked: [...project.scratchDirs.ignoredTracked, ...paths] })
   }
   const listed = paths.map((p) => `${p}/`).join(', ')
   const one = paths.length === 1
 
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger
+    <YPopover.Root open={open} onOpenChange={setOpen}>
+      <YPopover.Trigger
         aria-label="Scratch directories tracked in git"
-        className={clsx(
-          'flex shrink-0 items-center gap-1 rounded bg-warning/15 px-1 py-0.5 text-xs font-medium text-warning transition',
-          className,
-        )}
+        className={clsx(BADGE_TRIGGER, 'bg-warning-soft text-warning', className)}
       >
         <WarningIcon size={12} />
         {paths.length === 1 ? paths[0] : `${paths.length} dirs`}
-      </Popover.Trigger>
-      <PopoverPopup side="bottom" align="end" sideOffset={4} className="max-w-xs">
-        <div className="px-2 pb-0.5 pt-1 text-[11px] font-medium text-warning">Tracked in git</div>
-        <p className="px-2 pb-1.5 text-xs leading-relaxed text-text-dim">
+      </YPopover.Trigger>
+      <YPopoverPopup side="bottom" align="end" sideOffset={4} className="max-w-xs">
+        <div className="px-2 pb-0.5 pt-1 text-sm font-medium text-warning">Tracked in git</div>
+        <p className="px-2 pb-1.5 text-md leading-relaxed text-muted">
           <code className="font-mono text-text">{listed}</code>{' '}
           {one ? 'is' : 'are'} tracked in git, but this project makes {one ? 'it a scratch dir' : 'them scratch dirs'},
           so {one ? 'its' : 'their'} contents aren&apos;t kept for a restart: a stop deletes them, committed files
@@ -88,23 +84,23 @@ export function TrackedScratchDirsBadge({ workspace, project, className }: {
         </p>
         {!readOnly && (
           <div className="flex flex-col gap-1.5 p-1">
-            <button
-              type="button"
-              disabled={pending}
-              onClick={keepInCheckout}
-              className="w-full rounded-md border border-border-strong bg-surface-3 px-2 py-1.5 text-xs font-medium
-                text-text transition hover:bg-border-strong disabled:opacity-50"
-            >
+            <YButton disabled={pending} onClick={keepInCheckout} className="w-full">
               Keep in the checkout and restart
-            </button>
-            <label className="flex items-center gap-1.5 px-1 text-[11px] text-text-dim">
-              <input type="checkbox" checked={false} disabled={pending} onChange={ignore} />
+            </YButton>
+            <YCheckbox checked={false} disabled={pending} onCheckedChange={ignore} className="px-1">
               Don&apos;t show again for this project
-            </label>
-            {error && <p className="px-1 text-xs text-red-400">{error.message}</p>}
+            </YCheckbox>
+            {error && <p className="px-1 text-md text-danger">{error.message}</p>}
           </div>
         )}
-      </PopoverPopup>
-    </Popover.Root>
+      </YPopoverPopup>
+    </YPopover.Root>
   )
+}
+
+/** A workspace's tracked scratch dirs that the project has not been told to
+ *  stop showing ("Don't show again"). */
+export function shownScratchDirs(workspace: WorkspaceListEntry, project: ProjectSummary): string[] {
+  const tracked = workspace.trackedScratchDirs ?? []
+  return tracked.length === 0 ? [] : tracked.filter((p) => !project.scratchDirs.ignoredTracked.includes(p))
 }

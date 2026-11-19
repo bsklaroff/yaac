@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
-import clsx from 'clsx'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { ChatViewToggles } from '#components/ConversationView'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
 import { StatusMark, statusText } from '#components/StatusMark'
 import { PaneBarLeading, paneBarClass } from '#components/PaneBar'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { EmptyState } from '#components/ui/EmptyState'
 import { api } from '#lib/api'
 import { workspaceAgentLabel } from '#lib/agentLabel'
 import { RestartIcon, TerminalIcon } from '#lib/icons'
@@ -20,10 +17,7 @@ import { useReadOnly, useTeammateName, useWhoami } from '#lib/viewer'
 import { useIsMobile } from '#lib/viewport'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
 import type { StoppedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
-
-const PRIMARY = 'flex h-8 items-center gap-1.5 rounded-full bg-text px-3.5 text-xs font-medium text-bg hover:opacity-90'
-const SECONDARY = 'flex h-8 items-center rounded-full border border-border px-3.5 text-xs text-text-dim '
-  + 'hover:bg-surface-2 hover:text-text'
+import { YButton, YConfirm, YEmptyState } from '#ui'
 
 /** What the read-only pane shows: a teammate's running workspace, or any
  *  stopped one (the user's own or a teammate's). */
@@ -82,7 +76,7 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
     <main className="@container flex h-full min-w-0 flex-col">
       <header className={paneBarClass(isMobile)}>
         <PaneBarLeading />
-        <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-text-dim">{title}</span>
+        <span className="titlebar-drag min-w-0 flex-1 truncate font-medium text-muted">{title}</span>
         {subject && <ContainerlessBadge />}
       </header>
       {subject && showsLogs && stopped ? (
@@ -91,13 +85,8 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
           <WorkspaceLogs key={stopped.workspaceId} workspaceId={stopped.workspaceId} />
           {!readOnly && stopped.site === undefined && (
             <div className="flex shrink-0 items-center justify-end gap-2 p-2">
-              <button type="button" onClick={() => rerun(stopped, true)} className={SECONDARY}>
-                Rerun interactively
-              </button>
-              <button type="button" onClick={() => rerun(stopped, false)} className={PRIMARY}>
-                <RestartIcon size={12} />
-                Rerun
-              </button>
+              <YButton onClick={() => rerun(stopped, true)}>Rerun interactively</YButton>
+              <YButton variant="primary" icon={RestartIcon} onClick={() => rerun(stopped, false)}>Rerun</YButton>
             </div>
           )}
         </>
@@ -116,21 +105,17 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
               <div className="flex items-center p-2">
                 <ChatViewToggles />
                 {stopped && !readOnly && (
-                  <button
-                    type="button"
-                    onClick={() => setConfirmRestart(true)}
-                    className={clsx('ml-auto', PRIMARY)}
-                  >
-                    <RestartIcon size={12} />
+                  <YButton variant="primary" icon={RestartIcon} onClick={() => setConfirmRestart(true)} className="ml-auto">
                     Restart
-                  </button>
+                  </YButton>
+
                 )}
               </div>
             }
           />
         </>
       ) : (
-        <EmptyState
+        <YEmptyState
           className="flex-1"
           icon={TerminalIcon}
           title="No workspace selected"
@@ -138,7 +123,7 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
         />
       )}
       {stopped && (
-        <ConfirmDialog
+        <YConfirm
           open={confirmRestart}
           onOpenChange={setConfirmRestart}
           destructive={false}
@@ -179,11 +164,11 @@ function Facts({ subject, owner }: { subject: ReadOnlySubject; owner?: string })
     if (e.stepsOutcome) facts.push(['Steps', e.stepsOutcome])
   }
   return (
-    <dl className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-b border-hairline-soft px-2 pb-2 pt-1 text-xs">
+    <dl className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-b border-line px-3 pb-2 pt-1 text-md">
       {facts.map(([term, value]) => (
         <div key={term} className="flex min-w-0 gap-1.5">
-          <dt className="shrink-0 text-text-faint">{term}</dt>
-          <dd className="min-w-0 text-text-dim">{value}</dd>
+          <dt className="shrink-0 text-subtle">{term}</dt>
+          <dd className="min-w-0 text-muted">{value}</dd>
         </div>
       ))}
     </dl>

@@ -1,8 +1,8 @@
 /*
- * Verifies the Server health overlay (docs/server-health.md): the rail's
- * pulse button (the projects screen's row on mobile) opens it, it shows the
+ * Verifies the Server health overlay (docs/server-health.md): the yaac
+ * menu's item (the projects screen's row on mobile) opens it, it shows the
  * totals with their meters, the infrastructure and workspace tables, and on
- * a k8s server the nodes, and hovering a sparkline shows a tooltip once the
+ * a k8s server the nodes, and hovering a history chart shows a tooltip once the
  * server holds two minutes of history. Screenshots desktop and mobile to
  * $SCREENSHOT_DIR (default /tmp/yaac-shots).
  *
@@ -22,9 +22,16 @@ try {
   for (const [name, viewport] of [['desktop', { width: 1500, height: 900 }], ['mobile', { width: 390, height: 800 }]]) {
     const page = await browser.newPage({ viewport })
     await page.goto(origin)
-    const open = page.getByRole('button', { name: 'Server health' })
-    await open.first().waitFor({ timeout: 20_000 })
-    await open.first().click()
+    // On desktop it opens from the yaac menu; on a phone, from the projects
+    // screen's row.
+    if (name === 'desktop') {
+      await page.getByRole('button', { name: 'yaac menu' }).click()
+      await page.getByRole('menuitem', { name: 'Server health' }).click()
+    } else {
+      const open = page.getByRole('button', { name: 'Server health' })
+      await open.first().waitFor({ timeout: 20_000 })
+      await open.first().click()
+    }
 
     const dialog = page.getByRole('dialog')
     await dialog.getByText(report.driver === 'k8s' ? 'Cluster' : 'Host', { exact: true }).waitFor({ timeout: 15_000 })

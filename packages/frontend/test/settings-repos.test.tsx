@@ -76,7 +76,7 @@ describe('ReposSettings', () => {
     expect(within(row('repo-loose')).getByLabelText('Git credential')).toBeTruthy()
     expect(row('repo-api').textContent).toContain('Linked by alpha. Credential: gh.')
     // A repo shared with the caller is its owner's to change.
-    expect(within(row('repo-hers')).getByText('HOSTED BY YAAC')).toBeTruthy()
+    expect(within(row('repo-hers')).getByText('Hosted by yaac')).toBeTruthy()
     expect(within(row('repo-hers')).getByText('owned by Ada')).toBeTruthy()
     expect(within(row('repo-hers')).queryByRole('button', { name: 'Manage' })).toBeNull()
     // A deleted one names the workspaces that keep its objects on disk.
@@ -94,10 +94,8 @@ describe('ReposSettings', () => {
     show()
     await waitFor(() => expect(row('repo-api')).toBeTruthy())
 
-    // The focused repo stands out, open on its picker, which leaves out the
-    // credential it has.
-    expect(row('repo-api').className).toMatch(/ring-accent/)
-    expect(row('repo-loose').className).not.toMatch(/ring-accent/)
+    // The focused repo opens on its picker, which leaves out the credential
+    // it has.
     await waitFor(() => expect(within(row('repo-api')).getByRole('button', { name: 'Assign' })).toBeTruthy())
 
     const loose = row('repo-loose')
@@ -137,8 +135,8 @@ describe('ReposSettings', () => {
     await waitFor(() => expect(branch.value).toBe('agent/x'))
     expect(server.called('PUT /api/repo/repo-api/default-branch').map((c) => c.body)).toEqual([{ branch: 'agent/x' }])
 
-    const guard = screen.getByRole<HTMLInputElement>('checkbox', { name: /Protect the default branch/ })
-    expect(guard.checked).toBe(true)
+    const guard = screen.getByRole('checkbox', { name: /Protect the default branch/ })
+    expect(guard.getAttribute('aria-checked')).toBe('true')
     fireEvent.click(guard)
     await waitFor(() => expect(server.called('PUT /api/repo/repo-api/default-branch-guard').map((c) => c.body))
       .toEqual([{ enabled: false }]))

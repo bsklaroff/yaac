@@ -1,7 +1,7 @@
 import { useState, type JSX } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { repoBranchesKey, setRepoDefaultBranch, setRepoDefaultBranchGuard, useRepoBranches } from '#lib/repoApi'
-import { TEXT_BUTTON } from '#components/ui/button'
+import { YButton, YCheckbox, YSelect } from '#ui'
 import { hostedCloneUrl } from '@yaac/shared/hosted-git'
 
 /**
@@ -45,38 +45,36 @@ export function HostedRemote({ repoId, name, guardDefaultBranch, readOnly, onCha
 
   return (
     <div>
-      <p className="text-[11px] leading-relaxed text-text-faint">
+      <p className="text-sm leading-relaxed text-subtle">
         yaac hosts this repository, and it is the only copy. Clone it with:
       </p>
-      <div className="mt-2 flex min-w-0 items-center gap-2 rounded-md bg-bg px-2.5 py-1.5">
-        <code title={url} className="min-w-0 flex-1 select-all truncate font-mono text-[11px] text-text-faint">
+      <div className="mt-2 flex min-w-0 items-center gap-2 bg-sunken px-2.5 py-1">
+        <code title={url} className="min-w-0 flex-1 select-all truncate font-mono text-sm text-subtle">
           git clone {url} {name}
         </code>
-        <button type="button" onClick={copy} className={TEXT_BUTTON}>{copied ? 'Copied' : 'Copy'}</button>
+        <YButton variant="secondary" size="sm" onClick={copy}>{copied ? 'Copied' : 'Copy'}</YButton>
       </div>
-      <label className="mt-3 flex items-center gap-2 text-[11px] text-text-dim">
+      <label className="mt-3 flex items-center gap-2 text-sm text-muted">
         Default branch
-        <select
+        <YSelect
           value={current ?? ''}
           disabled={readOnly || setDefault.isPending || branchData === undefined || branchData.branches.length === 0}
           onChange={(e) => setDefault.mutate(e.target.value)}
-          className="min-w-0 max-w-[240px] rounded-md border border-border bg-bg px-2 py-1 font-mono text-[11px] text-text
-            outline-none focus:border-border-strong disabled:opacity-60"
+          className="max-w-[240px] font-mono text-sm"
         >
           {options.map((b) => <option key={b} value={b}>{b}</option>)}
-        </select>
+        </YSelect>
       </label>
-      {setDefault.error && <p className="mt-2 text-xs text-red-400">{setDefault.error.message}</p>}
-      <label className="mt-3 flex items-center gap-1.5 text-[11px] text-text-dim">
-        <input
-          type="checkbox"
-          checked={guardDefaultBranch}
-          disabled={readOnly || guard.isPending}
-          onChange={(e) => guard.mutate(e.target.checked)}
-        />
+      {setDefault.error && <p className="mt-2 text-md text-danger">{setDefault.error.message}</p>}
+      <YCheckbox
+        checked={guardDefaultBranch}
+        disabled={readOnly || guard.isPending}
+        onCheckedChange={(on) => guard.mutate(on)}
+        className="mt-3"
+      >
         Protect the default branch: refuse pushes that delete it or rewrite its history
-      </label>
-      {guard.error && <p className="mt-2 text-xs text-red-400">{guard.error.message}</p>}
+      </YCheckbox>
+      {guard.error && <p className="mt-2 text-md text-danger">{guard.error.message}</p>}
     </div>
   )
 }

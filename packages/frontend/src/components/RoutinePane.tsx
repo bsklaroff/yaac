@@ -1,11 +1,8 @@
 import { useState, type JSX, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import clsx from 'clsx'
 import { keepPreviousData, useInfiniteQuery } from '@tanstack/react-query'
-import { Menu } from '@base-ui/react/menu'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { useRoutineActions } from '#components/sidebar/RoutineRows'
-import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { agentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { MoreIcon, RoutineIcon } from '#lib/icons'
@@ -16,9 +13,10 @@ import { timeUntil, useNow, useTimeZone } from '#lib/time'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
 import { formatDuration, formatInZone } from '@yaac/shared/schedule'
 import { PERMISSION_MODE_COPY, effortLabel, type RoutineEntry, type RoutineRunEntry } from '@yaac/shared/types'
-
-const BAR_BUTTON = 'no-drag flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-text-dim '
-  + 'transition hover:bg-surface-2 hover:text-text'
+import {
+  cn, YBadge, YButton, YEmptyState, YListRow, YMenu, YMenuItem, YMenuPopup, YPageBody, YSection, YSettingGroup, YSettingRow, YStatus,
+  type YStatusKind,
+} from '#ui'
 
 /**
  * A routine in the main pane (docs/routines.md), opened from its sidebar
@@ -41,52 +39,58 @@ export function RoutinePane({ routine, bar }: {
   const schedule = describeSchedule(routine.cron)
 
   return (
-    <div className="h-full overflow-y-auto bg-bg px-4 py-4">
+    <div className="flex h-full flex-col bg-surface">
       {bar !== null && createPortal(
         <>
           <span className="titlebar-drag flex min-w-0 flex-1 items-center gap-1.5">
-            <RoutineIcon size={12} className="shrink-0 text-text-faint" />
+            <RoutineIcon size={12} className="shrink-0 text-subtle" />
             <h2 className="min-w-0 truncate font-medium text-text">{routine.name}</h2>
             {actions.error !== null && <span className="truncate text-danger" title={actions.error}>{actions.error}</span>}
           </span>
           <ContainerlessBadge />
-          <button
-            type="button"
+          <YButton
+            variant="ghost"
+            size="sm"
             onClick={() => actions.setPaused(!routine.paused)}
             title={routine.paused ? 'Resume its schedule' : 'Stop starting runs until resumed'}
-            className={BAR_BUTTON}
+            className="no-drag"
           >
             {routine.paused ? 'Resume' : 'Pause'}
-          </button>
-          <button type="button" onClick={actions.run} title="Start a run now, outside the schedule" className={BAR_BUTTON}>
+          </YButton>
+          <YButton variant="ghost" size="sm" onClick={actions.run} title="Start a run now, outside the schedule" className="no-drag">
             Run now
-          </button>
-          <Menu.Root>
-            <Menu.Trigger aria-label="Routine actions" title="Routine actions" className={BAR_BUTTON}>
-              <MoreIcon size={14} />
-            </Menu.Trigger>
-            <MenuPopup side="bottom" align="end" sideOffset={4} className="min-w-[140px]">
-              <Menu.Item className={MENU_ITEM} onClick={actions.edit}>Edit…</Menu.Item>
-              <Menu.Item className={MENU_ITEM} onClick={actions.remove}>Delete…</Menu.Item>
-            </MenuPopup>
-          </Menu.Root>
+          </YButton>
+          <YMenu.Root>
+            <YMenu.Trigger
+              render={<YButton variant="ghost" size="sm" icon={MoreIcon} aria-label="Routine actions" title="Routine actions" className="no-drag" />}
+            />
+            <YMenuPopup side="bottom" align="end" sideOffset={4} className="min-w-[140px]">
+              <YMenuItem onClick={actions.edit}>Edit…</YMenuItem>
+              <YMenuItem onClick={actions.remove}>Delete…</YMenuItem>
+            </YMenuPopup>
+          </YMenu.Root>
           {actions.dialog}
         </>,
         bar,
       )}
-      <div className="mx-auto flex max-w-xl flex-col gap-5 text-xs">
-        <Section title="Schedule">
-          <p className="text-text">{schedule} <span className="text-text-faint">· {routine.timeZone}</span></p>
-          {schedule !== routine.cron && <p className="font-mono text-[11px] text-text-faint">{routine.cron}</p>}
-          <p className="text-text-dim">
-            {routine.paused ? 'Paused'
-              : `Next: ${routine.nextRuns.map((r) => formatInZone(new Date(r), routine.timeZone)).join(' · ')}`}
-          </p>
-          {routine.lastError !== undefined && <p className="text-danger">Last run failed: {routine.lastError}</p>}
-        </Section>
+      <YPageBody>
+        <YSection title="Schedule">
+          <YSettingGroup>
+            <Fact label={schedule} hint={schedule !== routine.cron && <span className="font-mono">{routine.cron}</span>}>
+              {routine.timeZone}
+            </Fact>
+            <YSettingRow label="Next runs">
+              {routine.paused ? <YBadge tone="warning">Paused</YBadge>
+                : <span className="text-md text-muted">{routine.nextRuns.map((r) => formatInZone(new Date(r), routine.timeZone)).join(', ')}</span>}
+            </YSettingRow>
+            {routine.lastError !== undefined && (
+              <YSettingRow label="Last run failed" hint={<span className="text-danger">{routine.lastError}</span>} />
+            )}
+          </YSettingGroup>
+        </YSection>
 
-        <Section title="Settings">
-          <dl className="grid grid-cols-[96px_1fr] gap-x-2 gap-y-1">
+        <YSection title="Settings" description="What each run starts with.">
+          <YSettingGroup>
             <Fact label="Agent">{agentLabel(routine.tool, routine)}</Fact>
             <Fact label="UI">{routine.mode === 'acp' ? 'Chat' : 'Terminal'}</Fact>
             <Fact label="Permissions">{PERMISSION_MODE_COPY[routine.permissionMode]}</Fact>
@@ -97,47 +101,36 @@ export function RoutinePane({ routine, bar }: {
               const at = r.commit !== undefined ? <span className="font-mono">{r.commit.slice(0, 12)}</span> : r.branch
               return routine.selection.repos.length === 1
                 ? <Fact key={r.repo} label={r.commit !== undefined ? 'Commit' : 'Base branch'}>{at}</Fact>
-                : <Fact key={r.repo} label={dir}>{at}</Fact>
+                : <Fact key={r.repo} label={<span className="font-mono">{dir}</span>}>{at}</Fact>
             })}
             <Fact label="Group">{group?.name ?? 'None'}</Fact>
             <Fact label="Stops">
               {routine.timeoutMinutes !== undefined ? `after ${formatDuration(routine.timeoutMinutes)}` : 'at the next run'}
             </Fact>
-          </dl>
-          <p className={clsx('mt-2 whitespace-pre-wrap break-words text-text-dim', !promptOpen && 'line-clamp-4')}>
-            {routine.prompt ?? '(non-interactive)'}
-          </p>
-          {(routine.prompt ?? '').split('\n').length > 4 || (routine.prompt ?? '').length > 300 ? (
-            <button type="button" onClick={() => setPromptOpen(!promptOpen)} className="self-start text-text-faint underline hover:text-text-dim">
-              {promptOpen ? 'Show less' : 'Show all'}
-            </button>
-          ) : null}
-        </Section>
+            <YSettingRow label="Prompt" stacked>
+              <p className={cn('whitespace-pre-wrap break-words text-md text-muted', !promptOpen && 'line-clamp-4')}>
+                {routine.prompt ?? '(non-interactive)'}
+              </p>
+              {(routine.prompt ?? '').split('\n').length > 4 || (routine.prompt ?? '').length > 300 ? (
+                <YButton variant="link" onClick={() => setPromptOpen(!promptOpen)} className="mt-1 text-sm">
+                  {promptOpen ? 'Show less' : 'Show all'}
+                </YButton>
+              ) : null}
+            </YSettingRow>
+          </YSettingGroup>
+        </YSection>
 
-        <Section title="Runs">
+        <YSection title="Runs" description="Newest first. Each opens its workspace.">
           <RoutineRuns routine={routine} />
-        </Section>
-      </div>
+        </YSection>
+      </YPageBody>
     </div>
   )
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }): JSX.Element {
-  return (
-    <section className="flex flex-col gap-1">
-      <h3 className="text-[11px] font-medium uppercase tracking-wide text-text-faint">{title}</h3>
-      {children}
-    </section>
-  )
-}
-
-function Fact({ label, children }: { label: string; children: ReactNode }): JSX.Element {
-  return (
-    <>
-      <dt className="text-text-faint">{label}</dt>
-      <dd className="min-w-0 truncate text-text-dim">{children}</dd>
-    </>
-  )
+/** A read-only setting: its name, and its value on the right. */
+function Fact({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children: ReactNode }): JSX.Element {
+  return <YSettingRow label={label} hint={hint}><span className="text-md text-muted">{children}</span></YSettingRow>
 }
 
 /**
@@ -164,52 +157,54 @@ function RoutineRuns({ routine }: { routine: RoutineEntry }): JSX.Element {
   })
   const entries = runs.data?.pages.flatMap((p) => p.runs) ?? []
 
-  const state = (run: RoutineRunEntry): ReactNode => {
-    switch (run.state) {
-      case 'running': return run.deadline !== undefined ? `stops in ${timeUntil(run.deadline, now)}` : 'running'
-      case 'stopped': return 'stopped'
-      case 'ended': return 'ended at next run'
-      case 'timed-out': return 'timed out'
-      case 'died': return `died: ${run.deathReason !== undefined ? describeWorkspaceDeathReason(run.deathReason) : 'unknown'}`
-      case 'failed': return <span className="text-danger">failed: {run.launchError}</span>
-      case 'awaiting-approval': return <span className="text-warning">awaiting approval: review it from its menu in the sidebar</span>
-      case 'waiting': return 'waiting'
-    }
-  }
-
-  if (runs.isError) return <p className="text-danger">Runs could not be loaded: {runs.error.message}</p>
-  if (runs.isPending) return <p className="text-text-faint">Loading…</p>
-  if (entries.length === 0) return <p className="text-text-faint">No runs yet.</p>
+  if (runs.isError) return <p className="text-md text-danger">Runs could not be loaded: {runs.error.message}</p>
+  if (runs.isPending) return <p className="text-md text-subtle">Loading…</p>
+  if (entries.length === 0) return <YEmptyState compact title="No runs yet" className="py-4" />
   return (
-    <>
-      <ul className="flex flex-col">
-        {entries.map((run) => (
-          <li key={run.id}>
-            <button
-              type="button"
-              disabled={run.workspaceId === undefined}
-              onClick={() => { if (run.workspaceId !== undefined) openWorkspace(routine.projectId, run.workspaceId) }}
-              className="flex w-full items-center gap-3 rounded-md px-1.5 py-1 text-left transition enabled:hover:bg-surface-2"
-            >
-              <span className="w-28 shrink-0 text-text-faint">
-                {run.startAt !== undefined ? formatInZone(new Date(run.startAt), zone) : '—'}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-text-dim">{run.title ?? routine.name}</span>
-              <span className="shrink-0 text-text-faint">{state(run)}</span>
-            </button>
-          </li>
-        ))}
-      </ul>
+    <div className="flex flex-col items-start gap-2">
+      <div className="w-full border-t border-line">
+        {entries.map((run) => {
+          const when = run.startAt !== undefined ? formatInZone(new Date(run.startAt), zone) : '—'
+          const workspaceId = run.workspaceId
+          return (
+            <YListRow
+              key={run.id}
+              label={`Open the run of ${when}`}
+              {...(workspaceId !== undefined ? { onSelect: () => openWorkspace(routine.projectId, workspaceId) } : {})}
+              leading={<>
+                <YStatus kind={RUN_STATUS[run.state]} className="ml-1.5" />
+                <span className="w-28 shrink-0 text-md text-subtle">{when}</span>
+              </>}
+              title={run.title ?? routine.name}
+              sub={runState(run, now)}
+            />
+          )
+        })}
+      </div>
       {runs.hasNextPage && (
-        <button
-          type="button"
-          onClick={() => void runs.fetchNextPage()}
-          disabled={runs.isFetchingNextPage}
-          className="self-start text-text-faint underline hover:text-text-dim"
-        >
+        <YButton variant="ghost" size="sm" onClick={() => void runs.fetchNextPage()} disabled={runs.isFetchingNextPage}>
           {runs.isFetchingNextPage ? 'Loading…' : 'Show older runs'}
-        </button>
+        </YButton>
       )}
-    </>
+    </div>
   )
+}
+
+const RUN_STATUS: Record<RoutineRunEntry['state'], YStatusKind> = {
+  running: 'work', stopped: 'stop', ended: 'done', 'timed-out': 'stop', died: 'fail', failed: 'fail',
+  'awaiting-approval': 'need', waiting: 'later',
+}
+
+/** What became of a run, in words. */
+function runState(run: RoutineRunEntry, now: number): ReactNode {
+  switch (run.state) {
+    case 'running': return run.deadline !== undefined ? `stops in ${timeUntil(run.deadline, now)}` : 'running'
+    case 'stopped': return 'stopped'
+    case 'ended': return 'ended at next run'
+    case 'timed-out': return 'timed out'
+    case 'died': return `died: ${run.deathReason !== undefined ? describeWorkspaceDeathReason(run.deathReason) : 'unknown'}`
+    case 'failed': return <span className="text-danger">failed: {run.launchError}</span>
+    case 'awaiting-approval': return <span className="text-warning">awaiting approval: review it from its menu in the sidebar</span>
+    case 'waiting': return 'waiting'
+  }
 }

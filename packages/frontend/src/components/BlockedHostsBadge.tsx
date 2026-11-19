@@ -3,7 +3,7 @@ import clsx from 'clsx'
 import { BlockedIcon } from '#lib/icons'
 import { api } from '#lib/api'
 import { useReadOnly } from '#lib/viewer'
-import { ActionsBadge } from '#components/ui/ActionsBadge'
+import { ActionsBadge } from '#components/ActionsBadge'
 
 /**
  * Blocked-host count badge whose popover lists the hosts. Each host can be
@@ -31,8 +31,8 @@ export function BlockedHostsBadge({
     <ActionsBadge
       label={`${hosts.length} blocked host${hosts.length === 1 ? '' : 's'}`}
       icon={<BlockedIcon size={iconSize} />}
-      className={clsx('bg-danger/15 text-danger', className)}
-      header={<div className="px-2 pb-0.5 pt-1 text-[11px] font-medium text-text-faint">Blocked hosts</div>}
+      className={clsx('bg-danger-soft text-danger', className)}
+      header={<div className="px-2 pb-0.5 pt-1 text-sm font-medium text-subtle">Blocked hosts</div>}
       items={hosts}
       itemLabel={(host) => host}
       actions={(host) => readOnly ? [] : [

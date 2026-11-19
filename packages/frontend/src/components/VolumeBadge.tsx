@@ -13,7 +13,7 @@ export function VolumeBadge({ projectId, workspaceId }: { projectId: string; wor
   return (
     <span
       title={`Volume “${volume.name}” is attached, at $YAAC_VOLUME_DIR`}
-      className="flex h-6 min-w-0 shrink items-center gap-1 rounded px-1.5 text-[11px] text-text-dim"
+      className="flex h-6 min-w-0 shrink items-center gap-1 rounded px-1.5 text-sm text-muted"
     >
       <VolumeIcon size={11} className="shrink-0" />
       <span className="truncate font-mono">{volume.name}</span>

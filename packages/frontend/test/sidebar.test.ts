@@ -200,16 +200,13 @@ describe('sidebarRowIds', () => {
 describe('groupDisplay', () => {
   const live = { provisioning: [], members: [entry('a', 1)], held: [], waiting: [] }
   const ghostsOnly = { provisioning: [], members: [], held: [], waiting: [] }
-  const state = { collapsed: false, showStopped: true, narrowed: false }
+  const state = { collapsed: false, showStopped: true }
 
   it('owns its ghosts only while they are on screen', () => {
     expect(groupDisplay(live, state)).toEqual({ onlyGhosts: false, expanded: true, ownsGhosts: true })
     // Collapsed, or with the toggle off, the Stopped section lists them.
     expect(groupDisplay(live, { ...state, collapsed: true }).ownsGhosts).toBe(false)
     expect(groupDisplay(live, { ...state, showStopped: false }).ownsGhosts).toBe(false)
-    // A search holds the group open and hides its ghosts.
-    expect(groupDisplay(live, { ...state, collapsed: true, narrowed: true }))
-      .toEqual({ onlyGhosts: false, expanded: true, ownsGhosts: false })
   })
 
   it('expands a group of only ghosts with its toggle, whatever the collapse says', () => {

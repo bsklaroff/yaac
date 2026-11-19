@@ -1,6 +1,6 @@
 /*
  * Verifies, in a real browser, the typeaheads built on Base UI's Combobox
- * (`Typeahead` in packages/frontend/src/components/ui/Typeahead.tsx):
+ * (`Typeahead` in packages/frontend/src/components/Typeahead.tsx):
  *
  *  1. New-workspace pane, Base branch: typing opens the list with the
  *     first match highlighted; ↑/↓ move the highlight; Escape closes only
@@ -47,7 +47,7 @@ try {
   // land while the list is open, changing its rows and so the highlight.
   // Through a workspace's proxy that fetch can take a while.
   const refreshed = page.waitForResponse((r) => r.url().includes(`/repo/${repo.id}/branches?refresh=1`), { timeout: 60_000 })
-  await page.locator('aside').getByRole('button', { name: 'New workspace', exact: true }).click()
+  await page.getByRole('button', { name: /^New session/ }).click()
   await refreshed
 
   // (1) Base branch.
@@ -114,9 +114,10 @@ try {
     String(next))
 
   // (2) Provider picker.
-  await page.getByTitle('Settings').first().click()
+  await page.getByRole('button', { name: 'yaac menu' }).click()
+  await page.getByRole('menuitem', { name: 'Settings' }).click()
   await page.getByRole('button', { name: 'Credentials' }).click()
-  const row = page.locator('div.rounded-md', { has: page.getByText(/^opencode/) }).first()
+  const row = page.locator('[data-tool="opencode"]')
   await row.getByRole('button', { name: 'Sign in' }).click()
   const search = page.getByPlaceholder('Search providers…')
   const plist = page.getByRole('listbox')

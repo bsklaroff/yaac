@@ -1,20 +1,16 @@
 import { useEffect, useRef, useState, type CSSProperties, type JSX } from 'react'
 import clsx from 'clsx'
-import { FeedbackButton } from '#components/FeedbackButton'
-import { NewProjectButton } from '#components/NewProjectButton'
-import { ServersButton } from '#components/ServerBadge'
-import { ServerHealthButton } from '#components/ServerHealthOverlay'
-import { SettingsButton } from '#components/SettingsButton'
-import { UserSwitcher } from '#components/UserSwitcher'
-import { WindowControls } from '#components/WindowControls'
+import { LogoMenu } from '#shell/LogoMenu'
 import { api } from '#lib/api'
-import { LoadingIcon, WarningIcon } from '#lib/icons'
-import { hidesTitleBar } from '#lib/platform'
-import { identityColor, identityInitial, projectIconUrl } from '#lib/projectIdentity'
-import type { ProjectOp } from '#lib/store'
+import { AddIcon, InboxIcon, LoadingIcon, WarningIcon } from '#lib/icons'
+import { projectIconUrl } from '#lib/projectIdentity'
+import { useUiStore, type ProjectOp } from '#lib/store'
 import { usePressDrag } from '#lib/usePressDrag'
 import { useTeammateView } from '#lib/viewer'
 import type { ProjectSummary } from '@yaac/shared/types'
+import {
+  identityFamily, identityInitial, identityStyle, YProjectRail, YProjectTile, YRailItem, YTip,
+} from '#ui'
 
 /** The projects to list, then the adds still pending, each with the op
  *  (add or remove) in flight on it. */
@@ -66,24 +62,28 @@ function inOrder(projects: ProjectSummary[], ids: string[]): ProjectSummary[] {
   return [...projects].sort((a, b) => rank(a) - rank(b))
 }
 
-/** A rail chip's colors: muted tints of the project color, slightly
- *  stronger for the active project. */
-export function railChipStyle(color: string, active: boolean): CSSProperties {
-  return {
-    background: `color-mix(in oklab, ${color} ${active ? 26 : 12}%, var(--color-surface-2))`,
-    color: active
-      ? `color-mix(in oklab, ${color} 40%, var(--color-text))`
-      : `color-mix(in oklab, ${color} 45%, var(--color-text-dim))`,
-  }
+/** A rail chip's colours: its family's tint, or the solid fill for the
+ *  active project. */
+export function railChipStyle(id: string, active: boolean): CSSProperties {
+  return identityStyle(identityFamily(id), active)
+}
+
+/** How a project's tile shows what is going on in it. */
+export interface RailTileState {
+  /** Workspaces with an agent working. */
+  agents: number
+  /** Something failed there that the viewer has not seen. */
+  failed: boolean
 }
 
 /**
- * Left rail: the user switcher, then the viewed user's project chips. The
- * active project scopes the sidebar; a project with unviewed workspaces
- * waiting for input shows a dot. A project being added or removed (`ops`)
- * shows a spinner, or a warning once its request failed.
+ * The rail: Home, the viewed user's projects as tiles, adding a project,
+ * and the logo menu at the foot. A tile shows its project's state
+ * (`tiles`, plus `attentionByProject` for what waits on the viewer); the
+ * current project's is lit, unless Home is open. A project being added or
+ * removed (`ops`) shows a spinner, or a warning once its request failed.
  *
- * The user can drag their own chips with the mouse to reorder them. The
+ * The user can drag their own tiles with the mouse to reorder them. The
  * server keeps the order (`PUT /project/order`). The rail shows a dropped
  * order straight away and holds it until the snapshot lists the projects
  * that way, or until the save of the latest drop fails. Saves are sent one
@@ -94,30 +94,38 @@ export function ProjectRail({
   ops,
   activeProjectId,
   attentionByProject,
+  tiles,
+  homeActive,
+  onHome,
   onSelect,
 }: {
   projects: ProjectSummary[]
   ops: ProjectOp[]
   activeProjectId: string | null
   attentionByProject: Record<string, number>
+  tiles: Record<string, RailTileState>
+  homeActive: boolean
+  onHome: () => void
   onSelect: (projectId: string) => void
 }): JSX.Element {
   const readOnly = useTeammateView()
+  const setAddProjectForm = useUiStore((s) => s.setAddProjectForm)
   const [order, setOrder] = useState<string[] | null>(null)
+  const [hovered, setHovered] = useState<string | null>(null)
   const placed = order === null ? projects : inOrder(projects, order)
   const agreed = placed.every((p, i) => p === projects[i])
   useEffect(() => {
     if (agreed) setOrder(null)
   }, [agreed])
 
-  // The drop target is an insertion index into `placed`: how many chips'
+  // The drop target is an insertion index into `placed`: how many tiles'
   // midpoints lie above the pointer. Off the rail there is none.
   const rail = useRef<HTMLDivElement>(null)
   const chips = useRef(new Map<string, HTMLElement>())
   const saving = useRef(Promise.resolve())
   const drops = useRef(0)
   // Set while a mouse press is usePressDrag's to settle. The browser still
-  // fires a click when the press ends on the chip, which must not select
+  // fires a click when the press ends on the tile, which must not select
   // after a drag.
   const pressDrag = useRef(false)
   /** Whether dropping `item` at `over` would move it. */
@@ -148,81 +156,79 @@ export function ProjectRail({
     },
   })
   const dropAt = drag !== null && moves(drag.item, drag.over) ? drag.over : -1
+  const anyWaiting = Object.values(attentionByProject).some((n) => n > 0)
 
   return (
-    <div ref={rail} className={clsx(
-      // pl-2 centers the chips in the rail plus the 8px gap to the sidebar,
-      // which read as one region.
-      'flex w-16 shrink-0 flex-col items-center gap-2 pb-3 pl-2',
-      hidesTitleBar() ? 'pt-2' : 'pt-3',
-    )}>
-      {hidesTitleBar() && <WindowControls className="h-5" />}
-      <UserSwitcher />
-      {listedProjects(placed, ops).map(({ op, ...p }, i) => {
-        const active = p.id === activeProjectId
-        const waiting = attentionByProject[p.id] ?? 0
-        const draggable = !readOnly && i < placed.length
-        return (
-          <button
-            key={p.id}
-            ref={(el) => {
-              if (el && draggable) chips.current.set(p.id, el)
-              else chips.current.delete(p.id)
-            }}
-            // A mouse press may become a drag; if not, usePressDrag selects.
-            // Touch and keyboard (a click with no pointer, `detail` 0) use
-            // onClick.
-            onPointerDown={(e) => {
-              pressDrag.current = draggable && e.pointerType === 'mouse' && e.button === 0
-              if (pressDrag.current) start(e, p.id, () => onSelect(p.id))
-            }}
-            onClick={(e) => {
-              if (e.detail === 0 || !pressDrag.current) onSelect(p.id)
-            }}
-            className={clsx(
-              'group relative flex items-center justify-center',
-              drag?.item === p.id && 'opacity-40',
-            )}
-            title={p.name}
-          >
-            {/* Centered in the 8px gap above, or below the last chip. */}
-            {(dropAt === i || (dropAt === placed.length && i === placed.length - 1)) && (
-              <span className={clsx(
-                'absolute inset-x-0 h-0.5 rounded-full bg-accent',
-                dropAt === i ? '-top-[5px]' : '-bottom-[5px]',
-              )} />
-            )}
-            <span
-              className={clsx(
-                // -ml-4 pulls the bar flush to the window's left edge.
-                'absolute left-0 -ml-4 w-0.5 rounded-r-full bg-text transition-all',
-                active ? 'h-6' : 'h-0 group-hover:h-4',
-              )}
-            />
-            <ProjectChip
-              project={p}
-              op={op}
-              iconSize={18}
-              className={clsx(
-                'flex h-10 w-10 items-center justify-center text-[16px] font-semibold transition-all',
-                active ? 'rounded-xl' : 'rounded-[20px] group-hover:rounded-xl',
-              )}
-              style={railChipStyle(identityColor(p.id), active)}
-            />
-            {waiting > 0 && op === undefined && (
-              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-base" />
-            )}
-          </button>
-        )
-      })}
-
-      <NewProjectButton />
-
-      <div className="flex-1" />
-      <FeedbackButton />
-      <ServerHealthButton />
-      <ServersButton />
-      <SettingsButton />
-    </div>
+    <YProjectRail
+      top={<>
+        <YRailItem icon={InboxIcon} label="Home" active={homeActive} dot={anyWaiting} onClick={onHome} />
+      </>}
+      bottom={<LogoMenu />}
+    >
+      <div ref={rail} className="flex w-full flex-col">
+        {listedProjects(placed, ops).map(({ op, ...p }, i) => {
+          const current = p.id === activeProjectId && !homeActive
+          const draggable = !readOnly && i < placed.length
+          const state = tiles[p.id]
+          return (
+            <YRailItem
+                key={p.id}
+                label={p.name}
+                tip={<YTip title={p.name} hint={tileHint(state, attentionByProject[p.id] ?? 0)} />}
+                active={false}
+                ref={(el) => {
+                  if (el && draggable) chips.current.set(p.id, el)
+                  else chips.current.delete(p.id)
+                }}
+                // A mouse press may become a drag; if not, usePressDrag selects.
+                // Touch and keyboard (a click with no pointer, `detail` 0) use
+                // onClick.
+                onPointerDown={(e) => {
+                  pressDrag.current = draggable && e.pointerType === 'mouse' && e.button === 0
+                  if (pressDrag.current) start(e, p.id, () => onSelect(p.id))
+                }}
+                onClick={(e) => {
+                  if (e.detail === 0 || !pressDrag.current) onSelect(p.id)
+                }}
+                onPointerEnter={() => setHovered(p.id)}
+                onPointerLeave={() => setHovered((h) => (h === p.id ? null : h))}
+                aria-current={current || undefined}
+                className={clsx('hover:bg-transparent', drag?.item === p.id && 'opacity-40')}
+              >
+                {(dropAt === i || (dropAt === placed.length && i === placed.length - 1)) && (
+                  <span className={clsx('absolute inset-x-0 h-0.5 bg-accent', dropAt === i ? '-top-[3px]' : '-bottom-[3px]')} />
+                )}
+                {op !== undefined ? (
+                  <ProjectChip project={p} op={op} iconSize={16} style={railChipStyle(p.id, false)}
+                    className="flex h-11 w-11 items-center justify-center text-base font-semibold" />
+                ) : (
+                  <YProjectTile
+                    id={p.id}
+                    name={p.name}
+                    {...(p.iconHash !== undefined ? { imageUrl: projectIconUrl(p.id, p.iconHash) } : {})}
+                    agents={state?.agents ?? 0}
+                    waiting={attentionByProject[p.id] ?? 0}
+                    failed={state?.failed ?? false}
+                    size={44}
+                    current={current}
+                    lit={hovered === p.id}
+                  />
+                )}
+            </YRailItem>
+          )
+        })}
+        {!readOnly && <YRailItem icon={AddIcon} label="Add a project" onClick={() => setAddProjectForm({ remoteUrl: '' })} />}
+      </div>
+    </YProjectRail>
   )
+}
+
+/** A tile's tooltip line: what is going on in the project. */
+function tileHint(state: RailTileState | undefined, waiting: number): string | undefined {
+  const parts = [
+    waiting > 0 ? `${waiting} waiting for you` : '',
+    state?.failed ? 'something failed' : '',
+    state && state.agents > 0 ? `${state.agents} ${state.agents === 1 ? 'agent' : 'agents'} working` : '',
+  ].filter(Boolean)
+  return parts.length > 0 ? parts.join(', ') : undefined
 }

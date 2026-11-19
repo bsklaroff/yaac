@@ -1,13 +1,12 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
-import { PopoverPopup } from '#components/ui/menu'
-import { Popover } from '@base-ui/react/popover'
 import { PinIcon, UsageIcon, TOOL_LABEL } from '#lib/icons'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useTeammateView, useWhoami } from '#lib/viewer'
 import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
 import type { AgentTool, PlanUsageLimit, PlanUsageResult } from '@yaac/shared/types'
+import { YButton, YPopover, YPopoverPopup } from '#ui'
 
 /** One tool's queryable usage, flattened for rendering. */
 interface UsageSection {
@@ -102,14 +101,14 @@ export function usageTone(limit: PlanUsageLimit): 'ok' | 'warn' | 'high' {
 }
 
 const TONE_BAR: Record<ReturnType<typeof usageTone>, string> = {
-  ok: 'bg-emerald-400',
-  warn: 'bg-amber-400',
+  ok: 'bg-success',
+  warn: 'bg-warning',
   high: 'bg-danger',
 }
 
 const TONE_TRIGGER: Record<ReturnType<typeof usageTone>, string> = {
-  ok: 'bg-surface-2 text-text-dim hover:bg-surface-3 hover:text-text',
-  warn: 'bg-amber-400/15 text-amber-400 hover:bg-amber-400/25',
+  ok: 'bg-selected text-muted hover:bg-line-strong hover:text-text',
+  warn: 'bg-warning/15 text-warning hover:bg-warning/25',
   high: 'bg-danger/15 text-danger hover:bg-danger/25',
 }
 
@@ -163,7 +162,7 @@ export function UsageBadge(): JSX.Element | null {
   const top = pinned ?? all.reduce((a, b) => (b.limit.percent > a.limit.percent ? b : a))
 
   return (
-    <Popover.Root
+    <YPopover.Root
       onOpenChange={(open) => {
         // Ask for a refresh on open; the server rate-limits it to once a
         // minute and pushes new numbers in the snapshot.
@@ -173,29 +172,29 @@ export function UsageBadge(): JSX.Element | null {
         }
       }}
     >
-      <Popover.Trigger
+      <YPopover.Trigger
         aria-label="Show plan usage"
         className={clsx(
-          'flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-xs font-medium transition',
+          'flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-md font-medium transition',
           TONE_TRIGGER[usageTone(top.limit)],
         )}
       >
         <UsageIcon size={11} />
         {pinned && <span className="font-normal opacity-80">{pillTag(pinned.limit, pinned.tool)}</span>}
         {Math.round(top.limit.percent)}%
-      </Popover.Trigger>
-      <PopoverPopup side="bottom" align="end" sideOffset={4} className="w-64">
+      </YPopover.Trigger>
+      <YPopoverPopup side="bottom" align="end" sideOffset={4} className="w-64">
         <div className="px-2 pb-0.5 pt-1">
-          <span className="text-[11px] font-medium text-text-faint">Plan usage</span>
+          <span className="text-sm font-medium text-subtle">Plan usage</span>
         </div>
         {sections.map((section) => {
           const plan = planLabel(section.subscriptionType, section.rateLimitTier)
           return (
             <div key={section.tool} className="pb-0.5">
               <div className="flex items-baseline px-2 pt-1">
-                <span className="text-[11px] font-medium text-text-dim">{TOOL_LABEL[section.tool]}</span>
+                <span className="text-sm font-medium text-muted">{TOOL_LABEL[section.tool]}</span>
                 {plan && (
-                  <span className="ml-auto text-[11px] text-text-faint/70">{plan}</span>
+                  <span className="ml-auto text-sm text-subtle/70">{plan}</span>
                 )}
               </div>
               <ul className="flex flex-col gap-0.5 px-1 pb-1">
@@ -215,8 +214,8 @@ export function UsageBadge(): JSX.Element | null {
             </div>
           )
         })}
-      </PopoverPopup>
-    </Popover.Root>
+      </YPopoverPopup>
+    </YPopover.Root>
   )
 }
 
@@ -235,37 +234,36 @@ function LimitRow({
   const label = limitLabel(limit, tool)
   return (
     <li>
-      <button
-        type="button"
+      <YButton
+        variant="bare"
         onClick={onToggle}
         aria-pressed={pinned}
         aria-label={`${pinned ? 'Unpin' : 'Pin'} ${TOOL_LABEL[tool]} ${label}`}
         title={pinned ? 'Unpin from the sidebar pill' : 'Pin to the sidebar pill'}
-        className="group/pin flex w-full flex-col gap-1 rounded px-1.5 py-1 text-left outline-none
-          transition hover:bg-surface-3"
+        className="group/pin flex w-full flex-col gap-1 px-1.5 py-1 text-left transition hover:bg-hover"
       >
-        <span className="flex items-center gap-1.5 text-xs">
-          <span className="truncate text-text-dim">{label}</span>
+        <span className="flex items-center gap-1.5 text-md">
+          <span className="truncate text-muted">{label}</span>
           <PinIcon
             size={10}
             fill={pinned ? 'currentColor' : 'none'}
             className={clsx(
               'shrink-0',
               pinned
-                ? 'text-text-dim'
-                : 'text-text-faint opacity-0 transition-opacity group-hover/pin:opacity-100',
+                ? 'text-muted'
+                : 'text-subtle opacity-0 transition-opacity group-hover/pin:opacity-100',
             )}
           />
           <span className="ml-auto shrink-0 font-medium">{Math.round(limit.percent)}%</span>
         </span>
-        <span className="h-1 w-full overflow-hidden rounded-full bg-surface-3">
+        <span className="h-1 w-full overflow-hidden rounded-full bg-line-strong">
           <span
             className={clsx('block h-full rounded-full', TONE_BAR[usageTone(limit)])}
             style={{ width: `${Math.min(100, Math.max(0, limit.percent))}%` }}
           />
         </span>
-        {reset && <span className="text-[11px] text-text-faint">{reset}</span>}
-      </button>
+        {reset && <span className="text-sm text-subtle">{reset}</span>}
+      </YButton>
     </li>
   )
 }

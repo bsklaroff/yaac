@@ -1,43 +1,36 @@
 import { useState, type FormEvent, type JSX } from 'react'
-import clsx from 'clsx'
-import { Dialog } from '@base-ui/react/dialog'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   AllowlistAddNotice, GitCredentialPicker, remoteKind, remoteProjectName, TrustedHostKey,
 } from '#components/GitCredentialPicker'
 import { AddIcon } from '#lib/icons'
 import { addProjectInBackground, createProjectInBackground } from '#lib/projectOps'
-import { BUTTON } from '#components/ui/button'
 import { projectNameFor } from '@yaac/shared/project-name'
-import { Modal } from '#components/ui/Modal'
 import { useUiStore } from '#lib/store'
 import { useTeammateView } from '#lib/viewer'
+import { YButton, YDialog, YDialogClose, YDialogDescription, YDialogTitle, YInput, YSegmented } from '#ui'
 
 /** Opens the add-project dialog. */
 export function NewProjectButton(
-  /** 'rail': the desktop rail chip. 'row': the mobile projects-screen row.
-   *  'cta': the welcome screen's button. */
-  { variant = 'rail' }: { variant?: 'rail' | 'row' | 'cta' } = {},
+  /** 'row': the mobile projects-screen row. 'cta': the welcome screen's button. */
+  { variant }: { variant: 'row' | 'cta' },
 ): JSX.Element | null {
   const setAddProjectForm = useUiStore((s) => s.setAddProjectForm)
   const readOnly = useTeammateView()
   if (readOnly) return null
+  const open = (): void => setAddProjectForm({ remoteUrl: '' })
+  if (variant === 'cta') {
+    return <YButton variant="primary" icon={AddIcon} onClick={open}>Add project</YButton>
+  }
   return (
-    <button
-      onClick={() => setAddProjectForm({ remoteUrl: '' })}
-      title="New project"
-      className={{
-        row: 'flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm text-text-dim transition '
-          + 'active:bg-surface-2',
-        rail: 'flex h-10 w-10 items-center justify-center rounded-[20px] bg-surface-2 text-text-dim transition-all '
-          + 'hover:rounded-xl hover:bg-surface-3 hover:text-accent',
-        cta: 'flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-bg transition '
-          + 'hover:brightness-110',
-      }[variant]}
+    <YButton
+      variant="bare"
+      onClick={open}
+      className="flex w-full items-center gap-3 px-3 py-3 text-left text-base text-muted transition active:bg-selected"
     >
-      <AddIcon size={variant === 'cta' ? 14 : 18} />
-      {variant !== 'rail' && <span>Add project</span>}
-    </button>
+      <AddIcon size={18} />
+      <span>Add project</span>
+    </YButton>
   )
 }
 
@@ -59,43 +52,35 @@ export function AddProjectDialog(): JSX.Element {
   }
 
   return (
-    <Modal
+    <YDialog
       open={form !== null || keys.length > 0}
       onOpenChange={(next) => { if (!next) close() }}
       variant="form"
       className="w-[420px]"
     >
-      <Dialog.Title className="text-sm font-semibold">Add project</Dialog.Title>
+      <YDialogTitle className="text-base font-semibold">Add project</YDialogTitle>
       {form !== null ? (
         <>
-          <div role="radiogroup" aria-label="Source" className="mt-3 flex w-fit rounded-md border border-border bg-bg p-0.5">
-            {([['Clone a repository', { remoteUrl: '' }], ['New project', { name: '' }]] as const).map(([label, blank]) => (
-              <button
-                key={label}
-                type="button"
-                role="radio"
-                aria-checked={('name' in form) === ('name' in blank)}
-                onClick={() => { if (('name' in form) !== ('name' in blank)) setAddProjectForm(blank) }}
-                className={clsx('rounded px-2 py-0.5 text-[11px] transition',
-                  ('name' in form) === ('name' in blank) ? 'bg-surface-3 text-text' : 'text-text-faint hover:text-text')}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+          <YSegmented
+            ariaLabel="Source"
+            className="mt-3"
+            options={[{ value: 'clone', label: 'Clone a repository' }, { value: 'create', label: 'New project' }]}
+            value={'name' in form ? 'create' : 'clone'}
+            onChange={(source) => setAddProjectForm(source === 'create' ? { name: '' } : { remoteUrl: '' })}
+          />
           {'name' in form ? (
             <>
-              <Dialog.Description className="mt-3 text-xs text-text-dim">
+              <YDialogDescription className="mt-3 text-md text-muted">
                 Start an empty project. yaac hosts its git repository, so it needs no credential;
                 clone it to your machine with <code>yaac project clone</code>.
-              </Dialog.Description>
+              </YDialogDescription>
               <CreateForm key={form.name} initialName={form.name} onDone={close} />
             </>
           ) : (
             <>
-              <Dialog.Description className="mt-3 text-xs text-text-dim">
+              <YDialogDescription className="mt-3 text-md text-muted">
                 Clone a git repo as a new project, with the credential its git authenticates with.
-              </Dialog.Description>
+              </YDialogDescription>
               <CloneForm key={form.remoteUrl} initialUrl={form.remoteUrl} onDone={close} />
             </>
           )}
@@ -104,19 +89,14 @@ export function AddProjectDialog(): JSX.Element {
         <div className="mt-4 flex flex-col gap-3">
           {keys.map((k) => (
             <div key={`${k.projectName} ${k.entry}`} className="flex flex-col gap-2">
-              <p className="text-xs text-text-dim">Added {k.projectName}.</p>
+              <p className="text-md text-muted">Added {k.projectName}.</p>
               <TrustedHostKey entry={k.entry} />
             </div>
           ))}
-          <Dialog.Close
-            className="self-end rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-bg transition
-              hover:brightness-110"
-          >
-            Done
-          </Dialog.Close>
+          <YDialogClose render={<YButton variant="primary" className="self-end" />}>Done</YDialogClose>
         </div>
       )}
-    </Modal>
+    </YDialog>
   )
 }
 
@@ -136,14 +116,13 @@ function CloneForm({ initialUrl, onDone }: { initialUrl: string; onDone: () => v
 
   return (
     <div className="mt-4 flex flex-col gap-3">
-      <input
+      <YInput
         aria-label="Repository URL"
         value={url}
         onChange={(e) => setUrl(e.target.value)}
         autoFocus
         placeholder="https://github.com/owner/repo.git"
-        className="rounded-md border border-border bg-bg px-3 py-2 font-mono text-xs text-text outline-none
-          focus:border-border-strong"
+        className="font-mono"
       />
       <AllowlistAddNotice remoteUrl={remoteUrl} allowlist={NEW_PROJECT_ALLOWLIST} />
       <GitCredentialPicker
@@ -170,23 +149,22 @@ function CreateForm({ initialName, onDone }: { initialName: string; onDone: () =
 
   return (
     <form onSubmit={create} className="mt-4 flex flex-col gap-3">
-      <input
+      <YInput
         aria-label="Project name"
         value={name}
         onChange={(e) => setName(e.target.value)}
         autoFocus
         placeholder="my-project"
-        className="rounded-md border border-border bg-bg px-3 py-2 font-mono text-xs text-text outline-none
-          focus:border-border-strong"
+        className="font-mono"
       />
       {name.trim() !== '' && projectName !== name.trim() && (
-        <p className="text-[11px] text-text-faint">
+        <p className="text-sm text-subtle">
           {projectName === '' ? 'Use at least one letter or digit.' : <>Named <code>{projectName}</code>.</>}
         </p>
       )}
       <div className="flex justify-end gap-2">
-        <button type="button" onClick={onDone} className={BUTTON}>Cancel</button>
-        <button type="submit" disabled={projectName === ''} className={BUTTON}>Create</button>
+        <YButton variant="ghost" onClick={onDone}>Cancel</YButton>
+        <YButton variant="primary" type="submit" disabled={projectName === ''}>Create</YButton>
       </div>
     </form>
   )

@@ -76,7 +76,7 @@ describe('UserSwitcher', () => {
     renderSwitcher('k8s')
     fireEvent.click(screen.getByRole('button', { name: 'Switch user (Your projects)' }))
     const items = await screen.findAllByRole('menuitem')
-    expect(items.map((i) => i.textContent)).toEqual(['MMe (you)me@x.comidle', 'AAdaada@x.com · admin3 active'])
+    expect(items.map((i) => i.textContent)).toEqual(['MMe (you)me@x.comidle', 'AAdaada@x.com, admin3 active'])
     expect(screen.queryByText(/does not separate users/)).toBeNull()
 
     fireEvent.click(items[1])

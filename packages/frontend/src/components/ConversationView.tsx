@@ -1,8 +1,7 @@
 import {
-  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX, type MouseEventHandler, type ReactNode,
-  type RefObject,
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type JSX, type MouseEventHandler,
+  type ReactNode, type RefObject,
 } from 'react'
-import clsx from 'clsx'
 import {
   AcpTranscript, active, groupEvents, subagentCategory, taskCategory, USER_BUBBLE, type Group,
 } from '#components/AcpTranscript'
@@ -13,7 +12,11 @@ import { useConversationFind, type FindOptions } from '#components/ConversationF
 import type { AcpStream } from '#lib/acp'
 import type { Opening } from '#lib/opening'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
-import { CondenseIcon, JumpBottomIcon, JumpTopIcon, LoadingIcon, NarrowIcon, UncondenseIcon, WidenIcon } from '#lib/icons'
+import {
+  CondenseIcon, JumpBottomIcon, JumpTopIcon, LoadingIcon, NarrowIcon, StopIcon, UncondenseIcon, WidenIcon,
+} from '#lib/icons'
+import { YButton } from '#ui'
+
 import { TAIL_SLACK_PX, type TranscriptPages } from '#lib/useTranscriptPages'
 import { useUiStore } from '#lib/store'
 import type { AcpEvent } from '@yaac/shared/acp'
@@ -71,6 +74,8 @@ export function useConversationView({
   activity: ReturnType<typeof latestActivity>
   /** The subagent's thread while one is shown, else the conversation. */
   groups: Group[]
+  /** Answers a permission ask; absent where the viewer cannot act. */
+  answerPermission: ((requestId: string, optionId?: string) => boolean) | undefined
   findBar: JSX.Element | null
   /** What goes in the column. */
   body: JSX.Element
@@ -81,6 +86,8 @@ export function useConversationView({
   const condensed = useUiStore((s) => s.chatCondensed)
   /** The socket that may act on the conversation. */
   const control = readOnly === undefined ? stream : undefined
+  const answerPermission = control === undefined ? undefined : (requestId: string, optionId?: string): boolean =>
+    control.send({ type: 'permission', requestId, ...(optionId !== undefined ? { optionId } : {}) })
   const [opened, setOpened] = useState<ActivityTarget | undefined>()
   const activity = useMemo(() => latestActivity(events), [events])
   const subagent = opened?.kind === 'subagent' ? activity.subagents.get(opened.id) : undefined
@@ -129,6 +136,7 @@ export function useConversationView({
     open: setOpened,
     activity,
     groups,
+    answerPermission,
     findBar,
     body: (
       <>
@@ -157,8 +165,8 @@ export function useConversationView({
               condensed={condensed}
               {...(control !== undefined
                 ? {
-                  onAnswerPermission: (requestId: string, optionId?: string) =>
-                    control.send({ type: 'permission', requestId, ...(optionId !== undefined ? { optionId } : {}) }),
+                  onAnswerPermission: answerPermission,
+                  dockAsks: true,
                 }
                 : {})}
               {...(live && readOnly !== undefined ? { waitingOn: readOnly.owner ?? null } : {})}
@@ -194,7 +202,7 @@ export function useConversationView({
  *  progress as the `caption`, so the spinner carries on into the chat. */
 export function Working({ caption = 'working' }: { caption?: string }): JSX.Element {
   return (
-    <div className="mt-3 flex items-center gap-1.5 text-xs text-text-dim">
+    <div className="mt-3 flex items-center gap-1.5 text-md text-muted">
       <LoadingIcon size={12} className="animate-spin" />
       <span>
         {caption.replace(/(\.\.\.|…)$/, '')}
@@ -351,7 +359,7 @@ function scrollsList(list: HTMLElement, target: EventTarget | null, way: 'up' | 
 /** In place of a page of the conversation being read, at the end it joins. */
 export function PageLoading(): JSX.Element {
   return (
-    <div className="my-3 flex items-center justify-center gap-1.5 text-xs text-text-faint">
+    <div className="my-3 flex items-center justify-center gap-1.5 text-md text-subtle">
       <LoadingIcon size={12} className="animate-spin" />
       Loading the conversation…
     </div>
@@ -362,14 +370,9 @@ export function PageLoading(): JSX.Element {
  *  else to show and reading them failed. */
 export function PageFailed({ onRetry }: { onRetry: () => void }): JSX.Element {
   return (
-    <div className="my-3 flex items-center justify-center gap-2 text-xs text-text-faint">
+    <div className="my-3 flex items-center justify-center gap-2 text-md text-subtle">
       The earlier pages could not be read.
-      <button
-        onClick={onRetry}
-        className="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-dim transition hover:text-text"
-      >
-        Retry
-      </button>
+      <YButton size="sm" onClick={onRetry}>Retry</YButton>
     </div>
   )
 }
@@ -380,26 +383,27 @@ export function PageFailed({ onRetry }: { onRetry: () => void }): JSX.Element {
  *  be positioned. */
 export function JumpButtons({ pages, unseen }: { pages: TranscriptPages; unseen: boolean }): JSX.Element | null {
   if (!pages.above && !pages.below) return null
-  const button = 'pointer-events-auto flex size-8 items-center justify-center rounded-full border border-border '
-    + 'bg-surface text-text-dim shadow-sm hover:bg-surface-2 hover:text-text'
   return (
     <div className="pointer-events-none absolute right-4 bottom-2 flex flex-col gap-1.5">
       {pages.above && (
-        <button type="button" aria-label="Jump to the start" title="Jump to the start" onClick={pages.jumpToTop} className={button}>
-          <JumpTopIcon size={15} />
-        </button>
+        <YButton
+          icon={JumpTopIcon}
+          aria-label="Jump to the start"
+          title="Jump to the start"
+          onClick={pages.jumpToTop}
+          className="pointer-events-auto"
+        />
       )}
       {pages.below && (
-        <button
-          type="button"
-          aria-label={unseen ? 'Jump to the latest (new activity)' : 'Jump to the latest'}
-          title={unseen ? 'New activity below' : 'Jump to the latest'}
-          onClick={pages.jumpToBottom}
-          className={clsx(button, 'relative')}
-        >
-          <JumpBottomIcon size={15} />
+        <span className="pointer-events-auto relative flex">
+          <YButton
+            icon={JumpBottomIcon}
+            aria-label={unseen ? 'Jump to the latest (new activity)' : 'Jump to the latest'}
+            title={unseen ? 'New activity below' : 'Jump to the latest'}
+            onClick={pages.jumpToBottom}
+          />
           {unseen && <span className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full border-2 border-surface bg-accent" />}
-        </button>
+        </span>
       )}
     </div>
   )
@@ -411,7 +415,7 @@ export function JumpButtons({ pages, unseen }: { pages: TranscriptPages; unseen:
 export function Launching({ prompt, loading, caption }: Opening & { caption?: string }): JSX.Element {
   const shown = loading === true ? 'connecting' : caption
   return (
-    <div className="flex flex-col items-start break-words text-sm">
+    <div className="flex flex-col items-start break-words text-base">
       {prompt !== undefined && <div className={USER_BUBBLE}>{prompt}</div>}
       <Working {...(shown !== undefined ? { caption: shown } : {})} />
     </div>
@@ -421,11 +425,12 @@ export function Launching({ prompt, loading, caption }: Opening & { caption?: st
 /** The composer's text box. index.css raises its text to 16px on phones so
  *  iOS Safari does not zoom on focus. */
 export const COMPOSER_INPUT = 'block max-h-60 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 '
-  + 'text-sm text-text placeholder:text-text-faint focus:outline-none'
+  + 'text-base text-text placeholder:text-subtle focus:outline-none'
 
-/** The composer's round Send and Stop buttons. */
-export const ROUND_BUTTON = 'flex size-8 items-center justify-center rounded-full bg-text text-bg hover:opacity-90 '
-  + 'disabled:bg-surface-3 disabled:text-text-faint'
+/** The stop square filled, as the composer's Stop buttons draw it. */
+export function FilledStopIcon(props: ComponentProps<typeof StopIcon>): JSX.Element {
+  return <StopIcon {...props} fill="currentColor" />
+}
 
 /** The conversation and composer share one centered column, so lines stay
  *  readable in a wide pane, unless the user picks full width. The width
@@ -454,8 +459,7 @@ export function ChatBottomBar({ above, onClick, children }: {
         {above}
         <div
           onClick={onClick}
-          className="rounded-xl border border-border bg-surface shadow-sm transition-colors
-            focus-within:border-border-strong"
+          className="rounded-md bg-surface shadow-inset transition-shadow focus-within:shadow-control"
         >
           {children}
         </div>
@@ -464,8 +468,6 @@ export function ChatBottomBar({ above, onClick, children }: {
   )
 }
 
-/** How each view toggle is drawn, minus its display. */
-const TOGGLE = 'rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text'
 
 /**
  * The saved view toggles every chat pane shares, live or read-only, in the
@@ -479,24 +481,21 @@ export function ChatViewToggles(): JSX.Element {
   const setCondensed = useUiStore((s) => s.setChatCondensed)
   return (
     <>
-      <button
-        type="button"
+      <YButton
+        variant="ghost"
+        icon={fullWidth ? NarrowIcon : WidenIcon}
         aria-label={fullWidth ? 'Center chat' : 'Full-width chat'}
         title={fullWidth ? 'Center chat' : 'Full-width chat'}
         onClick={() => setFullWidth(!fullWidth)}
-        className={clsx(TOGGLE, 'hidden items-center @min-[66rem]:flex')}
-      >
-        {fullWidth ? <NarrowIcon size={16} /> : <WidenIcon size={16} />}
-      </button>
-      <button
-        type="button"
+        className="@max-[66rem]:hidden"
+      />
+      <YButton
+        variant="ghost"
+        icon={condensed ? UncondenseIcon : CondenseIcon}
         aria-label={condensed ? 'Show every step' : 'Show key messages only'}
         title={condensed ? 'Show every step' : 'Show key messages only'}
         onClick={() => setCondensed(!condensed)}
-        className={clsx(TOGGLE, 'flex items-center')}
-      >
-        {condensed ? <UncondenseIcon size={16} /> : <CondenseIcon size={16} />}
-      </button>
+      />
     </>
   )
 }

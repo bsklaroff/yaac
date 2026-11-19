@@ -1,0 +1,296 @@
+/*
+ * Design tokens: the "yaac foundation" (docs/frontend-components.md). Flush,
+ * minimal, monochrome first: regions sit edge to edge, cut by 1px lines, and
+ * only things that float or press (buttons, the active tab, menus) get a
+ * layered edge. Colour is for state: amber needs you, red failed, green added
+ * lines. The accent marks focus and selection only.
+ *
+ * Every colour is written once as light-dark(light, dark), under the
+ * design's own names, so a theme is just a `color-scheme`: [data-theme] on
+ * <html>, or on a subtree that forces its own theme, picks light, dark, or
+ * the OS's choice. The raw tokens are declared on every [data-theme]
+ * element, not only :root, because the CSS build rewrites light-dark() into
+ * variables that resolve where a token is declared. `@theme inline` maps
+ * them to Tailwind's names (bg-surface, text-muted, border-line,
+ * bg-proj-violet-tint …), whose utilities then read the raw token directly.
+ *
+ * Never name a colour after a size step (--color-base, --color-lg): Tailwind
+ * would read text-base as that colour instead of the font size.
+ */
+
+:root,
+[data-theme="system"] { color-scheme: light dark; }
+[data-theme="dark"] { color-scheme: dark; }
+[data-theme="light"] { color-scheme: light; }
+
+:root,
+[data-theme] {
+  /* Surfaces: shell is the rail and sidebar, surface the work area, raised
+   * what floats (menus, popovers), sunken inputs and code. */
+  --bg-shell: light-dark(#F6F6F5, #18181B);
+  --bg-surface: light-dark(#FFFFFF, #202023);
+  --bg-raised: light-dark(#FFFFFF, #29292D);
+  --bg-sunken: light-dark(#F6F6F5, #1B1B1E);
+  --bg-hover: light-dark(rgb(0 0 0 / 0.035), rgb(255 255 255 / 0.05));
+  --bg-selected: light-dark(rgb(0 0 0 / 0.06), rgb(255 255 255 / 0.08));
+  --bg-inverse: light-dark(#171717, #F2F2F1);
+  --bg-overlay: light-dark(rgb(0 0 0 / 0.30), rgb(0 0 0 / 0.55));
+  --text-inverse: light-dark(#FAFAFA, #18181B);
+  /* Text on the graphite primary button. */
+  --text-on-primary: light-dark(#FAFAFA, #F2F2F1);
+
+  /* Lines, the main structural device. */
+  --line: light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.08));
+  --line-strong: light-dark(rgb(0 0 0 / 0.14), rgb(255 255 255 / 0.14));
+
+  --text: light-dark(#171717, #F2F2F1);
+  --text-muted: light-dark(#5C5C5B, #B4B4B1);
+  --text-subtle: light-dark(#6A6A69, #97979A);
+
+  /* The accent marks focus and selection, nothing else. */
+  --accent: light-dark(#4353D9, #97A6FF);
+  --accent-soft: light-dark(rgb(67 83 217 / 0.09), rgb(151 166 255 / 0.14));
+
+  --info: light-dark(#2563EB, #82B8FF);
+  --info-soft: light-dark(rgb(37 99 235 / 0.08), rgb(130 184 255 / 0.12));
+  --success: light-dark(#157F3C, #66D396);
+  --success-soft: light-dark(rgb(21 127 60 / 0.08), rgb(102 211 150 / 0.12));
+  --warning: light-dark(#A85A07, #F2BA52);
+  --warning-soft: light-dark(rgb(168 90 7 / 0.09), rgb(242 186 82 / 0.13));
+  --on-warning: light-dark(#FFFFFF, #18181B);
+  --danger: light-dark(#C4302B, #FF8178);
+  --danger-soft: light-dark(rgb(196 48 43 / 0.08), rgb(255 129 120 / 0.13));
+  --on-danger: light-dark(#FFFFFF, #18181B);
+  /* File-type tint in the file tree. */
+  --purple: light-dark(#6639BA, #A371F7);
+
+  /* Project colour families: fill is a lit tile, tint an active one, ink the
+   * initial on a tint, deep and glow the shader's lanes. */
+  --proj-on: light-dark(#FFFFFF, #18181B);
+  --proj-coral-fill: light-dark(#DF7F7A, #FAA39D);
+  --proj-coral-tint: light-dark(#FCE1DE, #402A28);
+  --proj-coral-ink: light-dark(#883836, #FFB9B3);
+  --proj-coral-deep: light-dark(#F1CECB, #2C1A18);
+  --proj-coral-glow: light-dark(#FDA19B, #C46762);
+  --proj-orange-fill: light-dark(#D68A4D, #F1AD79);
+  --proj-orange-tint: light-dark(#F8E4D5, #3E2C1F);
+  --proj-orange-ink: light-dark(#814200, #FFC293);
+  --proj-orange-deep: light-dark(#EDD2BE, #2A1C11);
+  --proj-orange-glow: light-dark(#F3AC75, #BB7234);
+  --proj-yellow-fill: light-dark(#B69D3A, #D3BD6C);
+  --proj-yellow-tint: light-dark(#EEE8D2, #36301C);
+  --proj-yellow-ink: light-dark(#695300, #E4D188);
+  --proj-yellow-deep: light-dark(#DFD8BA, #241F0E);
+  --proj-yellow-glow: light-dark(#D4BD67, #9D8519);
+  --proj-green-fill: light-dark(#63B376, #8BD19A);
+  --proj-green-tint: light-dark(#DBEEDE, #243527);
+  --proj-green-ink: light-dark(#196632, #A4E3B0);
+  --proj-green-deep: light-dark(#C6DFCA, #152318);
+  --proj-green-glow: light-dark(#89D298, #4A9A5E);
+  --proj-teal-fill: light-dark(#0FB6AC, #61D4CA);
+  --proj-teal-tint: light-dark(#D2EFEB, #1A3633);
+  --proj-teal-ink: light-dark(#006861, #82E5DC);
+  --proj-teal-deep: light-dark(#BBE1DC, #0C2422);
+  --proj-teal-glow: light-dark(#5AD5CB, #009D94);
+  --proj-sky-fill: light-dark(#3FABDC, #72CAF6);
+  --proj-sky-tint: light-dark(#D5ECF9, #1E333F);
+  --proj-sky-ink: light-dark(#005E87, #8FDCFF);
+  --proj-sky-deep: light-dark(#BEDDEE, #10222B);
+  --proj-sky-glow: light-dark(#6DCAF8, #1B92C2);
+  --proj-violet-fill: light-dark(#9793E6, #B6B4FF);
+  --proj-violet-tint: light-dark(#E5E6FC, #2E2E41);
+  --proj-violet-ink: light-dark(#504A8F, #CAC9FF);
+  --proj-violet-deep: light-dark(#D4D4F2, #1E1D2D);
+  --proj-violet-glow: light-dark(#B6B4FF, #7F7BCB);
+  --proj-pink-fill: light-dark(#D080B6, #ECA3D3);
+  --proj-pink-tint: light-dark(#F7E1EE, #3C2A36);
+  --proj-pink-ink: light-dark(#7C3A68, #FCB9E5);
+  --proj-pink-deep: light-dark(#EBCEE0, #291A24);
+  --proj-pink-glow: light-dark(#EEA2D4, #B5689D);
+
+  /* Edges for things that press or float. A control is lit from above: a
+   * hard top lip, a ring darker than the surface, and a soft drop shadow.
+   * Each layer exists in both themes and is transparent in the one that
+   * doesn't use it, so the value stays one light-dark() list. */
+  --edge-control:
+    inset 0 1px 0 light-dark(transparent, rgb(255 255 255 / 0.10)),
+    inset 0 -1px 0 light-dark(rgb(0 0 0 / 0.05), transparent),
+    inset 0 0 0 1px light-dark(transparent, rgb(255 255 255 / 0.03)),
+    0 0 0 1px light-dark(rgb(0 0 0 / 0.12), rgb(0 0 0 / 0.60)),
+    0 4px 6px -1px light-dark(rgb(0 0 0 / 0.06), rgb(0 0 0 / 0.20)),
+    0 2px 4px -2px light-dark(rgb(0 0 0 / 0.06), rgb(0 0 0 / 0.20));
+  --edge-primary:
+    inset 0 1px 0 light-dark(#525252, rgb(255 255 255 / 0.14)),
+    0 0 0 1px light-dark(#0A0A0A, rgb(0 0 0 / 0.60)),
+    0 4px 6px -1px light-dark(rgb(0 0 0 / 0.10), transparent),
+    0 2px 4px -2px light-dark(rgb(0 0 0 / 0.10), transparent),
+    0 2px 4px -1px light-dark(transparent, rgb(0 0 0 / 0.30));
+  --edge-pressed:
+    inset 0 1px 1px light-dark(rgb(0 0 0 / 0.06), rgb(255 255 255 / 0.03)),
+    0 0 0 1px light-dark(rgb(0 0 0 / 0.12), rgb(0 0 0 / 0.60));
+  --edge-inset: inset 0 0 0 1px light-dark(rgb(0 0 0 / 0.09), rgb(255 255 255 / 0.08));
+  --edge-raised:
+    inset 0 1px 0 light-dark(transparent, rgb(255 255 255 / 0.07)),
+    0 0 0 1px light-dark(rgb(0 0 0 / 0.08), rgb(255 255 255 / 0.10)),
+    0 4px 8px -2px light-dark(rgb(0 0 0 / 0.06), transparent),
+    0 16px 36px -10px light-dark(rgb(0 0 0 / 0.12), rgb(0 0 0 / 0.55));
+
+  /* Control fills: a solid base under a top-lit gradient. Hover and pressed
+   * change only the base (the surface-* utilities below). */
+  --fill-control:
+    linear-gradient(180deg, light-dark(rgb(0 0 0 / 0), rgb(255 255 255 / 0.08)), light-dark(rgb(0 0 0 / 0.025), rgb(255 255 255 / 0))),
+    light-dark(#FFFFFF, #27272B);
+  --fill-control-hover:
+    linear-gradient(180deg, light-dark(rgb(0 0 0 / 0), rgb(255 255 255 / 0.08)), light-dark(rgb(0 0 0 / 0.025), rgb(255 255 255 / 0))),
+    light-dark(#FAFAFA, #2F2F33);
+  --fill-pressed: light-dark(#F1F1F0, #1F1F22);
+  --fill-primary:
+    linear-gradient(180deg, light-dark(rgb(255 255 255 / 0.20), rgb(255 255 255 / 0.10)), rgb(255 255 255 / 0)),
+    light-dark(#171717, #4A4A50);
+  --fill-primary-hover:
+    linear-gradient(180deg, light-dark(rgb(255 255 255 / 0.20), rgb(255 255 255 / 0.10)), rgb(255 255 255 / 0)),
+    light-dark(#262626, #55555B);
+}
+
+@theme inline {
+  --color-shell: var(--bg-shell);
+  --color-surface: var(--bg-surface);
+  --color-raised: var(--bg-raised);
+  --color-sunken: var(--bg-sunken);
+  --color-hover: var(--bg-hover);
+  --color-selected: var(--bg-selected);
+  --color-inverse: var(--bg-inverse);
+  --color-on-inverse: var(--text-inverse);
+  --color-on-primary: var(--text-on-primary);
+  --color-overlay: var(--bg-overlay);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-subtle: var(--text-subtle);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-on-warning: var(--on-warning);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-on-danger: var(--on-danger);
+  --color-purple: var(--purple);
+  --color-proj-on: var(--proj-on);
+  --color-proj-coral-fill: var(--proj-coral-fill);
+  --color-proj-coral-tint: var(--proj-coral-tint);
+  --color-proj-coral-ink: var(--proj-coral-ink);
+  --color-proj-coral-deep: var(--proj-coral-deep);
+  --color-proj-coral-glow: var(--proj-coral-glow);
+  --color-proj-orange-fill: var(--proj-orange-fill);
+  --color-proj-orange-tint: var(--proj-orange-tint);
+  --color-proj-orange-ink: var(--proj-orange-ink);
+  --color-proj-orange-deep: var(--proj-orange-deep);
+  --color-proj-orange-glow: var(--proj-orange-glow);
+  --color-proj-yellow-fill: var(--proj-yellow-fill);
+  --color-proj-yellow-tint: var(--proj-yellow-tint);
+  --color-proj-yellow-ink: var(--proj-yellow-ink);
+  --color-proj-yellow-deep: var(--proj-yellow-deep);
+  --color-proj-yellow-glow: var(--proj-yellow-glow);
+  --color-proj-green-fill: var(--proj-green-fill);
+  --color-proj-green-tint: var(--proj-green-tint);
+  --color-proj-green-ink: var(--proj-green-ink);
+  --color-proj-green-deep: var(--proj-green-deep);
+  --color-proj-green-glow: var(--proj-green-glow);
+  --color-proj-teal-fill: var(--proj-teal-fill);
+  --color-proj-teal-tint: var(--proj-teal-tint);
+  --color-proj-teal-ink: var(--proj-teal-ink);
+  --color-proj-teal-deep: var(--proj-teal-deep);
+  --color-proj-teal-glow: var(--proj-teal-glow);
+  --color-proj-sky-fill: var(--proj-sky-fill);
+  --color-proj-sky-tint: var(--proj-sky-tint);
+  --color-proj-sky-ink: var(--proj-sky-ink);
+  --color-proj-sky-deep: var(--proj-sky-deep);
+  --color-proj-sky-glow: var(--proj-sky-glow);
+  --color-proj-violet-fill: var(--proj-violet-fill);
+  --color-proj-violet-tint: var(--proj-violet-tint);
+  --color-proj-violet-ink: var(--proj-violet-ink);
+  --color-proj-violet-deep: var(--proj-violet-deep);
+  --color-proj-violet-glow: var(--proj-violet-glow);
+  --color-proj-pink-fill: var(--proj-pink-fill);
+  --color-proj-pink-tint: var(--proj-pink-tint);
+  --color-proj-pink-ink: var(--proj-pink-ink);
+  --color-proj-pink-deep: var(--proj-pink-deep);
+  --color-proj-pink-glow: var(--proj-pink-glow);
+  --shadow-control: var(--edge-control);
+  --shadow-primary: var(--edge-primary);
+  --shadow-pressed: var(--edge-pressed);
+  --shadow-inset: var(--edge-inset);
+  --shadow-raised: var(--edge-raised);
+}
+
+@theme {
+  --font-sans: "Geist Variable", "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Type: one sans; mono only for code, paths and branches. */
+  --text-xs: 11px;
+  --text-xs--line-height: 16px;
+  --text-sm: 12px;
+  --text-sm--line-height: 16px;
+  --text-md: 13px;
+  --text-md--line-height: 20px;
+  --text-base: 14px;
+  --text-base--line-height: 22px;
+  --text-lg: 16px;
+  --text-lg--line-height: 24px;
+  --text-xl: 22px;
+  --text-xl--line-height: 28px;
+  --tracking-title: -0.02em;
+
+  /* Corners: 4px on controls, square everywhere else. */
+  --radius-xs: 4px;
+  --radius-sm: 4px;
+  --radius-md: 4px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+
+  /* Bar and control heights (h-bar, h-control-sm …). */
+  --spacing-bar: 44px;
+  --spacing-control-xs: 22px;
+  --spacing-control-sm: 28px;
+  --spacing-control-md: 32px;
+  --spacing-control-lg: 44px;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+  --animate-fade-in: fade-in 200ms ease-out both;
+  /* The logo's strokes drawing in turn: the page loader, and the working
+   * status at 1.6s. */
+  --animate-logo-draw: logo-draw 2.4s cubic-bezier(0.6, 0, 0.2, 1) infinite;
+  --animate-logo-step: logo-step 1.6s cubic-bezier(0.6, 0, 0.2, 1) infinite;
+
+  @keyframes logo-draw {
+    0% { stroke-dashoffset: 1.05; }
+    42%, 62% { stroke-dashoffset: 0; }
+    100% { stroke-dashoffset: -1.05; }
+  }
+  @keyframes logo-step {
+    0% { stroke-dashoffset: 1.05; }
+    35%, 70% { stroke-dashoffset: 0; }
+    100% { stroke-dashoffset: 1.05; }
+  }
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+}
+
+@utility surface-control { background: var(--fill-control); }
+@utility surface-control-hover { background: var(--fill-control-hover); }
+@utility surface-pressed { background: var(--fill-pressed); }
+@utility surface-primary { background: var(--fill-primary); }
+@utility surface-primary-hover { background: var(--fill-primary-hover); }

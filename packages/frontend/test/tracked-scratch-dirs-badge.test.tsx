@@ -69,7 +69,7 @@ describe('TrackedScratchDirsBadge', () => {
   it('adds the paths to the project\'s ignored list on "don\'t show again", restarting nothing', async () => {
     render(<TrackedScratchDirsBadge workspace={workspace} project={project(['vendor'])} />)
     fireEvent.click(screen.getByRole('button', { name: 'Scratch directories tracked in git' }))
-    fireEvent.click(screen.getByLabelText('Don\'t show again for this project'))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Don\'t show again for this project' }))
 
     await waitFor(() => {
       expect(server.called(PUT).map((c) => c.body)).toEqual([{ ignoredTracked: ['vendor', 'target'] }])

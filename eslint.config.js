@@ -98,6 +98,61 @@ function zone(files, patterns, extra = {}) {
   }
 }
 
+// frontend (docs/frontend-components.md): #ui is the component catalog. It
+// is pure presentation, and the rest of the app reaches it through its
+// barrel instead of styling raw controls or using base-ui itself.
+const FRONTEND_SRC = 'packages/frontend/src/**/*.{ts,tsx}'
+const FRONTEND_UI = 'packages/frontend/src/ui/**/*.{ts,tsx}'
+// The catalog page shows #ui's components with sample content of its own.
+const FRONTEND_CATALOG = 'packages/frontend/src/catalog/**/*.{ts,tsx}'
+const FRONTEND_ONLY_SHARED = { ...ONLY_SHARED, message: 'packages/frontend may only depend on @yaac/shared.' }
+const NO_DEEP_UI = { regex: '^#ui/', message: 'Import components from the #ui barrel.' }
+const NO_BASE_UI = {
+  regex: '^@base-ui/react(/|$)',
+  message: 'Build controls, menus, popovers, dialogs and pickers from #ui; only #ui uses base-ui directly.',
+}
+const UI_PURE = {
+  regex: '^#(components|catalog)/|^#lib/(store|api|useSnapshot|viewer|useEvents)$|^@tanstack/',
+  message: '#ui components take props and raise events; they never read the store, the snapshot or the API.',
+}
+// Files whose effects may pick a selection without navigating the mobile
+// shell (see the rule below).
+const SELECTION_EFFECT_FILES = [
+  'packages/frontend/src/App.tsx',
+  'packages/frontend/src/lib/store.ts',
+  'packages/frontend/src/lib/stopWorkspaceFlow.ts',
+]
+const AUTO_SELECT = {
+  selector: "Identifier[name='autoSelectWorkspace'], Identifier[name='restoreActiveProject']",
+  message: 'autoSelectWorkspace/restoreActiveProject are App\'s effect-side actions. Anything a user '
+    + 'taps must use selectWorkspace/setActiveProject so the mobile shell navigates with it '
+    + '(docs/mobile-layout.md).',
+}
+const RAW_CONTROLS = {
+  selector: 'JSXOpeningElement[name.name=/^(button|input|select|textarea)$/]',
+  message: 'Build controls from #ui (YButton, YChip, YInput, YSelect, YTextArea …); only #ui styles a raw control.',
+}
+const PIXEL_TYPE = {
+  selector: 'Literal[value=/(^|\\s)(\\S+:)?text-\\[\\d+(\\.\\d+)?px\\]/], '
+    + 'TemplateElement[value.raw=/(^|\\s)(\\S+:)?text-\\[\\d+(\\.\\d+)?px\\]/]',
+  message: 'Use the type scale (text-xs … text-xl), not a pixel size.',
+}
+// The frontend's no-restricted-syntax for `files`. Re-states ImportExpression:
+// redeclaring the rule replaces the base config's options.
+function frontendSyntax(files, { ignores = [], autoSelect = true, raw = true } = {}) {
+  return {
+    files,
+    ignores,
+    rules: {
+      'no-restricted-syntax': [
+        'error', 'ImportExpression', PIXEL_TYPE,
+        ...(autoSelect ? [AUTO_SELECT] : []),
+        ...(raw ? [RAW_CONTROLS] : []),
+      ],
+    },
+  }
+}
+
 export default tseslint.config(
   // dockerfiles/streamd, acpd and agent-patches are plain JS outside the
   // tsconfig projects; their vitest projects (unit:streamd, unit:acpd,
@@ -264,38 +319,18 @@ export default tseslint.config(
     { ...ONLY_SHARED, allowTypeImports: true, message: '@yaac/shared may only type-import from other workspace packages.' },
   ]),
 
-  // frontend: only @yaac/shared (+ self via #).
-  zone(['packages/frontend/src/**/*.{ts,tsx}'], [
-    { ...ONLY_SHARED, message: 'packages/frontend may only depend on @yaac/shared.' },
-  ]),
+  // frontend: only @yaac/shared (+ self via #), and components from #ui.
+  zone([FRONTEND_SRC], [FRONTEND_ONLY_SHARED, NO_DEEP_UI, NO_BASE_UI], { ignores: [FRONTEND_UI] }),
+  zone([FRONTEND_UI], [FRONTEND_ONLY_SHARED, UI_PURE]),
 
   // The mobile shell only changes screens on a user action
   // (docs/mobile-layout.md). The non-navigating selection variants are
-  // reserved for App's effects and the delete flow (the ignored files);
+  // reserved for App's effects and the delete flow (SELECTION_EFFECT_FILES);
   // using one elsewhere could move a phone user off the list they are on.
-  //
-  // Re-states ImportExpression: redeclaring no-restricted-syntax replaces
-  // the base rule's options.
-  {
-    files: ['packages/frontend/src/**/*.{ts,tsx}'],
-    ignores: [
-      'packages/frontend/src/App.tsx',
-      'packages/frontend/src/lib/store.ts',
-      'packages/frontend/src/lib/stopWorkspaceFlow.ts',
-    ],
-    rules: {
-      'no-restricted-syntax': [
-        'error',
-        'ImportExpression',
-        {
-          selector: "Identifier[name='autoSelectWorkspace'], Identifier[name='restoreActiveProject']",
-          message: 'autoSelectWorkspace/restoreActiveProject are App\'s effect-side actions. Anything a user '
-            + 'taps must use selectWorkspace/setActiveProject so the mobile shell navigates with it '
-            + '(docs/mobile-layout.md).',
-        },
-      ],
-    },
-  },
+  // Outside #ui no file styles a raw control or sizes type in pixels.
+  frontendSyntax([FRONTEND_SRC], { ignores: [FRONTEND_UI, FRONTEND_CATALOG, ...SELECTION_EFFECT_FILES] }),
+  frontendSyntax([FRONTEND_UI, FRONTEND_CATALOG], { raw: false }),
+  frontendSyntax(SELECTION_EFFECT_FILES, { autoSelect: false }),
 
   // desktop (Electron main): only @yaac/shared and the auth daemon it bundles
   // (+ self via #). The window shows the SPA the server serves.

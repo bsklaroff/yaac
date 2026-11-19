@@ -9,6 +9,7 @@ import type { ProjectSummary, ServerSnapshot, WorkspaceListEntry } from '@yaac/s
 const snap = (entries: Array<Partial<WorkspaceListEntry>>): ServerSnapshot => ({
   driver: 'k8s',
   feedbackHost: null,
+  startedAtMs: 0,
   workspaceGroups: [],
   queuedWorkspaces: [],
   heldWorkspaces: [],

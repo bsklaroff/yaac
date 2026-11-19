@@ -2,9 +2,6 @@ import { useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { HealthIcon, WarningIcon } from '#lib/icons'
-import { Meter } from '#components/ui/Meter'
-import { Modal } from '#components/ui/Modal'
-import { Sparkline } from '#components/ui/Sparkline'
 import { api } from '#lib/api'
 import type {
   ComponentUsage,
@@ -14,6 +11,7 @@ import type {
   VolumeUsage,
   WorkspaceUsageRow,
 } from '@yaac/shared/types'
+import { YBars, YButton, YDialog, YMeter } from '#ui'
 
 /*
  * The server health overlay (docs/server-health.md): the install's CPU,
@@ -41,28 +39,62 @@ function formatCores(cores: number): string {
   return cores >= 10 ? cores.toFixed(0) : cores.toFixed(2)
 }
 
-const memoryPoints = (history: UsagePoint[]) => history.map((p) => ({ at: p.at, value: p.memoryBytes }))
-const cpuPoints = (history: UsagePoint[]) => history.map((p) => ({ at: p.at, value: p.cpuCores }))
+/** How much of a capacity is used, amber from 75% and red from 90%. `name`
+ *  says what for screen readers, where `label` relies on its table or tile. */
+function Usage({ label, name, used, capacity }: { label: string; name: string; used: number; capacity: number }): JSX.Element {
+  return <YMeter label={label} name={name} value={capacity > 0 ? used / capacity : 0} warnAt={0.75} dangerAt={0.9} />
+}
 
-/** The rail chip (or the mobile projects screen's row) that opens the
- *  overlay. */
-export function ServerHealthButton({ variant = 'rail' }: { variant?: 'rail' | 'row' } = {}): JSX.Element {
+/** At most this many bars per history, so a chart fits a table cell. */
+const BARS = 20
+
+/**
+ * An hour of one series as bars, oldest first, each the largest sample in
+ * its stretch of the hour, labelled with its value and time. `max` is the
+ * capacity it is drawn against, when there is one.
+ */
+function History({ history, value, format, name, max }: {
+  history: UsagePoint[]
+  value: (p: UsagePoint) => number
+  format: (value: number) => string
+  /** What it plots ("CPU"), for screen readers. */
+  name: string
+  max?: number
+}): JSX.Element {
+  if (history.length < 2) return <span className="text-xs text-subtle">collecting…</span>
+  const size = Math.ceil(history.length / BARS)
+  const bars: UsagePoint[] = []
+  for (let i = 0; i < history.length; i += size) {
+    bars.push(history.slice(i, i + size).reduce((a, b) => (value(b) > value(a) ? b : a)))
+  }
+  return (
+    <YBars
+      className="w-24"
+      height={24}
+      name={`${name}, last hour: now ${format(value(history[history.length - 1]))}`}
+      {...(max !== undefined ? { max } : {})}
+      values={bars.map(value)}
+      labels={bars.map((p) => `${format(value(p))} at ${new Date(p.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`)}
+    />
+  )
+}
+
+const memory = (p: UsagePoint): number => p.memoryBytes
+const cpu = (p: UsagePoint): number => p.cpuCores
+
+/** The mobile projects screen's row that opens the overlay. */
+export function ServerHealthButton(): JSX.Element {
   const [open, setOpen] = useState(false)
   return (
     <>
-      <button
+      <YButton
+        variant="bare"
         onClick={() => setOpen(true)}
-        title="Server health"
-        aria-label="Server health"
-        className={variant === 'row'
-          ? 'flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm text-text-dim transition '
-            + 'active:bg-surface-2'
-          : 'flex h-10 w-10 items-center justify-center rounded-[20px] text-text-faint transition-all '
-            + 'hover:rounded-xl hover:text-text-dim'}
+        className="flex w-full items-center gap-3 px-3 py-3 text-left text-base text-muted transition active:bg-selected"
       >
         <HealthIcon size={18} />
-        {variant === 'row' && <span>Server health</span>}
-      </button>
+        <span>Server health</span>
+      </YButton>
       <ServerHealthOverlay open={open} onOpenChange={setOpen} />
     </>
   )
@@ -82,15 +114,15 @@ export function ServerHealthOverlay({ open, onOpenChange }: {
     placeholderData: keepPreviousData,
   })
   return (
-    <Modal open={open} onOpenChange={onOpenChange} variant="sheet" title="Server health">
-      {error && <p className="text-xs text-danger">{error.message}</p>}
-      {!data && !error && <p className="text-xs text-text-faint">Loading…</p>}
+    <YDialog open={open} onOpenChange={onOpenChange} variant="sheet" title="Server health">
+      {error && <p className="text-md text-danger">{error.message}</p>}
+      {!data && !error && <p className="text-md text-subtle">Loading…</p>}
       {data && (
         <div className={clsx(
           'flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto pr-1 transition-opacity',
           isFetching && isPlaceholderData && 'opacity-70',
         )}>
-          <p className="text-[11px] text-text-faint">
+          <p className="text-sm text-subtle">
             Sampled {new Date(data.sampledAt).toLocaleTimeString()}. History covers up to the last hour and
             starts over when the server restarts.
             {data.driver === 'containerless' && ' Memory is resident memory (RSS), which counts a page shared by'
@@ -102,14 +134,14 @@ export function ServerHealthOverlay({ open, onOpenChange }: {
           <Workspaces report={data} />
         </div>
       )}
-    </Modal>
+    </YDialog>
   )
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }): JSX.Element {
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="text-xs font-semibold text-text-dim">{title}</h3>
+      <h3 className="text-md font-semibold text-muted">{title}</h3>
       {children}
     </section>
   )
@@ -117,10 +149,10 @@ function Section({ title, children }: { title: string; children: ReactNode }): J
 
 function Tile({ label, value, children }: { label: string; value: string; children?: ReactNode }): JSX.Element {
   return (
-    <div className="flex min-w-56 flex-1 flex-col gap-1.5 rounded-lg bg-bg/60 p-3">
+    <div className="flex min-w-56 flex-1 flex-col gap-1.5 rounded-lg bg-sunken/60 p-3">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-xs text-text-dim">{label}</span>
-        <span className="text-sm font-semibold">{value}</span>
+        <span className="text-md text-muted">{label}</span>
+        <span className="text-base font-semibold">{value}</span>
       </div>
       {children}
     </div>
@@ -130,17 +162,17 @@ function Tile({ label, value, children }: { label: string; value: string; childr
 function VolumeMeter({ volume }: { volume: VolumeUsage }): JSX.Element {
   if (volume.usedBytes === null || volume.capacityBytes === null) {
     return (
-      <span className="text-[11px] text-text-faint">
+      <span className="text-sm text-subtle">
         {volume.capacityBytes === null ? 'size unknown' : `${formatBytes(volume.capacityBytes)}; usage not reported`}
       </span>
     )
   }
   return (
     <span className="flex min-w-0 flex-1 items-center gap-2">
-      <span className="shrink-0 whitespace-nowrap text-[11px] tabular-nums text-text-dim">
+      <span className="shrink-0 whitespace-nowrap text-sm tabular-nums text-muted">
         {formatBytes(volume.usedBytes)} / {formatBytes(volume.capacityBytes)}
       </span>
-      <Meter className="min-w-0 flex-1" used={volume.usedBytes} capacity={volume.capacityBytes} label={`${volume.name} used`} />
+      <span className="min-w-0 flex-1"><Usage label="Used" name={`${volume.name} used`} used={volume.usedBytes} capacity={volume.capacityBytes} /></span>
     </span>
   )
 }
@@ -151,7 +183,7 @@ function Totals({ report }: { report: ResourceReport }): JSX.Element {
   return (
     <Section title={report.driver === 'k8s' ? 'Cluster' : 'Host'}>
       {missing > 0 && (
-        <p className="flex items-center gap-1 text-[11px] text-warning">
+        <p className="flex items-center gap-1 text-sm text-warning">
           <WarningIcon size={11} aria-hidden />
           CPU and memory cover {report.nodes.length - missing} of {report.nodes.length} nodes; the Nodes
           section says why the rest are missing.
@@ -159,37 +191,37 @@ function Totals({ report }: { report: ResourceReport }): JSX.Element {
       )}
       <div className="flex flex-wrap gap-2">
         <Tile label="CPU" value={`${formatCores(t.cpuCores)} / ${formatCores(t.cpuCapacityCores)} cores`}>
-          <Meter used={t.cpuCores} capacity={t.cpuCapacityCores} label="CPU in use" />
-          <Sparkline points={cpuPoints(t.history)} format={(v) => `${formatCores(v)} cores`} label="CPU" max={t.cpuCapacityCores} />
+          <Usage label="In use" name="CPU in use" used={t.cpuCores} capacity={t.cpuCapacityCores} />
+          <History history={t.history} value={cpu} format={(v) => `${formatCores(v)} cores`} name="CPU" max={t.cpuCapacityCores} />
         </Tile>
         <Tile label="Memory" value={`${formatBytes(t.memoryBytes)} / ${formatBytes(t.memoryCapacityBytes)}`}>
-          <Meter used={t.memoryBytes} capacity={t.memoryCapacityBytes} label="Memory in use" />
-          <Sparkline points={memoryPoints(t.history)} format={formatBytes} label="Memory" max={t.memoryCapacityBytes} />
+          <Usage label="In use" name="Memory in use" used={t.memoryBytes} capacity={t.memoryCapacityBytes} />
+          <History history={t.history} value={memory} format={formatBytes} name="Memory" max={t.memoryCapacityBytes} />
           {t.swapCapacityBytes > 0 && (
-            <span className="text-[11px] text-text-dim">
+            <span className="text-sm text-muted">
               Swap {formatBytes(t.swapBytes)} / {formatBytes(t.swapCapacityBytes)}
             </span>
           )}
         </Tile>
         {t.scheduled && (
           <Tile label="Scheduled (requests)" value="">
-            <span className="text-[11px] text-text-dim">
+            <span className="text-sm text-muted">
               CPU {formatCores(t.scheduled.cpuRequestCores)} / {formatCores(t.scheduled.cpuAllocatableCores)} cores
             </span>
-            <Meter used={t.scheduled.cpuRequestCores} capacity={t.scheduled.cpuAllocatableCores} label="CPU requested" />
-            <span className="text-[11px] text-text-dim">
+            <Usage label="Requested" name="CPU requested" used={t.scheduled.cpuRequestCores} capacity={t.scheduled.cpuAllocatableCores} />
+            <span className="text-sm text-muted">
               Memory {formatBytes(t.scheduled.memoryRequestBytes)} / {formatBytes(t.scheduled.memoryAllocatableBytes)}
             </span>
-            <Meter used={t.scheduled.memoryRequestBytes} capacity={t.scheduled.memoryAllocatableBytes} label="Memory requested" />
+            <Usage label="Requested" name="Memory requested" used={t.scheduled.memoryRequestBytes} capacity={t.scheduled.memoryAllocatableBytes} />
           </Tile>
         )}
       </div>
       {t.disks.length > 0 && (
-        <div className="flex flex-col gap-1 rounded-lg bg-bg/60 p-3">
-          <span className="text-xs text-text-dim">Disk</span>
+        <div className="flex flex-col gap-1 rounded-lg bg-sunken/60 p-3">
+          <span className="text-md text-muted">Disk</span>
           {t.disks.map((d) => (
-            <div key={d.name} className="flex items-center gap-3 text-xs">
-              <span className="w-56 truncate font-mono text-[11px] max-md:w-24" title={d.name}>{d.name}</span>
+            <div key={d.name} className="flex items-center gap-3 text-md">
+              <span className="w-56 truncate font-mono text-sm max-md:w-24" title={d.name}>{d.name}</span>
               <VolumeMeter volume={d} />
             </div>
           ))}
@@ -205,14 +237,14 @@ function Totals({ report }: { report: ResourceReport }): JSX.Element {
  * workspace, and that node's largest trees once it is under the first.
  */
 function NodeDiskCell({ disk, titles }: { disk: NodeDisk | undefined; titles: Map<string, string> }): JSX.Element {
-  if (disk === undefined) return <span className="text-text-faint">—</span>
+  if (disk === undefined) return <span className="text-subtle">—</span>
   if (disk.error !== undefined) return <span className="text-warning">{disk.error}</span>
-  const tone = disk.freeBytes < disk.stopBytes ? 'text-danger' : disk.freeBytes < disk.warnBytes ? 'text-warning' : 'text-text-dim'
+  const tone = disk.freeBytes < disk.stopBytes ? 'text-danger' : disk.freeBytes < disk.warnBytes ? 'text-warning' : 'text-muted'
   return (
     <span className="flex flex-col">
       <span className={clsx('tabular-nums', tone)}>{formatBytes(disk.freeBytes)} free of {formatBytes(disk.totalBytes)}</span>
       {disk.freeBytes < disk.warnBytes && (
-        <span className="text-[11px] text-text-faint">
+        <span className="text-sm text-subtle">
           {disk.freeBytes < disk.stopBytes ? `under the ${formatBytes(disk.stopBytes)} stop floor` : `under the ${formatBytes(disk.warnBytes)} warn floor`}
           {(disk.trees ?? []).slice(0, 3).map((t) => (
             <span key={`${t.workspaceId}/${t.life}`} className="block">{titles.get(t.workspaceId) ?? t.workspaceId.slice(0, 8)}: {formatBytes(t.bytes)}</span>
@@ -239,13 +271,13 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
   const titles = new Map(report.workspaces.map((w) => [w.workspaceId, w.title ?? w.workspaceId.slice(0, 8)]))
   return (
     <details open={report.nodes.length <= 3} className="flex flex-col gap-2">
-      <summary className="cursor-pointer text-xs font-semibold text-text-dim">
+      <summary className="cursor-pointer text-md font-semibold text-muted">
         Nodes ({report.nodes.length})
       </summary>
       <div className="mt-2 overflow-x-auto">
-        <table className="w-full min-w-[800px] text-xs">
+        <table className="w-full min-w-[800px] text-md">
           <thead>
-            <tr className="text-left text-[11px] text-text-faint">
+            <tr className="text-left text-sm text-subtle">
               <th className="py-1 font-normal">Node</th>
               <th className="font-normal">Role</th>
               <th className="font-normal">Workspaces</th>
@@ -259,31 +291,31 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
           </thead>
           <tbody>
             {report.nodes.map((n) => (
-              <tr key={n.name} className="border-t border-hairline align-middle">
-                <td className="py-1.5 pr-2 font-mono text-[11px]">{n.name}</td>
-                <td className="pr-2 text-text-dim">{ROLE_LABEL[n.role]}</td>
+              <tr key={n.name} className="border-t border-line align-middle">
+                <td className="py-1.5 pr-2 font-mono text-sm">{n.name}</td>
+                <td className="pr-2 text-muted">{ROLE_LABEL[n.role]}</td>
                 {n.error !== undefined
                   ? <td colSpan={disks.size > 0 ? 7 : 6} className="text-warning">{n.error}</td>
                   : (
                     <>
-                      <td className="pr-2 tabular-nums text-text-dim">{running.get(n.name) ?? 0}</td>
-                      <td className="w-40 pr-3">
-                        <span className="tabular-nums text-text-dim">{formatCores(n.cpuCores)} / {formatCores(n.cpuCapacityCores)}</span>
-                        <Meter used={n.cpuCores} capacity={n.cpuCapacityCores} label={`${n.name} CPU`} />
+                      <td className="pr-2 tabular-nums text-muted">{running.get(n.name) ?? 0}</td>
+                      <td className="w-48 pr-3">
+                        <span className="tabular-nums text-muted">{formatCores(n.cpuCores)} / {formatCores(n.cpuCapacityCores)}</span>
+                        <Usage label="Used" name={`${n.name} CPU`} used={n.cpuCores} capacity={n.cpuCapacityCores} />
                       </td>
-                      <td className="w-44 pr-3">
-                        <span className="tabular-nums text-text-dim">{formatBytes(n.memoryBytes)} / {formatBytes(n.memoryCapacityBytes)}</span>
-                        <Meter used={n.memoryBytes} capacity={n.memoryCapacityBytes} label={`${n.name} memory`} />
+                      <td className="w-52 pr-3">
+                        <span className="tabular-nums text-muted">{formatBytes(n.memoryBytes)} / {formatBytes(n.memoryCapacityBytes)}</span>
+                        <Usage label="Used" name={`${n.name} memory`} used={n.memoryBytes} capacity={n.memoryCapacityBytes} />
                       </td>
-                      <td className="pr-2 tabular-nums text-text-dim">
+                      <td className="pr-2 tabular-nums text-muted">
                         {n.swapCapacityBytes > 0
                           ? `${formatBytes(n.swapBytes)} / ${formatBytes(n.swapCapacityBytes)}`
-                          : <span className="text-text-faint">none</span>}
+                          : <span className="text-subtle">none</span>}
                       </td>
                       {disks.size > 0 && <td className="pr-2"><NodeDiskCell disk={disks.get(n.name)} titles={titles} /></td>}
                       <td className="pr-2">
                         {n.conditions.length === 0
-                          ? <span className="text-text-faint">healthy</span>
+                          ? <span className="text-subtle">healthy</span>
                           : (
                             <span className="flex items-center gap-1 text-danger">
                               <WarningIcon size={11} aria-hidden />
@@ -291,7 +323,7 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
                             </span>
                           )}
                       </td>
-                      <td className="text-text-faint">
+                      <td className="text-subtle">
                         {n.sampledAt === null ? '—' : `${String(Math.max(0, Math.round((report.sampledAt - n.sampledAt) / 1000)))}s ago`}
                       </td>
                     </>
@@ -307,21 +339,21 @@ function Nodes({ report }: { report: ResourceReport }): JSX.Element {
 
 function ComponentRow({ c }: { c: ComponentUsage & { history?: UsagePoint[] } }): JSX.Element {
   return (
-    <tr className="border-t border-hairline align-middle">
+    <tr className="border-t border-line align-middle">
       <td className="py-1.5 pr-2">
         {c.label}
-        {c.count !== undefined && <span className="ml-1 text-text-faint">({c.count} running)</span>}
+        {c.count !== undefined && <span className="ml-1 text-subtle">({c.count} running)</span>}
       </td>
-      <td className="pr-3 tabular-nums text-text-dim">{formatCores(c.cpuCores)}</td>
-      <td className="pr-3 tabular-nums text-text-dim">{formatBytes(c.memoryBytes)}</td>
+      <td className="pr-3 tabular-nums text-muted">{formatCores(c.cpuCores)}</td>
+      <td className="pr-3 tabular-nums text-muted">{formatBytes(c.memoryBytes)}</td>
       <td className="pr-3">
-        {c.history && <Sparkline points={memoryPoints(c.history)} format={formatBytes} label={`${c.label} memory`} />}
+        {c.history && <History history={c.history} value={memory} format={formatBytes} name={`${c.label} memory`} />}
       </td>
       <td className="min-w-64">
         <div className="flex flex-col gap-1">
           {c.volumes.map((v) => (
             <div key={v.name} className="flex items-center gap-2">
-              <span className="w-40 shrink-0 truncate font-mono text-[11px]" title={v.name}>{v.name}</span>
+              <span className="w-40 shrink-0 truncate font-mono text-sm" title={v.name}>{v.name}</span>
               <VolumeMeter volume={v} />
             </div>
           ))}
@@ -335,9 +367,9 @@ function Components({ report }: { report: ResourceReport }): JSX.Element {
   return (
     <Section title="Infrastructure">
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[720px] text-xs">
+        <table className="w-full min-w-[720px] text-md">
           <thead>
-            <tr className="text-left text-[11px] text-text-faint">
+            <tr className="text-left text-sm text-subtle">
               <th className="py-1 font-normal">Component</th>
               <th className="font-normal">CPU (cores)</th>
               <th className="font-normal">Memory</th>
@@ -356,47 +388,42 @@ function Components({ report }: { report: ResourceReport }): JSX.Element {
 
 function WorkspaceRow({ w, showNode }: { w: WorkspaceUsageRow; showNode: boolean }): JSX.Element {
   return (
-    <tr className={clsx('border-t border-hairline align-middle', !w.running && 'text-text-faint')}>
+    <tr className={clsx('border-t border-line align-middle', !w.running && 'text-subtle')}>
       <td className="max-w-64 py-1.5 pr-2">
         <span className="block truncate" title={w.title ?? w.workspaceId}>
-          {w.title ?? <span className="font-mono text-[11px]">{w.workspaceId.slice(0, 8)}</span>}
+          {w.title ?? <span className="font-mono text-sm">{w.workspaceId.slice(0, 8)}</span>}
         </span>
         {!w.running && (
-          <span className="text-[11px]">
-            stopped{w.deathReason !== undefined && <> · <span className="text-warning">{w.deathReason}</span></>}
-            {w.deathDetail !== undefined && <> · {w.deathDetail}</>}
+          <span className="text-sm">
+            stopped{w.deathReason !== undefined && <>, <span className="text-warning">{w.deathReason}</span></>}
+            {w.deathDetail !== undefined && <>, {w.deathDetail}</>}
           </span>
         )}
       </td>
-      <td className="pr-2 text-text-dim">
+      <td className="pr-2 text-muted">
         {w.projectName ?? '—'}
-        {w.owner !== undefined && <span className="block text-[11px] text-text-faint">{w.owner}</span>}
+        {w.owner !== undefined && <span className="block text-sm text-subtle">{w.owner}</span>}
       </td>
-      {showNode && <td className="pr-2 font-mono text-[11px] text-text-dim">{w.node ?? '—'}</td>}
-      <td className="pr-3 tabular-nums text-text-dim">{w.running ? formatCores(w.cpuCores) : '—'}</td>
-      <td className="w-48 pr-3">
+      {showNode && <td className="pr-2 font-mono text-sm text-muted">{w.node ?? '—'}</td>}
+      <td className="pr-3 tabular-nums text-muted">{w.running ? formatCores(w.cpuCores) : '—'}</td>
+      <td className="w-56 pr-3">
         {w.running && (
           <>
-            <span className="tabular-nums text-text-dim">
+            <span className="tabular-nums text-muted">
               {formatBytes(w.memoryBytes)}{w.memoryLimitBytes !== null && ` / ${formatBytes(w.memoryLimitBytes)}`}
             </span>
             {w.memoryLimitBytes !== null && (
-              <Meter used={w.memoryBytes} capacity={w.memoryLimitBytes} label="Memory against its limit" />
+              <Usage label="Of limit" name="Memory against its limit" used={w.memoryBytes} capacity={w.memoryLimitBytes} />
             )}
           </>
         )}
       </td>
-      <td className="pr-3 tabular-nums text-text-dim">
+      <td className="pr-3 tabular-nums text-muted">
         {w.ephemeralStorageBytes === null ? '—' : formatBytes(w.ephemeralStorageBytes)}
       </td>
-      <td className="pr-3 tabular-nums text-text-dim">{formatBytes(w.peakMemoryBytes)}</td>
+      <td className="pr-3 tabular-nums text-muted">{formatBytes(w.peakMemoryBytes)}</td>
       <td>
-        <Sparkline
-          points={memoryPoints(w.history)}
-          format={formatBytes}
-          label="Memory"
-          {...(w.memoryLimitBytes !== null ? { max: w.memoryLimitBytes } : {})}
-        />
+        <History history={w.history} value={memory} format={formatBytes} name="Memory" />
       </td>
     </tr>
   )
@@ -407,12 +434,12 @@ function Workspaces({ report }: { report: ResourceReport }): JSX.Element {
   return (
     <Section title={`Workspaces (${String(report.workspaces.filter((w) => w.running).length)} running)`}>
       {report.workspaces.length === 0
-        ? <p className="text-xs text-text-faint">No workspace has run in the last hour.</p>
+        ? <p className="text-md text-subtle">No workspace has run in the last hour.</p>
         : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] text-xs">
+            <table className="w-full min-w-[860px] text-md">
               <thead>
-                <tr className="text-left text-[11px] text-text-faint">
+                <tr className="text-left text-sm text-subtle">
                   <th className="py-1 font-normal">Workspace</th>
                   <th className="font-normal">Project</th>
                   {showNode && <th className="font-normal">Node</th>}

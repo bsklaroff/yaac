@@ -1,7 +1,6 @@
 import type { JSX } from 'react'
-import { StopIcon } from '#lib/icons'
 import { USER_BUBBLE } from '#components/AcpTranscript'
-import { ChatBottomBar, Launching, ROUND_BUTTON, useChatColumn } from '#components/ConversationView'
+import { ChatBottomBar, FilledStopIcon, Launching, useChatColumn } from '#components/ConversationView'
 import { agentLabel } from '#lib/agentLabel'
 import { useProjectName } from '#lib/projectIdentity'
 import { dismissProvisioning, restartWorkspace } from '#lib/createWorkspace'
@@ -10,6 +9,7 @@ import { useUiStore, type LaunchPane } from '#lib/store'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { stopProvisioning } from '#lib/stopWorkspaceFlow'
 import { PROMPT_PREVIEW_LENGTH, type ProvisioningWorkspaceEntry } from '@yaac/shared/types'
+import { YButton } from '#ui'
 
 const PANE_NAME: Record<LaunchPane, string> = { shell: 'a shell', files: 'Files', changes: 'Changes', commits: 'Commits' }
 
@@ -58,15 +58,15 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
   }
 
   return (
-    <div className="flex h-full w-full flex-col bg-bg">
+    <div className="flex h-full w-full flex-col bg-sunken">
       <div className="flex-1 overflow-y-auto px-4 py-4">
         <div className={column}>
           {creating.error === undefined ? (
             <Launching {...opening} caption={creating.stopping === true ? 'Stopping…' : creating.message} />
           ) : (
-            <div className="flex flex-col items-start gap-3 break-words text-sm">
+            <div className="flex flex-col items-start gap-3 break-words text-base">
               {opening?.prompt !== undefined && <div className={USER_BUBBLE}>{opening.prompt}</div>}
-              <p className="text-xs text-danger">
+              <p className="text-md text-danger">
                 Couldn&apos;t {creating.kind === 'restart' ? 'restart' : 'create'} the workspace: {creating.error}
               </p>
             </div>
@@ -75,7 +75,7 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
       </div>
       <ChatBottomBar>
         <div className="flex items-center gap-2 py-2 pl-3 pr-2">
-          <span className="min-w-0 flex-1 truncate text-sm text-text-faint">
+          <span className="min-w-0 flex-1 truncate text-base text-subtle">
             {creating.error !== undefined
               ? 'The workspace did not start.'
               : `${creating.kind === 'restart' ? 'Restarting' : 'Creating'} `
@@ -84,34 +84,20 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
                 + (pane !== undefined ? `, then opening ${PANE_NAME[pane]}` : '')}
           </span>
           {volumeHeld && (
-            <button
-              type="button"
-              onClick={restartWithoutVolume}
-              className="rounded-md bg-surface-3 px-3 py-1.5 text-xs text-text transition hover:bg-border-strong"
-            >
-              Restart without volume
-            </button>
+            <YButton onClick={restartWithoutVolume}>Restart without volume</YButton>
           )}
           {creating.error !== undefined ? (
-            <button
-              type="button"
-              onClick={dismiss}
-              className="rounded-md bg-surface-2 px-3 py-1.5 text-xs text-text-dim transition hover:bg-surface-3
-                hover:text-text"
-            >
-              Dismiss
-            </button>
+            <YButton variant="ghost" onClick={dismiss}>Dismiss</YButton>
           ) : creating.stopping !== true && (
-            <button
-              type="button"
+            <YButton
+              variant="primary"
+              icon={FilledStopIcon}
               aria-label="Stop"
               title="Stop"
               onClick={() => stopProvisioning(creating.workspaceId)}
-              className={ROUND_BUTTON}
-            >
-              <StopIcon size={11} fill="currentColor" />
-            </button>
+            />
           )}
+
         </div>
       </ChatBottomBar>
     </div>

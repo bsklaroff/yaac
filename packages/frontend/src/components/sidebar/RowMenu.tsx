@@ -1,17 +1,17 @@
 import { useRef, type JSX } from 'react'
 import clsx from 'clsx'
-import { Menu } from '@base-ui/react/menu'
 import { MoreIcon } from '#lib/icons'
-import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { useReadOnly } from '#lib/viewer'
+import { YButton, YMenu, YMenuItem, YMenuPopup, YMenuSeparator } from '#ui'
 
 /** A menu item, or a separator. `view` marks an item that changes only what
  *  this client shows, so it stays in a read-only view (#lib/viewer). */
 export type RowMenuItem = { label: string; onSelect: () => void; view?: true } | 'separator'
 
 /**
- * A row's `…` actions menu at its top right, shown on hover (always on
- * touch).
+ * A row's `…` actions menu. In a `SidebarRow` it sits with the row's other
+ * hover actions; a section heading passes `hoverOnly` to hide it until the
+ * heading (a `group/row`) is hovered; on touch it always shows.
  *
  * A picked item runs after the menu finishes closing, and focus stays where
  * the item put it (a rename input, or a dialog). Before the item runs,
@@ -19,11 +19,12 @@ export type RowMenuItem = { label: string; onSelect: () => void; view?: true } |
  * and on nothing after a pointer pick, so the hover-only `…` isn't left
  * showing.
  */
-export function RowMenu({ label, items, position = 'right-2 top-2' }: {
+export function RowMenu({ label, items, hoverOnly = false, onOpenChange }: {
   label: string
   items: RowMenuItem[]
-  /** The trigger's position; a group header is shorter than a row. */
-  position?: string
+  hoverOnly?: boolean
+  /** Told when the menu opens and closes, so a row can keep it shown. */
+  onOpenChange?: (open: boolean) => void
 }): JSX.Element | null {
   const trigger = useRef<HTMLButtonElement>(null)
   // Kept until the next open, since `finalFocus` reads it after the item runs.
@@ -35,8 +36,11 @@ export function RowMenu({ label, items, position = 'right-2 top-2' }: {
   const shown = readOnly ? items.filter((item) => item !== 'separator' && item.view) : items
   if (shown.length === 0) return null
   return (
-    <Menu.Root
-      onOpenChange={(open) => { if (open) picked.current = null }}
+    <YMenu.Root
+      onOpenChange={(open) => {
+        if (open) picked.current = null
+        onOpenChange?.(open)
+      }}
       onOpenChangeComplete={(open) => {
         if (open || picked.current === null) return
         if (byKey.current) trigger.current?.focus()
@@ -44,20 +48,21 @@ export function RowMenu({ label, items, position = 'right-2 top-2' }: {
         picked.current()
       }}
     >
-      <Menu.Trigger
+      <YMenu.Trigger
         ref={trigger}
-        title={label}
-        aria-label={label}
-        className={clsx(position, `absolute flex h-5 w-5 items-center justify-center rounded text-text-faint
-          opacity-0 transition hover:bg-surface-3 hover:text-text pointer-events-none
-          group-hover:pointer-events-auto group-hover:opacity-100
-          focus-visible:pointer-events-auto focus-visible:opacity-100
-          data-[popup-open]:pointer-events-auto data-[popup-open]:opacity-100 data-[popup-open]:bg-surface-3
-          max-md:h-7 max-md:w-7 max-md:pointer-events-auto max-md:opacity-100`)}
-      >
-        <MoreIcon size={14} />
-      </Menu.Trigger>
-      <MenuPopup
+        render={(
+          <YButton
+            variant="ghost"
+            size="sm"
+            icon={MoreIcon}
+            title={label}
+            aria-label={label}
+            className={clsx('max-md:size-7', hoverOnly && `opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100
+              data-[popup-open]:opacity-100 max-md:opacity-100`)}
+          />
+        )}
+      />
+      <YMenuPopup
         side="bottom"
         align="end"
         sideOffset={4}
@@ -67,13 +72,13 @@ export function RowMenu({ label, items, position = 'right-2 top-2' }: {
         className="min-w-[180px]"
       >
         {shown.map((item, i) => item === 'separator'
-          ? <Menu.Separator key={`sep-${i}`} className="my-1 h-px bg-border" />
+          ? <YMenuSeparator key={`sep-${i}`} />
           : (
-            <Menu.Item key={item.label} className={MENU_ITEM} onClick={() => { picked.current = item.onSelect }}>
+            <YMenuItem key={item.label} onClick={() => { picked.current = item.onSelect }}>
               {item.label}
-            </Menu.Item>
+            </YMenuItem>
           ))}
-      </MenuPopup>
-    </Menu.Root>
+      </YMenuPopup>
+    </YMenu.Root>
   )
 }

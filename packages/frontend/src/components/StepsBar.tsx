@@ -5,20 +5,19 @@ import { useUiStore } from '#lib/store'
 import { stepStateText } from '#components/StepPane'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
 import type { StepState } from '@yaac/shared/steps'
+import { YButton } from '#ui'
 
 const DOT: Record<StepState, string> = {
-  pending: 'bg-text-faint/40',
+  pending: 'bg-subtle/40',
   running: 'bg-accent animate-pulse',
   ready: 'bg-accent',
   succeeded: 'bg-success',
   failed: 'bg-danger',
-  skipped: 'bg-text-faint/40',
+  skipped: 'bg-subtle/40',
   cancelled: 'bg-warning',
   interrupted: 'bg-warning',
 }
 
-const CHIP = 'no-drag flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] text-text-dim transition '
-  + 'hover:bg-surface-2 hover:text-text'
 
 /**
  * The workspace bar's steps (docs/workspace-steps.md), grouped under their
@@ -49,33 +48,36 @@ function WorkflowSteps({ workspaceId, workflow, steps }: {
   const openStep = useUiStore((s) => s.openStep)
   const { shown, done } = foldSteps(steps)
   const chip = (s: typeof steps[number]): JSX.Element => (
-    <button
+    <YButton
       key={s.name}
-      type="button"
+      variant="ghost"
+      size="sm"
       onClick={() => openStep(workspaceId, s.name)}
       title={`${s.name}: ${stepStateText(s)}`}
-      className={CHIP}
+      className="no-drag"
     >
       <span aria-hidden="true" className={clsx('h-1.5 w-1.5 shrink-0 rounded-full', DOT[s.state])} />
       <span className={clsx('max-w-32 truncate font-mono', s.state === 'skipped' && 'line-through')}>{stepShortName(s)}</span>
       {s.state === 'failed' && s.exitCode !== undefined && <span className="text-danger">{s.exitCode}</span>}
-    </button>
+    </YButton>
   )
   return (
     <div className="flex shrink-0 items-center gap-0.5" role="group" {...(workflow !== '' ? { 'aria-label': `Workflow ${workflow}` } : {})}>
-      {workflow !== '' && <span className="max-w-24 truncate font-mono text-[10px] text-text-faint">{workflow}</span>}
+      {workflow !== '' && <span className="max-w-24 truncate font-mono text-xs text-subtle">{workflow}</span>}
       {shown.map(chip)}
       {done.length > 0 && (
-        <button
-          type="button"
+        <YButton
+          variant="ghost"
+          size="sm"
           onClick={() => setExpanded(!expanded)}
           aria-expanded={expanded}
           title={expanded ? 'Fold the finished steps' : done.map((s) => `${s.name}: ${s.state}`).join('\n')}
-          className={clsx(CHIP, 'text-text-faint')}
+          className="no-drag text-subtle"
         >
           <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
           {done.length} done
-        </button>
+        </YButton>
+
       )}
       {expanded && done.map(chip)}
     </div>

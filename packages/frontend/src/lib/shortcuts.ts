@@ -26,6 +26,7 @@ export interface Chord {
  * so each can be rebound separately.
  */
 export type ShortcutId =
+  | 'command-palette'
   | 'new-workspace'
   | 'new-shell'
   | 'delete-workspace'
@@ -69,6 +70,8 @@ function altShift(code: string): Chord {
  * vim's h/j/k/l, leaving the arrow keys to the terminal.
  */
 export const SHORTCUTS: ShortcutDef[] = [
+  { id: 'command-palette', label: 'Command palette',
+    description: 'Jump to a session or project, or run a command.', defaultChord: alt('KeyO') },
   { id: 'new-workspace', label: 'New workspace',
     description: 'Open the new-workspace pane in the active project, prompt focused.', defaultChord: alt('KeyN') },
   { id: 'new-shell', label: 'New shell',

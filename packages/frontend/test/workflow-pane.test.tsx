@@ -101,8 +101,8 @@ describe('WorkflowPane', () => {
     const steps = screen.getByLabelText<HTMLTextAreaElement>('Workflow steps')
     expect(JSON.parse(steps.value)).toEqual(DEPLOY.steps)
     fireEvent.change(steps, { target: { value: '{"build": {"run": "make"}}' } })
-    expect(within(screen.getByRole('group', { name: 'Run secrets it gets' })).getByRole<HTMLInputElement>('checkbox', { name: 'TOKEN' }).checked)
-      .toBe(true)
+    expect(within(screen.getByRole('group', { name: 'Run secrets it gets' })).getByRole('checkbox', { name: 'TOKEN' }).getAttribute('aria-checked'))
+      .toBe('true')
     fireEvent.click(screen.getByRole('button', { name: 'Save workflow' }))
     await waitFor(() => expect(sent('POST /api/workflow/edit')).toHaveLength(1))
     expect(sent('POST /api/workflow/edit')[0]).toEqual({
@@ -133,6 +133,6 @@ describe('WorkflowPane', () => {
     mount(DEPLOY)
     expect(screen.getByText('pnpm build')).toBeTruthy()
     for (const name of [/Run now/, 'Run…', 'Workflow actions']) expect(screen.queryByRole('button', { name })).toBeNull()
-    expect(screen.getByRole<HTMLInputElement>('switch').disabled).toBe(true)
+    expect(screen.getByRole('switch').getAttribute('aria-disabled')).toBe('true')
   })
 })

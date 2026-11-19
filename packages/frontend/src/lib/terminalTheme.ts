@@ -2,21 +2,21 @@ import type { ITheme } from '@xterm/xterm'
 
 /**
  * xterm palettes per app theme. Background and foreground match
- * --color-bg / --color-text in index.css so the terminal blends with its
+ * --color-sunken / --color-text in index.css so the terminal blends with its
  * wrapper. The dark palette keeps xterm's default ANSI colors; the light one
  * supplies its own, since the defaults wash out on a light background.
  */
 const DARK: ITheme = {
-  background: '#0b0b0d',
-  foreground: '#e7e7ea',
+  background: '#1B1B1E',
+  foreground: '#F2F2F1',
   selectionBackground: '#3a3d4d',
 }
 
 const LIGHT: ITheme = {
-  background: '#e2e1dc',
-  foreground: '#1a1918',
-  cursor: '#1a1918',
-  cursorAccent: '#e2e1dc',
+  background: '#F6F6F5',
+  foreground: '#171717',
+  cursor: '#171717',
+  cursorAccent: '#F6F6F5',
   selectionBackground: '#b9c6d6',
   black: '#24292e',
   red: '#cf222e',

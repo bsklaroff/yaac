@@ -3,8 +3,8 @@ import clsx from 'clsx'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { DeleteIcon } from '#lib/icons'
 import { api } from '#lib/api'
-import { SectionLabel } from '#components/settings/Field'
 import type { ProjectEnvVar, SecretProxyRule } from '@yaac/shared/types'
+import { YButton, YInput, YSectionLabel, YSegmented, YSelect, YSettingRow } from '#ui'
 
 /** One-line summary of where a secret is injected, for the row. */
 function ruleSummary(rule: SecretProxyRule | undefined): string {
@@ -26,6 +26,8 @@ interface Draft {
   field: string
   prefix: string
 }
+
+const KINDS = [{ value: 'variable', label: 'Variable' }, { value: 'secret', label: 'Secret' }] as const
 
 /** A header field's default, as the proxy applies it to a rule naming none. */
 const DEFAULT_HEADER = 'authorization'
@@ -68,7 +70,7 @@ function ruleFromDraft(draft: Draft): SecretProxyRule {
 function Caption({ label, className, children }: { label: string; className?: string; children: ReactNode }): JSX.Element {
   return (
     <label className={clsx('block min-w-0', className)}>
-      <span className="mb-1 block text-[10px] text-text-faint">{label}</span>
+      <span className="mb-1 block text-xs text-subtle">{label}</span>
       {children}
     </label>
   )
@@ -131,56 +133,50 @@ export function ProjectEnv({ projectId, mediatedEgress, readOnly = false }: {
     save.mutate()
   }
 
-  const inputClass = 'w-full rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono '
-    + 'text-xs text-text outline-none focus:border-border-strong'
-
   const edit = (v: ProjectEnvVar): void => { setEditing(v.id); setDraft(draftFrom(v)) }
   const row = (v: ProjectEnvVar, detail: JSX.Element): JSX.Element => (
     <div
       key={v.id}
-      className={clsx('flex items-center gap-2 rounded-md bg-bg px-2.5 py-1.5 font-mono text-xs',
-        editing === v.id && 'ring-1 ring-accent-soft')}
+      className={clsx('flex min-h-8 items-center gap-2 font-mono text-md', editing === v.id ? 'bg-selected' : !readOnly && 'hover:bg-hover')}
     >
-      <button
+      <YButton
+        variant="bare"
         onClick={() => edit(v)}
         disabled={readOnly || busy}
         title={readOnly ? undefined : `Edit ${v.name}`}
-        className={clsx('flex min-w-0 flex-1 items-center gap-3 text-left',
-          !readOnly && 'transition hover:opacity-80')}
+        className="flex min-h-8 min-w-0 flex-1 items-center gap-3 self-stretch text-left disabled:opacity-100"
       >
         <span className="max-w-[50%] shrink-0 truncate text-text">{v.name}</span>
         {detail}
-      </button>
-      {!readOnly && <button
+      </YButton>
+      {!readOnly && <YButton
+        variant="ghost"
+        size="sm"
+        icon={DeleteIcon}
         onClick={() => { save.reset(); remove.mutate(v) }}
         disabled={busy}
         aria-label={`Delete ${v.name}`}
-        className="shrink-0 text-text-faint transition hover:text-text disabled:opacity-50"
-      >
-        <DeleteIcon size={12} />
-      </button>}
+      />}
     </div>
   )
   const plain = vars?.filter((v) => !v.secret) ?? []
   const secrets = vars?.filter((v) => v.secret) ?? []
 
   return (
-    <div>
-      <SectionLabel>Environment</SectionLabel>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-        Variables every workspace of this project starts with. Applies to workspaces
-        created after saving.
-      </p>
-
-      {plain.length > 0 && <div className="mt-3 space-y-1">
-        {plain.map((v) => row(v, <span className="min-w-0 flex-1 truncate text-text-faint">{v.value}</span>))}
+    <YSettingRow
+      stacked
+      label="Environment"
+      hint="Set in every new workspace."
+    >
+      {plain.length > 0 && <div className="divide-y divide-line">
+        {plain.map((v) => row(v, <span className="min-w-0 flex-1 truncate text-subtle">{v.value}</span>))}
       </div>}
 
       {secrets.length > 0 && <>
-        <div className="mt-4"><SectionLabel>Secrets</SectionLabel></div>
-        <div className="mt-2 space-y-1">
+        <YSectionLabel className={clsx('pb-1', plain.length > 0 && 'mt-3')}>Secrets</YSectionLabel>
+        <div className="divide-y divide-line">
           {secrets.map((v) => row(v, <>
-            <span className={clsx('shrink-0', v.hasValue ? 'text-text-faint' : 'font-sans text-[11px] text-error')}>
+            <span className={clsx('shrink-0', v.hasValue ? 'text-subtle' : 'font-sans text-sm text-danger')}>
               {v.hasValue ? '••••••••' : 'no value stored'}
             </span>
             <span title={ruleSummary(v.rule)} className="min-w-0 flex-1 truncate text-right text-accent">
@@ -190,42 +186,33 @@ export function ProjectEnv({ projectId, mediatedEgress, readOnly = false }: {
         </div>
       </>}
 
-      {readOnly && vars?.length === 0 && <p className="mt-3 text-[11px] text-text-faint">None set.</p>}
+      {readOnly && vars?.length === 0 && <p className="text-md text-subtle">None set.</p>}
 
-      {!readOnly && <form onSubmit={submit} className="mt-3 space-y-2">
+      {!readOnly && <form onSubmit={submit} className={clsx('space-y-2', vars !== undefined && vars.length > 0 && 'mt-2')}>
         <div className="flex gap-2">
-          <div role="radiogroup" aria-label="Kind" className="flex shrink-0 rounded-md border border-border bg-bg p-0.5">
-            {([['Variable', false], ['Secret', true]] as const).map(([label, secret]) => (
-              <button
-                key={label}
-                type="button"
-                role="radio"
-                aria-checked={draft.secret === secret}
-                onClick={() => setDraft({ ...draft, secret })}
-                className={clsx('rounded px-2 text-[11px] transition',
-                  draft.secret === secret ? 'bg-surface-3 text-text' : 'text-text-faint hover:text-text')}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <input
+          <YSegmented
+            ariaLabel="Kind"
+            options={KINDS}
+            value={draft.secret ? 'secret' : 'variable'}
+            onChange={(kind) => setDraft({ ...draft, secret: kind === 'secret' })}
+          />
+          <YInput
             value={draft.name}
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
             placeholder="NAME"
-            className={clsx(inputClass, 'min-w-0 flex-1')}
+            className="flex-1 font-mono"
           />
-          <input
+          <YInput
             value={draft.value}
             onChange={(e) => setDraft({ ...draft, value: e.target.value })}
             type={draft.secret ? 'password' : 'text'}
             placeholder={draft.secret && editing !== null ? 'unchanged' : 'value'}
-            className={clsx(inputClass, 'min-w-0 flex-1')}
+            className="flex-1 font-mono"
           />
         </div>
 
         {draft.secret && (
-          <p className="text-[11px] leading-relaxed text-text-faint">
+          <p className="text-sm leading-relaxed text-subtle">
             Stored encrypted and never shown again.{' '}
             {mediatedEgress
               ? 'The workspace sees only a placeholder; the proxy swaps in the value on requests matching:'
@@ -234,18 +221,18 @@ export function ProjectEnv({ projectId, mediatedEgress, readOnly = false }: {
         )}
 
         {draft.secret && (
-          <div className="space-y-2 rounded-md border border-border p-2">
+          <div className="space-y-2 rounded-sm p-2 shadow-inset">
             <Caption label="hosts">
-              <input
+              <YInput
                 value={draft.hosts}
                 onChange={(e) => setDraft({ ...draft, hosts: e.target.value })}
                 placeholder="api.example.com, *.example.com"
-                className={inputClass}
+                className="w-full font-mono"
               />
             </Caption>
             <Caption label="inject into">
               <div className="flex gap-2">
-                <select
+                <YSelect
                   value={draft.injectInto}
                   onChange={(e) => {
                     const injectInto = e.target.value === 'bodyParam' ? 'bodyParam' : 'header'
@@ -255,35 +242,33 @@ export function ProjectEnv({ projectId, mediatedEgress, readOnly = false }: {
                       : draft.field
                     setDraft({ ...draft, injectInto, field })
                   }}
-                  className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text
-                    outline-none focus:border-border-strong"
                 >
                   <option value="header">Header</option>
                   <option value="bodyParam">Body parameter</option>
-                </select>
-                <input
+                </YSelect>
+                <YInput
                   value={draft.field}
                   onChange={(e) => setDraft({ ...draft, field: e.target.value })}
                   placeholder={draft.injectInto === 'header' ? DEFAULT_HEADER : 'client_secret'}
-                  className={clsx(inputClass, 'flex-1')}
+                  className="flex-1 font-mono"
                 />
               </div>
             </Caption>
             <div className="flex gap-2">
               <Caption label="path" className="flex-1">
-                <input
+                <YInput
                   value={draft.path}
                   onChange={(e) => setDraft({ ...draft, path: e.target.value })}
-                  className={inputClass}
+                  className="w-full font-mono"
                 />
               </Caption>
               {draft.injectInto === 'header' && (
                 <Caption label="prefix" className="flex-1">
-                  <input
+                  <YInput
                     value={draft.prefix}
                     onChange={(e) => setDraft({ ...draft, prefix: e.target.value })}
                     placeholder="none"
-                    className={inputClass}
+                    className="w-full font-mono"
                   />
                 </Caption>
               )}
@@ -292,27 +277,18 @@ export function ProjectEnv({ projectId, mediatedEgress, readOnly = false }: {
         )}
 
         <div className="flex items-center gap-2">
-          <button
-            type="submit"
-            disabled={busy || draft.name.trim() === ''}
-            className="rounded-md bg-surface-3 px-3 py-1 text-xs font-medium text-text transition
-              hover:bg-border-strong disabled:opacity-50"
-          >
+          <YButton type="submit" disabled={busy || draft.name.trim() === ''}>
             {editing !== null ? 'Save' : 'Add'}
-          </button>
+          </YButton>
           {editing !== null && (
-            <button
-              type="button"
-              onClick={() => { setEditing(null); setDraft(EMPTY) }}
-              className="text-[11px] text-text-faint transition hover:text-text"
-            >
+            <YButton variant="ghost" size="sm" onClick={() => { setEditing(null); setDraft(EMPTY) }}>
               Cancel
-            </button>
+            </YButton>
           )}
         </div>
       </form>}
 
-      {error && <p className="mt-2 text-xs text-red-400">{error.message}</p>}
-    </div>
+      {error && <p className="mt-2 text-md text-danger">{error.message}</p>}
+    </YSettingRow>
   )
 }

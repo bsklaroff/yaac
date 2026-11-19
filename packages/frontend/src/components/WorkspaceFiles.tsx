@@ -3,22 +3,16 @@ import {
   type ChangeEvent, type DragEvent, type JSX, type KeyboardEvent, type ReactNode,
 } from 'react'
 import clsx from 'clsx'
-import { MENU_ITEM, MenuPopup, POPUP } from '#components/ui/menu'
 import { useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { ServerError } from '@yaac/shared/errors'
-import { ContextMenu } from '@base-ui/react/context-menu'
-import { Menu } from '@base-ui/react/menu'
-import { Tooltip } from '@base-ui/react/tooltip'
 import { WORKTREE_REF, type SymlinkTarget, type WorkspaceChange, type WorkspaceDiff, type WorkspaceFiles as Listing } from '@yaac/shared/types'
 import { DEFAULT_FONT_SIZE, layoutOf, paneViewKey, useUiStore } from '#lib/store'
 import { ChangesStrip, CommitHeader } from '#components/ChangesStrip'
 import { DiffView } from '#components/DiffView'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { PaneFindBar, useFindQuery } from '#components/ui/FindPanel'
-import { LineCountsLabel } from '#components/ui/LineCountsLabel'
-import { PathLabel } from '#components/ui/PathLabel'
-import { TextSizeMenu } from '#components/ui/TextSizeMenu'
-import { Tip, WithTip } from '#components/ui/Tooltip'
+import { PaneFindBar, useFindQuery } from '#components/FindPanel'
+import { LineCountsLabel } from '#components/LineCountsLabel'
+import { PathLabel } from '#components/PathLabel'
+import { TextSizeMenu } from '#components/TextSizeMenu'
 import type { ParsedFileDiff } from '#lib/diff'
 import { useChangeDiffs, type DiffWant } from '#lib/useChangeDiffs'
 import { CHANGE_STAGES, ROW_STATUS, pathStatuses, type RowStatus } from '#lib/gitStatus'
@@ -61,6 +55,10 @@ import {
   LoadingIcon, MoreIcon, NewFileIcon, NewFolderIcon, SearchIcon, ShowIcon, SymlinkIcon, TreeListIcon,
   UploadFilesIcon, UploadFolderIcon, WarningIcon,
 } from '#lib/icons'
+import {
+  FIELD_BOX, POPUP, YButton, YConfirm, YContextMenu, YFileInput, YInput, YMenu, YMenuItem, YMenuPopup, YTip, YTooltip, YTooltipProvider,
+  type YIconGlyph,
+} from '#ui'
 
 /** The most matches the filter lists. */
 const MAX_MATCHES = 200
@@ -84,15 +82,15 @@ function fileIcon(path: string): { Icon: typeof FileIcon; className: string } {
     case null: {
       const base = path.slice(path.lastIndexOf('/') + 1)
       return base.startsWith('.') || base.endsWith('.lock')
-        ? { Icon: FileConfigIcon, className: 'text-text-faint' }
-        : { Icon: FileIcon, className: 'text-text-faint' }
+        ? { Icon: FileConfigIcon, className: 'text-subtle' }
+        : { Icon: FileIcon, className: 'text-subtle' }
     }
-    case 'md': return { Icon: FileTextIcon, className: 'text-link' }
+    case 'md': return { Icon: FileTextIcon, className: 'text-info' }
     case 'json': return { Icon: FileJsonIcon, className: 'text-warning' }
     case 'yaml': case 'toml': case 'xml': case 'dockerfile':
       return { Icon: FileConfigIcon, className: 'text-purple' }
     case 'shell': return { Icon: FileShellIcon, className: 'text-success' }
-    default: return { Icon: FileCodeIcon, className: 'text-link' }
+    default: return { Icon: FileCodeIcon, className: 'text-info' }
   }
 }
 
@@ -496,34 +494,32 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
     return { title: `Delete “${row.path}”?`, description: `This can't be undone.${lost}` }
   }
 
-  const menuItems = (row: Row | null, Item: typeof Menu.Item): ReactNode => {
+  /** The rows of both the context menu and a row's ⋯ menu, whose items
+   *  are the same base-ui part. */
+  const menuItems = (row: Row | null): ReactNode => {
     const folder = row === null ? '' : folderOf(row)
     return (
       <>
         {folder !== null && (
           <>
-            <Item className={MENU_ITEM} onClick={() => startEdit({ kind: 'file', parent: folder })}>
-              <NewFileIcon size={13} /> New file
-            </Item>
-            <Item className={MENU_ITEM} onClick={() => startEdit({ kind: 'folder', parent: folder })}>
-              <NewFolderIcon size={13} /> New folder
-            </Item>
+            <YMenuItem icon={NewFileIcon} onClick={() => startEdit({ kind: 'file', parent: folder })}>New file</YMenuItem>
+            <YMenuItem icon={NewFolderIcon} onClick={() => startEdit({ kind: 'folder', parent: folder })}>New folder</YMenuItem>
             {!changedOnly && (
               <>
-                <Item className={MENU_ITEM} onClick={() => openPicker(filesInput.current, folder)}>
-                  <UploadFilesIcon size={13} /> Upload files…
-                </Item>
-                <Item className={MENU_ITEM} onClick={() => openPicker(folderInput.current, folder)}>
-                  <UploadFolderIcon size={13} /> Upload folder…
-                </Item>
+                <YMenuItem icon={UploadFilesIcon} onClick={() => openPicker(filesInput.current, folder)}>
+                  Upload files…
+                </YMenuItem>
+                <YMenuItem icon={UploadFolderIcon} onClick={() => openPicker(folderInput.current, folder)}>
+                  Upload folder…
+                </YMenuItem>
               </>
             )}
           </>
         )}
         {row !== null && (
           <>
-            <Item className={MENU_ITEM} onClick={() => startEdit({ kind: 'rename', path: row.path })}>Rename</Item>
-            <Item className={MENU_ITEM} onClick={() => setConfirmDelete(row)}>Delete</Item>
+            <YMenuItem onClick={() => startEdit({ kind: 'rename', path: row.path })}>Rename</YMenuItem>
+            <YMenuItem onClick={() => setConfirmDelete(row)}>Delete</YMenuItem>
           </>
         )}
       </>
@@ -534,7 +530,7 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
   if (changes.isError && isStopped(changes.error)) {
     // Listing needs the workspace running; open tabs still work when stopped.
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface text-xs text-text-dim">
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface text-md text-muted">
         <span>Start the workspace to {changedOnly ? 'review its changes' : 'browse its files'}.</span>
       </div>
     )
@@ -542,22 +538,17 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
   if (!data || !tree) {
     if (!changes.isError) {
       return (
-        <div className="flex h-full items-center justify-center bg-surface text-text-dim">
+        <div className="flex h-full items-center justify-center bg-surface text-muted">
           <LoadingIcon size={18} className="animate-spin" />
         </div>
       )
     }
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface text-xs text-text-dim">
-        <WarningIcon size={18} className="text-text-faint" />
+      <div className="flex h-full flex-col items-center justify-center gap-2 bg-surface text-md text-muted">
+        <WarningIcon size={18} className="text-subtle" />
         <span>Couldn’t load files.</span>
-        <span className="max-w-full truncate px-4 text-[11px] text-text-faint">{errMessage(changes.error)}</span>
-        <button
-          onClick={() => void changes.refetch()}
-          className="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-dim transition hover:text-text"
-        >
-          Retry
-        </button>
+        <span className="max-w-full truncate px-4 text-sm text-subtle">{errMessage(changes.error)}</span>
+        <YButton size="sm" onClick={() => void changes.refetch()}>Retry</YButton>
       </div>
     )
   }
@@ -570,7 +561,7 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
         onCommit={(v) => void commitEdit(v)}
         onCancel={() => { setEditing(null); setEditError(null) }}
       />
-      {editError && <div className="py-0.5 text-[11px] text-error">{editError}</div>}
+      {editError && <div className="py-0.5 text-sm text-danger">{editError}</div>}
     </div>
   )
 
@@ -660,14 +651,12 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
     ? find ? `${visibleChanged.length} of ${changed.length} changed` : `${changed.length} changed`
     : find ? `${matches.length}${matches.length === MAX_MATCHES ? '+' : ''} of ${count}` : `${count} files`
   const header = (
-    <Tooltip.Provider>
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-hairline px-1.5 text-[11px] text-text-dim">
-        <label
-          className="flex h-6 min-w-0 flex-1 items-center gap-1.5 rounded border border-border bg-bg pl-1.5 pr-1
-            transition focus-within:border-border-strong"
-        >
-          <SearchIcon size={12} className="shrink-0 text-text-faint" />
-          <input
+    <YTooltipProvider>
+      <div className="@container flex h-8 shrink-0 items-center gap-1 border-b border-line px-1.5 text-sm text-muted">
+        <label className={clsx(FIELD_BOX, 'flex h-6 min-w-0 flex-1 items-center gap-1.5 overflow-hidden pl-1.5 pr-1')}>
+          <SearchIcon size={12} className="shrink-0 text-subtle" />
+          <YInput
+            bare
             ref={findRef}
             value={find}
             onChange={(e) => setFind(e.target.value)}
@@ -693,104 +682,81 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
               : `Go to file… (${formatChord(bindings['open-files'], IS_MAC)})`}
             aria-label={changedOnly ? 'Filter changed files' : 'Filter files'}
             spellCheck={false}
-            className="min-w-0 flex-1 bg-transparent py-0.5 text-[11px] text-text outline-none placeholder:text-text-faint"
+            className="flex-1 py-0.5 text-sm"
           />
           <span
-            className="shrink-0 tabular-nums text-text-faint"
+            className="shrink-0 tabular-nums text-subtle"
             title={data.truncated ? 'Only the first 50,000 paths are listed.' : undefined}
           >
             {countLabel}
             {data.truncated && !changedOnly && '+'}
           </span>
         </label>
-        {changedOnly ? (
-          <>
-            <HeaderButton label={`Find in diffs (${formatChord(findChord(), IS_MAC)})`} onClick={findQuery.open}>
-              <SearchIcon size={13} />
-            </HeaderButton>
-            <HeaderButton
-              label={flat ? 'Show as a tree' : 'Show as a flat list'}
-              pressed={flat}
-              onClick={() => setPaneView(viewKey, { flat: !flat })}
-            >
-              {flat ? <FlatListIcon size={13} /> : <TreeListIcon size={13} />}
-            </HeaderButton>
-            <HeaderButton
-              label={anyDiffOpen ? 'Collapse all changes' : 'Show all changes'}
-              onClick={() => setPaneView(viewKey, { openDiffs: anyDiffOpen ? [] : changed.map((c) => c.path) })}
-            >
-              {anyDiffOpen ? <CollapseAllIcon size={13} /> : <ExpandAllIcon size={13} />}
-            </HeaderButton>
-          </>
-        ) : (
-          <>
-            <HeaderButton
-              label={showIgnored ? 'Hide ignored files' : 'Show ignored files'}
-              pressed={showIgnored}
-              onClick={() => setPaneView(viewKey, { showIgnored: !showIgnored })}
-            >
-              {showIgnored ? <ShowIcon size={13} /> : <HideIcon size={13} />}
-            </HeaderButton>
-            <HeaderButton label="New file" onClick={() => startEdit({ kind: 'file', parent: createParent() })}>
-              <NewFileIcon size={13} />
-            </HeaderButton>
-            <HeaderButton label="New folder" onClick={() => startEdit({ kind: 'folder', parent: createParent() })}>
-              <NewFolderIcon size={13} />
-            </HeaderButton>
-            <HeaderButton label="Upload files" onClick={() => openPicker(filesInput.current, createParent())}>
-              <UploadFilesIcon size={13} />
-            </HeaderButton>
-            <HeaderButton label="Upload folder" onClick={() => openPicker(folderInput.current, createParent())}>
-              <UploadFolderIcon size={13} />
-            </HeaderButton>
-            <HeaderButton
-              label={anyFolderOpen ? 'Collapse all folders' : 'Expand all folders'}
-              onClick={() => setExpanded(anyFolderOpen ? new Set() : new Set(expandable))}
-            >
-              {anyFolderOpen ? <CollapseAllIcon size={13} /> : <ExpandAllIcon size={13} />}
-            </HeaderButton>
-          </>
-        )}
-        <TextSizeMenu size={fontSize} onChange={setFontSize} className="h-6 w-6" />
+        <HeaderActions actions={changedOnly ? [
+          { label: `Find in diffs (${formatChord(findChord(), IS_MAC)})`, icon: SearchIcon, onClick: findQuery.open },
+          {
+            label: flat ? 'Show as a tree' : 'Show as a flat list',
+            icon: flat ? FlatListIcon : TreeListIcon,
+            pressed: flat,
+            onClick: () => setPaneView(viewKey, { flat: !flat }),
+          },
+          {
+            label: anyDiffOpen ? 'Collapse all changes' : 'Show all changes',
+            icon: anyDiffOpen ? CollapseAllIcon : ExpandAllIcon,
+            onClick: () => setPaneView(viewKey, { openDiffs: anyDiffOpen ? [] : changed.map((c) => c.path) }),
+          },
+        ] : [
+          {
+            label: showIgnored ? 'Hide ignored files' : 'Show ignored files',
+            icon: showIgnored ? ShowIcon : HideIcon,
+            pressed: showIgnored,
+            onClick: () => setPaneView(viewKey, { showIgnored: !showIgnored }),
+          },
+          { label: 'New file', icon: NewFileIcon, onClick: () => startEdit({ kind: 'file', parent: createParent() }) },
+          { label: 'New folder', icon: NewFolderIcon, onClick: () => startEdit({ kind: 'folder', parent: createParent() }) },
+          { label: 'Upload files', icon: UploadFilesIcon, onClick: () => openPicker(filesInput.current, createParent()) },
+          { label: 'Upload folder', icon: UploadFolderIcon, onClick: () => openPicker(folderInput.current, createParent()) },
+          {
+            label: anyFolderOpen ? 'Collapse all folders' : 'Expand all folders',
+            icon: anyFolderOpen ? CollapseAllIcon : ExpandAllIcon,
+            onClick: () => setExpanded(anyFolderOpen ? new Set() : new Set(expandable)),
+          },
+        ]} />
+        <TextSizeMenu size={fontSize} onChange={setFontSize} />
       </div>
-    </Tooltip.Provider>
+    </YTooltipProvider>
   )
 
   const changesNotice = ((): JSX.Element | null => {
     if (!changedOnly) return null
     const center = 'flex min-h-0 flex-1 flex-col items-center justify-center gap-1 px-4 text-center'
     if (known && repos.length === 0) {
-      return <div className={center}><p className="text-xs text-text-dim">This workspace has no repos</p></div>
+      return <div className={center}><p className="text-md text-muted">This workspace has no repos</p></div>
     }
     if (!changes.data) {
       return changes.isError ? (
-        <div className={clsx(center, 'gap-2 text-xs text-text-dim')}>
-          <WarningIcon size={18} className="text-text-faint" />
+        <div className={clsx(center, 'gap-2 text-md text-muted')}>
+          <WarningIcon size={18} className="text-subtle" />
           <span>Couldn’t load changes.</span>
-          <button
-            onClick={() => void changes.refetch()}
-            className="rounded bg-surface-2 px-2 py-1 text-[11px] text-text-dim transition hover:text-text"
-          >
-            Retry
-          </button>
+          <YButton size="sm" onClick={() => void changes.refetch()}>Retry</YButton>
         </div>
       ) : (
-        <div className={clsx(center, 'text-text-dim')}><LoadingIcon size={18} className="animate-spin" /></div>
+        <div className={clsx(center, 'text-muted')}><LoadingIcon size={18} className="animate-spin" /></div>
       )
     }
     if (changed.length === 0 && !changes.data.skipped) {
-      if (range) return <div className={center}><p className="text-xs text-text-dim">No differences</p></div>
+      if (range) return <div className={center}><p className="text-md text-muted">No differences</p></div>
       // An unresolved base means the diff ran against HEAD and misses
       // committed work, so say that rather than "no changes".
       return changes.data.baseResolved ? (
         <div className={center}>
-          <p className="text-xs text-text-dim">No changes yet</p>
-          <p className="text-[11px] text-text-faint">Edits the agent makes in its workspace show up here.</p>
+          <p className="text-md text-muted">No changes yet</p>
+          <p className="text-sm text-subtle">Edits the agent makes in its workspace show up here.</p>
         </div>
       ) : (
         <div className={center}>
-          <p className="text-xs text-text-dim">Nothing uncommitted</p>
-          <p className="text-[11px] text-text-faint">
+          <p className="text-md text-muted">Nothing uncommitted</p>
+          <p className="text-sm text-subtle">
             Couldn’t find the fork point for the diff base, so committed work isn’t shown.
             Push that branch, or pick another base above.
           </p>
@@ -798,7 +764,7 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
       )
     }
     if (visibleChanged.length === 0 && find) {
-      return <div className={center}><p className="text-xs text-text-dim">No changes match “{find}”</p></div>
+      return <div className={center}><p className="text-md text-muted">No changes match “{find}”</p></div>
     }
     return null
   })()
@@ -828,8 +794,8 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
       {header}
       {!changedOnly && (
         <>
-          <input ref={filesInput} type="file" multiple hidden onChange={onPicked} />
-          <input ref={folderInput} type="file" hidden onChange={onPicked} {...{ webkitdirectory: '' }} />
+          <YFileInput ref={filesInput} multiple onChange={onPicked} />
+          <YFileInput ref={folderInput} directory onChange={onPicked} />
         </>
       )}
       {range && !range.from && compared.data?.commit && (
@@ -856,19 +822,19 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
         />
       )}
       {uploading && (
-        <div role="status" className="flex shrink-0 items-center gap-1.5 border-b border-hairline px-2 py-1 text-[11px] text-text-dim">
+        <div role="status" className="flex shrink-0 items-center gap-1.5 border-b border-line px-2 py-1 text-sm text-muted">
           <LoadingIcon size={11} className="animate-spin" />
           Uploading {uploading.done} of {uploading.total}…
         </div>
       )}
       {actionError && (
-        <div role="alert" className="shrink-0 border-b border-hairline px-2 py-1 text-[11px] text-error">
+        <div role="alert" className="shrink-0 border-b border-line px-2 py-1 text-sm text-danger">
           {actionError}
         </div>
       )}
       {/* The tree and counts below are the last answer that landed. */}
       {changes.isError && (
-        <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-hairline px-2 py-1 text-[11px] text-warning">
+        <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-line px-2 py-1 text-sm text-warning">
           <span className="min-w-0 flex-1 truncate" title={errMessage(changes.error)}>
             Not up to date: {errMessage(changes.error)}
           </span>
@@ -883,14 +849,15 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
           {...pinch}
           className="min-h-0 flex-1 touch-pan-x touch-pan-y overflow-y-auto py-0.5"
         >
-          {matches.length === 0 && <p className="px-3 py-2 text-xs text-text-dim">No files match “{find}”</p>}
+          {matches.length === 0 && <p className="px-3 py-2 text-md text-muted">No files match “{find}”</p>}
           {matches.map((path, i) => {
             const status = statuses.get(path)
             const change = changeByPath.get(path)
             const slash = path.lastIndexOf('/')
             const { Icon, className } = fileIcon(path)
             return (
-              <button
+              <YButton
+                variant="bare"
                 key={path}
                 role="option"
                 aria-selected={i === active}
@@ -898,23 +865,23 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
                 onClick={() => openFile(workspaceId, path)}
                 onMouseMove={() => { if (i !== active) setActive(i) }}
                 title={path}
-                className={clsx('flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-xs',
-                  i === active && 'bg-surface-2', ignoredFiles.has(path) && 'opacity-50')}
+                className={clsx('flex w-full items-center gap-1.5 px-2 py-0.5 text-left text-md',
+                  i === active && 'bg-selected', ignoredFiles.has(path) && 'opacity-50')}
               >
                 <Icon size={13} className={clsx('shrink-0', className)} />
                 <span className={clsx('shrink-0', status ? ROW_STATUS[status] : 'text-text')}>
                   {path.slice(slash + 1)}
                 </span>
-                <span className="min-w-0 flex-1 truncate text-[11px] text-text-faint">{path.slice(0, Math.max(slash, 0))}</span>
-                {change && !change.binary && <LineCountsLabel counts={change} className="text-[10px]" />}
+                <span className="min-w-0 flex-1 truncate text-sm text-subtle">{path.slice(0, Math.max(slash, 0))}</span>
+                {change && !change.binary && <LineCountsLabel counts={change} className="text-xs" />}
                 <StageBadges change={change} conflicted={status === 'conflicted'} />
-              </button>
+              </YButton>
             )
           })}
         </div>
       ) : (
-        <ContextMenu.Root>
-          <ContextMenu.Trigger
+        <YContextMenu.Root>
+          <YContextMenu.Trigger
             ref={setList}
             onContextMenuCapture={() => setContextRow(null)}
             // Clicking empty space clears the selection, so New file / New
@@ -930,35 +897,37 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
               const dir = path.endsWith('/')
               const { Icon, className } = dir ? { Icon: FolderIcon, className: 'text-accent/80' } : fileIcon(path)
               return (
-                <div key={path} className="flex items-center gap-1.5 px-2 py-0.5 text-xs">
+                <div key={path} className="flex items-center gap-1.5 px-2 py-0.5 text-md">
                   <Icon size={13} className={clsx('shrink-0', className)} />
                   <span className={clsx('shrink-0', ROW_STATUS.added)}>{prefix}{path}</span>
-                  <span className="min-w-0 flex-1 truncate text-[11px] text-text-faint">
+                  <span className="min-w-0 flex-1 truncate text-sm text-subtle">
                     {dir ? 'over 2,000 files' : 'over 10 MB'}, not diffed
                   </span>
                 </div>
               )
             })}
-          </ContextMenu.Trigger>
-          <ContextMenu.Portal>
-            <ContextMenu.Positioner>
-              <ContextMenu.Popup className={clsx('min-w-[160px]', POPUP)}>{menuItems(contextRow, ContextMenu.Item)}</ContextMenu.Popup>
-            </ContextMenu.Positioner>
-          </ContextMenu.Portal>
-        </ContextMenu.Root>
+          </YContextMenu.Trigger>
+          <YContextMenu.Portal>
+            <YContextMenu.Positioner>
+              <YContextMenu.Popup className={clsx('min-w-[160px]', POPUP)}>{menuItems(contextRow)}</YContextMenu.Popup>
+            </YContextMenu.Positioner>
+          </YContextMenu.Portal>
+        </YContextMenu.Root>
       ))}
 
-      <Menu.Root open={menu !== null} onOpenChange={(open) => { if (!open) setMenu(null) }}>
-        <MenuPopup anchor={menu?.anchor} side="bottom" align="end" sideOffset={4} className="min-w-[160px]">{menu && menuItems(menu.row, Menu.Item)}</MenuPopup>
-      </Menu.Root>
+      <YMenu.Root open={menu !== null} onOpenChange={(open) => { if (!open) setMenu(null) }}>
+        <YMenuPopup anchor={menu?.anchor} side="bottom" align="end" sideOffset={4} className="min-w-[160px]">
+          {menu && menuItems(menu.row)}
+        </YMenuPopup>
+      </YMenu.Root>
 
-      <ConfirmDialog
+      <YConfirm
         open={confirmDelete !== null}
         onOpenChange={(open) => { if (!open) setConfirmDelete(null) }}
         {...(confirmDelete ? deleteText(confirmDelete) : { title: '', description: '' })}
         onConfirm={() => { if (confirmDelete) void doDelete(confirmDelete) }}
       />
-      <ConfirmDialog
+      <YConfirm
         open={replacing !== null}
         onOpenChange={(open) => { if (!open) setReplacing(null) }}
         {...(replacing ? replaceText(replacing) : { title: '', description: '' })}
@@ -973,24 +942,46 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
   )
 }
 
-function HeaderButton({ label, pressed, onClick, children }: {
+interface HeaderAction {
   label: string
+  icon: YIconGlyph
   pressed?: boolean
   onClick: () => void
-  children: ReactNode
-}): JSX.Element {
+}
+
+/**
+ * The header's buttons beside the filter field. In a narrow pane (a tile
+ * among several) they fold into a ⋯ menu, so they never draw over the field.
+ */
+function HeaderActions({ actions }: { actions: HeaderAction[] }): JSX.Element {
   return (
-    <WithTip tip={<Tip title={label} />}>
-      <button
+    <>
+      <span className="flex shrink-0 items-center gap-1 @max-[22rem]:hidden">
+        {actions.map((a) => <HeaderButton key={a.label} {...a} />)}
+      </span>
+      <YMenu.Root>
+        <YMenu.Trigger render={<YButton variant="ghost" size="sm" icon={MoreIcon} aria-label="More actions" className="@min-[22rem]:hidden" />} />
+        <YMenuPopup side="bottom" align="end" sideOffset={4}>
+          {actions.map((a) => <YMenuItem key={a.label} icon={a.icon} onClick={a.onClick}>{a.label}</YMenuItem>)}
+        </YMenuPopup>
+      </YMenu.Root>
+    </>
+  )
+}
+
+function HeaderButton({ label, icon, pressed, onClick }: HeaderAction): JSX.Element {
+  return (
+    <YTooltip tip={<YTip title={label} />}>
+      <YButton
+        variant="ghost"
+        size="sm"
+        icon={icon}
         onClick={onClick}
         aria-label={label}
         aria-pressed={pressed}
-        className={clsx('flex h-6 w-6 shrink-0 items-center justify-center rounded transition hover:bg-surface-2 hover:text-text',
-          pressed ? 'text-text' : 'text-text-faint')}
-      >
-        {children}
-      </button>
-    </WithTip>
+        className="aria-pressed:text-text"
+      />
+    </YTooltip>
   )
 }
 
@@ -1001,7 +992,7 @@ function StageBadges({ change, conflicted }: { change?: WorkspaceChange; conflic
   if (!conflicted && stages.length === 0) return null
   const badge = 'w-2.5 text-center'
   return (
-    <span className="flex shrink-0 font-mono text-[10px] font-semibold">
+    <span className="flex shrink-0 font-mono text-xs font-semibold">
       {conflicted && <span title="Conflicted" className={clsx(badge, ROW_STATUS.conflicted)}>!</span>}
       {stages.map(({ stage, label, letter, className }) => (
         <span key={stage} title={label[0].toUpperCase() + label.slice(1)} className={clsx(badge, className)}>{letter}</span>
@@ -1037,84 +1028,92 @@ function TreeRowView({
     ? { Icon: open ? FolderOpenIcon : FolderIcon, className: 'text-accent/80' }
     : fileIcon(row.name)
   const name = row.name.includes('/') ? <PathLabel path={row.name} baseClassName={tint} /> : row.name
-  // A diff row holds the name's own button, which a button cannot contain.
-  const Main = diff ? 'div' : 'button'
+  // The row is a button, except a diff row: it holds the name's own button,
+  // which a button cannot contain.
+  const mainProps = {
+    title: broken
+      ? `${row.path} — broken link, or points outside the workspace`
+      : renamedFrom ? `${renamedFrom} → ${row.path}` : row.path,
+    'aria-expanded': row.dir ? open : undefined,
+    style: { paddingLeft: indent(depth) },
+    className: clsx('flex min-w-0 flex-1 items-center gap-1 py-0.5 pr-7 text-left text-md hover:bg-hover',
+      (row.ignored || broken) && 'opacity-50', (broken || (deleted && !diff)) && 'cursor-default',
+      diff && 'cursor-pointer'),
+  }
+  const content = (
+    <>
+      {diff ? (
+        // Its click reaches the row, which folds the diff; a button so
+        // the keyboard can do the same.
+        <YButton
+          variant="bare"
+          aria-label={`${diff.open ? 'Hide' : 'Show'} the diff of ${row.path}`}
+          aria-expanded={diff.open}
+          className="flex shrink-0 text-subtle hover:text-text"
+        >
+          <ChevronIcon size={11} className={clsx('transition-transform', diff.open && 'rotate-90')} />
+        </YButton>
+      ) : (
+        <ChevronIcon
+          size={11}
+          className={clsx('shrink-0 text-subtle transition-transform', !row.dir && 'invisible', open && 'rotate-90')}
+        />
+      )}
+      <Icon size={13} className={clsx('shrink-0', iconClass)} />
+      {diff && !deleted ? (
+        <YButton
+          variant="bare"
+          onClick={(e) => { e.stopPropagation(); onClick() }}
+          title={`Open ${row.path}`}
+          className={clsx('min-w-0 truncate text-left hover:underline', tint ?? 'text-text')}
+        >
+          {name}
+        </YButton>
+      ) : (
+        <span className={clsx('min-w-0 truncate', tint ?? 'text-text', deleted && 'line-through')}>
+          {name}
+        </span>
+      )}
+      {row.symlink && (
+        <span
+          title={row.symlink.target === null ? 'Broken symlink, or points outside the workspace' : `Symlink to ${row.symlink.target}`}
+          className="shrink-0 text-subtle"
+        >
+          <SymlinkIcon size={11} aria-label="symlink" />
+        </span>
+      )}
+      <span className="ml-auto" />
+      {row.change && !row.change.binary && <LineCountsLabel counts={row.change} className="text-xs" />}
+      {row.dir
+        ? tint && (
+          <span title={`Contains ${row.status} files`} aria-label={row.status} className={clsx('shrink-0 text-xs', tint)}>
+            ●
+          </span>
+        )
+        : <StageBadges change={row.change} conflicted={row.status === 'conflicted'} />}
+    </>
+  )
   return (
     <>
       {renaming ? renameInput : (
         <div
-          className={clsx('group/row relative flex items-center', selected && 'bg-surface-2', dropping && 'bg-accent/15')}
+          className={clsx('group/row relative flex items-center', selected && 'bg-selected', dropping && 'bg-accent/15')}
           onContextMenu={onContextMenu}
           data-drop-folder={folderOf(row) ?? parentOf(row.path)}
         >
-          <Main
-            onClick={diff ? diff.toggle : onClick}
-            title={broken
-              ? `${row.path} — broken link, or points outside the workspace`
-              : renamedFrom ? `${renamedFrom} → ${row.path}` : row.path}
-            aria-expanded={row.dir ? open : undefined}
-            style={{ paddingLeft: indent(depth) }}
-            className={clsx('flex min-w-0 flex-1 items-center gap-1 py-0.5 pr-7 text-left text-xs hover:bg-surface-2',
-              (row.ignored || broken) && 'opacity-50', (broken || (deleted && !diff)) && 'cursor-default',
-              diff && 'cursor-pointer')}
-          >
-            {diff ? (
-              // Its click reaches the row, which folds the diff; a button so
-              // the keyboard can do the same.
-              <button
-                aria-label={`${diff.open ? 'Hide' : 'Show'} the diff of ${row.path}`}
-                aria-expanded={diff.open}
-                className="flex shrink-0 text-text-faint hover:text-text"
-              >
-                <ChevronIcon size={11} className={clsx('transition-transform', diff.open && 'rotate-90')} />
-              </button>
-            ) : (
-              <ChevronIcon
-                size={11}
-                className={clsx('shrink-0 text-text-faint transition-transform', !row.dir && 'invisible', open && 'rotate-90')}
-              />
-            )}
-            <Icon size={13} className={clsx('shrink-0', iconClass)} />
-            {diff && !deleted ? (
-              <button
-                onClick={(e) => { e.stopPropagation(); onClick() }}
-                title={`Open ${row.path}`}
-                className={clsx('min-w-0 truncate text-left hover:underline', tint ?? 'text-text')}
-              >
-                {name}
-              </button>
-            ) : (
-              <span className={clsx('min-w-0 truncate', tint ?? 'text-text', deleted && 'line-through')}>
-                {name}
-              </span>
-            )}
-            {row.symlink && (
-              <span
-                title={row.symlink.target === null ? 'Broken symlink, or points outside the workspace' : `Symlink to ${row.symlink.target}`}
-                className="shrink-0 text-text-faint"
-              >
-                <SymlinkIcon size={11} aria-label="symlink" />
-              </span>
-            )}
-            <span className="ml-auto" />
-            {row.change && !row.change.binary && <LineCountsLabel counts={row.change} className="text-[10px]" />}
-            {row.dir
-              ? tint && (
-                <span title={`Contains ${row.status} files`} aria-label={row.status} className={clsx('shrink-0 text-[9px]', tint)}>
-                  ●
-                </span>
-              )
-              : <StageBadges change={row.change} conflicted={row.status === 'conflicted'} />}
-          </Main>
-          <button
+          {diff
+            ? <div {...mainProps} onClick={diff.toggle}>{content}</div>
+            : <YButton variant="bare" {...mainProps} onClick={onClick}>{content}</YButton>}
+          <YButton
+            variant="bare"
             onClick={(e) => onMore(e.currentTarget)}
             title="More actions"
             aria-label={`More actions for ${row.path}`}
-            className="absolute right-1 flex h-4 w-4 items-center justify-center rounded text-text-faint opacity-0
+            className="absolute right-1 flex h-4 w-4 items-center justify-center rounded text-subtle opacity-0
               transition hover:text-text group-hover/row:opacity-100 max-md:opacity-100"
           >
             <MoreIcon size={11} />
-          </button>
+          </YButton>
         </div>
       )}
       {diff?.open && diff.body}
@@ -1123,7 +1122,7 @@ function TreeRowView({
           {/* Guide line down the open folder's children. */}
           <span
             aria-hidden
-            className="pointer-events-none absolute inset-y-0 w-px bg-border/60"
+            className="pointer-events-none absolute inset-y-0 w-px bg-line-strong/60"
             style={{ left: indent(depth) + 5 }}
           />
           {children}
@@ -1197,7 +1196,7 @@ const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, restFaile
   }), [chunks, marks])
   const language = languageForPath(change.path)
   return (
-    <div ref={want && top} className="border-y border-hairline bg-bg">
+    <div ref={want && top} className="border-y border-line bg-sunken">
       {chunks.length > 0 ? chunks.map((lines, i) => (
         <NearScreen
           key={i}
@@ -1208,7 +1207,7 @@ const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, restFaile
           <DiffView lines={lines} language={language} marks={chunkMarks[i]} current={current} />
         </NearScreen>
       )) : (
-        <div className="px-3 py-1.5 text-[11px] text-text-faint">
+        <div className="px-3 py-1.5 text-sm text-subtle">
           {change.binary ? 'Binary file, no preview'
             : unfetched === 'loading' ? 'Loading diff…'
               : unfetched === 'failed' ? 'Diff not loaded'
@@ -1216,7 +1215,7 @@ const ChangeDiff = memo(function ChangeDiff({ change, diff, unfetched, restFaile
         </div>
       )}
       {chunks.length > 0 && diff?.cut && (
-        <div ref={want && end} className="px-3 py-1.5 text-[11px] text-text-faint">
+        <div ref={want && end} className="px-3 py-1.5 text-sm text-subtle">
           {restFailed ? 'Couldn’t load the rest of this diff' : 'Loading more…'}
         </div>
       )}
@@ -1314,8 +1313,8 @@ function LazyRows({ workspaceId, parent, render }: {
     queryFn: () => listWorkspaceDir(workspaceId, parent.path),
     refetchInterval: 5000,
   })
-  if (isError) return <div className="px-3 py-0.5 text-[11px] text-text-faint">Couldn’t list this folder.</div>
-  if (!data) return <div className="px-3 py-0.5 text-[11px] text-text-faint">Loading…</div>
+  if (isError) return <div className="px-3 py-0.5 text-sm text-subtle">Couldn’t list this folder.</div>
+  if (!data) return <div className="px-3 py-0.5 text-sm text-subtle">Loading…</div>
   const rows: Row[] = data.entries
     .map((e) => ({
       path: `${parent.path}/${e.name}`,
@@ -1328,7 +1327,7 @@ function LazyRows({ workspaceId, parent, render }: {
   return (
     <>
       {render(rows)}
-      {data.truncated && <div className="px-3 py-0.5 text-[11px] text-text-faint">First 5,000 shown</div>}
+      {data.truncated && <div className="px-3 py-0.5 text-sm text-subtle">First 5,000 shown</div>}
     </>
   )
 }
@@ -1336,7 +1335,7 @@ function LazyRows({ workspaceId, parent, render }: {
 /** The inline name input: Enter commits, Escape cancels. On phones its text
  *  is at least PHONE_TEXT_PX after the list's `zoom`, which iOS counts toward
  *  the size it zooms the page on focus below, and never smaller than the
- *  rows' own `text-xs`. */
+ *  rows' own `text-md`. */
 function InlineInput({ initial, zoom, onCommit, onCancel }: {
   initial: string
   zoom: number
@@ -1354,7 +1353,7 @@ function InlineInput({ initial, zoom, onCommit, onCancel }: {
     el.setSelectionRange(0, dot > 0 ? dot : initial.length)
   }, [initial])
   return (
-    <input
+    <YInput
       ref={ref}
       defaultValue={initial}
       aria-label="Name"
@@ -1367,7 +1366,7 @@ function InlineInput({ initial, zoom, onCommit, onCancel }: {
           onCancel()
         }
       }}
-      className="w-full rounded border border-border-strong bg-bg px-1 py-0.5 text-xs text-text outline-none"
+      className="w-full"
     />
   )
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
-import { SettingsButton } from '#components/SettingsButton'
+import { SettingsButton, SettingsDialog } from '#components/SettingsButton'
 import { useUiStore } from '#lib/store'
 import { deviceTimeZone } from '#lib/time'
 import { mockFetch, renderWithClient, type FetchMock } from './harness'
@@ -22,7 +22,7 @@ function serve(stored: { timeZone: string; pinned: boolean }): FetchMock {
 }
 
 async function openTimeZone(): Promise<HTMLSelectElement> {
-  renderWithClient(<SettingsButton />)
+  renderWithClient(<><SettingsButton /><SettingsDialog /></>)
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
   const select = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Time zone' })
   await waitFor(() => expect(select.disabled).toBe(false))

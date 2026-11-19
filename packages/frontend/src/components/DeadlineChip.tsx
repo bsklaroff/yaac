@@ -1,14 +1,12 @@
 import { useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { Menu } from '@base-ui/react/menu'
-import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import { api } from '#lib/api'
-import { TimeoutIcon } from '#lib/icons'
 import { timeUntil, useNow } from '#lib/time'
 import { minutesUntil, parseDuration } from '@yaac/shared/schedule'
+import { YChip, YInput, YMenu, YMenuItem, YMenuPopup } from '#ui'
 
 /**
- * The workspace header's timeout control (docs/routines.md "Timeouts"):
+ * The Details pane's timeout control (docs/routines.md "Timeouts"):
  * "stops in 42m" while the workspace has a deadline, else a bare clock. Its
  * menu pushes the deadline back, sets one, or clears it. The server takes a
  * timeout as minutes from now, so "+30m" sends the minutes from now until
@@ -38,7 +36,7 @@ export function DeadlineChip({ workspaceId, deadline }: { workspaceId: string; d
   if (custom !== null) {
     const minutes = parseDuration(custom)
     return (
-      <input
+      <YInput
         autoFocus
         aria-label="Stop after"
         value={custom}
@@ -51,27 +49,29 @@ export function DeadlineChip({ workspaceId, deadline }: { workspaceId: string; d
           set(minutes)
         }}
         onBlur={() => setCustom(null)}
-        className={clsx('no-drag h-6 w-20 shrink-0 rounded border bg-bg px-1.5 text-[11px] text-text outline-none',
-          custom !== '' && minutes === undefined ? 'border-danger' : 'border-border-strong')}
+        className={clsx('no-drag w-20 shrink-0', custom !== '' && minutes === undefined && 'focus-visible:outline-danger')}
       />
     )
   }
   return (
-    <Menu.Root>
-      <Menu.Trigger
-        title={error ?? (deadline !== undefined ? 'Change when the server stops it' : 'Set a timeout')}
-        aria-label={deadline !== undefined ? `Stops in ${timeUntil(deadline, now)}` : 'Set a timeout'}
-        className={clsx('no-drag flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] transition',
-          'hover:bg-surface-2 data-[popup-open]:bg-surface-2', error !== null ? 'text-danger' : 'text-text-dim')}
-      >
-        <TimeoutIcon size={11} />
-        {deadline !== undefined && <span className="whitespace-nowrap">stops in {timeUntil(deadline, now)}</span>}
-      </Menu.Trigger>
-      <MenuPopup side="bottom" align="end" sideOffset={4} className="min-w-[140px]">
+    <YMenu.Root>
+      <YMenu.Trigger
+        render={(
+          <YChip
+            dropdown
+            title={error ?? (deadline !== undefined ? 'Change when the server stops it' : 'Set a timeout')}
+            aria-label={deadline !== undefined ? `Stops in ${timeUntil(deadline, now)}` : 'Set a timeout'}
+            className={clsx('no-drag -ml-2 font-normal text-text', error !== null && 'text-danger')}
+          >
+            {deadline !== undefined ? `Stops in ${timeUntil(deadline, now)}` : 'No timeout'}
+          </YChip>
+        )}
+      />
+      <YMenuPopup side="bottom" align="end" sideOffset={4} className="min-w-[140px]">
         {items.map((item) => (
-          <Menu.Item key={item.label} className={MENU_ITEM} onClick={item.onClick}>{item.label}</Menu.Item>
+          <YMenuItem key={item.label} onClick={item.onClick}>{item.label}</YMenuItem>
         ))}
-      </MenuPopup>
-    </Menu.Root>
+      </YMenuPopup>
+    </YMenu.Root>
   )
 }

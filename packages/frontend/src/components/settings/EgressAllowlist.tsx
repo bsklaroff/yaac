@@ -3,13 +3,13 @@ import clsx from 'clsx'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronIcon, DeleteIcon } from '#lib/icons'
 import { api } from '#lib/api'
-import { SectionLabel } from '#components/settings/Field'
+import { YButton, YCheckbox, YInput, YRowFrame, YSettingRow } from '#ui'
 import type { EgressAllowlist as Allowlist } from '@yaac/shared/types'
 
-const ROW = 'flex items-center gap-2 rounded-md bg-bg px-2.5 py-1.5 font-mono text-xs'
+const ROW = 'min-h-8 font-mono text-md'
 
 function Dot({ allowed }: { allowed: boolean }): JSX.Element {
-  return <span className={clsx('size-1.5 shrink-0 rounded-full', allowed ? 'bg-success' : 'bg-error')} />
+  return <span className={clsx('size-1.5 shrink-0 rounded-full', allowed ? 'bg-success' : 'bg-danger')} />
 }
 
 /**
@@ -47,102 +47,101 @@ export function EgressAllowlist({ projectId, readOnly = false }: {
 
   const allowlist = data?.allowlist
   const everything = allowlist?.hosts.includes('*') ?? false
-  const label = 'shrink-0 text-[11px] font-sans'
+  const label = 'shrink-0 text-sm font-sans'
 
   return (
-    <div>
-      <SectionLabel>Egress allowlist</SectionLabel>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
+    <YSettingRow
+      stacked
+      label="Egress allowlist"
+      hint={<>
         Hosts this project&apos;s workspaces may reach. Exact names or{' '}
-        <code className="text-text-dim">*.example.com</code> or <code className="text-text-dim">store*.example.com</code> wildcards; <code className="text-text-dim">*</code>{' '}
+        <code className="text-muted">*.example.com</code> or <code className="text-muted">store*.example.com</code> wildcards; <code className="text-muted">*</code>{' '}
         allows everything. Applies to workspaces created after saving.
-      </p>
-
+      </>}
+    >
       {data && allowlist && (
-        <div className="mt-3 space-y-1">
-          <button
-            type="button"
+        <div className="divide-y divide-line">
+          <YButton
+            variant="bare"
             onClick={() => setShowDefaults(!showDefaults)}
-            className={clsx(ROW, 'w-full text-left transition hover:bg-surface-2')}
+            aria-expanded={showDefaults}
+            className="flex min-h-8 w-full items-center gap-2.5 text-left font-mono text-md hover:bg-hover"
           >
             <Dot allowed={allowlist.defaults} />
-            <span className={clsx('flex-1 truncate', allowlist.defaults ? 'text-text' : 'text-text-faint')}>
+            <span className={clsx('flex-1 truncate', allowlist.defaults ? 'text-text' : 'text-subtle')}>
               {data.defaultHosts.length} default hosts
             </span>
-            <ChevronIcon size={12} className={clsx('text-text-faint transition', showDefaults && 'rotate-90')} />
-            <span className={clsx(label, allowlist.defaults ? 'text-text-faint' : 'text-error')}>
+            <ChevronIcon size={12} aria-hidden className={clsx('text-subtle transition', showDefaults && 'rotate-90')} />
+            <span className={clsx(label, allowlist.defaults ? 'text-subtle' : 'text-danger')}>
               {allowlist.defaults ? 'default' : 'blocked'}
             </span>
-          </button>
+          </YButton>
           {showDefaults && (
-            <div className="max-h-48 space-y-1 overflow-y-auto pl-3">
+            <div className="max-h-48 divide-y divide-line overflow-y-auto pl-3">
               {data.defaultHosts.map((h) => (
-                <div key={h} className={ROW}>
+                <YRowFrame key={h} label={h} className={ROW}>
                   <Dot allowed={allowlist.defaults} />
-                  <span className={clsx('flex-1 truncate', allowlist.defaults ? 'text-text' : 'text-text-faint')}>{h}</span>
-                </div>
+                  <span className={clsx('flex-1 truncate', allowlist.defaults ? 'text-text' : 'text-subtle')}>{h}</span>
+                </YRowFrame>
               ))}
             </div>
           )}
 
           {allowlist.hosts.map((h) => (
-            <div key={h} className={ROW}>
-              <Dot allowed />
-              <span className="flex-1 truncate text-text">{h === '*' ? '* (everything)' : h}</span>
-              <span className={clsx(label, 'text-text-faint')}>added</span>
-              {!readOnly && (
-                <button
+            <YRowFrame
+              key={h}
+              label={h}
+              actionsShown
+              actions={!readOnly && (
+                <YButton
+                  variant="ghost"
+                  size="sm"
+                  icon={DeleteIcon}
                   onClick={() => save.mutate({ ...allowlist, hosts: allowlist.hosts.filter((x) => x !== h) })}
                   disabled={save.isPending}
                   aria-label={`Remove ${h}`}
-                  className="shrink-0 text-text-faint transition hover:text-text disabled:opacity-50"
-                >
-                  <DeleteIcon size={12} />
-                </button>
+                />
               )}
-            </div>
+              className={ROW}
+            >
+              <Dot allowed />
+              <span className="flex-1 truncate text-text">{h === '*' ? '* (everything)' : h}</span>
+              <span className={clsx(label, 'text-subtle')}>added</span>
+            </YRowFrame>
           ))}
 
-          <div className={ROW}>
+          <YRowFrame label="everything else" className={ROW}>
             <Dot allowed={everything} />
-            <span className="flex-1 truncate text-text-faint">everything else</span>
-            <span className={clsx(label, everything ? 'text-text-faint' : 'text-error')}>
+            <span className="flex-1 truncate text-subtle">everything else</span>
+            <span className={clsx(label, everything ? 'text-subtle' : 'text-danger')}>
               {everything ? 'allowed' : 'blocked'}
             </span>
-          </div>
+          </YRowFrame>
         </div>
       )}
 
-      {!readOnly && allowlist && <form onSubmit={submit} className="mt-3 space-y-2">
+      {!readOnly && allowlist && <form onSubmit={submit} className="mt-2 space-y-2">
         <div className="flex gap-2">
-          <input
+          <YInput
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder="api.example.com or *.example.com"
-            className="flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
-              outline-none focus:border-border-strong"
+            className="flex-1 font-mono"
           />
-          <button
-            type="submit"
-            disabled={save.isPending || draft.trim() === ''}
-            className="rounded-md bg-surface-3 px-3 py-1 text-xs font-medium text-text transition
-              hover:bg-border-strong disabled:opacity-50"
-          >
+          <YButton type="submit" disabled={save.isPending || draft.trim() === ''}>
             Add
-          </button>
+          </YButton>
         </div>
-        <label className="flex items-center gap-1.5 text-[11px] text-text-dim">
-          <input
-            type="checkbox"
-            checked={allowlist.defaults}
-            disabled={save.isPending}
-            onChange={(e) => save.mutate({ ...allowlist, defaults: e.target.checked })}
-          />
+        <YCheckbox
+          checked={allowlist.defaults}
+          disabled={save.isPending}
+          onCheckedChange={(on) => save.mutate({ ...allowlist, defaults: on })}
+        >
           Allow the default hosts (agent APIs, GitHub, package registries)
-        </label>
+        </YCheckbox>
       </form>}
 
-      {(save.error ?? loadError) && <p className="mt-2 text-xs text-red-400">{(save.error ?? loadError)?.message}</p>}
-    </div>
+      {(save.error ?? loadError) && <p className="mt-2 text-md text-danger">{(save.error ?? loadError)?.message}</p>}
+    </YSettingRow>
   )
 }
