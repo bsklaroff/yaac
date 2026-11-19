@@ -22,6 +22,10 @@ export const DEFAULT_ALLOWED_HOSTS: string[] = [
   'www.claude.com',
   'claude.ai',
   'downloads.claude.ai',
+  // Artifact content: the CLI reads published artifacts from the frame host,
+  // and pages pull assets through the assets proxy
+  '*.frame.claudeusercontent.com',
+  'assets-proxy.anthropic.com',
 
   // OpenAI services
   'api.openai.com',
