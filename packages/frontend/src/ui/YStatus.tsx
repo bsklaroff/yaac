@@ -4,16 +4,18 @@ import { YLogoMark } from './YLogoMark'
 
 /**
  * A session's state as a 14px mark: `need` (waiting for you), `fail`,
- * `work` (the logo stepping), `bg` (its turn ended but background work
- * still runs), `later` (scheduled), `done`, `stop` and `idle` (no mark).
+ * `work` (the logo stepping left to right), `bg` (its turn ended but
+ * background work such as a monitor still runs: the logo rising, slower),
+ * `later` (scheduled), `done` (a white square, amber while `unread`), `stop`
+ * and `idle` (no mark).
  * Pair it with words where there is room; the mark carries a title for
  * where there is not.
  */
-export type YStatusKind = 'need' | 'fail' | 'work' | 'bg' | 'later' | 'done' | 'stop' | 'idle'
+export type YStatusKind = 'need' | 'fail' | 'work' | 'bg' | 'later' | 'done' | 'unread' | 'stop' | 'idle'
 
 const LABEL: Record<YStatusKind, string> = {
   need: 'Needs you', fail: 'Failed', work: 'Working', bg: 'Running in the background',
-  later: 'Scheduled', done: 'Done', stop: 'Stopped', idle: 'Idle',
+  later: 'Scheduled', done: 'Done', unread: 'Finished since you looked', stop: 'Stopped', idle: 'Idle',
 }
 
 export function YStatus({ kind, title, className }: { kind: YStatusKind; title?: string; className?: string }): JSX.Element {
@@ -51,12 +53,7 @@ function mark(kind: YStatusKind): JSX.Element | null {
     case 'work':
       return <YLogoMark height={14} animation="step" className="text-info" />
     case 'bg':
-      return (
-        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-          <rect x="2" y="2" width="10" height="10" fill="none" stroke="var(--info)" strokeWidth="1.5"
-            strokeDasharray="2.5 2" />
-        </svg>
-      )
+      return <YLogoMark height={14} animation="rise" className="text-info" />
     case 'later':
       return (
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-subtle)" strokeWidth="2"
@@ -66,6 +63,8 @@ function mark(kind: YStatusKind): JSX.Element | null {
       )
     case 'done':
       return <span className="h-1.5 w-1.5 bg-text" />
+    case 'unread':
+      return <span className="h-1.5 w-1.5 bg-warning" />
     case 'stop':
       return <span className="h-[1.5px] w-[9px] bg-subtle" />
     case 'idle':

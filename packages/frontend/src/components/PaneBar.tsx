@@ -3,13 +3,13 @@ import {
   AddIcon, ChangesIcon, ChatIcon, CommitsIcon, FilesIcon, HistoryIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon,
   TabsIcon, TilesIcon, type Icon,
 } from '#lib/icons'
-import { YWindowControls } from '#ui'
 import { goBackScreen } from '#lib/mobileHistory'
+import { hidesTitleBar } from '#lib/platform'
 import { previewLabel } from '#lib/preview'
 import { useUiStore } from '#lib/store'
 import { useIsMobile } from '#lib/viewport'
 import type { PortMapping } from '@yaac/shared/types'
-import { YButton, YMenu, YMenuItem, YMenuLabel, YMenuPopup } from '#ui'
+import { YButton, YMenu, YMenuItem, YMenuLabel, YMenuPopup, YTrafficLights } from '#ui'
 
 /*
  * The bar over the main pane, shared by a workspace's header and the
@@ -24,14 +24,21 @@ export function paneBarClass(isMobile: boolean): string {
     : 'flex h-bar shrink-0 items-center gap-1.5 border-b border-line px-3 text-md'
 }
 
+/** The button that shows the hidden sidebar. */
+export function ShowSidebarButton(): JSX.Element {
+  const toggleSidebar = useUiStore((s) => s.toggleSidebar)
+  return <YButton variant="ghost" size="sm" icon={SidebarIcon} onClick={toggleSidebar} title="Show sidebar" aria-label="Show sidebar" />
+}
+
 /**
- * The bar's leading button: back to the workspace list on mobile, or the
- * show-sidebar toggle on desktop while the sidebar is hidden.
+ * The bar's leading button: back to the workspace list on mobile. While
+ * the sidebar is hidden, the show-sidebar button sits at the window's left
+ * edge, in the bar's stretch over the rail (App); in the macOS desktop app
+ * the traffic lights are there, so it comes here, after them.
  */
 export function PaneBarLeading(): JSX.Element | null {
   const isMobile = useIsMobile()
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
-  const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   if (isMobile) {
     return (
       <YButton
@@ -44,12 +51,12 @@ export function PaneBarLeading(): JSX.Element | null {
       />
     )
   }
-  if (sidebarOpen) return null
-  // With the sidebar hidden, its header's window controls come here.
+  if (sidebarOpen || !hidesTitleBar()) return null
+  // The traffic lights overhang the rail into this bar, which starts 45px in.
   return (
     <>
-      <YWindowControls className="mr-1" />
-      <YButton variant="ghost" size="sm" icon={SidebarIcon} onClick={toggleSidebar} title="Show sidebar" aria-label="Show sidebar" />
+      <YTrafficLights className="w-4" />
+      <ShowSidebarButton />
     </>
   )
 }

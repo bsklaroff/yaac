@@ -177,13 +177,14 @@ and `brew` is macOS behavior.
   loopback only; to expose ports to other machines use
   `yaac forward --bind`. It binds nothing against a containerless server on
   this machine, whose workspaces already hold their ports.
-- **Window chrome.** On macOS the title bar and native traffic lights are
-  hidden (`titleBarStyle: 'hidden'`); the SPA draws its own window controls
-  (`WindowControls.tsx`) and marks `titlebar-drag` strips so the window can
-  still be moved. On Linux and Windows the window keeps its native frame,
-  the SPA draws no controls, and the menu bar (a File menu with Quit in
-  place of the macOS app menu) is hidden until Alt is pressed. The native background follows the SPA's `--color-shell`
-  for the OS appearance (`src/theme-bg.ts`). Window bounds persist across
+- **Window chrome.** On macOS the title bar is hidden (`titleBarStyle:
+  'hidden'`) and the native traffic lights sit at the left of the SPA's top
+  bar (`trafficLightPosition`), where the SPA leaves them room; the SPA
+  marks its bars `titlebar-drag` so the window can still be moved. On
+  Linux and Windows the window keeps its native frame, the SPA draws no
+  controls, and the menu bar (a File menu with Quit in place of the macOS
+  app menu) is hidden until Alt is pressed. The native background follows
+  the SPA's `--color-shell` for the OS appearance (`src/theme-bg.ts`). Window bounds persist across
   launches and are restored only if still on a display
   (`src/window-state.ts`). The role-based menu keeps Cmd-C/V working in the
   xterm terminals, and links open in the system browser.

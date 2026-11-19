@@ -9,11 +9,12 @@ export function isElectron(): boolean {
  *  iPadOS Safari reports "Macintosh", which is the right treatment. */
 export const IS_MAC = /Mac|iPhone|iPad/.test(navigator.userAgent)
 
-/** True in the desktop shell on macOS, which hides the native title bar, so
- *  the SPA draws the window controls and leaves room to drag the window.
- *  On Linux and Windows the shell keeps the native frame. */
+/** True in the desktop app's own window on macOS, which hides the native
+ *  title bar, so the SPA leaves room for the traffic lights and to drag the
+ *  window. On Linux and Windows the shell keeps the native frame, and a
+ *  preview pane, Electron too, is no window and has no bridge. */
 export function hidesTitleBar(): boolean {
-  return isElectron() && IS_MAC
+  return IS_MAC && windowApi()?.app?.kind === 'desktop'
 }
 
 /** A native shell's description of its own build. */
@@ -35,10 +36,6 @@ interface YaacWindow {
    *  the desktop app's version and commit, the iPhone app's version and
    *  build number. */
   app?: ShellApp
-  minimize?: () => void
-  /** altKey selects the macOS Option-click zoom (maximize) instead of full screen. */
-  toggleMaximize?: (altKey?: boolean) => void
-  close?: () => void
   openExternal: (url: string) => void
   /** Show the shell's Servers page. */
   showServers: () => void

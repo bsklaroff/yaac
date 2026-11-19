@@ -25,7 +25,8 @@ export function YSessionRow({ status, title, sub, project, strong = false, depth
   return (
     <YRowFrame {...frame} className={cn(two ? 'py-2' : 'py-[7px]', 'pr-2', depth === 0 ? 'pl-2.5' : 'pl-7', frame.className)}>
       {depth > 0 && <span aria-hidden className="absolute -bottom-2 -top-2 -left-[11px] w-px bg-line" />}
-      {status && <YStatus kind={status} className={two ? 'mt-px self-start' : undefined} />}
+      {/* A little closer than the frame's gap: the mark reads with its title. */}
+      {status && <YStatus kind={status} className={cn('-mr-1', two && 'mt-px self-start')} />}
       <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
         <span className={cn('flex min-w-0 items-center gap-1.5 text-md',
           strong ? 'font-semibold text-text' : frame.selected ? 'text-text' : 'text-muted')}>

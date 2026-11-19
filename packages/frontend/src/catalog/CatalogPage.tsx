@@ -51,7 +51,7 @@ export function CatalogPage(): JSX.Element {
   )
 }
 
-const STATUSES: YStatusKind[] = ['need', 'fail', 'work', 'bg', 'later', 'done', 'stop']
+const STATUSES: YStatusKind[] = ['need', 'fail', 'work', 'bg', 'later', 'done', 'unread', 'stop']
 
 function Basics(): JSX.Element {
   const [device, setDevice] = useState<'desktop' | 'phone'>('phone')
@@ -89,7 +89,10 @@ function Basics(): JSX.Element {
       </Item>
       <Item name="YKbd"><YKbd>⌘K</YKbd><YKbd>esc</YKbd></Item>
       <Item name="YLoader"><YLoader /><YLoader size={20} tone="subtle" /></Item>
-      <Item name="YLogoMark"><YLogoMark height={32} colour /><YLogoMark height={32} className="text-muted" /></Item>
+      <Item name="YLogoMark · still, colour and mono; step and rise">
+        <YLogoMark height={32} colour /><YLogoMark height={32} className="text-muted" />
+        <YLogoMark height={32} animation="step" className="text-info" /><YLogoMark height={32} animation="rise" className="text-info" />
+      </Item>
       <Item name="YStatus">
         {STATUSES.map((k) => <YStatus key={k} kind={k} />)}
       </Item>

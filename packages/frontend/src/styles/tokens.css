@@ -268,9 +268,14 @@
 
   --animate-fade-in: fade-in 200ms ease-out both;
   /* The logo's strokes drawing in turn: the page loader, and the working
-   * status at 1.6s. */
+   * status at 1.6s. The background-work status instead moves soft bands
+   * of light steadily up through the mark, one after another. */
   --animate-logo-draw: logo-draw 2.4s cubic-bezier(0.6, 0, 0.2, 1) infinite;
   --animate-logo-step: logo-step 1.6s cubic-bezier(0.6, 0, 0.2, 1) infinite;
+  --animate-logo-rise: logo-rise 3s linear infinite;
+  /* A working tile's lane sliding down one repeat of its blocks; YLanes
+   * sets each lane's duration, phase and `--lane-repeat`. */
+  --animate-lane-fall: lane-fall 1s linear infinite;
 
   @keyframes logo-draw {
     0% { stroke-dashoffset: 1.05; }
@@ -281,6 +286,16 @@
     0% { stroke-dashoffset: 1.05; }
     35%, 70% { stroke-dashoffset: 0; }
     100% { stroke-dashoffset: 1.05; }
+  }
+
+  @keyframes logo-rise {
+    from { transform: translateY(0); }
+    to { transform: translateY(-50%); }
+  }
+
+  @keyframes lane-fall {
+    from { transform: translateY(calc(-1 * var(--lane-repeat))); }
+    to { transform: translateY(0); }
   }
 
   @keyframes fade-in {

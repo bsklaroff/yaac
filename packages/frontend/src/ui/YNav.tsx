@@ -126,7 +126,7 @@ export function YSidebarAll({ count, onClick, label = 'All sessions' }: { count?
 
 /** The bar over the work area: what is open (`title`, with `sub` such as
  *  its branch in mono) and, on the right, its counts and pane controls.
- *  `leading` comes first (the window controls' clearance, a back button).
+ *  `leading` comes first (the traffic lights' room, a back button).
  *  The title area drags the desktop app's window. */
 export function YTopBar({ leading, title, sub, trailing, className }: {
   leading?: ReactNode

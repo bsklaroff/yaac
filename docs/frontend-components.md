@@ -52,7 +52,7 @@ The design these encode:
   buttons are graphite.
 - **Motion means progress.** Loaders and spinners while something loads,
   a running step's pulse, and the lanes on a working project's tile
-  (YShaderTile); nothing moves for decoration.
+  (YLanes); nothing moves for decoration.
 - Geist for text, Geist Mono for real code only: diffs, terminals, paths,
   branches, commits.
 
@@ -109,11 +109,15 @@ only signal.
 
 ## How the screens are composed
 
-- **The rail** (YProjectRail): Home, a YProjectTile per project (its picture
-  if it has one, the lanes behind it while agents work), add project, and
+- **The rail** (YProjectRail), under the sidebar's header: Home, a YProjectTile per project (its picture
+  filling the tile if it has one; while agents work, lanes falling top to
+  bottom behind it, with the picture's own solid background keyed out so
+  they show through), add project, and
   the logo menu (settings, server health, servers, feedback, switching
   user).
-- **The sidebar** (YSidebar) follows the rail. On Home it lists every
+- **The sidebar** (YSidebar) follows the rail. Its header spans the rail
+  too, starting at the window's left edge, after room for the native
+  traffic lights in the macOS desktop app (YTrafficLights). On Home it lists every
   project's sessions in status sections (Needs you, Working, Done). On a
   project it lists its drafts and scheduled starts, its Workflows,
   Routines and Sites, then its sessions in creation order and the user's

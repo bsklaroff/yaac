@@ -233,7 +233,7 @@ export function WorkspaceRow({
             onBlur={handleRenameBlur}
             className="font-medium"
           />
-          <span className="flex items-center gap-2 pl-6 text-sm text-subtle">{meta}</span>
+          <span className="flex items-center gap-2 text-sm text-subtle">{meta}</span>
         </div>
       ) : (
         <SidebarRow
@@ -253,6 +253,7 @@ export function WorkspaceRow({
             <StatusMark
               status={workspace.status}
               asking={workspace.asking === true}
+              unread={unread}
               {...(teammate !== undefined ? { owner: teammate } : {})}
             />
           )}
@@ -321,6 +322,7 @@ function SessionRow({ workspace, session }: { workspace: WorkspaceListEntry; ses
         <StatusMark
           status={session.exited === true ? undefined : session.status}
           asking={session.asking === true}
+          unread={isSessionUnread(session, me)}
           {...(teammate !== undefined ? { owner: teammate } : {})}
         />
       )}
@@ -460,7 +462,8 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
         selected={selected}
         rowProps={{ title: 'Read this workspace\'s conversation' }}
         className={selected ? undefined : unseen ? 'bg-warning/10 opacity-80 hover:bg-warning/15' : 'opacity-60 hover:opacity-90'}
-        mark={unseen ? <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-warning" /> : null}
+        // Only an unseen death takes the mark's slot; the rest start at the edge.
+        {...(unseen ? { mark: <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-warning" /> } : {})}
         title={title}
         meta={(
           <>

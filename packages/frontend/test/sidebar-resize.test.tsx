@@ -48,6 +48,7 @@ function renderSidebar(): HTMLElement {
         queued: [], held: [], drafts: [], routines: [], workflows: [], sites: [],
       }}
       connected
+      rail={null}
     />,
   )
   return screen.getByRole('separator', { name: 'Resize sidebar' })
