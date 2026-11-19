@@ -1,13 +1,13 @@
-import { useState, type JSX } from 'react'
+import { useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { api } from '#lib/api'
 import { ErrorBoundary } from '#components/ErrorBoundary'
 import { StepLog } from '#components/StepLog'
 import { WorkspaceTerminal } from '#components/WorkspaceTerminal'
 import { RestartIcon, StopIcon } from '#lib/icons'
-import { isLocked, stepLive, stepLogFile } from '#lib/steps'
+import { isLocked, stepLive, stepLogFile, stepShortName } from '#lib/steps'
 import { useReadOnly } from '#lib/viewer'
-import { stepSettled, type WorkspaceStep } from '@yaac/shared/steps'
+import { stepSettled, type StepGraph, type WorkspaceStep } from '@yaac/shared/steps'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
 import { YButton } from '#ui'
 
@@ -18,10 +18,11 @@ export function stepStateText(step: Pick<WorkspaceStep, 'state' | 'exitCode'>): 
 
 /**
  * One step's pane (docs/workspace-steps.md): its state, a rerun or cancel
- * (not on a locked workspace, which nothing may change), and below, while
- * it runs in a workspace that is not locked, its live window, else
- * its log, followed while it can still grow. It stays open when its step
- * finishes, until it is closed.
+ * (not on a locked workspace, which nothing may change), its workflow's
+ * graph as this life ran it, folded, and below, while it runs in a
+ * workspace that is not locked, its live window, else its log, followed
+ * while it can still grow. It stays open when its step finishes, until it
+ * is closed.
  */
 export function StepPane({ workspace, name, visible, focusKey }: {
   workspace: WorkspaceListEntry
@@ -62,7 +63,10 @@ export function StepPane({ workspace, name, visible, focusKey }: {
           </span>
         )}
       </div>
-      <div className="min-h-0 flex-1 px-2.5 py-1.5">
+      <GraphOverLog
+        workflow={step.workflow}
+        graph={Object.fromEntries((workspace.steps ?? []).filter((s) => s.workflow === step.workflow).map((s) => [stepShortName(s), s.spec]))}
+      >
         {showWindow ? (
           <ErrorBoundary key={step.target}>
             <WorkspaceTerminal
@@ -75,7 +79,36 @@ export function StepPane({ workspace, name, visible, focusKey }: {
         ) : (
           <StepLog key={`${life}/${file}`} workspaceId={workspace.workspaceId} life={life} file={file} follow={live} />
         )}
-      </div>
+      </GraphOverLog>
+    </div>
+  )
+}
+
+/**
+ * A log under its workflow's graph as a life ran it, folded, in the JSON a
+ * workflow is written in: the specs its steps ran rather than the named
+ * workflow, which may have been edited since. The graph opens at full
+ * length and the two scroll together. The log keeps at least three
+ * quarters of the height, so with a long graph open some of it stays in
+ * view to scroll back up by, since the log takes the wheel for its own
+ * scrollback.
+ */
+export function GraphOverLog({ workflow, graph, logClassName, children }: {
+  workflow: string
+  /** Absent for a window that ran no workflow. */
+  graph: StepGraph | undefined
+  logClassName?: string
+  children: ReactNode
+}): JSX.Element {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      {graph !== undefined && (
+        <details className="shrink-0 border-b border-line text-sm">
+          <summary className="cursor-pointer px-2 py-1 text-subtle">{workflow !== '' ? `Workflow ${workflow}` : 'Steps'}</summary>
+          <pre className="overflow-x-auto px-2.5 pb-1.5 font-mono text-muted">{JSON.stringify(graph, null, 2)}</pre>
+        </details>
+      )}
+      <div className={clsx('min-h-[75%] flex-1 px-2.5 py-1.5', logClassName)}>{children}</div>
     </div>
   )
 }

@@ -7,9 +7,10 @@
  */
 import { constants as C } from 'node:fs'
 import { ServerError } from '@yaac/shared/errors'
-import { isAgentWindow, lifeDirName } from '@yaac/shared/steps'
+import { isAgentWindow, lifeDirName, type StepGraph } from '@yaac/shared/steps'
 import type { WorkspaceLogLife } from '@yaac/shared/types'
 import type { Actor } from '#domain/access'
+import { listWorkspaceSteps } from '#db'
 import { resolveWorkspaceRecord } from './resolve'
 import { authorizeWorkspace } from './steps'
 import { openTerminalLogs } from './life'
@@ -36,12 +37,15 @@ function windowLogFiles({ life, name }: LoggedWindow): string[] {
   return [`${lifeDirName(life)}/${name}.log.1`, `${lifeDirName(life)}/${name}.log`]
 }
 
-/** Each life's log files, newest life first. An agent session's are left
- *  out (`isAgentWindow`), though `readWorkspaceLog` still serves them. */
+/** Each life's log files, newest life first, with the step specs its
+ *  workflows ran. An agent session's logs are left out (`isAgentWindow`),
+ *  though `readWorkspaceLog` still serves them. */
 export async function listWorkspaceLogs(principal: Actor, idOrPrefix: string): Promise<WorkspaceLogLife[]> {
   const { projectId, workspaceId } = await resolveWorkspaceRecord(idOrPrefix)
   await authorizeWorkspace(principal, workspaceId)
   const logs = await openTerminalLogs(projectId, workspaceId)
+  const graphs: Record<string, Record<string, StepGraph>> = {}
+  for (const s of await listWorkspaceSteps(workspaceId)) ((graphs[lifeDirName(s.life)] ??= {})[s.workflowName] ??= {})[s.name] = s.spec
   const lives = (await logs.readdir('')).filter((d) => d.isDirectory() && LIFE.test(d.name)).map((d) => d.name).sort().reverse()
   return await Promise.all(lives.map(async (life) => {
     const names = (await logs.readdir(life)).flatMap((f) => {
@@ -49,7 +53,7 @@ export async function listWorkspaceLogs(principal: Actor, idOrPrefix: string): P
       return window !== undefined && !isAgentWindow(window) ? [f.name] : []
     }).sort()
     const files = await Promise.all(names.map(async (name) => ({ name, size: (await logs.stat(`${life}/${name}`))?.size ?? 0 })))
-    return { life, files }
+    return { life, files, workflows: graphs[life] ?? {} }
   }))
 }
 

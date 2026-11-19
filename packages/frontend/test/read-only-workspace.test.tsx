@@ -77,17 +77,24 @@ const renderPane = (subject: ReadOnlySubject): ReturnType<typeof renderWithClien
 
 describe('ReadOnlyWorkspace', () => {
   it('shows a stopped non-interactive workspace\'s outcome and logs, and reruns it, or interactively', async () => {
+    const ran = { build: { run: ['make'] }, test: { run: ['make test'], needs: ['build'] } }
     server.route('GET /api/workspace/s1/logs', [{ life: 'L2', files: [
-      { name: 'build.events', size: 9 }, { name: 'build.log', size: 3 }, { name: 'test.log', size: 1 },
-    ] }, { life: 'L1', files: [{ name: 'old.log', size: 1 }] }])
+      { name: 'ci.build.events', size: 9 }, { name: 'ci.build.log', size: 3 }, { name: 'ci.test.log', size: 1 }, { name: 'shell.log', size: 1 },
+    ], workflows: { ci: ran } }, { life: 'L1', files: [{ name: 'ci.old.log', size: 1 }], workflows: {} }])
     const entry = stopped({ nonInteractive: true, stepsOutcome: 'failed', prompt: undefined, title: 'CI' })
     renderPane({ kind: 'stopped', entry })
 
     expect(screen.getByText('Steps').nextElementSibling?.textContent).toBe('failed')
-    // The last run's logs, the first one shown.
-    expect((await screen.findByTestId('log')).textContent).toBe('L2/build.log')
+    // The last run's logs, the first one shown, under the graph its
+    // workflow ran.
+    expect((await screen.findByTestId('log')).textContent).toBe('L2/ci.build.log')
+    const graph = (): string | null | undefined => screen.queryByText('Workflow ci')?.closest('details')?.querySelector('pre')?.textContent
+    expect(JSON.parse(graph() ?? '')).toEqual(ran)
     fireEvent.click(screen.getByRole('button', { name: 'test' }))
-    expect(screen.getByTestId('log').textContent).toBe('L2/test.log')
+    expect(screen.getByTestId('log').textContent).toBe('L2/ci.test.log')
+    // A shell's window ran no workflow.
+    fireEvent.click(screen.getByRole('button', { name: 'shell' }))
+    expect(graph()).toBeUndefined()
     expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Rerun' }))
@@ -100,7 +107,7 @@ describe('ReadOnlyWorkspace', () => {
   })
 
   it('shows a stopped site release\'s logs, with no way to start it again but its site', async () => {
-    server.route('GET /api/workspace/s1/logs', [{ life: 'L1', files: [{ name: 'server.log', size: 3 }] }])
+    server.route('GET /api/workspace/s1/logs', [{ life: 'L1', files: [{ name: 'server.log', size: 3 }], workflows: {} }])
     renderPane({ kind: 'stopped', entry: stopped({ site: 'web', prompt: undefined, title: 'web release' }) })
     expect((await screen.findByTestId('log')).textContent).toBe('L1/server.log')
     for (const name of ['Restart', 'Rerun', 'Rerun interactively']) expect(screen.queryByRole('button', { name })).toBeNull()

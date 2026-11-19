@@ -21,9 +21,9 @@ import { mockFetch, renderWithClient, serverSnapshot, workspaceEntry, type Fetch
 /*
  * A workspace's steps in its bar and panes (docs/workspace-steps.md): the
  * ones still running or that failed listed, the finished ones folded, a
- * step's pane only when picked, live while it runs and its log after, and
- * a non-interactive workspace, or a site's release, offering nothing that
- * would change it.
+ * step's pane only when picked, live while it runs and its log after, with
+ * its workflow's graph above, and a non-interactive workspace, or a site's
+ * release, offering nothing that would change it.
  */
 
 const LIFE = '2026-11-03T01:00:00.000Z'
@@ -81,6 +81,12 @@ describe('WorkspaceView steps', () => {
     fireEvent.click(within(bar).getByRole('button', { name: /^build/ }))
     expect((await screen.findByTestId('log')).textContent).toBe('2026-11-03T01-00-00.000Z/ci.build.log')
     expect(screen.getByText('failed (exit 2)')).toBeTruthy()
+    // Above each pane's window or log, its workflow's graph as the life ran
+    // it, in the form a workflow is written in.
+    const graphs = screen.getAllByText('Workflow ci').map((s) => s.closest('details')?.querySelector('pre')?.textContent)
+    expect(graphs.map((g): unknown => JSON.parse(g ?? ''))).toEqual(Array(2).fill(Object.fromEntries(
+      ['install', 'build', 'docs', 'server'].map((n) => [n, { run: [`echo ${n}`] }]),
+    )))
 
     fireEvent.click(screen.getByRole('button', { name: 'Rerun' }))
     await waitFor(() => expect(server.called('POST /api/workspace/s1/steps/ci.build/rerun')).toHaveLength(1))

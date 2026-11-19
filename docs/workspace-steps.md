@@ -345,7 +345,10 @@ one subdir per life named after its start time, mounted in a pod at
 reads it from the host, so a stopped workspace's logs read the same
 (`GET /workspace/:id/logs`, then `GET /workspace/:id/logs/:life/:file` from a
 byte offset, which a client following a running log asks again from;
-`yaac workspace logs`). Its project's agents list its current life's steps
+`yaac workspace logs`). The listing gives each life's workflows as their
+steps ran, from the step rows rather than the named workflow, which may
+have been edited since; the webapp shows a step's workflow, folded, above
+its log, in a step pane and in a stopped workspace's logs alike. Its project's agents list its current life's steps
 with `yaac-mama logs <workspace>` and read the end of a step's log, from
 the newest life that has the step, at most 4 MiB of it, and only once the
 step has started: the log file is named after the window, and the server clears

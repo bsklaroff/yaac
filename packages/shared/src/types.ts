@@ -1882,11 +1882,13 @@ export interface StoppedWorkspaceEntry {
   site?: string
 }
 
-/** One life's logs (docs/workspace-steps.md "Logs"): its dir name, and each
- *  file with its size in bytes. */
+/** One life's logs (docs/workspace-steps.md "Logs"): its dir name, each
+ *  file with its size in bytes, and the graph each of its workflows ran,
+ *  by the name the workflow has in the workspace. */
 export interface WorkspaceLogLife {
   life: string
   files: Array<{ name: string; size: number }>
+  workflows: Record<string, StepGraph>
 }
 
 /** One page of `GET /workspace/list-stopped`, newest stop first. */

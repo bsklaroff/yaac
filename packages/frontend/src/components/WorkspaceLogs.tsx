@@ -2,13 +2,15 @@ import { useState, type JSX } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '#lib/api'
 import { StepLog } from '#components/StepLog'
+import { GraphOverLog } from '#components/StepPane'
 import { byWorkflow } from '#lib/steps'
 import { YChip } from '#ui'
 
 /**
  * A stopped workspace's terminal logs (docs/workspace-steps.md "Logs"):
  * each window of its last run, a step's included, as a tab, steps grouped
- * under their workflow, the picked one replayed in a read-only terminal.
+ * under their workflow, the picked one replayed in a read-only terminal
+ * under its workflow's graph.
  * The logs outlive the workspace's runtime until it is deleted.
  */
 export function WorkspaceLogs({ workspaceId }: { workspaceId: string }): JSX.Element {
@@ -20,6 +22,13 @@ export function WorkspaceLogs({ workspaceId }: { workspaceId: string }): JSX.Ele
   const last = data?.[0]
   const logs = (last?.files ?? []).filter((f) => f.name.endsWith('.log')).map((f) => f.name)
   const file = picked !== null && logs.includes(picked) ? picked : logs[0]
+  const groups = byWorkflow(logs, (name) => name.replace(/\.log$/, ''))
+  const shortName = (name: string, workflow: string): string => name.replace(/\.log$/, '').slice(workflow === '' ? 0 : workflow.length + 1)
+  // A shell's window shares the '' group with a step of a life from before
+  // steps had workflows, so the graph shows only for a window that is in it.
+  const workflow = groups.find((g) => file !== undefined && g.items.includes(file))?.workflow ?? ''
+  const graph = last?.workflows[workflow]
+  const ran = file !== undefined && graph?.[shortName(file, workflow)] !== undefined ? graph : undefined
   if (isError || (data !== undefined && file === undefined)) {
     return (
       <p className="flex flex-1 items-center justify-center text-md text-subtle">
@@ -30,23 +39,23 @@ export function WorkspaceLogs({ workspaceId }: { workspaceId: string }): JSX.Ele
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto px-1.5 py-1">
-        {byWorkflow(logs, (name) => name.replace(/\.log$/, '')).map((g) => (
+        {groups.map((g) => (
           <div key={g.workflow} className="flex shrink-0 items-center gap-0.5" role="group" aria-label={g.workflow || 'Windows'}>
             {g.workflow !== '' && <span className="pl-1 font-mono text-xs text-subtle">{g.workflow}</span>}
             {g.items.map((name) => (
               <YChip key={name} selected={name === file} onClick={() => setPicked(name)} className="font-mono">
-                {name.replace(/\.log$/, '').slice(g.workflow === '' ? 0 : g.workflow.length + 1)}
+                {shortName(name, g.workflow)}
               </YChip>
 
             ))}
           </div>
         ))}
       </div>
-      <div className="min-h-0 flex-1 bg-sunken px-2.5 py-1.5">
+      <GraphOverLog workflow={workflow} graph={ran} logClassName="bg-sunken">
         {last !== undefined && file !== undefined && (
           <StepLog key={`${last.life}/${file}`} workspaceId={workspaceId} life={last.life} file={file} follow={false} />
         )}
-      </div>
+      </GraphOverLog>
     </div>
   )
 }
