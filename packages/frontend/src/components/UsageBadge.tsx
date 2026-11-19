@@ -107,9 +107,9 @@ const TONE_BAR: Record<ReturnType<typeof usageTone>, string> = {
 }
 
 const TONE_TRIGGER: Record<ReturnType<typeof usageTone>, string> = {
-  ok: 'bg-selected text-muted hover:bg-line-strong hover:text-text',
-  warn: 'bg-warning/15 text-warning hover:bg-warning/25',
-  high: 'bg-danger/15 text-danger hover:bg-danger/25',
+  ok: 'text-muted hover:text-text',
+  warn: 'text-warning hover:text-warning/80',
+  high: 'text-danger hover:text-danger/80',
 }
 
 /** The snapshot's non-empty usage sections, in tool order. */
@@ -132,9 +132,11 @@ function usageSections(
 }
 
 /**
- * Sidebar-header pill showing plan-limit usage for signed-in Claude/Codex
+ * Sidebar status-row readout of plan-limit usage for signed-in Claude/Codex
  * subscriptions: the tightest limit, or the one the user pinned by clicking
- * a popover row. The popover breaks usage down per tool. Data comes from the
+ * a popover row. In a short row the pinned limit's tag truncates (its grid
+ * column has no minimum) after the server name and before the error chits'
+ * labels, while the icon and percentage stay whole. The popover breaks usage down per tool. Data comes from the
  * viewer's entry in the snapshot; the server queries upstream
  * (domain/auth/usage.ts). Hidden when no tool's usage is available, and
  * while viewing a teammate, since the readout is the caller's own plan and
@@ -175,13 +177,13 @@ export function UsageBadge(): JSX.Element | null {
       <YPopover.Trigger
         aria-label="Show plan usage"
         className={clsx(
-          'flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-md font-medium transition',
+          'grid shrink-[10] grid-cols-[auto_minmax(0,auto)_auto] items-center py-0.5 text-md font-medium transition',
           TONE_TRIGGER[usageTone(top.limit)],
         )}
       >
-        <UsageIcon size={11} />
-        {pinned && <span className="font-normal opacity-80">{pillTag(pinned.limit, pinned.tool)}</span>}
-        {Math.round(top.limit.percent)}%
+        <UsageIcon size={11} className="mr-1" />
+        {pinned && <span className="mr-1 truncate font-normal opacity-80">{pillTag(pinned.limit, pinned.tool)}</span>}
+        <span className="col-start-3">{Math.round(top.limit.percent)}%</span>
       </YPopover.Trigger>
       <YPopoverPopup side="bottom" align="end" sideOffset={4} className="w-64">
         <div className="px-2 pb-0.5 pt-1">

@@ -9,9 +9,10 @@
  *     Save / Discard / Keep editing, with Save focused; Escape on the
  *     question keeps the form and its prompt, and Discard saves nothing and
  *     goes on to the draft.
- *  4. The reopened draft shows its prompt and permission mode; New session leaves
- *     it unchanged for a blank form without asking.
- *  5. An edited draft asks to save its changes on New session; saving updates the
+ *  4. The reopened draft shows its prompt and permission mode, with New
+ *     workspace not highlighted; New workspace leaves it unchanged for a
+ *     blank form without asking, and is highlighted on that form.
+ *  5. An edited draft asks to save its changes on New workspace; saving updates the
  *     row in place (still one draft).
  *  6. The row's Discard… deletes the draft, and the section disappears.
  *
@@ -22,7 +23,7 @@
  * (PROJECT defaults to yaac)
  */
 import path from 'node:path'
-import { check, finish, origin, requirePlaywright, SHOTS, resolveProject, until } from './lib.js'
+import { check, finish, origin, requirePlaywright, SHOTS, resolveProject, until, newWorkspaceButton } from './lib.js'
 
 const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 const stamp = Date.now()
@@ -39,8 +40,7 @@ try {
   const drafts = aside.getByRole('group', { name: 'Drafts' })
   const prompt = page.getByLabel('Prompt')
   const question = page.getByRole('alertdialog')
-  // New session; its name ends with the shortcut.
-  const plus = aside.getByRole('button', { name: /^New session/ })
+  const plus = newWorkspaceButton(page)
   // A draft's row carries its prompt as its title.
   const draftRow = (text) => drafts.locator(`[title="${text}"]`)
   const promptIs = (text) => until(page, (t) => document.querySelector('textarea[aria-label="Prompt"]')?.value === t, text)
@@ -91,11 +91,13 @@ try {
   // (4) The reopened draft, left unchanged.
   check('reopens on its prompt', await prompt.inputValue() === idea)
   check('and its permission mode', await posture() === 'Plan mode', String(await posture()))
+  check('New workspace is not highlighted on a reopened draft', await plus.getAttribute('aria-current') === null)
   await plus.click()
   await promptIs('')
-  check('New session leaves an unchanged draft without asking', await question.count() === 0)
+  check('New workspace leaves an unchanged draft without asking', await question.count() === 0)
+  check('and is highlighted on the blank form', await plus.getAttribute('aria-current') === 'true')
 
-  // (5) Edit and save changes on New session.
+  // (5) Edit and save changes on New workspace.
   await draftRow(idea).click()
   await promptIs(idea)
   await prompt.fill(`${idea} edited`)

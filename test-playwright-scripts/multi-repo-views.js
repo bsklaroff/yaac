@@ -18,7 +18,7 @@
  * Run: WORKSPACE_ID=<id> node test-playwright-scripts/multi-repo-views.js
  */
 import path from 'node:path'
-import { SHOTS, api, check, finish, openMenuItem, origin, requirePlaywright, resolveProject, projectPage } from './lib.js'
+import { SHOTS, api, check, finish, openMenuItem, origin, requirePlaywright, resolveProject, projectPage, newWorkspaceButton } from './lib.js'
 
 const project = await resolveProject(process.env.PROJECT ?? 'multi')
 const repos = (await api('/project/list')).find((p) => p.id === project.id).repos
@@ -31,7 +31,7 @@ const shot = (name) => page.screenshot({ path: path.join(SHOTS, `multi-repo-${na
 
 try {
   await page.goto(`${origin}/?project=${project.id}`)
-  await page.locator('aside').getByRole('button', { name: /^New session/ }).click()
+  await newWorkspaceButton(page).click()
   await page.getByText('Start in').waitFor({ timeout: 15_000 })
   for (const repo of repos) {
     check(`the create form has a row for ${repo.dir}`,

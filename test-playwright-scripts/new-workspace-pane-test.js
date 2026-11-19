@@ -10,7 +10,7 @@
  *     the create's progress, then hands over to the chat pane, where the
  *     prompt stays and the spinner reads "working", with no empty state in
  *     between.
- *  4. Back on the pane (the sidebar's New session), a typed prompt and a click on the
+ *  4. Back on the pane (the sidebar's New workspace), a typed prompt and a click on the
  *     new workspace's row asks to save a draft; Keep editing stays, Save
  *     draft lands it in the sidebar's Drafts and moves on.
  *  5. With UI set to Terminal, "Start without a prompt" creates a terminal
@@ -24,7 +24,7 @@
  *
  * Run: APP_URL=http://127.0.0.1:8787 PROJECT=<name or id> node test-playwright-scripts/new-workspace-pane-test.js
  */
-import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject, until } from './lib.js'
+import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject, until, newWorkspaceButton } from './lib.js'
 
 const { chromium } = requirePlaywright()
 const project = await resolveProject(process.env.PROJECT ?? 'yaac')
@@ -32,8 +32,7 @@ const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
 const created = []
 const prompt = 'Reply with the single word pong, and do nothing else.'
-// The sidebar's New session; its name ends with the shortcut.
-const newSession = page.locator('aside').getByRole('button', { name: /^New session/ })
+const newWorkspace = newWorkspaceButton(page)
 // The pane starts on the last workspace's agent; these steps expect Claude's.
 const claude = () => page.getByRole('combobox', { name: 'Agent' }).selectOption('claude')
 
@@ -84,7 +83,7 @@ try {
   await page.screenshot({ path: `${SHOTS}/new-workspace-chat.png` })
 
   // Leaving with a typed prompt asks first.
-  await newSession.click()
+  await newWorkspace.click()
   await box.waitFor()
   await box.fill('an idea for later')
   const row = page.getByRole('group', { name: 'Ungrouped workspaces' }).getByRole('button').first()
@@ -110,7 +109,7 @@ try {
   }
 
   // A bare terminal.
-  await newSession.click()
+  await newWorkspace.click()
   await claude()
   await page.getByLabel('UI').selectOption('tui')
   await until(page, () => [...document.querySelectorAll('button')]
@@ -124,7 +123,7 @@ try {
   await page.screenshot({ path: `${SHOTS}/new-workspace-terminal.png` })
 
   // An empty chat, started from the bar's Files button.
-  await newSession.click()
+  await newWorkspace.click()
   await claude()
   await page.getByLabel('UI').selectOption('acp')
   check('bar: matches a workspace\'s', await page.getByRole('button', { name: /Tile view|Tab view/ }).count() === 1

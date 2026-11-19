@@ -17,7 +17,7 @@
  * Run: PROJECT=<name or id> YAAC_DATA_DIR=... node test-playwright-scripts/composer-settings-pill.js
  */
 import path from 'node:path'
-import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject } from './lib.js'
+import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject, newWorkspaceButton } from './lib.js'
 
 if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
 const PROJECT = (await resolveProject(process.env.PROJECT)).id
@@ -48,8 +48,7 @@ try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   await page.goto(`${origin}/?project=${PROJECT}`)
-  // New session; its name ends with the shortcut.
-  const plus = page.locator('aside').getByRole('button', { name: /^New session/ })
+  const plus = newWorkspaceButton(page)
   await plus.waitFor({ timeout: 15_000 })
   await plus.click()
   // The pane starts on the last workspace's agent; these checks are Claude's.

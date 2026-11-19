@@ -39,9 +39,9 @@ export function ServerBadge(): JSX.Element | null {
       onClick={() => useUiStore.getState().navigate(showServers)}
       title={`Connected to ${origin} — choose a server`}
       aria-label="Choose a server"
-      // The only shrinkable badge in the row: it truncates only when space
-      // runs out.
-      className="min-w-0 shrink"
+      // The first badge in the row to give up room, down to its icon (a
+      // square button).
+      className="min-w-6 shrink-[1000] px-1"
     >
       <ServerIcon size={11} className="shrink-0" />
       <span className="truncate">{serverLabel(origin)}</span>

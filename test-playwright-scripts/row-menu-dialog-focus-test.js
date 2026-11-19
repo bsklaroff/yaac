@@ -23,7 +23,7 @@
  * Run: YAAC_DATA_DIR=<data dir> node test-playwright-scripts/row-menu-dialog-focus-test.js
  * (PROJECT, a project name or id, defaults to yaac)
  */
-import { requirePlaywright, origin, check, finish, resolveProject, until } from './lib.js'
+import { requirePlaywright, origin, check, finish, resolveProject, until, newWorkspaceButton } from './lib.js'
 
 const PROJECT = await resolveProject(process.env.PROJECT ?? 'yaac')
 const idea = `pw focus ${Date.now()}`
@@ -39,7 +39,7 @@ try {
   const prompt = page.getByLabel('Prompt')
   const question = page.getByRole('alertdialog')
   // Its name ends with the shortcut; an untitled row is "New workspace".
-  const newButton = aside.getByRole('button', { name: /^New session/ })
+  const newButton = newWorkspaceButton(page)
   await newButton.waitFor({ timeout: 15_000 })
 
   // Save a draft to hang the row menu off.

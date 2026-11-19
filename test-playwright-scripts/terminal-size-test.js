@@ -23,7 +23,7 @@
  */
 import { execSync } from 'node:child_process'
 import path from 'node:path'
-import { requirePlaywright, origin, api, until, check, finish, SHOTS, createWorkspace, resolveProject } from './lib.js'
+import { requirePlaywright, origin, api, until, check, finish, SHOTS, createWorkspace, resolveProject, newWorkspaceButton } from './lib.js'
 
 const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 
@@ -121,7 +121,7 @@ try {
 
   // ---- 1. the settle gate on a fresh create ----
   await page.evaluate(startSampler)
-  await page.locator('aside').getByRole('button', { name: /^New session/ }).click()
+  await newWorkspaceButton(page).click()
   // The pane starts on the last workspace's agent; the tmux probe reads Claude's window.
   await page.getByRole('combobox', { name: 'Agent' }).selectOption('claude')
   await page.getByLabel('UI').selectOption('tui')
