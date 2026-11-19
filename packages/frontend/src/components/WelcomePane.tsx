@@ -16,19 +16,19 @@ export function WelcomePane(): JSX.Element {
     <div className="flex min-h-0 flex-1 overflow-y-auto px-8 py-10">
       <div className="m-auto w-full max-w-md">
         <h1 className="text-lg font-semibold text-text">Welcome to yaac</h1>
-        <p className="mt-2 text-sm text-text-dim">
+        <p className="mt-2 text-base text-muted">
           yaac runs coding agents in workspaces, each in its own checkout of a project&apos;s git repo.
         </p>
         <ol className="mt-6 flex flex-col gap-4">
           {STEPS.map(([title, body], i) => (
             <li key={title} className="flex gap-3">
-              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface-2
-                text-xs font-semibold text-text-dim">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-selected
+                text-md font-semibold text-muted">
                 {i + 1}
               </span>
               <div>
-                <p className="text-sm font-medium text-text">{title}</p>
-                <p className="mt-0.5 text-xs leading-relaxed text-text-faint">{body}</p>
+                <p className="text-base font-medium text-text">{title}</p>
+                <p className="mt-0.5 text-md leading-relaxed text-subtle">{body}</p>
               </div>
             </li>
           ))}

@@ -4,9 +4,7 @@ import { NEW_SHELL_TITLE } from '#components/PaneBar'
 import { isLocked } from '#lib/steps'
 import { useReadOnly } from '#lib/viewer'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
-
-const BUTTON = 'flex items-center justify-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs '
-  + 'text-text-dim transition hover:bg-surface-2 hover:text-text disabled:opacity-50'
+import { YButton } from '#ui'
 
 /**
  * A running workspace with no pane open: no session runs in it, and no
@@ -27,12 +25,12 @@ export function EmptyWorkspace({ workspace, onNewSession, onNewShell, onOpenHist
   const readOnly = useReadOnly()
   if (isLocked(workspace)) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-bg px-4 text-center">
+      <div className="flex h-full w-full items-center justify-center bg-sunken px-4 text-center">
         <div>
-          <p className="text-sm font-medium text-text-dim">
+          <p className="text-base font-medium text-muted">
             {workspace.site !== undefined ? `This workspace serves the site “${workspace.site}”` : 'This workspace runs its steps untouched'}
           </p>
-          <p className="mt-1 text-xs text-text-faint">
+          <p className="mt-1 text-md text-subtle">
             {workspace.site !== undefined
               ? 'Pick a step in the bar to follow its log. Deploy, stop or start the site from its row under Sites in the sidebar.'
               : 'Pick a step in the bar to follow its log. It stops once its steps finish, and can only be stopped before.'}
@@ -42,32 +40,24 @@ export function EmptyWorkspace({ workspace, onNewSession, onNewShell, onOpenHist
     )
   }
   return (
-    <div className="flex h-full w-full overflow-y-auto bg-bg px-4 py-6">
+    <div className="flex h-full w-full overflow-y-auto bg-sunken px-4 py-6">
       <div className="m-auto flex w-full max-w-md flex-col gap-4">
         <div className="text-center">
-          <p className="text-sm font-medium text-text-dim">No agent is running here</p>
-          <p className="mt-1 text-xs text-text-faint">
+          <p className="text-base font-medium text-muted">No agent is running here</p>
+          <p className="mt-1 text-md text-subtle">
             The workspace keeps its checkout and ports until it is stopped.
           </p>
         </div>
         <div className="flex justify-center gap-2">
           {!readOnly && onNewSession !== undefined && onNewShell !== undefined && (
             <>
-              <button type="button" onClick={onNewSession} className={BUTTON}>
-                <ChatIcon size={12} />
-                New session
-              </button>
-              <button type="button" onClick={onNewShell} title={NEW_SHELL_TITLE} className={BUTTON}>
-                <AddIcon size={12} />
-                New shell
-              </button>
+              <YButton icon={ChatIcon} onClick={onNewSession}>New session</YButton>
+              <YButton icon={AddIcon} onClick={onNewShell} title={NEW_SHELL_TITLE}>New shell</YButton>
             </>
           )}
           {onOpenHistory !== undefined && (
-            <button type="button" onClick={onOpenHistory} className={BUTTON}>
-              <HistoryIcon size={12} />
-              Earlier conversations
-            </button>
+            <YButton icon={HistoryIcon} onClick={onOpenHistory}>Earlier conversations</YButton>
+
           )}
         </div>
       </div>

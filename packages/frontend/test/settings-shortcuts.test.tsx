@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
-import { SettingsButton } from '#components/SettingsButton'
+import { SettingsButton, SettingsDialog } from '#components/SettingsButton'
 import { useUiStore } from '#lib/store'
 import { DEFAULT_BINDINGS, mergeBindings } from '#lib/shortcuts'
 import { mockFetch, renderWithClient, serverError, type FetchMock } from './harness'
@@ -26,7 +26,7 @@ function openShortcuts(): FetchMock {
     'POST /api/shortcuts/set': { ok: true },
     'POST /api/shortcuts/reset': { ok: true },
   })
-  renderWithClient(<SettingsButton />)
+  renderWithClient(<><SettingsButton /><SettingsDialog /></>)
   fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
   fireEvent.click(screen.getByRole('button', { name: 'Shortcuts' }))
   return server

@@ -17,6 +17,9 @@ import { errorText, serverLog } from '#lib/log'
 import { previewed, withPreviews } from '#api/prompt-previews'
 import type { ServerEvent, ServerSnapshot } from '@yaac/shared/types'
 
+/** When this module loaded, which is when the server started. */
+const STARTED_AT_MS = Date.now()
+
 /** Minimal surface the hub needs from a WebSocket connection. */
 export interface WsLike {
   send(data: string): void
@@ -62,6 +65,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   return {
     driver: workspaceDriver().kind,
     feedbackHost: feedbackHost(),
+    startedAtMs: STARTED_AT_MS,
     workspaces: active.workspaces.filter((w) => !hidden.has(w.workspaceId)).map(withPreviews),
     workspaceGroups,
     stale: active.stale,

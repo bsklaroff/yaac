@@ -1,10 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent, type JSX } from 'react'
-import clsx from 'clsx'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Dialog } from '@base-ui/react/dialog'
-import { Modal } from '#components/ui/Modal'
-import { Radio } from '@base-ui/react/radio'
-import { RadioGroup } from '@base-ui/react/radio-group'
 import {
   BranchIcon,
   CloseIcon,
@@ -27,7 +22,6 @@ import {
 } from '#lib/shortcuts'
 import { deviceTimeZone, timeZoneQuery } from '#lib/time'
 import { CredentialsPane } from '#components/settings/Credentials'
-import { Field } from '#components/settings/Field'
 import { PhoneLinkField } from '#components/settings/PhoneLink'
 import { PROJECT_PAGE_LABEL, ProjectSettings } from '#components/settings/ProjectSettings'
 import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectPicker'
@@ -36,12 +30,17 @@ import { SkillsSettings } from '#components/settings/Skills'
 import { UsersPane } from '#components/settings/Users'
 import { FileEditor } from '#components/settings/FileEditor'
 import { BuildFiles } from '#components/settings/BuildFiles'
+import { SettingsPageTitle } from '#components/settings/SettingsPage'
 import { userBuildFilesApi } from '#lib/buildFilesApi'
 import { useUiStore, type ProjectPage, type SettingsSection } from '#lib/store'
 import type { ThemePref } from '#lib/theme'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useWhoami } from '#lib/viewer'
 import { IS_MAC } from '#lib/platform'
+import {
+  cn, YButton, YDialog, YDialogClose, YDialogTitle, YInput, YListSection, YPageBody, YSection, YSegmented, YSelect,
+  YSettingGroup, YSettingRow, YSwitch,
+} from '#ui'
 
 const THEMES: { value: ThemePref; label: string }[] = [
   { value: 'system', label: 'System' },
@@ -69,20 +68,33 @@ const PROJECT_PAGES: { page: ProjectPage; Icon: NavIcon }[] = [
   { page: 'image', Icon: DockerIcon },
 ]
 
-const NAV_HEADING = 'px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wider text-text-faint max-md:hidden'
+/**
+ * The mobile project screen's Settings row. The modal itself is
+ * `SettingsDialog`, mounted once by the app; its open state lives in the
+ * store so any surface (the logo menu, the new-workspace menu's "Sign in")
+ * can open it on a given section.
+ */
+export function SettingsButton(): JSX.Element {
+  const openSettings = useUiStore((s) => s.openSettings)
+  return (
+    <YButton
+      variant="bare"
+      onClick={() => openSettings()}
+      title="Settings"
+      className="flex w-full items-center gap-3 px-3 py-3 text-left text-base text-muted active:bg-selected"
+    >
+      <SettingsIcon size={18} aria-hidden />
+      <span>Settings</span>
+    </YButton>
+  )
+}
 
 /**
- * The settings button and its modal: a left nav beside the content pane,
- * in two groups. Account holds what is the user's or the install's; Project
- * holds one project's pages, for the project its picker names. Open state
- * lives in the store so other surfaces (e.g. the new-workspace menu's
- * "Sign in") can open it on a given section.
+ * The settings modal: a left nav beside the content pane, in two groups.
+ * Account holds what is the user's or the install's; Project holds one
+ * project's pages, for the project its picker names.
  */
-export function SettingsButton(
-  /** 'rail' is the desktop rail's 40px chip; 'row' is the mobile project
-   *  screen's full-width labelled row. */
-  { variant = 'rail' }: { variant?: 'rail' | 'row' } = {},
-): JSX.Element {
+export function SettingsDialog(): JSX.Element {
   const open = useUiStore((s) => s.settingsOpen)
   const section = useUiStore((s) => s.settingsSection)
   const openSettings = useUiStore((s) => s.openSettings)
@@ -98,20 +110,20 @@ export function SettingsButton(
   const { projects, selected, pick } = useSettingsProject()
 
   const navButton = (key: SettingsSection, label: string, Icon: NavIcon): JSX.Element => (
-    <button
+    <YButton
       key={key}
+      variant="bare"
       onClick={() => setSection(key)}
-      className={clsx(
-        'flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition',
-        'max-md:h-9 max-md:shrink-0 max-md:whitespace-nowrap',
-        section === key
-          ? 'bg-surface-2 font-medium text-text'
-          : 'text-text-dim hover:bg-surface-2/60 hover:text-text',
+      aria-current={section === key || undefined}
+      className={cn(
+        'flex h-8 w-full shrink-0 items-center gap-2.5 whitespace-nowrap px-2.5 text-left text-md',
+        'max-md:h-9 max-md:w-auto',
+        section === key ? 'bg-selected text-text' : 'text-muted hover:bg-hover hover:text-text',
       )}
     >
-      <Icon size={13} className="shrink-0" />
+      <Icon size={14} strokeWidth={1.75} aria-hidden className="shrink-0" />
       {label}
-    </button>
+    </YButton>
   )
 
   // Refetch credentials on open; the CLI may have changed them.
@@ -120,151 +132,99 @@ export function SettingsButton(
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
   }, [open, queryClient])
 
+  // On small screens the nav becomes a scrolling row of chips above the
+  // content.
   return (
-    <>
-      <button
-        onClick={() => openSettings()}
-        title="Settings"
-        className={variant === 'row'
-          ? 'flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left text-sm text-text-dim transition '
-            + 'active:bg-surface-2'
-          : 'flex h-10 w-10 items-center justify-center rounded-[20px] text-text-faint transition-all '
-            + 'hover:rounded-xl hover:text-text-dim'}
-      >
-        <SettingsIcon size={18} />
-        {variant === 'row' && <span>Settings</span>}
-      </button>
-
-      {/* On small screens the nav becomes a scrolling row of chips above
-          the content. */}
-      <Modal
-        open={open}
-        onOpenChange={(next) => { if (next) openSettings(); else closeSettings() }}
-        variant="split"
-        className="max-md:flex-col"
-      >
-        <div className="flex w-52 shrink-0 flex-col gap-0.5 border-r border-hairline-soft bg-bg/50 p-2
-          max-md:w-full max-md:flex-row max-md:overflow-x-auto max-md:border-b max-md:border-r-0">
-          <Dialog.Title className="px-2 pb-2 pt-1 text-xs font-semibold text-text-dim max-md:hidden">
-            Settings
-          </Dialog.Title>
-          <div role="group" aria-label="Account" className="contents">
-            <div className={NAV_HEADING}>Account</div>
-            {ACCOUNT_SECTIONS
-              .filter((s) => (s.key !== 'userDockerfile' || buildsImages) && (s.key !== 'users' || multiUser))
-              .map(({ key, label, Icon }) => navButton(key, label, Icon))}
-          </div>
-          <div role="group" aria-label="Project" className="contents">
-            <div className={clsx(NAV_HEADING, 'mt-3')}>Project</div>
-            {selected === undefined ? (
-              <p className="px-2 text-[11px] text-text-faint max-md:hidden">No projects yet</p>
-            ) : <>
-              <ProjectSelect
-                projects={projects}
-                value={selected.id}
-                onChange={pick}
-                className="mx-1 mb-1 max-md:mx-0 max-md:mb-0 max-md:ml-2 max-md:h-9 max-md:shrink-0"
-              />
-              {PROJECT_PAGES.filter((p) => p.page !== 'image' || buildsImages)
-                .map(({ page, Icon }) => navButton(`project-${page}`, PROJECT_PAGE_LABEL[page], Icon))}
-            </>}
-          </div>
+    <YDialog
+      open={open}
+      onOpenChange={(next) => { if (next) openSettings(); else closeSettings() }}
+      variant="split"
+      className="max-md:flex-col"
+    >
+      <div className="flex w-52 shrink-0 flex-col border-r border-line bg-shell px-1.5 py-2
+        max-md:w-full max-md:flex-row max-md:gap-0.5 max-md:overflow-x-auto max-md:border-b max-md:border-r-0">
+        <YDialogTitle className="px-2.5 pb-1 pt-1 text-md font-semibold text-text max-md:hidden">
+          Settings
+        </YDialogTitle>
+        <div role="group" aria-label="Account" className="contents">
+          <YListSection label="Account" className="max-md:hidden" />
+          {ACCOUNT_SECTIONS
+            .filter((s) => (s.key !== 'userDockerfile' || buildsImages) && (s.key !== 'users' || multiUser))
+            .map(({ key, label, Icon }) => navButton(key, label, Icon))}
         </div>
+        <div role="group" aria-label="Project" className="contents">
+          <YListSection label="Project" className="max-md:hidden" />
+          {selected === undefined ? (
+            <p className="px-2.5 text-sm text-subtle max-md:hidden">No projects yet</p>
+          ) : <>
+            <ProjectSelect
+              projects={projects}
+              value={selected.id}
+              onChange={pick}
+              className="mb-1 max-md:mb-0 max-md:ml-2 max-md:h-9 max-md:shrink-0"
+            />
+            {PROJECT_PAGES.filter((p) => p.page !== 'image' || buildsImages)
+              .map(({ page, Icon }) => navButton(`project-${page}`, PROJECT_PAGE_LABEL[page], Icon))}
+          </>}
+        </div>
+      </div>
 
-        {/* The close button sits outside the scroller so it stays put, and
-            above it so content scrolled beneath (which may paint in its own
-            layer, like a faded disabled button) cannot swallow its clicks.
-            Skills fills the pane with its own scrolling list and detail; the
-            other sections scroll as one column of readable width. */}
-        <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-          <Dialog.Close className="absolute right-3 top-3 z-10 flex h-6 w-6 items-center justify-center rounded
-            bg-surface text-text-faint transition hover:bg-surface-2 hover:text-text max-md:h-9 max-md:w-9"
-            aria-label="Close settings">
-            <CloseIcon size={14} />
-          </Dialog.Close>
+      {/* The close button sits outside the scroller so it stays put, and
+          above it so content scrolled beneath (which may paint in its own
+          layer, like a faded disabled button) cannot swallow its clicks.
+          Skills fills the pane with its own scrolling list and detail; the
+          other sections scroll as one page column. */}
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        <YDialogClose render={(
+          <YButton
+            variant="ghost"
+            size="sm"
+            icon={CloseIcon}
+            aria-label="Close settings"
+            className="absolute right-3 top-3 z-10 bg-surface max-md:h-9 max-md:w-9"
+          />
+        )} />
 
-          <div className={clsx(
-            'flex min-h-0 flex-1 flex-col p-6 max-md:p-4 max-md:pt-10',
-            section !== 'skills' && 'overflow-y-auto',
-          )}>
-            {section === 'skills' && <SkillsSettings />}
-
-            {section !== 'skills' && <div className="mx-auto w-full max-w-3xl">
-              {section === 'general' && (
-                <section>
-                  <h2 className="text-sm font-semibold">General</h2>
-                  <Field
-                    label="Theme"
-                    hint="Follows your system appearance unless you pick one."
-                  >
-                    <RadioGroup
-                      value={themePref}
-                      onValueChange={(value) => setThemePref(value)}
-                      className="flex flex-col gap-1"
-                    >
-                      {THEMES.map((t) => (
-                        <label
-                          key={t.value}
-                          className="flex w-fit cursor-default items-center gap-2.5 rounded-md py-1 pr-2 text-xs
-                            text-text-dim transition hover:text-text"
-                        >
-                          <Radio.Root
-                            value={t.value}
-                            className="flex h-4 w-4 items-center justify-center rounded-full border border-border-strong
-                              transition data-[checked]:border-accent data-[checked]:bg-accent"
-                          >
-                            <Radio.Indicator className="h-1.5 w-1.5 rounded-full bg-surface data-[unchecked]:hidden" />
-                          </Radio.Root>
-                          {t.label}
-                        </label>
-                      ))}
-                    </RadioGroup>
-                  </Field>
-                  <Field
-                    label="Sounds"
-                    hint="Play a chime when a workspace needs your input."
-                  >
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={soundEnabled}
-                      aria-label="Sounds"
-                      onClick={() => setSoundEnabled(!soundEnabled)}
-                      className={clsx(
-                        'relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-                        soundEnabled ? 'bg-accent' : 'bg-surface-3',
-                      )}
-                    >
-                      <span
-                        className={clsx(
-                          'h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
-                          soundEnabled ? 'translate-x-[18px]' : 'translate-x-0.5',
-                        )}
-                      />
-                    </button>
-                  </Field>
+        {section === 'skills' ? (
+          <div className="flex min-h-0 flex-1 flex-col p-6 max-md:p-4 max-md:pt-12"><SkillsSettings /></div>
+        ) : (
+          <YPageBody className="max-md:pt-12">
+            {section === 'general' && <>
+              <SettingsPageTitle title="General" />
+              <YSection title="Appearance">
+                <YSettingGroup>
+                  <YSettingRow label="Theme" hint="Follows your system appearance unless you pick one.">
+                    <YSegmented options={THEMES} value={themePref} onChange={setThemePref} ariaLabel="Theme" />
+                  </YSettingRow>
+                  <YSettingRow label="Sounds" hint="Play a chime when a workspace needs your input.">
+                    <YSwitch checked={soundEnabled} onCheckedChange={setSoundEnabled} aria-label="Sounds" />
+                  </YSettingRow>
+                </YSettingGroup>
+              </YSection>
+              <YSection title="Server">
+                <YSettingGroup>
                   <GitIdentityField />
                   <TimeZoneField />
                   <PhoneLinkField />
-                </section>
-              )}
+                </YSettingGroup>
+              </YSection>
+            </>}
 
-              {section === 'shortcuts' && <ShortcutsPane />}
+            {section === 'shortcuts' && <ShortcutsPane />}
 
-              {section === 'credentials' && <CredentialsPane />}
+            {section === 'credentials' && <CredentialsPane />}
 
-              {section === 'repos' && <ReposSettings />}
+            {section === 'repos' && <ReposSettings />}
 
-              {section.startsWith('project-') && <ProjectSettings page={section.slice('project-'.length) as ProjectPage} />}
+            {section.startsWith('project-') && <ProjectSettings page={section.slice('project-'.length) as ProjectPage} />}
 
-              {section === 'userDockerfile' && <UserDockerfilePane />}
+            {section === 'userDockerfile' && <UserDockerfilePane />}
 
-              {section === 'users' && <UsersPane />}
-            </div>}
-          </div>
-        </div>
-      </Modal>
-    </>
+            {section === 'users' && <UsersPane />}
+          </YPageBody>
+        )}
+      </div>
+    </YDialog>
   )
 }
 
@@ -275,39 +235,43 @@ export function SettingsButton(
 function UserDockerfilePane(): JSX.Element {
   const filesApi = useMemo(() => userBuildFilesApi(), [])
   return (
-    <section>
-      <h2 className="text-sm font-semibold">User Dockerfile</h2>
-      <Field
-        label="Dockerfile.user"
-        hint={(
-          <>
-            Layered atop every project image. Must start with{' '}
-            <code className="text-text-dim">{'ARG BASE_IMAGE'}</code> and{' '}
-            <code className="text-text-dim">{'FROM ${BASE_IMAGE}'}</code>.
-          </>
-        )}
-      >
-        <FileEditor
-          title="Dockerfile.user"
-          language="dockerfile"
-          queryKey={['user-dockerfile']}
-          load={async () => (await api.config['user-dockerfile'].$get()).content}
-          save={async (content) => { await api.config['user-dockerfile'].$put({ json: { content } }) }}
-        />
-      </Field>
-      <Field
-        label="Build files"
-        hint={(
-          <>
-            Files stored next to Dockerfile.user as its build context — reference them
-            with <code className="text-text-dim">COPY</code>. Changes apply on the next
-            workspace create.
-          </>
-        )}
-      >
-        <BuildFiles filesApi={filesApi} title="Dockerfile.user" />
-      </Field>
-    </section>
+    <>
+      <SettingsPageTitle title="User Dockerfile" />
+      <YSettingGroup>
+        <YSettingRow
+          stacked
+          label="Dockerfile.user"
+          hint={(
+            <>
+              Layered atop every project image. Must start with{' '}
+              <code className="text-muted">{'ARG BASE_IMAGE'}</code> and{' '}
+              <code className="text-muted">{'FROM ${BASE_IMAGE}'}</code>.
+            </>
+          )}
+        >
+          <FileEditor
+            title="Dockerfile.user"
+            language="dockerfile"
+            queryKey={['user-dockerfile']}
+            load={async () => (await api.config['user-dockerfile'].$get()).content}
+            save={async (content) => { await api.config['user-dockerfile'].$put({ json: { content } }) }}
+          />
+        </YSettingRow>
+        <YSettingRow
+          stacked
+          label="Build files"
+          hint={(
+            <>
+              Files stored next to Dockerfile.user as its build context — reference them
+              with <code className="text-muted">COPY</code>. Changes apply on the next
+              workspace create.
+            </>
+          )}
+        >
+          <BuildFiles filesApi={filesApi} title="Dockerfile.user" />
+        </YSettingRow>
+      </YSettingGroup>
+    </>
   )
 }
 
@@ -381,65 +345,45 @@ function ShortcutsPane(): JSX.Element {
   }
 
   return (
-    <section>
+    <>
       {/* Title only: the dialog's close button owns the top-right corner,
           so "Reset all" goes in a footer. */}
-      <h2 className="text-sm font-semibold">Shortcuts</h2>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
+      <SettingsPageTitle title="Shortcuts">
         Click a shortcut, then press a new key combination (hold Alt, Ctrl, or Cmd).
         Some chords the browser reserves — like Ctrl+W — can’t be captured.
-      </p>
-      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
-      {saveBinding.error && (
-        <p className="mt-2 text-xs text-red-400">Not saved: {saveBinding.error.message}</p>
-      )}
+        {error && <p className="mt-2 text-danger">{error}</p>}
+        {saveBinding.error && <p className="mt-2 text-danger">Not saved: {saveBinding.error.message}</p>}
+      </SettingsPageTitle>
 
-      <div className="mt-4 space-y-1">
+      <YSettingGroup>
         {SHORTCUTS.map((def) => {
           const chord = bindings[def.id]
           const overridden = !chordsEqual(chord, def.defaultChord)
           const recording = recordingId === def.id
           return (
-            <div key={def.id} className="flex items-center justify-between gap-3 rounded-md bg-bg px-3 py-2">
-              <div className="min-w-0">
-                <div className="text-xs font-medium text-text">{def.label}</div>
-                <div className="truncate text-[11px] text-text-faint">{def.description}</div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
+            <YSettingRow key={def.id} label={def.label} hint={def.description}>
+              <div className="flex items-center gap-1.5">
                 {overridden && !recording && (
-                  <button
-                    onClick={() => resetOne(def.id)}
-                    title="Reset to default"
-                    className="rounded px-1.5 py-0.5 text-[11px] text-text-faint transition hover:text-text"
-                  >
+                  <YButton variant="secondary" size="sm" onClick={() => resetOne(def.id)} title="Reset to default">
                     Reset
-                  </button>
+                  </YButton>
                 )}
-                <button
+                <YButton
                   onClick={() => startRecording(def.id)}
-                  className={clsx(
-                    'min-w-[88px] rounded-md border px-2.5 py-1 text-center font-mono text-xs transition',
-                    recording
-                      ? 'border-accent bg-accent/10 text-accent'
-                      : 'border-border bg-surface-2 text-text-dim hover:border-border-strong hover:text-text',
-                  )}
+                  className={cn('min-w-[88px] font-mono text-md', recording && 'text-accent outline outline-accent')}
                 >
                   {recording ? 'Press…' : formatChord(chord, IS_MAC)}
-                </button>
+                </YButton>
               </div>
-            </div>
+            </YSettingRow>
           )
         })}
-      </div>
+      </YSettingGroup>
 
-      <button
-        onClick={resetAll}
-        className="mt-4 rounded-md border border-border px-2.5 py-1 text-[11px] text-text-faint transition
-          hover:border-border-strong hover:text-text"
-      >
+      <YButton size="sm" onClick={resetAll} className="self-start">
         Reset all to defaults
-      </button>
-    </section>
+      </YButton>
+    </>
   )
 }
 
@@ -475,11 +419,9 @@ function GitIdentityField(): JSX.Element {
     save.mutate({ name: shownName.trim(), email: shownEmail.trim() })
   }
 
-  const inputClass = 'flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono '
-    + 'text-xs text-text outline-none focus:border-border-strong'
-
   return (
-    <Field
+    <YSettingRow
+      stacked
       label="Git identity"
       hint={identity === null
         ? 'Not set — workspaces cannot be created until it is. The yaac desktop '
@@ -488,30 +430,25 @@ function GitIdentityField(): JSX.Element {
     >
       <form onSubmit={submit}>
         <div className="flex gap-2">
-          <input
+          <YInput
             value={shownName}
             onChange={(e) => { setName(e.target.value); save.reset() }}
             placeholder="Your Name"
-            className={inputClass}
+            className="flex-1 font-mono"
           />
-          <input
+          <YInput
             value={shownEmail}
             onChange={(e) => { setEmail(e.target.value); save.reset() }}
             placeholder="you@example.com"
-            className={inputClass}
+            className="flex-1 font-mono"
           />
-          <button
-            type="submit"
-            disabled={save.isPending || shownName.trim() === '' || shownEmail.trim() === ''}
-            className="shrink-0 rounded-md bg-surface-3 px-3 text-xs font-medium text-text transition
-              hover:bg-border-strong disabled:opacity-50"
-          >
+          <YButton type="submit" disabled={save.isPending || shownName.trim() === '' || shownEmail.trim() === ''}>
             {save.isPending ? 'Saving…' : save.isSuccess ? 'Saved' : 'Save'}
-          </button>
+          </YButton>
         </div>
-        {error && <p className="mt-2 text-xs text-red-400">{error.message}</p>}
+        {error && <p className="mt-2 text-md text-danger">{error.message}</p>}
       </form>
-    </Field>
+    </YSettingRow>
   )
 }
 
@@ -539,27 +476,21 @@ function TimeZoneField(): JSX.Element {
   const automatic = setting?.pinned === false && setting.timeZone ? setting.timeZone : deviceTimeZone()
 
   return (
-    <Field
+    <YSettingRow
       label="Time zone"
-      hint={'The zone new workspaces launch in and chats show times in. Automatic follows '
-        + 'whichever device last connected (for chat times, the device you are on), so it '
-        + 'changes as you switch between machines in different zones; pick a zone to pin '
-        + 'it. A running workspace keeps the zone it started with.'}
+      hint="For new workspaces and chat times."
     >
-      <>
-        <select
-          aria-label="Time zone"
-          value={setting?.pinned ? setting.timeZone ?? '' : ''}
-          disabled={setting === undefined}
-          onChange={(e) => choose.mutate(e.target.value)}
-          className="rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
-            outline-none focus:border-border-strong disabled:opacity-50"
-        >
-          <option value="">Automatic ({automatic})</option>
-          {zones.map((z) => <option key={z} value={z}>{z}</option>)}
-        </select>
-        {error && <p className="mt-2 text-xs text-red-400">{error.message}</p>}
-      </>
-    </Field>
+      <YSelect
+        aria-label="Time zone"
+        value={setting?.pinned ? setting.timeZone ?? '' : ''}
+        disabled={setting === undefined}
+        onChange={(e) => choose.mutate(e.target.value)}
+        className="w-60 max-md:w-full"
+      >
+        <option value="">Automatic ({automatic})</option>
+        {zones.map((z) => <option key={z} value={z}>{z}</option>)}
+      </YSelect>
+      {error && <p className="mt-2 w-60 text-md text-danger">{error.message}</p>}
+    </YSettingRow>
   )
 }

@@ -1,14 +1,8 @@
 import { useId, useState, type JSX } from 'react'
 import clsx from 'clsx'
-import { Menu } from '@base-ui/react/menu'
-import { Popover } from '@base-ui/react/popover'
-import { Radio } from '@base-ui/react/radio'
-import { RadioGroup } from '@base-ui/react/radio-group'
-import { MENU_ITEM, MenuPopup, PopoverPopup } from '#components/ui/menu'
-import { filterSuggestions, suggestionId, SuggestionList } from '#components/ui/Typeahead'
 import { modelItem } from '#components/ComposerMenu'
 import {
-  AcceptEditsIcon, AskFirstIcon, AutoReviewIcon, BypassIcon, CheckIcon, ChevronIcon, PlanIcon, ReadOnlyIcon, type Icon,
+  AcceptEditsIcon, AskFirstIcon, AutoReviewIcon, BypassIcon, ChevronIcon, PlanIcon, ReadOnlyIcon, type Icon,
 } from '#lib/icons'
 import { useSnapshot } from '#lib/useSnapshot'
 import type { AcpModel } from '@yaac/shared/acp'
@@ -20,6 +14,10 @@ import {
   type AgentOptions,
   type PermissionMode,
 } from '@yaac/shared/types'
+import {
+  filterSuggestions, MENU_ITEM, suggestionId, YCheckbox, YChip, YInput, YMenu, YMenuPopup, YMenuRadioItem, YPopover,
+  YPopoverPopup, YRadioGrid, YSuggestionList,
+} from '#ui'
 
 /*
  * The composer's agent settings, as two pills, the same in a chat and in
@@ -58,9 +56,8 @@ const PERMISSION_MODE_ICON: Record<PermissionMode, Icon> = {
   'read-only': ReadOnlyIcon,
 }
 
-const PILL = 'flex min-w-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-text-faint'
-const TRIGGER = clsx(PILL, 'outline-none hover:bg-surface-2 hover:text-text disabled:opacity-40',
-  'data-[popup-open]:bg-surface-2 data-[popup-open]:text-text')
+/** The permission posture as plain text, where it has no menu. */
+const PILL = 'flex min-w-0 items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-1 text-md text-subtle'
 
 /**
  * The conversation's permission posture. Where it can't be switched
@@ -90,35 +87,32 @@ export function PermissionModeSelect({ current, available, disabled, onSelect }:
   const tint = unsandboxed && 'text-warning'
   if (available.length === 0) return <span className={clsx(PILL, tint)} title={help}>{label}</span>
   return (
-    <Menu.Root>
-      <Menu.Trigger
+    <YMenu.Root>
+      <YMenu.Trigger
         aria-label="Permission mode"
         title={help}
         disabled={disabled}
-        className={clsx(TRIGGER, tint)}
+        render={<YChip className={clsx(tint)} />}
       >
         {label}
         <ChevronIcon size={11} className="hidden -rotate-90 @min-[30rem]:block" />
-      </Menu.Trigger>
-      <MenuPopup side="top" align="start" sideOffset={6} className="w-[280px]">
-        <Menu.RadioGroup value={current} onValueChange={(mode: PermissionMode) => onSelect(mode)}>
+      </YMenu.Trigger>
+      <YMenuPopup side="top" align="start" sideOffset={6} className="w-[280px]">
+        <YMenu.RadioGroup value={current} onValueChange={(mode: PermissionMode) => onSelect(mode)}>
           {available.map((m) => (
-            <Menu.RadioItem key={m} value={m} closeOnClick className={clsx(MENU_ITEM, 'items-start')}>
-              <span className="mt-0.5 w-3 shrink-0">
-                <Menu.RadioItemIndicator><CheckIcon size={12} /></Menu.RadioItemIndicator>
-              </span>
+            <YMenuRadioItem key={m} value={m} closeOnClick className="items-start">
               <span className="flex flex-col gap-0.5">
                 <span className="text-text">{PERMISSION_MODE_COPY[m]}</span>
-                <span className="text-[11px] text-text-faint">{PERMISSION_MODE_HELP[m]}</span>
+                <span className="text-sm text-subtle">{PERMISSION_MODE_HELP[m]}</span>
                 {m === 'bypass' && containerless && (
-                  <span className="text-[11px] text-warning">{NO_SANDBOX}</span>
+                  <span className="text-sm text-warning">{NO_SANDBOX}</span>
                 )}
               </span>
-            </Menu.RadioItem>
+            </YMenuRadioItem>
           ))}
-        </Menu.RadioGroup>
-      </MenuPopup>
-    </Menu.Root>
+        </YMenu.RadioGroup>
+      </YMenuPopup>
+    </YMenu.Root>
   )
 }
 
@@ -171,8 +165,8 @@ export function AgentSettings({ model, effort, options: given, disabled }: {
     ...(options?.list.map((o) => `${AGENT_OPTIONS[o].label}: ${options.value[o] === true ? 'on' : 'off'}`) ?? []),
   ].join('\n')
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger aria-label="Agent settings" title={title} disabled={disabled} className={TRIGGER}>
+    <YPopover.Root open={open} onOpenChange={setOpen}>
+      <YPopover.Trigger aria-label="Agent settings" title={title} disabled={disabled} render={<YChip />}>
         {modelName !== undefined && (
           <span className="min-w-0 max-w-[14rem] truncate">{modelName}</span>
         )}
@@ -181,8 +175,8 @@ export function AgentSettings({ model, effort, options: given, disabled }: {
         )}
         {modelName === undefined && effortName === undefined && <span>{on === 0 ? 'Options' : `Options (${String(on)})`}</span>}
         <ChevronIcon size={11} className="shrink-0 -rotate-90" />
-      </Popover.Trigger>
-      <PopoverPopup
+      </YPopover.Trigger>
+      <YPopoverPopup
         side="top"
         align="start"
         sideOffset={6}
@@ -194,65 +188,43 @@ export function AgentSettings({ model, effort, options: given, disabled }: {
         {model !== undefined && <ModelPicker {...model} onSelect={(id) => { model.onSelect(id); setOpen(false) }} />}
         {effort !== undefined && (
           <Section title="Effort">
-            <RadioGroup
-              aria-label="Effort"
+            <YRadioGrid
+              ariaLabel="Effort"
               value={effort.current}
-              onValueChange={(level: string) => effort.onSelect(level)}
-              className="mx-1 grid rounded-md bg-surface-1 p-0.5"
-              style={{ gridTemplateColumns: effortColumns(effort.available.length) }}
-            >
-              {effort.available.map((level) => (
-                <Radio.Root
-                  key={level}
-                  value={level}
-                  className="cursor-default truncate rounded px-1 py-1 text-center text-xs text-text-dim outline-none
-                    hover:bg-surface-3 hover:text-text focus-visible:ring-1 focus-visible:ring-border-strong
-                    data-[checked]:bg-surface-3 data-[checked]:text-text"
-                >
-                  {effortLabel(level)}
-                </Radio.Root>
-              ))}
-            </RadioGroup>
+              onChange={(level) => effort.onSelect(level)}
+              options={effort.available.map((level) => ({ value: level, label: effortLabel(level) }))}
+              className="mx-1"
+            />
           </Section>
         )}
         {options !== undefined && (
           <Section title="Options">
             {options.list.map((o) => (
-              <label key={o} className={clsx(MENU_ITEM, 'items-start hover:bg-surface-3')}>
-                <input
-                  type="checkbox"
+              <label key={o} className={clsx(MENU_ITEM, 'items-start hover:bg-line-strong')}>
+                <YCheckbox
                   checked={options.value[o] === true}
-                  onChange={(e) => options.onChange({ [o]: e.target.checked })}
-                  className="mt-0.5 shrink-0"
+                  onCheckedChange={(checked) => options.onChange({ [o]: checked })}
+                  className="mt-0.5"
+
                 />
                 <span className="flex flex-col gap-0.5">
                   <span className="text-text">{AGENT_OPTIONS[o].label}</span>
-                  <span className="text-[11px] text-text-faint">{AGENT_OPTIONS[o].hint}</span>
+                  <span className="text-sm text-subtle">{AGENT_OPTIONS[o].hint}</span>
                 </span>
               </label>
             ))}
           </Section>
         )}
-      </PopoverPopup>
-    </Popover.Root>
+      </YPopoverPopup>
+    </YPopover.Root>
   )
 }
 
-/**
- * The columns of the effort control, a grid of equal cells: at most four to
- * a row, so a name like "Minimal" fits at phone width, with the rows
- * balanced (claude's six as 3 + 3, codex's eight as 4 + 4, opencode's nine
- * as 3 × 3) rather than leaving one level alone on the last.
- */
-function effortColumns(levels: number): string {
-  const rows = Math.ceil(levels / 4)
-  return `repeat(${String(Math.ceil(levels / rows))}, minmax(0, 1fr))`
-}
 
 function Section({ title, children }: { title: string; children: JSX.Element | JSX.Element[] }): JSX.Element {
   return (
-    <div className="flex flex-col gap-1 border-t border-hairline pt-1.5 first:border-t-0 first:pt-0">
-      <div className="px-2 text-[10px] font-medium uppercase tracking-wide text-text-faint">{title}</div>
+    <div className="flex flex-col gap-1 border-t border-line pt-1.5 first:border-t-0 first:pt-0">
+      <div className="px-2 text-xs font-medium uppercase tracking-wide text-subtle">{title}</div>
       {children}
     </div>
   )
@@ -275,7 +247,7 @@ function ModelPicker({ current, items, onSelect, tag }: ModelChoice): JSX.Elemen
   const active = highlight.query === query && highlight.index >= 0 && highlight.index < rows.length ? highlight.index : start
   return (
     <Section title="Model">
-      <input
+      <YInput
         aria-label="Search models"
         role="combobox"
         aria-expanded
@@ -297,13 +269,13 @@ function ModelPicker({ current, items, onSelect, tag }: ModelChoice): JSX.Elemen
           }
           e.preventDefault()
         }}
-        className="mx-1 rounded-md border border-border bg-surface-1 px-2 py-1 font-mono text-xs text-text outline-none
-          placeholder:text-text-faint focus:border-border-strong"
+        className="mx-1 font-mono"
       />
+
       {rows.length === 0
-        ? <div className="px-2 py-1 text-[11px] text-text-faint">No matches</div>
+        ? <div className="px-2 py-1 text-sm text-subtle">No matches</div>
         : (
-          <SuggestionList
+          <YSuggestionList
             id={listId}
             rows={rows}
             active={active}

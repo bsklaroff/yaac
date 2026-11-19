@@ -1,9 +1,7 @@
 import { Fragment, useState, type FormEvent, type JSX } from 'react'
 import clsx from 'clsx'
 import { useMutation } from '@tanstack/react-query'
-import { Collapsible } from '@base-ui/react/collapsible'
-import { Dialog } from '@base-ui/react/dialog'
-import { ChevronIcon, PinIcon } from '#lib/icons'
+import { PinIcon } from '#lib/icons'
 import { api } from '#lib/api'
 import { unseenDeaths, useUiStore } from '#lib/store'
 import { useWhoami } from '#lib/viewer'
@@ -12,9 +10,6 @@ import { useInlineEdit } from '#lib/useInlineRename'
 import { RowMenu } from '#components/sidebar/RowMenu'
 import { ObjectRow, type ObjectRowProps } from '#components/sidebar/ObjectRow'
 import { QueuedSet } from '#components/sidebar/QueuedRows'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
-import { Modal } from '#components/ui/Modal'
-import { NumberInput } from '#components/ui/NumberInput'
 import { roomKey } from '#lib/queued'
 import { StoppedRows } from '#components/sidebar/StoppedRows'
 import { isTerminating, ProvisioningRow, StoppedWorkspaceRow, WorkspaceRow, type SidebarDrag } from '#components/sidebar/WorkspaceRows'
@@ -22,6 +17,7 @@ import { groupDisplay, type SidebarGroupSection } from '#components/WorkspaceLis
 // The server refuses longer group names, so the name fields stop here.
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
 import type { WorkspaceGroupSummary } from '@yaac/shared/types'
+import { YButton, YConfirm, YDialog, YDialogClose, YDialogDescription, YDialogTitle, YInput, YListSection, YNumberInput } from '#ui'
 
 /**
  * One group: a collapsible section and drop zone holding its live, held and
@@ -39,8 +35,7 @@ import type { WorkspaceGroupSummary } from '@yaac/shared/types'
  * time while shown. Whether they are shown, and whether the group is
  * collapsed, live in the store, because while the ghosts are on screen the
  * Stopped section leaves them out (`groupDisplay`). In a section of only
- * ghosts, the caret and the menu item toggle the same thing. A search or
- * status filter holds every listed group open and hides its ghosts.
+ * ghosts, the caret and the menu item toggle the same thing.
  */
 export function GroupSection({
   section,
@@ -49,7 +44,6 @@ export function GroupSection({
   rowIds,
   dropTarget,
   zoneRef,
-  narrowed,
   elsewhere,
   hidden,
   notice,
@@ -64,8 +58,6 @@ export function GroupSection({
   /** A drop here would move the dragged workspace into this group. */
   dropTarget: boolean
   zoneRef: (el: HTMLDivElement | null) => void
-  /** A sidebar search or status filter is active. */
-  narrowed: boolean
   /** Stopped workspaces with a row elsewhere (held, restarting), which the
    *  server leaves out of the ghost list. */
   elsewhere: string[]
@@ -85,7 +77,7 @@ export function GroupSection({
   const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
   const setGroupCollapsed = useUiStore((s) => s.setGroupCollapsed)
   const setGroupShowsStopped = useUiStore((s) => s.setGroupShowsStopped)
-  const { onlyGhosts, expanded, ownsGhosts } = groupDisplay(section, { collapsed, showStopped, narrowed })
+  const { onlyGhosts, expanded, ownsGhosts } = groupDisplay(section, { collapsed, showStopped })
   const ghosts = useStoppedWorkspaces(group.projectId, { group: group.groupId, exclude: elsewhere }, {
     enabled: ownsGhosts,
     version: String(group.stoppedCount),
@@ -116,7 +108,6 @@ export function GroupSection({
   // With only ghosts, the caret sets both, so the state carries over when a
   // live row returns.
   const toggleExpanded = (next: boolean): void => {
-    if (narrowed) return
     if (onlyGhosts) setGroupShowsStopped(group.groupId, next)
     setGroupCollapsed(group.groupId, !next)
   }
@@ -141,77 +132,77 @@ export function GroupSection({
       ref={zoneRef}
       role="group"
       aria-label={group.name}
-      className={clsx('py-1', dropTarget && 'rounded-lg bg-surface-2/40 ring-1 ring-accent/40')}
+      className={clsx('py-1', dropTarget && 'bg-selected/40 ring-1 ring-accent/40')}
     >
-      <Collapsible.Root open={expanded} onOpenChange={toggleExpanded}>
-        {object !== undefined ? (
-          <ObjectRow
-            {...object}
-            items={[
-              ...object.items,
-              'separator',
-              // A site's next release runs beside its live one until it
-              // takes over, so a limit there would refuse every deploy.
-              ...(object.object.kind !== 'site' ? [{ label: 'Run limit…', onSelect: () => setSettingLimit(true) }] : []),
-              ...(group.stoppedCount > 0 || showStopped
-                ? [{ label: showStopped ? 'Hide stopped runs' : 'Show stopped runs', onSelect: toggleStopped, view: true as const }]
-                : []),
-            ]}
-            runs={{ expanded, onToggle: toggleExpanded, live: active, ...(limit !== undefined ? { limit } : {}), stopped, died }}
+      {object !== undefined ? (
+        <ObjectRow
+          {...object}
+          items={[
+            ...object.items,
+            'separator',
+            // A site's next release runs beside its live one until it
+            // takes over, so a limit there would refuse every deploy.
+            ...(object.object.kind !== 'site' ? [{ label: 'Run limit…', onSelect: () => setSettingLimit(true) }] : []),
+            ...(group.stoppedCount > 0 || showStopped
+              ? [{ label: showStopped ? 'Hide stopped runs' : 'Show stopped runs', onSelect: toggleStopped, view: true as const }]
+              : []),
+          ]}
+          runs={{ expanded, onToggle: toggleExpanded, live: active, ...(limit !== undefined ? { limit } : {}), stopped, died }}
+        />
+      ) : editing ? (
+        <div className="px-2.5 py-1">
+          <YInput
+            ref={inputRef}
+            aria-label="Group name"
+            defaultValue={seed}
+            placeholder="Group name"
+            maxLength={MAX_TITLE_LENGTH}
+            onKeyDown={handleKeyDown}
+            onBlur={handleBlur}
+            className="w-full font-medium"
           />
-        ) : <div className="group relative">
-          {editing ? (
-            <div className="px-3 py-1">
-              <input
-                ref={inputRef}
-                aria-label="Group name"
-                defaultValue={seed}
-                placeholder="Group name"
-                maxLength={MAX_TITLE_LENGTH}
-                onKeyDown={handleKeyDown}
-                onBlur={handleBlur}
-                className="w-full rounded border border-border-strong bg-bg px-1.5 py-0.5
-                  text-xs font-medium text-text outline-none"
-              />
-            </div>
-          ) : (
-            <>
-              <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
-                text-text-faint outline-none transition hover:text-text-dim group-hover:pr-9 max-md:pr-11">
-                <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', expanded && 'rotate-90')} />
-                {/* The pin icon is always shown, not only on hover. */}
-                {group.pinned && <PinIcon size={10} className="shrink-0 rotate-45" />}
-                <span className="truncate">{group.name}</span>
-                <span
-                  className={clsx(limit !== undefined && active >= limit ? 'text-amber-400/80' : 'text-text-faint/70')}
-                  title={limit !== undefined ? `${active} live of a limit of ${limit}` : `${active} live`}
-                >
-                  ({active}{limit !== undefined && `/${limit}`})
-                </span>
-                {stopped > 0 && <span className="shrink-0 text-text-faint/70">· {stopped} stopped</span>}
-                {died > 0 && <span className="shrink-0 text-danger">· {died} died</span>}
-              </Collapsible.Trigger>
-
-              {/* Outside the trigger, which is itself a button. */}
-              <RowMenu
-                label="Group actions"
-                position="right-2 top-0.5"
-                items={[
-                  { label: 'Rename', onSelect: startRename },
-                  { label: group.pinned ? 'Unpin' : 'Pin', onSelect: togglePinned },
-                  { label: 'Workspace limit…', onSelect: () => setSettingLimit(true) },
-                  ...(group.stoppedCount > 0 || showStopped
-                    ? [{ label: showStopped ? 'Hide stopped workspaces' : 'Show stopped workspaces', onSelect: toggleStopped, view: true as const }]
-                    : []),
-                  'separator',
-                  { label: 'Delete group', onSelect: () => (section.waiting.length > 0 ? setConfirmDelete(true) : remove()) },
-                ]}
-              />
-            </>
+        </div>
+      ) : (
+        <YListSection
+          className="group/row"
+          label={(
+            <span className="flex min-w-0 items-center gap-1.5">
+              {/* The pin icon is always shown, not only on hover. */}
+              {group.pinned && <PinIcon size={10} className="shrink-0 rotate-45" />}
+              <span className="truncate">{group.name}</span>
+              <span
+                className={clsx('shrink-0 tabular-nums', limit !== undefined && active >= limit ? 'text-warning/80' : 'text-subtle')}
+                title={limit !== undefined ? `${active} live of a limit of ${limit}` : `${active} live`}
+              >
+                ({active}{limit !== undefined && `/${limit}`})
+              </span>
+              {stopped > 0 && <span className="shrink-0">{stopped} stopped</span>}
+              {died > 0 && <span className="shrink-0 text-danger">{died} died</span>}
+            </span>
           )}
-        </div>}
-        {notice !== undefined && <p className="px-3 pb-1 pl-7 text-xs text-danger">{notice}</p>}
-        <Collapsible.Panel className={object !== undefined ? 'pl-3' : undefined}>
+          open={expanded}
+          onToggle={() => toggleExpanded(!expanded)}
+          actions={(
+            <RowMenu
+              label="Group actions"
+              hoverOnly
+              items={[
+                { label: 'Rename', onSelect: startRename },
+                { label: group.pinned ? 'Unpin' : 'Pin', onSelect: togglePinned },
+                { label: 'Workspace limit…', onSelect: () => setSettingLimit(true) },
+                ...(group.stoppedCount > 0 || showStopped
+                  ? [{ label: showStopped ? 'Hide stopped workspaces' : 'Show stopped workspaces', onSelect: toggleStopped, view: true as const }]
+                  : []),
+                'separator',
+                { label: 'Delete group', onSelect: () => (section.waiting.length > 0 ? setConfirmDelete(true) : remove()) },
+              ]}
+            />
+          )}
+        />
+      )}
+      {notice !== undefined && <p className="px-3 pb-1 pl-7 text-md text-danger">{notice}</p>}
+      {expanded && (
+        <div className={object !== undefined ? 'pl-3' : undefined}>
           {/* Provisioning rows lead the section, as they lead the list. */}
           {provisioning.map((p) => (
             <Fragment key={p.workspaceId}>
@@ -233,10 +224,10 @@ export function GroupSection({
           ))}
           <QueuedSet parentId={roomKey(group.groupId)} waiting />
           {ownsGhosts && <StoppedRows list={ghosts} />}
-        </Collapsible.Panel>
-      </Collapsible.Root>
+        </div>
+      )}
       <WorkspaceLimitDialog group={group} open={settingLimit} onOpenChange={setSettingLimit} />
-      <ConfirmDialog
+      <YConfirm
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
         title="Delete group?"
@@ -275,19 +266,19 @@ function WorkspaceLimitDialog({ group, open, onOpenChange }: {
     save.mutate(text === '' ? null : Number(text))
   }
   return (
-    <Modal
+    <YDialog
       open={open}
       onOpenChange={(next) => { if (!save.isPending) { save.reset(); onOpenChange(next) } }}
       variant="form"
       className="w-[340px]"
     >
-      <Dialog.Title className="text-sm font-semibold">Workspace limit</Dialog.Title>
-      <Dialog.Description className="mt-1 text-xs text-text-dim">
+      <YDialogTitle className="text-base font-semibold">Workspace limit</YDialogTitle>
+      <YDialogDescription className="mt-1 text-md text-muted">
         The most workspaces “{group.name}” runs at once. Starting, restarting or moving in one more is
         refused, and queued workspaces wait for room. Leave it empty for no limit.
-      </Dialog.Description>
+      </YDialogDescription>
       <form onSubmit={submit} className="mt-4 flex flex-col gap-3">
-        <NumberInput
+        <YNumberInput
           name="limit"
           min={1}
           step={1}
@@ -295,27 +286,14 @@ function WorkspaceLimitDialog({ group, open, onOpenChange }: {
           aria-label="Workspace limit"
           placeholder="No limit"
           defaultValue={group.workspaceLimit ?? ''}
-          className="h-8 bg-bg"
+          className="h-8 bg-sunken"
         />
-        {save.error && <p className="text-xs text-red-400">{save.error.message}</p>}
+        {save.error && <p className="text-md text-danger">{save.error.message}</p>}
         <div className="flex justify-end gap-2">
-          <Dialog.Close
-            disabled={save.isPending}
-            className="flex h-8 items-center rounded-md px-3 text-xs text-text-dim transition
-              hover:bg-surface-3 hover:text-text disabled:opacity-50"
-          >
-            Cancel
-          </Dialog.Close>
-          <button
-            type="submit"
-            disabled={save.isPending}
-            className="flex h-8 items-center rounded-md bg-accent px-3 text-xs font-medium text-bg transition
-              hover:brightness-110 disabled:opacity-50"
-          >
-            Save
-          </button>
+          <YDialogClose disabled={save.isPending} render={<YButton variant="ghost" />}>Cancel</YDialogClose>
+          <YButton type="submit" variant="primary" disabled={save.isPending}>Save</YButton>
         </div>
       </form>
-    </Modal>
+    </YDialog>
   )
 }

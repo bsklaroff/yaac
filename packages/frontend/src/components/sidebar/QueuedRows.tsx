@@ -1,10 +1,8 @@
 import { Fragment, useState, type JSX, type ReactNode, createContext, useContext } from 'react'
 import clsx from 'clsx'
-import { Collapsible } from '@base-ui/react/collapsible'
 import { ChevronIcon, DraftIcon, QueuedIcon } from '#lib/icons'
-import { RowMenu } from '#components/sidebar/RowMenu'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { ApprovalDetails } from '#components/ApprovalDetails'
+import { SidebarRow } from '#components/sidebar/SidebarRow'
 import { agentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { fetchFullPrompt, queuedTitle, clip } from '#lib/queued'
@@ -14,6 +12,7 @@ import { relativeAge, timeUntil, useNow, useTimeZone } from '#lib/time'
 import { useReadOnly } from '#lib/viewer'
 import { formatInZone } from '@yaac/shared/schedule'
 import type { DraftWorkspaceEntry, LaunchApprovalRequest, QueuedWorkspaceEntry } from '@yaac/shared/types'
+import { YButton, YConfirm, YListSection } from '#ui'
 
 /** The row a discarded entry's children would move under, as its discard
  *  confirmation describes it. */
@@ -61,18 +60,20 @@ export function QueuedSet({ parentId, waiting = false }: { parentId: string; wai
   const failed = entries.filter((e) => e.launchError !== undefined).length - awaiting
   const open = expanded.has(parentId)
   return (
-    <Collapsible.Root open={open} onOpenChange={(next) => setOpen(parentId, next)}>
-      <Collapsible.Trigger className="mx-2 flex items-center gap-1 pl-5 pr-2 py-1 text-xs
-        text-text-faint outline-none transition hover:text-text-dim">
+    <>
+      <YButton
+        variant="bare"
+        aria-expanded={open}
+        onClick={() => setOpen(parentId, !open)}
+        className="flex items-center gap-1 py-1 pl-5 pr-2 text-md text-subtle transition hover:text-muted"
+      >
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
         {waiting ? `${n} waiting for room` : `${n} queued workspace${n === 1 ? '' : 's'}`}
         {awaiting > 0 && <span className="text-warning">· {awaiting} awaiting approval</span>}
         {failed > 0 && <span className="text-danger">· {failed} failed</span>}
-      </Collapsible.Trigger>
-      <Collapsible.Panel>
-        <QueuedRows parentId={parentId} depth={1} />
-      </Collapsible.Panel>
-    </Collapsible.Root>
+      </YButton>
+      {open && <QueuedRows parentId={parentId} depth={1} />}
+    </>
   )
 }
 
@@ -122,8 +123,7 @@ function discardDescription(entry: QueuedWorkspaceEntry, context: QueueContextVa
  * menu runs it now, edits it, queues another after it, or discards it. A
  * failed launch shows its error until run again, and one that needs a
  * person's approval says so, and its menu reviews what it would run before
- * approving exactly that. Not selectable (see
- * `sidebarRowIds`).
+ * approving exactly that. Not selectable (see `sidebarRowIds`).
  */
 export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEntry; depth: number }): JSX.Element {
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
@@ -140,58 +140,60 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
   const now = useNow()
 
   return (
-    <div className="group relative mx-2" style={{ paddingLeft: depth * 12 }}>
-      <button
-        type="button"
-        onClick={edit}
-        disabled={readOnly}
-        title={entry.prompt}
-        className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition
-          hover:bg-surface-2/60"
-      >
-        <span className="flex items-center gap-2 group-hover:pr-8 max-md:pr-10">
-          <QueuedIcon size={11} className="shrink-0 text-text-faint" />
-          <span className="truncate text-text-dim">{queuedTitle(entry)}</span>
-        </span>
-        <span className="flex items-center gap-2 text-xs text-text-faint">
-          {error === null && entry.awaitingApproval !== undefined
-            ? <span className="truncate text-warning" title={failure}>awaiting your approval · review it from its menu</span>
-            : failure !== undefined
-            ? <span className="truncate text-danger" title={failure}>{failure}</span>
-            : entry.startAt !== undefined
-              ? <span className="truncate" title={`${formatInZone(new Date(entry.startAt), zone)} ${zone}`}>
-                  in ~{timeUntil(entry.startAt, now)} · {agentLabel(entry.tool, entry)}
-                  {entry.waitingForRoom === true ? ' · waiting for room' : ''}
-                </span>
-              : <span className="truncate">{agentLabel(entry.tool, entry)} · {entry.waitingForRoom === true ? 'waiting for room' : 'queued'}</span>}
-          {entry.orphaned === true && <span className="ml-auto shrink-0">parent gone</span>}
-        </span>
-      </button>
-
-      <RowMenu
-        label="Queued workspace actions"
-        items={[
-          entry.awaitingApproval !== undefined
-            ? { label: 'Review and approve…', onSelect: () => setReview(entry.awaitingApproval ?? null) }
-            : {
-              label: 'Run now',
-              onSelect: () => {
-                setError(null)
-                api.workspace.queue.run.$post({ json: { id: entry.id } }).catch(report)
+    <>
+      <SidebarRow
+        label={queuedTitle(entry)}
+        onSelect={readOnly ? undefined : edit}
+        rowProps={{ title: entry.prompt, style: { paddingLeft: 10 + depth * 12 } }}
+        mark={<QueuedIcon size={11} className="text-subtle" />}
+        title={queuedTitle(entry)}
+        meta={(
+          <>
+            {error === null && entry.awaitingApproval !== undefined
+              ? <span className="truncate text-warning" title={failure}>awaiting your approval · review it from its menu</span>
+              : failure !== undefined
+              ? <span className="truncate text-danger" title={failure}>{failure}</span>
+              : (
+                <>
+                  {entry.startAt !== undefined && (
+                    <span className="shrink-0" title={`${formatInZone(new Date(entry.startAt), zone)} ${zone}`}>
+                      in ~{timeUntil(entry.startAt, now)}
+                    </span>
+                  )}
+                  <span className="truncate">{agentLabel(entry.tool, entry)}</span>
+                  {entry.waitingForRoom === true
+                    ? <span className="shrink-0">waiting for room</span>
+                    : entry.startAt === undefined && <span className="shrink-0">queued</span>}
+                </>
+              )}
+            {entry.orphaned === true && <span className="ml-auto shrink-0">parent gone</span>}
+          </>
+        )}
+        menu={{
+          label: 'Queued workspace actions',
+          items: [
+            entry.awaitingApproval !== undefined
+              ? { label: 'Review and approve…', onSelect: () => setReview(entry.awaitingApproval ?? null) }
+              : {
+                label: 'Run now',
+                onSelect: () => {
+                  setError(null)
+                  api.workspace.queue.run.$post({ json: { id: entry.id } }).catch(report)
+                },
               },
+            { label: 'Edit…', onSelect: edit },
+            {
+              label: 'Queue workspace after this…',
+              onSelect: () => openNewWorkspace({ projectId: entry.projectId, parent: entry.id }),
             },
-          { label: 'Edit…', onSelect: edit },
-          {
-            label: 'Queue workspace after this…',
-            onSelect: () => openNewWorkspace({ projectId: entry.projectId, parent: entry.id }),
-          },
-          'separator',
-          { label: 'Discard…', onSelect: () => setConfirmDiscard(true) },
-        ]}
+            'separator',
+            { label: 'Discard…', onSelect: () => setConfirmDiscard(true) },
+          ],
+        }}
       />
 
       {review !== null && (
-        <ConfirmDialog
+        <YConfirm
           open
           onOpenChange={(open) => { if (!open) setReview(null) }}
           title="Approve and run?"
@@ -206,10 +208,10 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
           }}
         >
           <ApprovalDetails request={review} />
-        </ConfirmDialog>
+        </YConfirm>
       )}
 
-      <ConfirmDialog
+      <YConfirm
         open={confirmDiscard}
         onOpenChange={setConfirmDiscard}
         title="Discard queued workspace?"
@@ -220,7 +222,7 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
           api.workspace.queue.discard.$post({ json: { id: entry.id } }).catch(report)
         }}
       />
-    </div>
+    </>
   )
 }
 
@@ -229,16 +231,9 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
 export function SidebarSection({ label, count, children }: { label: string; count: number; children: ReactNode }): JSX.Element {
   const [open, setOpen] = useState(true)
   return (
-    <div role="group" aria-label={label} className="py-1">
-      <Collapsible.Root open={open} onOpenChange={setOpen}>
-        <Collapsible.Trigger className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium
-          text-text-faint outline-none transition hover:text-text-dim">
-          <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
-          <span>{label}</span>
-          <span className="text-text-faint/70">{count}</span>
-        </Collapsible.Trigger>
-        <Collapsible.Panel>{children}</Collapsible.Panel>
-      </Collapsible.Root>
+    <div role="group" aria-label={label}>
+      <YListSection label={label} count={count} open={open} onToggle={() => setOpen(!open)} />
+      {open && children}
     </div>
   )
 }
@@ -289,36 +284,31 @@ function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Eleme
   }
 
   return (
-    <div className="group relative mx-2">
-      <button
-        type="button"
-        onClick={open}
-        disabled={readOnly}
-        title={draft.prompt}
-        className="flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition
-          hover:bg-surface-2/60"
-      >
-        <span className="flex items-center gap-2 group-hover:pr-8 max-md:pr-10">
-          <DraftIcon size={11} className="shrink-0 text-text-faint" />
-          <span className="truncate text-text-dim">{name}</span>
-        </span>
-        <span className="flex items-center gap-2 text-xs text-text-faint">
-          <span className="shrink-0">{relativeAge(draft.updatedAt)}</span>
-          <span className="ml-auto truncate">{agentLabel(draft.tool, draft)}</span>
-        </span>
-      </button>
-
-      <RowMenu
-        label="Draft actions"
-        items={[
-          { label: 'Run now', onSelect: run },
-          { label: 'Open…', onSelect: open },
-          'separator',
-          { label: 'Discard…', onSelect: () => setConfirmDiscard(true) },
-        ]}
+    <>
+      <SidebarRow
+        label={name}
+        onSelect={readOnly ? undefined : open}
+        rowProps={{ title: draft.prompt }}
+        mark={<DraftIcon size={11} className="text-subtle" />}
+        title={name}
+        meta={(
+          <>
+            <span className="shrink-0">{relativeAge(draft.updatedAt)}</span>
+            <span className="ml-auto truncate">{agentLabel(draft.tool, draft)}</span>
+          </>
+        )}
+        menu={{
+          label: 'Draft actions',
+          items: [
+            { label: 'Run now', onSelect: run },
+            { label: 'Open…', onSelect: open },
+            'separator',
+            { label: 'Discard…', onSelect: () => setConfirmDiscard(true) },
+          ],
+        }}
       />
 
-      <ConfirmDialog
+      <YConfirm
         open={confirmDiscard}
         onOpenChange={setConfirmDiscard}
         title="Discard draft?"
@@ -330,6 +320,6 @@ function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Eleme
             .catch((e: unknown) => console.error('draft discard failed', e))
         }}
       />
-    </div>
+    </>
   )
 }

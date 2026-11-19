@@ -1,34 +1,27 @@
 import type { JSX } from 'react'
-import clsx from 'clsx'
-import { Menu } from '@base-ui/react/menu'
-import { MENU_ITEM, MenuPopup } from '#components/ui/menu'
 import {
   AddIcon, ChangesIcon, ChatIcon, CommitsIcon, FilesIcon, HistoryIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon,
-  TabsIcon, TilesIcon,
+  TabsIcon, TilesIcon, type Icon,
 } from '#lib/icons'
+import { YWindowControls } from '#ui'
 import { goBackScreen } from '#lib/mobileHistory'
 import { previewLabel } from '#lib/preview'
 import { useUiStore } from '#lib/store'
 import { useIsMobile } from '#lib/viewport'
 import type { PortMapping } from '@yaac/shared/types'
+import { YButton, YMenu, YMenuItem, YMenuLabel, YMenuPopup } from '#ui'
 
 /*
  * The bar over the main pane, shared by a workspace's header and the
  * new-workspace pane's, so both offer the same controls in the same place.
  */
 
-/** The bar's labeled buttons: view mode, new shell, files, changes, commits. */
-export const BAR_BUTTON = 'flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11px] '
-  + 'text-text-dim transition hover:bg-surface-2 hover:text-text disabled:opacity-50 '
-  + 'disabled:hover:bg-transparent disabled:hover:text-text-dim'
-
-/** The bar's classes. On mobile the warning badges (git auth, blocked
- *  hosts, unforwarded ports) stay in the bar and other controls move to an
- *  overflow menu. */
+/** The bar's classes. On mobile most controls move to an overflow menu;
+ *  the warnings are in the Details pane at every width. */
 export function paneBarClass(isMobile: boolean): string {
   return isMobile
-    ? 'flex h-12 shrink-0 items-center gap-1 border-b border-hairline pl-1 pr-1.5 text-xs'
-    : 'flex h-8 shrink-0 items-center gap-2.5 px-2 text-xs'
+    ? 'flex h-12 shrink-0 items-center gap-1 border-b border-line pl-1 pr-1.5 text-md'
+    : 'flex h-bar shrink-0 items-center gap-1.5 border-b border-line px-3 text-md'
 }
 
 /**
@@ -41,28 +34,23 @@ export function PaneBarLeading(): JSX.Element | null {
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   if (isMobile) {
     return (
-      <button
+      <YButton
+        variant="ghost"
+        icon={NavBackIcon}
         onClick={goBackScreen}
         title="Back to workspaces"
         aria-label="Back to workspaces"
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-text-dim
-          transition active:bg-surface-2"
-      >
-        <NavBackIcon size={18} />
-      </button>
+        className="h-9! w-9!"
+      />
     )
   }
   if (sidebarOpen) return null
+  // With the sidebar hidden, its header's window controls come here.
   return (
-    <button
-      onClick={toggleSidebar}
-      title="Show sidebar"
-      aria-label="Show sidebar"
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-text-faint transition
-        hover:bg-surface-2 hover:text-text-dim"
-    >
-      <SidebarIcon size={14} />
-    </button>
+    <>
+      <YWindowControls className="mr-1" />
+      <YButton variant="ghost" size="sm" icon={SidebarIcon} onClick={toggleSidebar} title="Show sidebar" aria-label="Show sidebar" />
+    </>
   )
 }
 
@@ -93,71 +81,27 @@ export function PaneBarActions({
   const setViewMode = useUiStore((s) => s.setViewMode)
   const tiled = viewMode === 'tiles'
   const off = disabled !== undefined
+  const action = (label: string, icon: Icon, onClick: () => void, title: string, enabled = true): JSX.Element => (
+    <YButton variant="ghost" icon={icon} onClick={onClick} disabled={enabled && off} title={title} aria-label={label} />
+  )
   return (
     <>
-      <button
-        onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}
-        title={tiled ? 'Switch to tabs' : 'Switch to tiles'}
-        className={BAR_BUTTON}
-      >
-        {tiled ? <TabsIcon size={13} /> : <TilesIcon size={13} />}
-        <span className="max-lg:sr-only">{tiled ? 'Tab view' : 'Tile view'}</span>
-      </button>
-      {onNewSession !== undefined && (
-        <button onClick={onNewSession} disabled={off} title={disabled ?? 'Start another agent session here'} className={BAR_BUTTON}>
-          <ChatIcon size={13} />
-          <span className="max-lg:sr-only">New Session</span>
-        </button>
-      )}
-      {onNewShell !== undefined && (
-        <button onClick={onNewShell} disabled={off} title={disabled ?? titles?.shell ?? NEW_SHELL_TITLE} className={BAR_BUTTON}>
-          <AddIcon size={13} />
-          <span className="max-lg:sr-only">New Shell</span>
-        </button>
-      )}
-      <button
-        onClick={onOpenFiles}
-        disabled={off}
-        title={disabled ?? titles?.files ?? 'Browse files'}
-        aria-label="Browse files"
-        className={BAR_BUTTON}
-      >
-        <FilesIcon size={13} />
-        Files
-      </button>
-      <button
-        onClick={onOpenChanges}
-        disabled={off}
-        title={disabled ?? titles?.changes ?? 'Show changes'}
-        aria-label="Show changes"
-        className={BAR_BUTTON}
-      >
-        <ChangesIcon size={13} />
-        Changes
-      </button>
-      <button
-        onClick={onOpenCommits}
-        disabled={off}
-        title={disabled ?? titles?.commits ?? 'Show commits'}
-        aria-label="Show commits"
-        className={BAR_BUTTON}
-      >
-        <CommitsIcon size={13} />
-        Commits
-      </button>
-      {onOpenHistory !== undefined && (
-        <button onClick={onOpenHistory} title="Read or resume closed sessions' conversations" className={BAR_BUTTON}>
-          <HistoryIcon size={13} />
-          <span className="max-lg:sr-only">History</span>
-        </button>
-      )}
+      {action(tiled ? 'Tab view' : 'Tile view', tiled ? TabsIcon : TilesIcon, () => setViewMode(tiled ? 'tabs' : 'tiles'),
+        tiled ? 'Switch to tabs' : 'Switch to tiles', false)}
+      {onNewSession !== undefined && action('New Session', ChatIcon, onNewSession, disabled ?? 'Start another agent session here')}
+      {onNewShell !== undefined && action('New Shell', AddIcon, onNewShell, disabled ?? titles?.shell ?? NEW_SHELL_TITLE)}
+      {action('Browse files', FilesIcon, onOpenFiles, disabled ?? titles?.files ?? 'Browse files')}
+      {action('Show changes', ChangesIcon, onOpenChanges, disabled ?? titles?.changes ?? 'Show changes')}
+      {action('Show commits', CommitsIcon, onOpenCommits, disabled ?? titles?.commits ?? 'Show commits')}
+      {onOpenHistory !== undefined
+        && action('History', HistoryIcon, onOpenHistory, "Read or resume closed sessions' conversations", false)}
     </>
   )
 }
 
 /**
  * The mobile bar's ⋯ menu, holding the desktop bar's controls that don't
- * fit on a phone. Warning badges stay in the bar.
+ * fit on a phone.
  */
 export function PaneOverflowMenu({
   label,
@@ -178,57 +122,45 @@ export function PaneOverflowMenu({
   onOpenPreview?: (containerPort: number) => void
 }): JSX.Element {
   // Taller rows than other menus: this one is for touch.
-  const ITEM = clsx(MENU_ITEM, 'py-2!')
+  const ITEM = 'py-2!'
   const off = disabled !== undefined
   return (
-    <Menu.Root>
-      <Menu.Trigger
-        title="More"
-        aria-label="More pane actions"
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-text-dim
-          transition active:bg-surface-2 data-[popup-open]:bg-surface-2"
-      >
-        <MoreIcon size={18} />
-      </Menu.Trigger>
-      <MenuPopup side="bottom" align="end" sideOffset={6} className="min-w-[200px]">
+    <YMenu.Root>
+      <YMenu.Trigger
+        render={<YButton variant="ghost" icon={MoreIcon} title="More" aria-label="More pane actions" className="h-9! w-9!" />}
+      />
+      <YMenuPopup side="bottom" align="end" sideOffset={6} className="min-w-[200px]">
         {onNewSession !== undefined && (
-          <Menu.Item className={ITEM} disabled={off} onClick={onNewSession}>
-            <ChatIcon size={14} />
+          <YMenuItem icon={ChatIcon} className={ITEM} disabled={off} onClick={onNewSession}>
             New session
-          </Menu.Item>
+          </YMenuItem>
         )}
         {onNewShell !== undefined && (
-          <Menu.Item className={ITEM} disabled={off} onClick={onNewShell}>
-            <AddIcon size={14} />
+          <YMenuItem icon={AddIcon} className={ITEM} disabled={off} onClick={onNewShell}>
             New shell
-          </Menu.Item>
+          </YMenuItem>
         )}
-        <Menu.Item className={ITEM} disabled={off} onClick={onOpenChanges}>
-          <ChangesIcon size={14} />
+        <YMenuItem icon={ChangesIcon} className={ITEM} disabled={off} onClick={onOpenChanges}>
           Review changes
-        </Menu.Item>
-        <Menu.Item className={ITEM} disabled={off} onClick={onOpenCommits}>
-          <CommitsIcon size={14} />
+        </YMenuItem>
+        <YMenuItem icon={CommitsIcon} className={ITEM} disabled={off} onClick={onOpenCommits}>
           Commits
-        </Menu.Item>
-        <Menu.Item className={ITEM} disabled={off} onClick={onOpenFiles}>
-          <FilesIcon size={14} />
+        </YMenuItem>
+        <YMenuItem icon={FilesIcon} className={ITEM} disabled={off} onClick={onOpenFiles}>
           Browse files
-        </Menu.Item>
+        </YMenuItem>
         {onOpenHistory !== undefined && (
-          <Menu.Item className={ITEM} onClick={onOpenHistory}>
-            <HistoryIcon size={14} />
+          <YMenuItem icon={HistoryIcon} className={ITEM} onClick={onOpenHistory}>
             Conversation history
-          </Menu.Item>
+          </YMenuItem>
         )}
         {previewPorts.map((p) => (
-          <Menu.Item key={p.containerPort} className={ITEM} onClick={() => onOpenPreview?.(p.containerPort)}>
-            <PreviewIcon size={14} />
+          <YMenuItem key={p.containerPort} icon={PreviewIcon} className={ITEM} onClick={() => onOpenPreview?.(p.containerPort)}>
             {previewLabel(previewPorts.length > 1 ? p : undefined)}
-          </Menu.Item>
+          </YMenuItem>
         ))}
-        <div className="px-2 pb-1 pt-1.5 text-[11px] text-text-faint">{disabled ?? label}</div>
-      </MenuPopup>
-    </Menu.Root>
+        <YMenuLabel>{disabled ?? label}</YMenuLabel>
+      </YMenuPopup>
+    </YMenu.Root>
   )
 }

@@ -1,12 +1,20 @@
 import type { JSX, KeyboardEvent, PointerEvent } from 'react'
 import { SidebarIcon } from '#lib/icons'
-import { ListActions, ListBadges, ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
+import { HomeSessionList } from '#components/home/HomeSessionList'
+import { YWindowControls } from '#ui'
+import type { HomeRow } from '#components/home/homeRows'
+import { ListBadges, ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
+import { IS_MAC } from '#lib/platform'
+import { formatChord } from '#lib/shortcuts'
+import { useReadOnly } from '#lib/viewer'
+import type { ProjectSummary } from '@yaac/shared/types'
 import {
   DEFAULT_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
   useUiStore,
 } from '#lib/store'
+import { YButton, YMenu, YMenuItem, YMenuLabel, YMenuPopup, YSidebar, YSidebarNewSession } from '#ui'
 
 // The list body lives in WorkspaceList, shared with the mobile screen.
 // Re-exported for App's Alt+K/J row cycling and the tests.
@@ -22,6 +30,8 @@ export {
  * The resize strip on the sidebar's right edge. It sits in the gutter outside
  * the card, clear of the list's scrollbar, and shows a hairline only on
  * hover/focus.
+ * The sidebar is `isolate`, so the strip's z-10 lifts it over the pane but
+ * never over popups portaled to <body>.
  *
  * Pointer capture keeps a fast drag across a terminal from losing the pointer
  * or leaking events to xterm. A body class sets the resize cursor and blocks
@@ -75,64 +85,73 @@ function ResizeHandle(): JSX.Element {
       onPointerDown={startDrag}
       onDoubleClick={() => setSidebarWidth(DEFAULT_SIDEBAR_WIDTH)}
       onKeyDown={onKeyDown}
-      className="no-drag group absolute inset-y-0 -right-2 z-10 w-2 cursor-col-resize
+      className="no-drag group absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize
         touch-none outline-none"
     >
-      <div className="mx-auto h-full w-px transition group-hover:bg-border-strong
+      <div className="mx-auto h-full w-px transition group-hover:bg-line-strong
         group-focus-visible:bg-accent" />
     </div>
   )
 }
 
 /**
- * The desktop workspace list: a resizable card between the project rail and
- * the pane, with a header and status chits over the shared WorkspaceList body.
- *
- * The card clips rows to its rounded corners, so the resize handle hangs off
- * an unclipped outer wrapper. That wrapper is `isolate` so the handle's z-10
- * lifts it over the pane but not over Base UI popups (portaled to <body>),
- * such as the plan-usage popover, which would otherwise lose clicks to it.
- * The fixed `#root` (index.css) confines it too; the wrapper does not rely on
- * that.
+ * The sidebar, scoped by the rail. On a project: its name and actions, New
+ * session, then its workspaces, groups, workflows, routines and sites in
+ * the order WorkspaceList keeps. On Home (`home`): every project's sessions
+ * in status sections, and New session asks which project.
  */
-export function Sidebar({ scope, connected }: { scope: ProjectScope; connected: boolean }): JSX.Element {
+export function Sidebar({ scope, connected, home }: {
+  scope: ProjectScope
+  connected: boolean
+  home?: { rows: HomeRow[]; projects: ProjectSummary[] }
+}): JSX.Element {
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const sidebarWidth = useUiStore((s) => s.sidebarWidth)
+  const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
+  const bindings = useUiStore((s) => s.bindings)
+  const readOnly = useReadOnly()
+  const kbd = formatChord(bindings['new-workspace'], IS_MAC) || undefined
+  const projects = home?.projects ?? []
+  const newSession = readOnly ? undefined
+    : home ? (projects.length === 1
+      ? <YSidebarNewSession kbd={kbd} onClick={() => openNewWorkspace({ projectId: projects[0].id })} />
+      : projects.length > 1 && (
+        <YMenu.Root>
+          <YMenu.Trigger render={<YSidebarNewSession kbd={kbd} />} />
+          <YMenuPopup align="start" className="w-56">
+            <YMenuLabel>New session in</YMenuLabel>
+            {projects.map((p) => (
+              <YMenuItem key={p.id} onClick={() => openNewWorkspace({ projectId: p.id })}>{p.name}</YMenuItem>
+            ))}
+          </YMenuPopup>
+        </YMenu.Root>
+      ))
+    : scope.projectId && <YSidebarNewSession kbd={kbd} onClick={() => openNewWorkspace({ projectId: scope.projectId ?? '' })} />
 
   return (
-    <aside
-      style={{ width: sidebarWidth }}
-      className="isolate relative my-2 ml-2 flex shrink-0 flex-col"
-    >
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg
-        border border-hairline bg-surface text-text">
-        <div className="shrink-0">
-          <div className="titlebar-drag flex h-11 items-center gap-2 pl-4 pr-2">
-            <div className="no-drag flex min-w-0 flex-1 items-center">
-              <ListTitle scope={scope} />
-            </div>
-            <div className="flex shrink-0 items-center gap-2 no-drag">
-              <ListActions projectId={scope.projectId} connected={connected} />
-              <button
-                onClick={toggleSidebar}
-                title="Hide sidebar"
-                aria-label="Hide sidebar"
-                className="flex h-5 w-5 items-center justify-center rounded text-text-faint transition
-                  hover:bg-surface-2 hover:text-text-dim"
-              >
-                <SidebarIcon size={14} />
-              </button>
-            </div>
+    <YSidebar
+      width={sidebarWidth}
+      className="isolate"
+      header={
+        <div className="titlebar-drag flex h-bar shrink-0 items-center gap-2 border-b border-line pl-3 pr-1.5">
+          <YWindowControls className="mr-1" />
+          <div className="no-drag flex min-w-0 flex-1 items-center">
+            {home ? <span className="text-base font-semibold tracking-tight text-text">Home</span> : <ListTitle scope={scope} />}
           </div>
-          {/* Status chits get their own row so a long project name keeps the full
-              header width. */}
-          <ListBadges scope={scope} className="px-4 pb-2" />
+          <div className="no-drag flex shrink-0 items-center gap-1">
+            {!connected && <span className="text-sm text-warning">reconnecting…</span>}
+            <YButton variant="ghost" size="sm" icon={SidebarIcon} onClick={toggleSidebar} title="Hide sidebar" aria-label="Hide sidebar" />
+          </div>
         </div>
-
-        <WorkspaceList {...scope} />
-      </div>
-
+      }
+      newSession={newSession || undefined}
+    >
+      <ListBadges
+        projectIds={home ? home.projects.map((p) => p.id) : scope.projectId !== null ? [scope.projectId] : []}
+        className="px-1 pt-2"
+      />
+      {home ? <HomeSessionList rows={home.rows} projects={home.projects} /> : <WorkspaceList {...scope} />}
       <ResizeHandle />
-    </aside>
+    </YSidebar>
   )
 }

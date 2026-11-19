@@ -49,10 +49,6 @@ const CASES: { field: keyof typeof initial; key: string; value: unknown; stored:
   { field: 'viewMode', key: 'yaac.viewmode.v1', value: 'tabs', stored: 'tabs', loads: [['garbage', undefined]] },
   { field: 'mobileScreen', key: 'yaac.mobilescreen.v1', value: 'pane', stored: 'pane', loads: [['wat', undefined]] },
   {
-    field: 'sidebarStatuses', key: 'yaac.sidebarstatuses.v1', value: ['waiting', 'stopped'],
-    stored: '["waiting","stopped"]', loads: [['["stopped","bogus","running"]', ['running', 'stopped']], ['"waiting"', undefined]],
-  },
-  {
     field: 'lastWorkspaceOf', key: 'yaac.lastworkspace.v1', value: { p1: 'w1' }, stored: '{"p1":"w1"}',
     loads: [['{"p1":"w1","p2":7}', { p1: 'w1' }], ['[]', undefined]],
   },

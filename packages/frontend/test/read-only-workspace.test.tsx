@@ -219,6 +219,7 @@ describe('ReadOnlyWorkspace', () => {
         }} />
       </QueryClientProvider>,
     )
-    expect(screen.getByText('Status').nextElementSibling?.textContent).toBe('?Waiting for Ada\'s answer')
+    expect(screen.getByText('Status').nextElementSibling?.textContent).toBe('Waiting for Ada\'s answer')
+    expect(screen.getByRole('img', { name: 'Waiting for Ada\'s answer' })).toBeTruthy()
   })
 })

@@ -54,7 +54,7 @@ export function useFileLinks(workspaceId: string, cwd?: string): FileLinks | nul
   } : null, [root, from, paths, workspaceId])
 }
 
-const LINK_CLASS = 'text-link underline decoration-link/40 underline-offset-2 hover:decoration-link'
+const LINK_CLASS = 'text-info underline decoration-info/40 underline-offset-2 hover:decoration-info'
 
 /**
  * Opens one file. A span rather than a button, so a long path wraps. The
@@ -166,7 +166,7 @@ export function Linked({ children, about, web = false }: {
 function InlineCode({ children }: { children: ReactNode }): JSX.Element {
   const links = useContext(FileLinksContext)
   const file = links && typeof children === 'string' ? resolveFilePath(children, links) : undefined
-  const code = <code className="rounded bg-surface-2 px-1 py-px font-mono text-[0.9em] text-text">{children}</code>
+  const code = <code className="rounded bg-selected px-1 py-px font-mono text-[0.9em] text-text">{children}</code>
   return file === undefined ? code : <FileLink file={file}>{code}</FileLink>
 }
 
@@ -205,7 +205,7 @@ function CodeBlock({ text, language }: { text: string; language: HighlightLangua
     [text],
   )
   return (
-    <pre className="my-1.5 overflow-x-auto rounded-md border border-hairline bg-surface-2 px-2.5 py-1.5">
+    <pre className="my-1.5 overflow-x-auto rounded-md border border-line bg-selected px-2.5 py-1.5">
       <code>
         <CodeView lines={lines} language={language} />
       </code>
@@ -245,17 +245,17 @@ const COMPONENTS: Components = {
   },
   code: ({ children }) => <InlineCode>{children}</InlineCode>,
   p: ({ children }) => <p className="my-1.5 first:mt-0 last:mb-0"><Linked>{children}</Linked></p>,
-  h1: ({ children }) => <h1 className="mb-1 mt-2.5 text-base font-semibold first:mt-0"><Linked>{children}</Linked></h1>,
+  h1: ({ children }) => <h1 className="mb-1 mt-2.5 text-lg font-semibold first:mt-0"><Linked>{children}</Linked></h1>,
   h2: ({ children }) => <h2 className="mb-1 mt-2.5 text-[0.95rem] font-semibold first:mt-0"><Linked>{children}</Linked></h2>,
   h3: ({ children }) => <h3 className="mb-1 mt-2 font-semibold first:mt-0"><Linked>{children}</Linked></h3>,
   h4: ({ children }) => <h4 className="mb-1 mt-2 font-semibold first:mt-0"><Linked>{children}</Linked></h4>,
   ul: ({ children }) => <ul className="my-1.5 list-disc space-y-0.5 pl-5 first:mt-0 last:mb-0">{children}</ul>,
   ol: ({ children }) => <ol className="my-1.5 list-decimal space-y-0.5 pl-5 first:mt-0 last:mb-0">{children}</ol>,
-  li: ({ children }) => <li className="pl-0.5 marker:text-text-faint"><Linked>{children}</Linked></li>,
+  li: ({ children }) => <li className="pl-0.5 marker:text-subtle"><Linked>{children}</Linked></li>,
   blockquote: ({ children }) => (
-    <blockquote className="my-1.5 border-l-2 border-hairline pl-2.5 text-text-dim">{children}</blockquote>
+    <blockquote className="my-1.5 border-l-2 border-line pl-2.5 text-muted">{children}</blockquote>
   ),
-  hr: () => <hr className="my-2.5 border-hairline" />,
+  hr: () => <hr className="my-2.5 border-line" />,
   strong: ({ children }) => <strong className="font-semibold text-text"><Linked>{children}</Linked></strong>,
   em: ({ children }) => <em><Linked>{children}</Linked></em>,
   a: ({ href, children }) => <Link href={href}>{children}</Link>,
@@ -267,13 +267,13 @@ const COMPONENTS: Components = {
   ),
   table: ({ children }) => (
     <div className="my-1.5 overflow-x-auto">
-      <table className="w-full border-collapse text-xs">{children}</table>
+      <table className="w-full border-collapse text-md">{children}</table>
     </div>
   ),
   th: ({ children }) => (
-    <th className="border border-hairline bg-surface-2 px-2 py-1 text-left font-semibold"><Linked>{children}</Linked></th>
+    <th className="border border-line bg-selected px-2 py-1 text-left font-semibold"><Linked>{children}</Linked></th>
   ),
-  td: ({ children }) => <td className="border border-hairline px-2 py-1 align-top"><Linked>{children}</Linked></td>,
+  td: ({ children }) => <td className="border border-line px-2 py-1 align-top"><Linked>{children}</Linked></td>,
 }
 
 const PLUGINS = [remarkGfm]

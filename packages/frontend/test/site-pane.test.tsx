@@ -137,6 +137,8 @@ describe('SitePane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Site actions' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Publish…' }))
     expect(dialog().getByText(/release web@abcdef12, the one you can preview now/)).toBeTruthy()
+    // Nothing to publish at until a hostname is typed.
+    expect(dialog().getByRole<HTMLButtonElement>('button', { name: 'Publish' }).disabled).toBe(true)
     fireEvent.change(dialog().getByLabelText('Hostname'), { target: { value: ' docs.example.com ' } })
     expect(dialog().getByText(/^A public site/)).toBeTruthy()
     fireEvent.click(dialog().getByRole('button', { name: 'Publish' }))
@@ -160,7 +162,8 @@ describe('SitePane', () => {
     }
     detail = { ...DETAIL, requested }
     mount({ ...WEB, awaitingApproval: true })
-    expect(await screen.findByText(/^An agent asked to deploy web@eeeeeeee 3m ago · awaiting approval/)).toBeTruthy()
+    expect(await screen.findByText('An agent asked to deploy this 3m ago')).toBeTruthy()
+    expect(screen.getByText('web@eeeeeeee')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Review…' }))
     await screen.findByRole('alertdialog')
     expect(dialog().getByText(/it approves no branch/)).toBeTruthy()

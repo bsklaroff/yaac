@@ -27,6 +27,7 @@ import { usePaneCwd } from '#lib/checkouts'
 import { useUiStore } from '#lib/store'
 import { focusRaisesKeyboard } from '#lib/viewport'
 import { DISCONNECT_NOTICE_DELAY_MS, reconnectingSocket, type ReconnectingSocket } from '#lib/reconnect'
+import { YButton } from '#ui'
 
 /** Keystroke coalescing window, for bursts faster than a human types
  *  (autorepeat, a paste in pieces, mouse reports). The batcher sends on the
@@ -158,7 +159,7 @@ export function WorkspaceTerminal({
     const disposeQueries = swallowTerminalQueries(term)
     const disposeLinks = installTerminalLinks(term, {
       isMac: IS_MAC,
-      // The status bar's changes poll keeps the listing current.
+      // The workspace view's git status poll keeps the listing current.
       listFiles: () => {
         const files = queryClient.getQueryData<WorkspaceFiles>(filesKey(workspaceId))
         return Promise.resolve(files && { root: files.root, cwd: linkCwdRef.current, paths: files.paths })
@@ -407,14 +408,14 @@ export function WorkspaceTerminal({
       {/* Shown while the terminal is hidden by the settle gate. */}
       {!settled && (
         <div className="pointer-events-none absolute inset-0 flex animate-fade-in items-center
-          justify-center gap-2 text-xs text-text-faint">
+          justify-center gap-2 text-md text-subtle">
           <LoadingIcon size={13} className="animate-spin" />
           Connecting…
         </div>
       )}
       {(uploading > 0 || uploadError !== null) && (
         <div className="absolute right-2 bottom-2 flex items-center gap-1.5 rounded-md border
-          border-hairline bg-surface-2 px-2 py-1 text-xs text-text-dim">
+          border-line bg-selected px-2 py-1 text-md text-muted">
           {uploading > 0 ? (
             <>
               <LoadingIcon size={12} className="animate-spin" />
@@ -422,10 +423,9 @@ export function WorkspaceTerminal({
             </>
           ) : (
             <>
-              <span className="text-error">Image not attached: {uploadError}</span>
-              <button type="button" aria-label="Dismiss" onClick={() => setUploadError(null)} className="hover:text-text">
-                <CloseIcon size={12} />
-              </button>
+              <span className="text-danger">Image not attached: {uploadError}</span>
+              <YButton variant="ghost" size="sm" icon={CloseIcon} aria-label="Dismiss" onClick={() => setUploadError(null)} />
+
             </>
           )}
         </div>

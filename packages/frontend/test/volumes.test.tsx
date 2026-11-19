@@ -61,10 +61,10 @@ describe('Volumes settings', () => {
     renderWithClient(<Volumes projectId="proj" readOnly={false} />, client())
     expect(await screen.findByText('db')).toBeTruthy()
     expect(server.called(LIST)[0].query.get('project')).toBe('proj')
-    expect(screen.getByText('db').closest('.rounded-md')?.textContent)
+    expect(screen.getByText('db').closest('[data-volume]')?.textContent)
       .toBe('db5GiResizeAttached to running Serve the app 5m ago')
-    expect(screen.getByText('cache').closest('.rounded-md')?.textContent)
-      .toBe('cache10GiResizeFree · restarts with it: Old run, w-untitl')
+    expect(screen.getByText('cache').closest('[data-volume]')?.textContent)
+      .toBe('cache10GiResizeFree. Restarts with it: Old run, w-untitl')
 
     // Create, with the default size left to the server.
     fireEvent.change(screen.getByLabelText('Volume name'), { target: { value: ' uploads ' } })

@@ -55,22 +55,17 @@ const DRAFT_DISCARD = 'POST /api/workspace/draft/discard'
 
 /** The project's stopped workspaces, as the server lists them. */
 const stoppedRows: StoppedWorkspaceEntry[] = []
-/** Prompts of their later conversations, which the server searches but the
- *  rows don't carry. */
-const laterPrompts = new Map<string, string>()
 
 /** `GET /workspace/list-stopped` over `stoppedRows`, honoring the filters
  *  the sidebar sends. The cursor is a row index. */
 function listStopped(c: FetchCall): StoppedWorkspacePage {
-  const q = c.query.get('q')?.toLowerCase()
   const group = c.query.get('group')
   const exclude = c.query.get('excludeGroups')?.split(',') ?? []
   const excludeIds = c.query.get('exclude')?.split(',') ?? []
   const workspace = c.query.get('workspace')
   const rows = stoppedRows.filter((r) => (group ? r.groupId === group : !exclude.includes(r.groupId ?? ''))
     && (!workspace || r.workspaceId === workspace)
-    && !excludeIds.includes(r.workspaceId)
-    && (!q || `${r.title ?? ''} ${r.prompt ?? ''} ${laterPrompts.get(r.workspaceId) ?? ''}`.toLowerCase().includes(q)))
+    && !excludeIds.includes(r.workspaceId))
   const start = Number(c.query.get('cursor') || 0)
   const end = start + Number(c.query.get('limit') || rows.length)
   return { entries: rows.slice(start, end), total: rows.length, ...(end < rows.length ? { nextCursor: String(end) } : {}) }
@@ -101,7 +96,6 @@ const filed = (workspaceId: string, groupId: string | null): unknown => ({ proje
 beforeEach(() => {
   localStorage.clear()
   stoppedRows.length = 0
-  laterPrompts.clear()
   intersection.startInView = false
   useUiStore.setState(initial, true)
   server = mockFetch({
@@ -219,6 +213,9 @@ function renderList(
   return (w, o = {}) => rerender(element(w, o))
 }
 
+/** The sidebar row (a YRowFrame) holding `text`. */
+const rowOf = (text: string): HTMLElement => screen.getByText(text).closest<HTMLElement>('[class*="group/row"]')!
+
 /** Pick an item from a row's `…` menu; the item runs once the menu closes. */
 async function pickAction(item: string, menu = 'Workspace actions', index = 0): Promise<void> {
   fireEvent.click(screen.getAllByRole('button', { name: menu })[index])
@@ -258,16 +255,15 @@ describe('WorkspaceList', () => {
       entry({ workspaceId: 'd', title: 'Blocked', status: 'waiting', asking: true, waitingSinceMs: 1 }),
     ])
 
-    const marker = (title: string, selector: string): Element | null =>
-      screen.getByText(title).closest('button')!.querySelector(selector)
-    expect(marker('Working', '.braille-spinner:not(.braille-breathe)')).toBeTruthy()
-    expect(marker('Watching', '.braille-breathe')).toBeTruthy()
-    expect(marker('Watching', '.bg-amber-500')).toBeNull()
-    expect(marker('Done', '.braille-spinner')).toBeNull()
-    expect(marker('Done', '.bg-amber-500')).toBeTruthy()
-    expect(marker('Done', '[aria-label="Waiting for your answer"]')).toBeNull()
-    expect(marker('Blocked', '[aria-label="Waiting for your answer"]')).toBeTruthy()
-    expect(marker('Blocked', '.bg-amber-500, .braille-spinner')).toBeNull()
+    // Each row's mark names its status; unread and asking rows are bold.
+    const mark = (title: string): string | null =>
+      within(rowOf(title)).getByRole('img').getAttribute('aria-label')
+    const bold = (title: string): boolean => screen.getByText(title).closest('.font-semibold') !== null
+    expect(mark('Working')).toBe('Working')
+    expect(mark('Watching')).toBe('Background work running')
+    expect(mark('Done')).toBe('Waiting')
+    expect(mark('Blocked')).toBe('Waiting for your answer')
+    expect(['Working', 'Watching', 'Done', 'Blocked'].map(bold)).toEqual([false, false, true, true])
   })
 
   it('names each row\'s tool and the model it is answering as', () => {
@@ -299,7 +295,7 @@ describe('WorkspaceList', () => {
     // Stopped section.
     const section = screen.getByRole('group', { name: group().name })
     expect(section.textContent).toContain('(1)')
-    expect(section.textContent).toContain('· 2 stopped')
+    expect(section.textContent).toContain('2 stopped')
     expect(screen.getByRole('button', { name: /Stopped\s*2/ })).toBeTruthy()
     expect(screen.queryByText('Stopped one')).toBeNull()
     expect(stoppedQueries()).toEqual([])
@@ -403,7 +399,7 @@ describe('WorkspaceList', () => {
     })
 
     await pickAction('Show stopped workspaces', 'Group actions')
-    fireEvent.click(await screen.findByText('Stopped one'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Stopped one' }))
     expect(useUiStore.getState().selectedWorkspaceId).toBe('gone')
   })
 
@@ -482,12 +478,7 @@ describe('WorkspaceList', () => {
       expect(within(stoppedSection).queryByText('Stopped held')).toBeNull()
       expect(within(stoppedSection).queryByText('Stopped back')).toBeNull()
       expect(stoppedSection.textContent).toMatch(/Stopped\s*2/)
-
-      // A search's count is the server's, which leaves them out as well.
-      fireEvent.change(screen.getByRole('textbox', { name: 'Search workspaces' }), { target: { value: 'Stopped' } })
-      await waitFor(() => expect(stoppedQueries().at(-1)).toContain('q=Stopped'))
       expect(stoppedQueries().at(-1)).toContain(`exclude=${encodeURIComponent('back,held')}`)
-      await waitFor(() => expect(stoppedSection.textContent).toMatch(/Stopped\s*2/))
     })
 
     it('opens to show the open workspace, once each time its row lands there', async () => {
@@ -573,198 +564,6 @@ describe('WorkspaceList', () => {
     })
   })
 
-  describe('search', () => {
-    it('filters the rows and groups, searches the stopped list on the server, and keeps the selection on top', async () => {
-      stoppedRows.push(stoppedEntry('old', { title: 'Parser rewrite, take one' }), stoppedEntry('other'))
-      useUiStore.setState({ selectedWorkspaceId: 'b' })
-      renderList([
-        entry({ workspaceId: 'a', title: 'Fix the parser' }),
-        entry({ workspaceId: 'b', title: 'Write docs' }),
-        entry({ workspaceId: 'c', title: 'Parser tests', groupId: 'g1' }),
-        entry({ workspaceId: 'd', title: 'Unrelated', groupId: 'g2' }),
-      ], {
-        groups: [group(), group({ groupId: 'g2', name: 'Pinned', pinned: true })],
-        project: { stoppedCount: 2, deaths: 0, deathsSeenBy: {} },
-      })
-
-      fireEvent.change(screen.getByRole('textbox', { name: 'Search workspaces' }), { target: { value: 'PARSER' } })
-      expect(screen.getByText('Fix the parser')).toBeTruthy()
-      // The open workspace stays, on top and marked, though it doesn't match.
-      const open = screen.getByRole('group', { name: 'Open workspace' })
-      expect(within(open).getByText('Write docs')).toBeTruthy()
-      expect(within(open).getByText('not a match')).toBeTruthy()
-      expect(screen.getAllByText('Write docs')).toHaveLength(1)
-      expect(screen.getByText('Parser tests')).toBeTruthy()
-      // A group with no match goes, pinned or not.
-      expect(screen.queryByRole('group', { name: 'Pinned' })).toBeNull()
-      // The stopped section opens on the server's matches.
-      expect(await screen.findByText('Parser rewrite, take one')).toBeTruthy()
-      expect(screen.queryByText('Stopped other')).toBeNull()
-      expect(stoppedQueries().at(-1)).toContain('q=PARSER')
-      expect(useUiStore.getState().selectedWorkspaceId).toBe('b')
-
-      // Opening a match drops the pin, and the old selection with it.
-      fireEvent.click(screen.getByText('Fix the parser'))
-      expect(screen.queryByRole('group', { name: 'Open workspace' })).toBeNull()
-      expect(screen.queryByText('Write docs')).toBeNull()
-
-      // A stopped workspace the search hides is pinned too, and deselecting
-      // it leaves the pane empty.
-      act(() => useUiStore.setState({ selectedWorkspaceId: 'other' }))
-      expect(await within(await screen.findByRole('group', { name: 'Open workspace' })).findByText('Stopped other')).toBeTruthy()
-      fireEvent.click(screen.getByRole('button', { name: 'Deselect' }))
-      expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
-      expect(screen.queryByRole('group', { name: 'Open workspace' })).toBeNull()
-      expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Search workspaces' }))
-
-      fireEvent.change(screen.getByRole('textbox', { name: 'Search workspaces' }), { target: { value: 'zzz' } })
-      expect(await screen.findByText('No matches')).toBeTruthy()
-
-      fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
-      expect(screen.getByText('Write docs')).toBeTruthy()
-      expect(screen.getByRole('group', { name: 'Pinned' })).toBeTruthy()
-    })
-
-    it('pins a stopped selection by the server\'s match, not by what its row shows', async () => {
-      // Every row matches "parser" in a later conversation, so the selection
-      // sorts onto the second page of the results.
-      for (let i = 0; i < 60; i++) {
-        stoppedRows.push(stoppedEntry(`s${i}`))
-        laterPrompts.set(`s${i}`, 'Refactor the parser')
-      }
-      useUiStore.setState({ selectedWorkspaceId: 's55' })
-      renderList([], { project: { stoppedCount: 60, deaths: 0, deathsSeenBy: {} } })
-      const search = screen.getByRole('textbox', { name: 'Search workspaces' })
-
-      // Its agent label holds "claude", but the server's search doesn't match it.
-      fireEvent.change(search, { target: { value: 'claude' } })
-      expect(await within(await screen.findByRole('group', { name: 'Open workspace' })).findByText('Stopped s55')).toBeTruthy()
-
-      // The server matches it, so it leaves "Open workspace" for the top of
-      // the Stopped results while its page is unloaded, and shows once, in
-      // place, when that page loads.
-      fireEvent.change(search, { target: { value: 'parser' } })
-      await waitFor(() => expect(screen.queryByRole('group', { name: 'Open workspace' })).toBeNull())
-      const results = screen.getByRole('group', { name: 'Stopped workspaces' })
-      await within(results).findByText('Stopped s0')
-      expect(within(results).getAllByText(/^Stopped s\d+$/)[0].textContent).toBe('Stopped s55')
-      scrollToEnd()
-      expect(await screen.findAllByText('Stopped s55')).toHaveLength(1)
-    })
-
-    it('leaves the saved Stopped section alone while a search or filter moves a stopped group member there', async () => {
-      stoppedRows.push(stoppedEntry('ghost', { groupId: 'g1' }))
-      useUiStore.setState({ selectedWorkspaceId: 'ghost', stoppedShownGroups: ['g1'] })
-      renderList([entry({ workspaceId: 'b', title: 'Filed one', groupId: 'g1' })], {
-        groups: [group({ stoppedCount: 1 })],
-        project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} },
-      })
-      expect(await within(screen.getByRole('group', { name: 'Release' })).findByText('Stopped ghost')).toBeTruthy()
-      await waitFor(() => expect(stoppedQueries().some((q) => q.includes('workspace=ghost'))).toBe(true))
-
-      const search = screen.getByRole('textbox', { name: 'Search workspaces' })
-      fireEvent.change(search, { target: { value: 'zz' } })
-      await waitFor(() => expect(stoppedQueries().at(-1)).toContain('q=zz'))
-      fireEvent.change(search, { target: { value: '' } })
-      expect(await within(screen.getByRole('group', { name: 'Release' })).findByText('Stopped ghost')).toBeTruthy()
-      expect(useUiStore.getState().stoppedExpanded).toBe(false)
-
-      // A filter leaving the Stopped list out pins it as "Open in pane" instead.
-      act(() => useUiStore.getState().setSidebarStatuses(['running']))
-      expect(await within(await screen.findByRole('group', { name: 'Open workspace' })).findByText('Stopped ghost')).toBeTruthy()
-      act(() => useUiStore.getState().setSidebarStatuses([]))
-      expect(await within(screen.getByRole('group', { name: 'Release' })).findByText('Stopped ghost')).toBeTruthy()
-      expect(useUiStore.getState().stoppedExpanded).toBe(false)
-    })
-
-    it('spins until the stopped results settle, dropping a superseded request', async () => {
-      stoppedRows.push(stoppedEntry('old', { title: 'Parser rewrite' }), stoppedEntry('lexer', { title: 'Lexer port' }))
-      // Hold the first search's reply, so the second supersedes it in flight.
-      let release = (): void => {}
-      server.route('GET /api/workspace/list-stopped', (c: FetchCall) => c.query.get('q') === 'parser'
-        ? new Promise((resolve) => { release = () => resolve(listStopped(c)) })
-        : listStopped(c))
-      renderList([], { project: { stoppedCount: 2, deaths: 0, deathsSeenBy: {} } })
-      const search = screen.getByRole('textbox', { name: 'Search workspaces' })
-
-      fireEvent.change(search, { target: { value: 'parser' } })
-      expect(screen.getByLabelText('Searching')).toBeTruthy()
-      await waitFor(() => expect(stoppedQueries().at(-1)).toContain('q=parser'))
-      expect(screen.getByLabelText('Searching')).toBeTruthy()
-      expect(screen.queryByText('No matches')).toBeNull()
-
-      fireEvent.change(search, { target: { value: 'lexer' } })
-      expect(await screen.findByText('Lexer port')).toBeTruthy()
-      expect(screen.queryByLabelText('Searching')).toBeNull()
-      const parser = server.called('GET /api/workspace/list-stopped').find((c) => c.query.get('q') === 'parser')
-      expect(parser?.signal?.aborted).toBe(true)
-      release()
-    })
-  })
-
-  describe('status filter', () => {
-    /** Check or uncheck a status in the filter menu, which stays open
-     *  across picks. */
-    const pick = async (status: string): Promise<void> => {
-      if (!screen.queryByRole('menu')) fireEvent.click(screen.getByRole('button', { name: 'Filter by status' }))
-      fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: status }))
-    }
-
-    it('narrows the rows and groups to the checked statuses, opening or hiding the Stopped section', async () => {
-      stoppedRows.push(stoppedEntry('old'))
-      renderList([
-        entry({ workspaceId: 'a', title: 'Needs me', status: 'waiting' }),
-        entry({ workspaceId: 'b', title: 'Busy' }),
-        entry({ workspaceId: 'c', title: 'Watching', status: 'background', groupId: 'g1' }),
-      ], {
-        groups: [group(), group({ groupId: 'g2', name: 'Pinned', pinned: true })],
-        project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} },
-        queued: [queuedEntry('q1', { parentWorkspaceId: 'a' }), queuedEntry('q2', { parentWorkspaceId: 'b' })],
-      })
-
-      await pick('Waiting')
-      expect(screen.getByText('Needs me')).toBeTruthy()
-      expect(screen.queryByText('Busy')).toBeNull()
-      expect(screen.queryByRole('group', { name: 'Release' })).toBeNull()
-      expect(screen.queryByRole('group', { name: 'Pinned' })).toBeNull()
-      expect(screen.queryByRole('group', { name: 'Stopped workspaces' })).toBeNull()
-      // A queued workspace stays under its shown parent, and goes with a hidden one.
-      expect(screen.getAllByText(/1 queued workspace/)).toHaveLength(1)
-      expect(screen.getByRole('button', { name: 'Filter by status' }).textContent).toBe('1')
-
-      await pick('Monitoring')
-      expect(within(screen.getByRole('group', { name: 'Release' })).getByText('Watching')).toBeTruthy()
-
-      await pick('Stopped')
-      const stoppedSection = screen.getByRole('group', { name: 'Stopped workspaces' })
-      expect(await within(stoppedSection).findByText('Stopped old')).toBeTruthy()
-      expect(useUiStore.getState().sidebarStatuses).toEqual(['waiting', 'background', 'stopped'])
-
-      fireEvent.click(await screen.findByRole('menuitem', { name: 'Show all' }))
-      expect(screen.getByText('Busy')).toBeTruthy()
-      expect(screen.getByRole('group', { name: 'Pinned' })).toBeTruthy()
-      expect(useUiStore.getState().sidebarStatuses).toEqual([])
-    })
-
-    it('pins a stopped selection when the filter leaves out the Stopped list, though its pages are loaded', async () => {
-      stoppedRows.push(stoppedEntry('old'))
-      useUiStore.setState({ stoppedExpanded: true })
-      renderList([entry({ workspaceId: 'a', title: 'Busy' })], { project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} } })
-      fireEvent.click(await screen.findByText('Stopped old'))
-
-      await pick('Running')
-      const open = screen.getByRole('group', { name: 'Open workspace' })
-      expect(within(open).getByText('Stopped old')).toBeTruthy()
-      expect(screen.queryByRole('group', { name: 'Stopped workspaces' })).toBeNull()
-    })
-
-    it('says so when nothing has a checked status', async () => {
-      renderList([entry({ workspaceId: 'a', title: 'Busy' })], { project: { stoppedCount: 3, deaths: 0, deathsSeenBy: {} } })
-      await pick('Waiting')
-      expect(screen.getByText('No matches')).toBeTruthy()
-    })
-  })
-
   // A restarting workspace is missing from the snapshot until it is back, so
   // its placeholder row must sit in its group, not at the top of the list.
   it('draws a restarting workspace inside its group', () => {
@@ -815,20 +614,21 @@ describe('WorkspaceList', () => {
     expect(screen.getByText('No agent')).toBeTruthy()
     expect(screen.getByText('2 sessions')).toBeTruthy()
     // Each session row: its own name, agent and status.
-    const row = screen.getByText('Reviewer').closest('button')!
+    const row = rowOf('Reviewer')
     expect(row.textContent).toContain('Codex')
-    expect(row.querySelector('.bg-amber-500')).toBeTruthy()
-    expect(screen.getByText('write the parser').closest('button')!.querySelector('.braille-spinner')).toBeTruthy()
+    expect(within(row).getByRole('img', { name: 'Waiting' })).toBeTruthy()
+    expect(screen.getByText('Reviewer').className).toContain('font-semibold')
+    expect(within(rowOf('write the parser')).getByRole('img', { name: 'Working' })).toBeTruthy()
 
     // A session row opens its workspace on that session's pane.
-    fireEvent.click(row)
+    fireEvent.click(screen.getByRole('button', { name: 'Reviewer' }))
     expect(useUiStore.getState().selectedWorkspaceId).toBe('b')
     expect(useUiStore.getState().activeTabs.b).toBe('session:sb')
   })
 
   it('selects a workspace on tap, which is what advances the mobile pane screen', () => {
     renderList([entry({ workspaceId: 'a', title: 'Fix parser' })])
-    fireEvent.click(screen.getByText('Fix parser'))
+    fireEvent.click(screen.getByRole('button', { name: 'Fix parser' }))
     expect(useUiStore.getState().selectedWorkspaceId).toBe('a')
     expect(useUiStore.getState().mobileScreen).toBe('pane')
   })
@@ -896,7 +696,7 @@ describe('WorkspaceList', () => {
       })
       const section = screen.getByRole('group', { name: 'Release' })
       fireEvent.click(within(section).getByRole('button', { name: '1 waiting for room' }))
-      expect(within(section).getByText('Claude · Sonnet 5 · waiting for room')).toBeTruthy()
+      expect(within(section).getByText('waiting for room')).toBeTruthy()
     })
 
     it('nests each under the row it waits on, a chain one step deeper per link', () => {
@@ -911,7 +711,7 @@ describe('WorkspaceList', () => {
       // The chain follows the row it waits on, whatever else is listed.
       expect(text.indexOf('Parent')).toBeLessThan(text.indexOf('Step q1'))
       expect(text.indexOf('Step q1')).toBeLessThan(text.indexOf('Step q2'))
-      expect(screen.getByText('Claude · Sonnet 5 · queued')).toBeTruthy()
+      expect(rowOf('Step q1').textContent).toMatch(/Claude · Sonnet 5\s*queued/)
       // A failed launch says why in place of its settings.
       expect(screen.getByText('branch gone')).toBeTruthy()
     })
@@ -1014,7 +814,7 @@ describe('WorkspaceList', () => {
         queued: [queuedEntry('q1'), queuedEntry('q2', { parentWorkspaceId: undefined, parentQueuedId: 'q1' })],
       })
       fireEvent.click(screen.getByRole('button', { name: '2 queued workspaces' }))
-      fireEvent.click(screen.getByText('Step q1'))
+      fireEvent.click(screen.getByRole('button', { name: 'Step q1' }))
       expect(useUiStore.getState().newWorkspace).toMatchObject({ projectId: 'proj', editId: 'q1' })
 
       await pickAction('Run now', 'Queued workspace actions')
@@ -1089,7 +889,7 @@ describe('WorkspaceList', () => {
     it('reopens the new-workspace pane on click, and discards from its menu', async () => {
       renderList([], { drafts: [draft('d1')], snapshot: serverSnapshot({ draftWorkspaces: [draft('d1')] }) })
       expect(screen.queryByText('No workspaces yet')).toBeNull()
-      fireEvent.click(screen.getByText('Idea d1'))
+      fireEvent.click(screen.getByRole('button', { name: 'Idea d1' }))
       expect(useUiStore.getState().newWorkspace)
         .toMatchObject({ projectId: 'proj', draftId: 'd1', prompt: 'Idea d1\nmore detail' })
 
@@ -1165,7 +965,7 @@ describe('WorkspaceList', () => {
       expect(section.textContent).toMatch(/Triage.*At 09:00, Monday through Friday.*in ~3h.*Weekly.*At 08:30, only on Monday.*Paused.*Odd.*only in January/)
       expect(screen.getByRole('img', { name: 'Last run failed: no credential' })).toBeTruthy()
 
-      fireEvent.click(screen.getByText('Triage'))
+      fireEvent.click(screen.getByRole('button', { name: 'Triage' }))
       expect(useUiStore.getState().selectedObject).toEqual({ kind: 'routine', id: 'r1' })
       await pickAction('Run now', 'Routine actions', 0)
       await waitFor(() => expect(posted('POST /api/routine/run')).toEqual([{ id: 'r1' }]))
@@ -1214,7 +1014,7 @@ describe('WorkspaceList', () => {
       expect(await within(section).findByText('Last night')).toBeTruthy()
 
       // Its row opens its pane, and runs it from one click.
-      fireEvent.click(within(section).getByText('no repo'))
+      fireEvent.click(within(section).getByRole('button', { name: 'deploy' }))
       expect(useUiStore.getState().selectedObject).toEqual({ kind: 'workflow', id: 'wf-deploy' })
       fireEvent.click(screen.getByRole('button', { name: 'Run now: deploy' }))
       await waitFor(() => expect(provision).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'proj', groupId: 'g-deploy' }), expect.any(Function)))
@@ -1333,7 +1133,7 @@ describe('WorkspaceList', () => {
       })
       const section = screen.getByRole('group', { name: 'Release' })
       expect(section.textContent).toContain('(1/2)')
-      expect(section.textContent).toContain('· 3 stopped')
+      expect(section.textContent).toContain('3 stopped')
 
       await pickAction('Workspace limit…', 'Group actions')
       const input = await screen.findByRole<HTMLInputElement>('spinbutton', { name: 'Workspace limit' })

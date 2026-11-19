@@ -4,19 +4,20 @@ import { useAcpStream } from '#lib/acp'
 import type { Opening } from '#lib/opening'
 import { ActivityBar } from '#components/AcpActivity'
 import { sessionModels, useComposerMenu } from '#components/ComposerMenu'
-import { tokenCount } from '#components/AcpTranscript'
+import { PendingAsks, tokenCount } from '#components/AcpTranscript'
 import {
-  ChatBottomBar, ChatViewToggles, COMPOSER_INPUT, JumpButtons, Launching, PageFailed, PageLoading, ROUND_BUTTON, useChatColumn,
+  ChatBottomBar, ChatViewToggles, COMPOSER_INPUT, FilledStopIcon, JumpButtons, Launching, PageFailed, PageLoading, useChatColumn,
   useConversationView, useFollowTail,
 } from '#components/ConversationView'
 import { FileLinksContext, useFileLinks } from '#components/Markdown'
 import { AgentSettings, PermissionModeSelect } from '#components/ComposerSettings'
 import { imageFiles, useDraftImages } from '#lib/attachments'
-import { DraftImage } from '#components/ui/DraftImage'
+import { DraftImage } from '#components/DraftImage'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { focusRaisesKeyboard } from '#lib/viewport'
 import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
-import { AttachImageIcon, CloseIcon, SendIcon, StopIcon } from '#lib/icons'
+import { AttachImageIcon, CloseIcon, SendIcon } from '#lib/icons'
+import { YButton, YFileInput, YTextArea } from '#ui'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { useTranscriptPages } from '#lib/useTranscriptPages'
 import { useSnapshot } from '#lib/useSnapshot'
@@ -40,7 +41,7 @@ import type { AcpContent, AcpEvent, AcpQueuedPrompt } from '@yaac/shared/acp'
  * agent takes messages only on its main thread.
  *
  * Paths of checkout files in the transcript open the file pane
- * (`FileLinksContext`), matched against the listing `GitStatusBar` keeps
+ * (`FileLinksContext`), matched against the listing `GitTopBarSummary` keeps
  * current.
  */
 
@@ -127,7 +128,7 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const pages = useTranscriptPages({ workspaceId, conversationId, life: stream.life, last: stream.page, lastEvents: events, scrollRef })
-  const { view, open, activity, groups, findBar, body, titleBar } = useConversationView({
+  const { view, open, activity, groups, answerPermission, findBar, body, titleBar } = useConversationView({
     workspaceId,
     events: pages.events,
     // A turn runs at the end, which an earlier page does not show.
@@ -281,7 +282,7 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
 
   return (
     <div
-      className="@container flex h-full w-full flex-col bg-bg"
+      className="@container flex h-full w-full flex-col bg-surface"
       onDragOver={(e) => {
         if (e.dataTransfer.types.includes('Files')) e.preventDefault()
       }}
@@ -300,7 +301,7 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
           className="flex-1 overflow-y-auto px-4 py-4"
         >
           {empty && pages.fromStart && pages.loading === undefined && (
-            <div className="flex h-full items-center justify-center text-xs text-text-faint">
+            <div className="flex h-full items-center justify-center text-md text-subtle">
               No messages yet — say something.
             </div>
           )}
@@ -325,9 +326,12 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
         above={
           <>
             {dropped && (
-              <div className="mb-1.5 px-1 text-xs text-text-faint">
+              <div className="mb-1.5 px-1 text-md text-subtle">
                 Disconnected — the agent keeps working; this pane reattaches automatically.
               </div>
+            )}
+            {view?.kind !== 'task' && answerPermission !== undefined && (
+              <PendingAsks workspaceId={workspaceId} groups={groups} onAnswer={answerPermission} />
             )}
             <ActivityBar
               subagents={activity.subagents}
@@ -336,10 +340,10 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
               onOpen={open}
             />
             {view === undefined && imageError !== null && (
-              <div className="mb-1.5 px-1 text-xs text-error">Image not attached: {imageError}</div>
+              <div className="mb-1.5 px-1 text-md text-danger">Image not attached: {imageError}</div>
             )}
             {view === undefined && optionError !== null && (
-              <div className="mb-1.5 px-1 text-xs text-error">Option not changed: {optionError}</div>
+              <div className="mb-1.5 px-1 text-md text-danger">Option not changed: {optionError}</div>
             )}
             {view === undefined && menu}
           </>
@@ -363,7 +367,8 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
                 ))}
               </div>
             )}
-            <textarea
+            <YTextArea
+              bare
               ref={inputRef}
               {...menuInputProps}
               rows={1}
@@ -387,16 +392,14 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
               className={COMPOSER_INPUT}
             />
             <div className="flex items-center justify-between px-2 pb-2">
-              <button
-                type="button"
+              <YButton
+                variant="ghost"
+                icon={AttachImageIcon}
                 aria-label="Attach image"
                 title="Attach image"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={awaitingEcho !== null}
-                className="rounded-md p-2 text-text-faint hover:bg-surface-2 hover:text-text disabled:opacity-40"
-              >
-                <AttachImageIcon size={16} />
-              </button>
+              />
               <ChatViewToggles />
               <div className="mr-auto flex min-w-0 items-center">
                 {permissionModes.current !== undefined && (
@@ -434,12 +437,10 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
                     : undefined}
                 />
               </div>
-              <input
+              <YFileInput
                 ref={fileInputRef}
-                type="file"
                 accept="image/*"
                 multiple
-                hidden
                 onChange={(e) => {
                   attach([...(e.target.files ?? [])])
                   e.target.value = ''
@@ -449,26 +450,23 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
               <div className="flex items-center">
                 {usage !== undefined && <ContextMeter used={usage.used} size={usage.size} />}
                 {busy && (
-                  <button
-                    type="button"
+                  <YButton
+                    variant="primary"
+                    icon={FilledStopIcon}
                     aria-label="Stop turn"
                     title="Stop"
                     onClick={() => send({ type: 'cancel' })}
-                    className={clsx(ROUND_BUTTON, 'mr-1.5')}
-                  >
-                    <StopIcon size={11} fill="currentColor" />
-                  </button>
+                    className="mr-1.5"
+                  />
                 )}
-                <button
-                  type="button"
+                <YButton
+                  variant="primary"
+                  icon={SendIcon}
                   aria-label="Send"
                   title="Send (Enter)"
                   onClick={() => submit()}
                   disabled={(draft.trim() === '' && images.length === 0) || !connected || awaitingEcho !== null}
-                  className={ROUND_BUTTON}
-                >
-                  <SendIcon size={15} strokeWidth={2.5} />
-                </button>
+                />
               </div>
             </div>
           </>
@@ -500,8 +498,8 @@ function ContextMeter({ used, size }: { used: number; size: number }): JSX.Eleme
   const short = `${tokenCount(used)} / ${tokenCount(size)}`
   const circumference = 2 * Math.PI * 6
   return (
-    <button
-      type="button"
+    <YButton
+      variant="bare"
       role="meter"
       aria-label="Context used"
       aria-valuenow={percent}
@@ -509,13 +507,13 @@ function ContextMeter({ used, size }: { used: number; size: number }): JSX.Eleme
       aria-expanded={expanded}
       onClick={() => setExpanded((e) => !e)}
       className={clsx(
-        'mr-1 flex items-center gap-1 whitespace-nowrap rounded-md px-1 py-0.5 text-xs tabular-nums @min-[30rem]:mr-2',
-        'hover:bg-surface-2',
-        percent >= 90 ? 'text-error' : percent >= 75 ? 'text-warning' : 'text-text-faint',
+        'mr-1 flex items-center gap-1 whitespace-nowrap rounded-md px-1 py-0.5 text-md tabular-nums @min-[30rem]:mr-2',
+        'hover:bg-hover',
+        percent >= 90 ? 'text-danger' : percent >= 75 ? 'text-warning' : 'text-subtle',
       )}
     >
       <svg width="16" height="16" viewBox="0 0 16 16" className="-rotate-90">
-        <circle cx="8" cy="8" r="6" fill="none" strokeWidth="2" className="stroke-surface-3" />
+        <circle cx="8" cy="8" r="6" fill="none" strokeWidth="2" className="stroke-line-strong" />
         <circle
           cx="8"
           cy="8"
@@ -529,7 +527,7 @@ function ContextMeter({ used, size }: { used: number; size: number }): JSX.Eleme
       </svg>
       <span className={expanded ? '@min-[30rem]:hidden' : 'hidden @min-[30rem]:inline'}>{short}</span>
       {expanded && <span className="hidden @min-[30rem]:inline">{label}</span>}
-    </button>
+    </YButton>
   )
 }
 
@@ -539,26 +537,27 @@ function ContextMeter({ used, size }: { used: number; size: number }): JSX.Eleme
  */
 function QueuedMessage({ prompt, onRemove }: { prompt: AcpQueuedPrompt; onRemove: () => void }): JSX.Element {
   return (
-    <div className="mt-3 flex items-start gap-1.5 text-sm opacity-60">
+    <div className="mt-3 flex items-start gap-1.5 text-base opacity-60">
       <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-xl border border-dashed border-accent/40 px-3 py-2 text-text">
         {prompt.text}
         {prompt.images > 0 && (
-          <span className="text-text-faint">
+          <span className="text-subtle">
             {prompt.text === '' ? '' : ' '}
             [{prompt.images} {prompt.images === 1 ? 'image' : 'images'}]
           </span>
         )}
-        <div className="mt-0.5 text-[11px] text-text-faint">queued until the agent finishes</div>
+        <div className="mt-0.5 text-sm text-subtle">queued until the agent finishes</div>
       </div>
-      <button
-        type="button"
+      <YButton
+        variant="ghost"
+        size="sm"
+        icon={CloseIcon}
         aria-label="Remove queued message"
         title="Remove"
         onClick={onRemove}
-        className="mt-1 rounded-md p-1 text-text-faint hover:bg-surface-2 hover:text-text"
-      >
-        <CloseIcon size={12} />
-      </button>
+        className="mt-1"
+      />
+
     </div>
   )
 }

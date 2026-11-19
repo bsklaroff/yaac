@@ -374,19 +374,22 @@ rest unchanged. A range between two full commit ids never changes and is read
 once; one naming a branch or HEAD is read again every 30 seconds while on
 screen.
 
-### Git status bar
+### Git status
 
-`GitStatusBar`, above a workspace's panes, shows the reference branch and how
-far HEAD is ahead of and behind it, which opens the Commits pane, then the
-total changed lines (`+52 −3`), which open the Changes pane. Both come from the
-changes answer (`branch`, `comparison`, `files`), polled every 10 seconds
-while the workspace is on screen. The bar also asks for `listing=paths`, so
-the explorer's tree and the terminal's and chat pane's file links are ready
+The workspace's top bar (`GitTopBarSummary` in `components/GitStatus.tsx`)
+says in a few words how far HEAD is ahead of and behind the reference
+branch, which opens the Commits pane, then the total changed lines
+(`+52 −3`), which open the Changes pane. The Details pane's Git card
+(`GitStatusRows`) says the same in full, with the checkout picker and when
+the reference branch was fetched. Both come from the changes answer
+(`branch`, `comparison`, `files`), polled every 10 seconds while the
+workspace is on screen. The top bar also asks for `listing=paths`, so the
+explorer's tree and the terminal's and chat pane's file links are ready
 before the explorer opens.
 
 It never fetches, so `behind` is only as fresh as the checkout's `origin/*`
 (which the server keeps within minutes of origin, docs/server-git.md). The
-bar shows `fetchedAt`, the newest mtime among:
+Git card shows `fetchedAt`, the newest mtime among:
 
 - `server-local/git-fetched/`, a record each successful server fetch writes
   (git empties `FETCH_HEAD` even when a fetch fails);
@@ -409,7 +412,7 @@ message. A body line loses any of the log's separator bytes, so a message
 can neither add a row nor split a field. The
 ref is checked by `RESOLVE_BASE_SH`, the same shell the changes script
 runs, and kept only if it shares history with HEAD, so the pane, the
-Changes pane and the git status bar always name the same ref.
+Changes pane and the git status always name the same ref.
 
 The client lays out the graph itself (`layoutGraph` in `#lib/commits`). Each
 lane waits for one commit; a commit takes the lane waiting for it, its first
@@ -437,7 +440,7 @@ menu also compares it with the working tree or HEAD, and copies its id.
 The pane's strip picks the workspace's base branch from origin's branches
 (the project's branch list, refreshed while the picker is open). A pick is
 confirmed in a dialog, since it moves the diff base of every pane and the
-git status bar, and what is queued under the workspace forks from it; the
+git status, and what is queued under the workspace forks from it; the
 commits themselves stay where they are. `POST /workspace/:id/base` then
 records it (`setWorkspaceBase`, which `yaac-mama set-base` runs too):
 a branch the main clone lacks is fetched for, at most once per 10 seconds,

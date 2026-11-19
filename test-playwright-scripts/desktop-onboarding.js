@@ -18,7 +18,7 @@
  *     output, and Cancel stops it and marks the step cancelled.
  *  4. Run again: the install runs without trusting the tap, the server
  *     starts, and the window lands on its origin.
- *  5. The SPA's Servers button opens the Servers page, which shows that
+ *  5. The yaac menu's Servers item opens the Servers page, which shows that
  *     server running, with a Stop, and the cluster setup (or why this
  *     machine cannot run it).
  *  6. A server's page (a stand-in on loopback, as a port the app forwards
@@ -223,11 +223,12 @@ async function main() {
     check('never trusted the tap', !calls.some((c) => c.startsWith('brew trust')), calls.join(', '))
     await shot(win, '4-landed')
 
-    console.log('\n5. the Servers button shows this Mac\'s installs')
-    const serversButton = win.locator('button[aria-label="Servers"]')
+    console.log('\n5. the Servers item shows this Mac\'s installs')
+    const menu = win.locator('button[aria-label="yaac menu"]')
     // The SPA may still be rendering just after the landing.
-    await serversButton.waitFor({ timeout: 15_000 })
-    await serversButton.click()
+    await menu.waitFor({ timeout: 15_000 })
+    await menu.click()
+    await win.getByRole('menuitem', { name: 'Servers' }).click()
     page = await waitForPicker(app)
     const text = await page.textContent('#install-server')
     check('lists the containerless server as connected and running',

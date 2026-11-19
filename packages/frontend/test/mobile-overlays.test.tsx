@@ -5,7 +5,7 @@ import type { JSX } from 'react'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
-import { MasterDetail } from '#components/ui/MasterDetail'
+import { MasterDetail } from '#components/MasterDetail'
 import { mockFetch, renderWithClient, testQueryClient, type FetchMock } from './harness'
 
 
@@ -110,7 +110,7 @@ describe('ImageBuildsOverlay on a phone', () => {
     // Unlike desktop, mobile doesn't auto-follow the running build's log.
     expect(server.called(BUILD_LOG)).toEqual([])
 
-    fireEvent.click(screen.getByText('base layer'))
+    fireEvent.click(screen.getByRole('button', { name: /^base layer/ }))
     await waitFor(() => expect(screen.getByText(/STEP 1\/2/)).toBeTruthy())
     const detailPane = screen.getByText(/STEP 1\/2/).parentElement as HTMLElement
 
@@ -131,7 +131,7 @@ describe('ImageBuildsOverlay on a phone', () => {
     )
     const { rerender } = render(overlay(true))
     await flushEffects()
-    fireEvent.click(screen.getByText('base layer'))
+    fireEvent.click(screen.getByRole('button', { name: /^base layer/ }))
     const detailPane = (await screen.findByText(/STEP 1\/2/)).parentElement as HTMLElement
     await waitFor(() => expect(detailPane.className).not.toContain('max-md:hidden'))
 

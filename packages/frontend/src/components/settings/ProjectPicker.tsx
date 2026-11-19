@@ -1,9 +1,9 @@
 import type { JSX } from 'react'
-import clsx from 'clsx'
 import type { ProjectSummary } from '@yaac/shared/types'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
 import { projectsOf, useViewedUserId } from '#lib/viewer'
+import { YSelect } from '#ui'
 
 /**
  * The project the project-scoped settings sections show, picked among the
@@ -35,16 +35,8 @@ export function ProjectSelect({ projects, value, onChange, className }: {
   className?: string
 }): JSX.Element {
   return (
-    <select
-      aria-label="Project"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className={clsx(
-        'rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text outline-none focus:border-border-strong',
-        className,
-      )}
-    >
+    <YSelect aria-label="Project" value={value} onChange={(e) => onChange(e.target.value)} className={className}>
       {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-    </select>
+    </YSelect>
   )
 }

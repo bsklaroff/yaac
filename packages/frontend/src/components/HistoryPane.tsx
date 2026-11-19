@@ -1,7 +1,6 @@
 import { useState, type JSX } from 'react'
 import { ChatViewToggles } from '#components/ConversationView'
 import { ReadOnlyTranscript } from '#components/ReadOnlyTranscript'
-import { EmptyState } from '#components/ui/EmptyState'
 import { agentLabel } from '#lib/agentLabel'
 import { openSession } from '#lib/createWorkspace'
 import { HistoryIcon, RestartIcon } from '#lib/icons'
@@ -9,9 +8,7 @@ import { pastConversations } from '#lib/panes'
 import { relativeAge } from '#lib/time'
 import { useReadOnly } from '#lib/viewer'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
-
-const RESUME = 'flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-text px-3.5 text-xs font-medium '
-  + 'text-bg hover:opacity-90 disabled:opacity-50'
+import { YButton, YEmptyState } from '#ui'
 
 /**
  * A running workspace's History pane (docs/sessions.md): the conversations
@@ -40,8 +37,8 @@ export function HistoryPane({ workspace, focused, onResumed }: {
   }
   if (past.length === 0) {
     return (
-      <EmptyState
-        className="h-full bg-bg"
+      <YEmptyState
+        className="h-full bg-sunken"
         icon={HistoryIcon}
         title="No earlier conversations"
         description="A session's conversation shows here once it is closed, to read or resume."
@@ -49,7 +46,7 @@ export function HistoryPane({ workspace, focused, onResumed }: {
     )
   }
   return (
-    <div className="@container flex h-full w-full flex-col overflow-hidden rounded-md bg-bg">
+    <div className="@container flex h-full w-full flex-col overflow-hidden rounded-md bg-sunken">
       <ReadOnlyTranscript
         workspaceId={workspace.workspaceId}
         conversations={past}
@@ -57,20 +54,20 @@ export function HistoryPane({ workspace, focused, onResumed }: {
         footer={(c) => (
           <div className="p-2">
             {c !== undefined && error?.conversationId === c.conversationId && (
-              <p className="px-1 pb-2 text-xs text-danger">{error.message}</p>
+              <p className="px-1 pb-2 text-md text-danger">{error.message}</p>
             )}
             <div className="flex items-center gap-2">
               <ChatViewToggles />
               {c !== undefined && (
-                <span className="min-w-0 flex-1 truncate text-xs text-text-faint">
+                <span className="min-w-0 flex-1 truncate text-md text-subtle">
                   {[agentLabel(c.tool, c), relativeAge(c.lastActiveAt)].filter(Boolean).join(' · ')}
                 </span>
               )}
               {c !== undefined && !readOnly && (
-                <button type="button" disabled={resuming} onClick={() => resume(c.conversationId)} className={RESUME}>
-                  <RestartIcon size={12} />
+                <YButton variant="primary" icon={RestartIcon} disabled={resuming} onClick={() => resume(c.conversationId)}>
                   {resuming ? 'Resuming…' : 'Resume'}
-                </button>
+                </YButton>
+
               )}
             </div>
           </div>

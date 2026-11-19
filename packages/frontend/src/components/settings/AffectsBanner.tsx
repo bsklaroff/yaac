@@ -15,7 +15,7 @@ export function AffectsBanner({ lead, names, none, note }: {
   note?: string
 }): JSX.Element {
   return (
-    <p role="note" className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-1.5 text-[11px] leading-relaxed text-text-dim">
+    <p role="note" className="border-l-2 border-warning bg-warning-soft px-2.5 py-1.5 text-sm leading-relaxed text-muted">
       {names.length === 0 ? none : (
         <>
           {lead}{' '}

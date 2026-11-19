@@ -14,7 +14,7 @@ import {
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
 import { ownedGroupIds, Sidebar, sidebarRowIds } from './components/Sidebar'
-import { narrowRows, type ProjectScope } from './components/WorkspaceList'
+import type { ProjectScope } from './components/WorkspaceList'
 import { useStoppedEntry } from './lib/useStoppedWorkspaces'
 import { WorkspaceView } from './components/WorkspaceView'
 import { ReadOnlyWorkspace, type ReadOnlySubject } from './components/ReadOnlyWorkspace'
@@ -33,6 +33,11 @@ import { mergeProjectOps } from './lib/projectOps'
 import { WelcomePane } from './components/WelcomePane'
 import { MobileHeader } from './components/mobile/MobileHeader'
 import { StopWorkspaceDialog } from './components/StopWorkspaceDialog'
+import { YWindowControls } from '#ui'
+import { SettingsDialog } from './components/SettingsButton'
+import { HomePage } from './components/home/HomePage'
+import { homeListOrder, homeRows, projectActivity } from './components/home/homeRows'
+import { CommandPalette } from './shell/CommandPalette'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
 
 function App(): JSX.Element {
@@ -77,7 +82,7 @@ function App(): JSX.Element {
       <FullScreen>
         <div className="max-w-md px-8">
           <h1 className="text-lg font-semibold text-text">This server will not say who you are</h1>
-          <p className="mt-3 text-sm text-text-dim">{whoami.error.message}</p>
+          <p className="mt-3 text-base text-muted">{whoami.error.message}</p>
         </div>
       </FullScreen>
     )
@@ -126,6 +131,10 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const autoSelectWorkspace = useUiStore((s) => s.autoSelectWorkspace)
   const lastWorkspaceOf = useUiStore((s) => s.lastWorkspaceOf)
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
+  const homeOpen = useUiStore((s) => s.homeOpen)
+  const openHome = useUiStore((s) => s.openHome)
+  const newWorkspaceForm = useUiStore((s) => s.newWorkspace)
+  const selectedObject = useUiStore((s) => s.selectedObject)
   const mobileScreen = useUiStore((s) => s.mobileScreen)
   const syncChatDrafts = useUiStore((s) => s.syncChatDrafts)
   const projectOps = useUiStore((s) => s.projectOps)
@@ -206,7 +215,6 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     routines: inProject(snapshot?.routines),
     workflows: inProject(snapshot?.workflows),
     sites: inProject(snapshot?.sites),
-    gitAuthFailures: (activeProjectId && snapshot?.gitAuthFailures?.[activeProjectId]) || [],
   }
 
   // Project-scoped shortcuts (next/prev workspace, new, stop). They listen
@@ -216,14 +224,9 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   // the one listener read the current render's state.
   const owned = ownedGroupIds(scope.groups, scope)
   const rowIds = sidebarRowIds(scope.provisioning, scope.workspaces, scope.groups, pendingDeleteIds, owned)
-  // The cycle steps through the rows the sidebar search and status filter
-  // leave on screen.
-  const sidebarQuery = useUiStore((s) => s.sidebarQuery)
-  const sidebarStatuses = useUiStore((s) => s.sidebarStatuses)
-  const searched = narrowRows(sidebarQuery, sidebarStatuses, {
-    workspaces: scope.workspaces, provisioning: scope.provisioning, queued: [], held: [], drafts: [],
-  })
-  const cycleIds = sidebarRowIds(searched.provisioning, searched.workspaces, scope.groups, pendingDeleteIds, owned)
+  const allHomeRows = homeRows(workspaces, provisioning, me, pendingDeleteIds, snapshot?.startedAtMs)
+  // On Home the cycle steps through Home's list, across projects.
+  const cycleRows = homeOpen ? homeListOrder(allHomeRows) : null
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const newWorkspace = (): void => {
     if (activeProjectId && !readOnly) openNewWorkspace({ projectId: activeProjectId })
@@ -232,8 +235,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const selectedWorkspace = selectedWorkspaceId && !readOnly && !pendingDeleteIds.includes(selectedWorkspaceId)
     ? workspaces.find((s) => s.workspaceId === selectedWorkspaceId && !s.stopping) ?? null
     : null
-  const shortcutCtx = useRef({ cycleIds, selectedWorkspaceId, selectedWorkspace, newWorkspace })
-  shortcutCtx.current = { cycleIds, selectedWorkspaceId, selectedWorkspace, newWorkspace }
+  const shortcutCtx = useRef({ rowIds, cycleRows, selectedWorkspaceId, selectedWorkspace, newWorkspace })
+  shortcutCtx.current = { rowIds, cycleRows, selectedWorkspaceId, selectedWorkspace, newWorkspace }
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       const ctx = shortcutCtx.current
@@ -241,6 +244,10 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       if (state.recordingShortcut) return
       const id = matchShortcut(state.bindings, e)
       switch (id) {
+        case 'command-palette':
+          claimChord(e)
+          state.setPaletteOpen(!state.paletteOpen)
+          return
         case 'new-workspace':
           claimChord(e)
           ctx.newWorkspace()
@@ -255,10 +262,13 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
         case 'next-workspace': {
           const delta = cycleDeltaFor(id)
           if (delta === null) return
-          const next = resolveCycleTarget(ctx.cycleIds, ctx.selectedWorkspaceId ?? undefined, delta)
+          const ids = ctx.cycleRows ? ctx.cycleRows.map((r) => r.id) : ctx.rowIds
+          const next = resolveCycleTarget(ids, ctx.selectedWorkspaceId ?? undefined, delta)
           if (!next) return
           claimChord(e)
-          useUiStore.getState().selectWorkspace(next)
+          const homeRow = ctx.cycleRows?.find((r) => r.id === next)
+          if (homeRow) useUiStore.getState().selectHomeWorkspace(homeRow.projectId, next)
+          else useUiStore.getState().selectWorkspace(next)
           return
         }
         default:
@@ -297,6 +307,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   useLayoutEffect(() => {
     const previousProjectId = lastProjectId.current
     lastProjectId.current = activeProjectId
+    // Home's pane is its inbox until the user picks a session.
+    if (homeOpen) return
     const pick = resolveVacantSelection({
       previousProjectId,
       activeProjectId,
@@ -310,7 +322,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     if (!pick) return
     if (selectedWorkspaceId !== null && claims[selectedWorkspaceId] === pick) forgetClaim(selectedWorkspaceId)
     autoSelectWorkspace(pick)
-  }, [activeProjectId, rowIds, stoppedEntry, stoppedSelection.pending, selectedWorkspaceId, claims, inFlightProvisions, lastWorkspaceOf, forgetClaim, autoSelectWorkspace])
+  }, [homeOpen, activeProjectId, rowIds, stoppedEntry, stoppedSelection.pending, selectedWorkspaceId, claims, inFlightProvisions, lastWorkspaceOf, forgetClaim, autoSelectWorkspace])
   // Drop chat drafts for workspaces that no longer exist (same first-snapshot
   // guard as above). Provisioning ids count as live because a restarting
   // workspace leaves the workspace list and returns with the same id.
@@ -323,6 +335,10 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   }, [all, optimisticProvisioning, syncChatDrafts])
 
   const attention = unreadWaitingByProject(workspaces, me, pendingDeleteIds)
+  const activity = useMemo(() => projectActivity(projects, workspaces, provisioning, me), [projects, workspaces, provisioning, me])
+  const home = homeOpen ? { rows: allHomeRows, projects } : undefined
+  // Home's pane shows its inbox while nothing else is open in it.
+  const homePage = home !== undefined && selectedWorkspaceId === null && newWorkspaceForm === null && selectedObject === null
 
   // What replaces the sidebar and pane when there is no project to show.
   const placeholder = projectOp
@@ -347,7 +363,9 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
             ops={ops}
             activeProjectId={activeProjectId}
             attentionByProject={attention}
+            tiles={activity}
             connected={connected}
+            onHome={openHome}
             onSelect={setActiveProject}
           />
         </MobileScreenLayer>
@@ -357,6 +375,9 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
           ops={ops}
           activeProjectId={activeProjectId}
           attentionByProject={attention}
+          tiles={activity}
+          homeActive={homeOpen}
+          onHome={openHome}
           onSelect={setActiveProject}
         />
       )}
@@ -369,22 +390,24 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
               <ProjectOpPane op={projectOp} />
             </>
           ) : (
-            <WorkspacesScreen scope={scope} connected={connected} onBack={goBackScreen} />
+            <WorkspacesScreen scope={scope} connected={connected} onBack={goBackScreen} {...(home ? { home } : {})} />
           )}
         </MobileScreenLayer>
       ) : placeholder ? (
-        <div className="m-2 flex min-w-0 flex-1 flex-col rounded-lg border border-hairline bg-surface">
+        <div className="flex min-w-0 flex-1 flex-col bg-surface">
+          {/* The window controls the hidden sidebar's header would hold. */}
+          <YWindowControls className="h-bar px-3" />
           {placeholder}
         </div>
       ) : sidebarOpen && (
-        <Sidebar scope={scope} connected={connected} />
+        <Sidebar scope={scope} connected={connected} {...(home ? { home } : {})} />
       )}
 
       {(isMobile || !placeholder) && <div
         inert={isMobile && mobileScreen !== 'pane'}
         className={clsx(isMobile
           ? ['absolute inset-0', mobileScreen !== 'pane' && 'invisible pointer-events-none']
-          : 'min-w-0 flex-1 p-2')}
+          : 'min-w-0 flex-1 bg-surface')}
       >
         {/* A stopped workspace covers the workspace view rather than
             replacing it, so its terminals stay mounted and laid out. */}
@@ -393,8 +416,13 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
         ) : (
           <div className="relative h-full">
             {!readOnly && (
-              <div inert={stoppedEntry !== undefined} className={clsx('h-full', stoppedEntry && 'invisible')}>
-                <WorkspaceView snapshot={snapshot} provisioning={scope.provisioning} />
+              <div inert={stoppedEntry !== undefined || homePage} className={clsx('h-full', (stoppedEntry || homePage) && 'invisible')}>
+                <WorkspaceView snapshot={snapshot} provisioning={home ? provisioning : scope.provisioning} />
+              </div>
+            )}
+            {homePage && home && (
+              <div className="absolute inset-0">
+                <HomePage rows={home.rows} projects={projects} activity={activity} waitingByProject={attention} />
               </div>
             )}
             {stoppedEntry && (
@@ -417,6 +445,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       />
       <LeaveNewWorkspaceDialog />
       <AddProjectDialog />
+      <SettingsDialog />
+      <CommandPalette scope={scope} rows={allHomeRows} projects={projects} />
     </div>
   )
 }
@@ -429,7 +459,7 @@ function liveSubject(workspaces: WorkspaceListEntry[], selectedId: string | null
 
 function FullScreen({ children }: { children: ReactNode }): JSX.Element {
   return (
-    <div className="flex h-full items-center justify-center bg-bg text-text-faint">
+    <div className="flex h-full items-center justify-center bg-sunken text-subtle">
       {children}
     </div>
   )

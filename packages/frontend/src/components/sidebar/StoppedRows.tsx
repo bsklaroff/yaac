@@ -1,12 +1,12 @@
 import { useEffect, useRef, type JSX } from 'react'
-import clsx from 'clsx'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronIcon, LoadingIcon } from '#lib/icons'
+import { LoadingIcon } from '#lib/icons'
 import { api } from '#lib/api'
 import { patchStopped, refetchStopped, type StoppedList } from '#lib/useStoppedWorkspaces'
 import { useWhoami } from '#lib/viewer'
 import { RowMenu } from '#components/sidebar/RowMenu'
 import { StoppedWorkspaceRow } from '#components/sidebar/WorkspaceRows'
+import { YButton, YListSection } from '#ui'
 
 /**
  * A paged stopped list's rows, then a marker that loads the next page once
@@ -36,17 +36,15 @@ export function StoppedRows({ list }: { list: StoppedList }): JSX.Element {
       {list.entries.map((d) => <StoppedWorkspaceRow key={d.workspaceId} entry={d} />)}
       <div ref={marker} aria-hidden="true" className="h-px" />
       {isFetchingNextPage && (
-        <p className="flex items-center gap-1.5 px-4 py-2 text-xs text-text-faint">
+        <p className="flex items-center gap-1.5 px-4 py-2 text-md text-subtle">
           <LoadingIcon size={11} className="animate-spin" />
           Loading…
         </p>
       )}
       {isError && (
-        <p className="px-4 py-2 text-xs text-text-faint">
+        <p className="px-4 py-2 text-md text-subtle">
           Stopped workspaces could not be loaded.{' '}
-          <button type="button" onClick={list.fetchNextPage} className="underline hover:text-text-dim">
-            Retry
-          </button>
+          <YButton variant="ghost" size="sm" onClick={list.fetchNextPage}>Retry</YButton>
         </p>
       )}
     </>
@@ -67,12 +65,11 @@ export function StoppedSection({
   list,
 }: {
   projectId: string
-  /** How many it lists (from the snapshot, or the search's total). */
+  /** How many it lists, from the snapshot. */
   count: number
   unseenDeaths: number
   expanded: boolean
-  /** Absent while a search holds the section open. */
-  onExpandedChange?: (expanded: boolean) => void
+  onExpandedChange: (expanded: boolean) => void
   list: StoppedList
 }): JSX.Element | null {
   const queryClient = useQueryClient()
@@ -86,36 +83,33 @@ export function StoppedSection({
   if (count === 0 && list.entries.length === 0) return null
   return (
     <div role="group" aria-label="Stopped workspaces" className="py-1">
-      <div className="group relative">
-        <button
-          type="button"
-          aria-expanded={expanded}
-          disabled={onExpandedChange === undefined}
-          onClick={() => onExpandedChange?.(!expanded)}
-          className="flex w-full items-center gap-1 px-3 py-1 text-xs font-medium text-text-faint outline-none
-            transition hover:text-text-dim group-hover:pr-9 max-md:py-2.5 max-md:pr-11 max-md:text-sm"
-        >
-          <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', expanded && 'rotate-90')} />
-          <span>Stopped</span>
-          <span className="text-text-faint/70">{count}</span>
-          {/* aria-hidden so it stays out of the button's name. */}
-          {unseenDeaths > 0 && (
-            <span
-              aria-hidden="true"
-              title={`${unseenDeaths} workspace${unseenDeaths > 1 ? 's' : ''} died unexpectedly`}
-              className="ml-1 h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
-            />
-          )}
-          {markAll.error && <span className="ml-auto truncate text-danger">{markAll.error.message}</span>}
-        </button>
-        {unseenDeaths > 0 && (
+      <YListSection
+        className="group/row"
+        label={(
+          <span className="flex min-w-0 items-center gap-1.5">
+            Stopped
+            <span className="tabular-nums text-subtle">{count}</span>
+            {/* aria-hidden so it stays out of the button's name. */}
+            {unseenDeaths > 0 && (
+              <span
+                aria-hidden="true"
+                title={`${unseenDeaths} workspace${unseenDeaths > 1 ? 's' : ''} died unexpectedly`}
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning"
+              />
+            )}
+            {markAll.error && <span className="truncate text-danger">{markAll.error.message}</span>}
+          </span>
+        )}
+        open={expanded}
+        onToggle={() => onExpandedChange(!expanded)}
+        actions={unseenDeaths > 0 && (
           <RowMenu
             label="Stopped workspaces actions"
-            position="right-2 top-0.5"
+            hoverOnly
             items={[{ label: 'Mark all as read', onSelect: () => markAll.mutate() }]}
           />
         )}
-      </div>
+      />
       {expanded && <StoppedRows list={list} />}
     </div>
   )

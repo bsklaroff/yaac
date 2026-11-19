@@ -20,7 +20,7 @@
  *     once its probe fails.
  *  5. With the server started from a terminal, its row lands (Connect, or
  *     Start while the page still reads it stopped).
- *  6. The SPA's Servers button (rail, above Settings) opens the page over
+ *  6. The yaac menu's Servers item opens the page over
  *     the server, in a view that fills the window and follows a resize:
  *     "Servers" with "← Back to Local containerless server", the install's
  *     row first and checked with Disconnect and Stop and no Connect, and
@@ -279,12 +279,13 @@ async function main() {
   check('the row landed the window', (await win.evaluate(() => location.origin)) === origin)
   await shot(win, '5-reconnected')
 
-  // 6. The rail's Servers button opens the same page over the server.
-  console.log('\n6. the Servers button opens the page over the SPA, and Back uncovers it')
+  // 6. The yaac menu's Servers item opens the same page over the server.
+  console.log('\n6. the Servers item opens the page over the SPA, and Back uncovers it')
   const spaUrl = await win.evaluate(() => location.href)
   // Survives only if Back does not reload the SPA.
   await win.evaluate(() => { window.__notReloaded = true })
-  await win.click('button[aria-label="Servers"]')
+  await win.click('button[aria-label="yaac menu"]')
+  await win.getByRole('menuitem', { name: 'Servers' }).click()
   page = await waitForPicker(app)
   const fits = ({ content, views }) => views.length === 1
     && views[0].x === 0 && views[0].y === 0 && views[0].width === content.width && views[0].height === content.height

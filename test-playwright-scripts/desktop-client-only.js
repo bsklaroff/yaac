@@ -114,8 +114,8 @@ try {
         return document.querySelector('#root')?.childElementCount > 0
       }, 60_000)
       check('the app lands on it', new URL(spa.url()).origin === origin, spa.url())
-      // The rail's Servers button shows once the rail, where macOS draws the controls, has rendered.
-      await spa.getByLabel('Servers', { exact: true }).waitFor({ timeout: 30_000 })
+      // The rail's yaac menu shows once the rail has rendered.
+      await spa.getByRole('button', { name: 'yaac menu' }).waitFor({ timeout: 30_000 })
       check('the SPA draws no window controls', (await spa.getByLabel('Close window').count()) === 0)
       await spa.screenshot({ path: path.join(SHOTS, 'desktop-client-only-spa.png') })
     } finally {

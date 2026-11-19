@@ -1,5 +1,6 @@
 import type { JSX } from 'react'
 import { PTY_KEYS, paneKey, sendPtyInput } from '#lib/ptyInput'
+import { YButton } from '#ui'
 
 /** Keys a phone keyboard lacks: dismiss, complete, interrupt, navigate.
  *  Labels are ASCII apart from the arrows; our fonts have no ⇧ glyph. */
@@ -34,19 +35,20 @@ export function TerminalKeyBar({
   return (
     <div className="flex shrink-0 items-center gap-1 overflow-x-auto px-1 py-1">
       {KEYS.map((k) => (
-        <button
+        <YButton
+          variant="bare"
           key={k.label}
           aria-label={k.aria}
           onPointerDown={(e) => {
             e.preventDefault()
             sendPtyInput(key, k.data)
           }}
-          className={`flex h-9 shrink-0 items-center justify-center rounded-md border border-hairline
-            bg-surface-2 font-mono text-xs text-text-dim transition active:bg-surface-3 active:text-text
+          className={`flex h-9 shrink-0 items-center justify-center rounded-md border border-line
+            bg-selected font-mono text-md text-muted transition active:bg-line-strong active:text-text
             ${k.wide ? 'min-w-11 px-2.5' : 'w-11'}`}
         >
           {k.label}
-        </button>
+        </YButton>
       ))}
     </div>
   )

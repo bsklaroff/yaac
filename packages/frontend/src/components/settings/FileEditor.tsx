@@ -1,10 +1,10 @@
 import { useState, type JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CodeEditor } from '#components/ui/CodeEditor'
-import { Modal } from '#components/ui/Modal'
+import { CodeEditor } from '#components/CodeEditor'
 import type { HighlightLanguage } from '#lib/highlight'
 import { CollapseIcon, ExpandIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
+import { YButton, YDialog } from '#ui'
 
 /**
  * A syntax-highlighted file editor that loads text via `load` (cached under
@@ -45,7 +45,7 @@ export function FileEditor({
     },
   })
 
-  if (loaded.isPending) return <p className="text-xs text-text-faint">Loading…</p>
+  if (loaded.isPending) return <p className="text-md text-subtle">Loading…</p>
 
   const text = edit ?? loaded.data ?? ''
   const dirty = edit !== null && edit !== loaded.data
@@ -58,19 +58,13 @@ export function FileEditor({
 
   const footer = (
     <>
-      {hint && <p className="text-[11px] leading-relaxed text-text-faint">{hint}</p>}
-      {error && <p className="whitespace-pre-wrap text-xs text-red-400">{error.message}</p>}
+      {hint && <p className="text-sm leading-relaxed text-subtle">{hint}</p>}
+      {error && <p className="whitespace-pre-wrap text-md text-danger">{error.message}</p>}
       {save && <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={onSave}
-          disabled={saving.isPending || !dirty}
-          className="shrink-0 rounded-md bg-surface-3 px-3 py-1.5 text-xs font-medium text-text transition
-            hover:bg-border-strong disabled:opacity-50"
-        >
+        <YButton variant="primary" onClick={onSave} disabled={saving.isPending || !dirty}>
           {saving.isPending ? 'Saving…' : 'Save'}
-        </button>
-        {saving.isSuccess && !dirty && <span className="text-xs text-emerald-400">Saved</span>}
+        </YButton>
+        {saving.isSuccess && !dirty && <span className="text-md text-success">Saved</span>}
       </div>}
     </>
   )
@@ -79,20 +73,18 @@ export function FileEditor({
     <div className="flex flex-col gap-2">
       <div className="relative">
         <CodeEditor value={text} onChange={onEdit} language={language} fontSize={fontSize} readOnly={!save} />
-        <button
-          type="button"
+        <YButton
+          size="sm"
+          icon={ExpandIcon}
           onClick={() => setExpanded(true)}
           title="Expand editor"
           aria-label="Expand editor"
-          className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded
-            bg-surface-2/80 text-text-faint transition hover:bg-surface-3 hover:text-text"
-        >
-          <ExpandIcon size={12} />
-        </button>
+          className="absolute right-1.5 top-1.5"
+        />
       </div>
       {footer}
 
-      <Modal
+      <YDialog
         open={expanded}
         onOpenChange={setExpanded}
         variant="sheet"
@@ -110,7 +102,7 @@ export function FileEditor({
           className="min-h-0 flex-1"
         />
         {footer}
-      </Modal>
+      </YDialog>
     </div>
   )
 }

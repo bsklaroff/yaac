@@ -290,8 +290,8 @@ the label, pi and opencode label a call with the bare tool name (`read`),
 so their file follows the label, and codex titles every edit "Editing
 files" with no locations, so its edit always shows the file header.
 Matching is the terminal's (`fileLinksIn` in `#lib/files`,
-docs/terminal-mirror.md "Links") against the listing the git status bar
-polls, so a file the agent just created links once the next poll lists it.
+docs/terminal-mirror.md "Links") against the listing the top bar's git
+status polls, so a file the agent just created links once the next poll lists it.
 Nothing inside a link's label links again, so a backticked path labelling
 a link opens what the link says. Only the live pane links paths; a stopped
 workspace has no file pane, so its transcript leaves them as text.

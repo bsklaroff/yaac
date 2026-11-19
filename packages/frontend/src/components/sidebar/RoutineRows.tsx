@@ -1,7 +1,6 @@
 import { useState, type JSX } from 'react'
 import { RoutineIcon } from '#lib/icons'
 import type { ObjectRowProps } from '#components/sidebar/ObjectRow'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { api } from '#lib/api'
 import { clip } from '#lib/queued'
 import { describeSchedule } from '#lib/routines'
@@ -9,6 +8,7 @@ import { useUiStore } from '#lib/store'
 import { timeUntil, useNow, useTimeZone } from '#lib/time'
 import { formatInZone } from '@yaac/shared/schedule'
 import type { RoutineEntry } from '@yaac/shared/types'
+import { YConfirm } from '#ui'
 
 /** What can be done to a routine, from its sidebar row or its pane. */
 export interface RoutineActions {
@@ -40,7 +40,7 @@ export function useRoutineActions(routine: RoutineEntry): RoutineActions {
     remove: () => setConfirmDelete(true),
     error,
     dialog: (
-      <ConfirmDialog
+      <YConfirm
         open={confirmDelete}
         onOpenChange={setConfirmDelete}
         title="Delete routine?"
@@ -73,7 +73,7 @@ export function useRoutineRow(routine: RoutineEntry): ObjectRowProps {
       <>
         <span className="truncate" title={`${schedule} (${routine.timeZone})`}>{schedule}</span>
         {routine.paused
-          ? <span className="ml-auto shrink-0 rounded bg-surface-3 px-1 text-[10px]">Paused</span>
+          ? <span className="ml-auto shrink-0 rounded bg-line-strong px-1 text-xs">Paused</span>
           : next !== undefined && (
             <span className="ml-auto shrink-0" title={`${formatInZone(new Date(next), zone)} ${zone}`}>
               in ~{timeUntil(next, now)}

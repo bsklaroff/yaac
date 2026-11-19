@@ -43,19 +43,11 @@ describe('ServerBadge', () => {
 })
 
 describe('ServersButton', () => {
-  it('opens the shell\'s Servers page, and renders nothing without it', () => {
+  it('opens the shell\'s Servers page, names the server, and renders nothing without the page', () => {
     expect(render(<ServersButton />).container.innerHTML).toBe('')
     const showServers = vi.fn()
     inject({ showServers })
     render(<ServersButton />)
-    fireEvent.click(screen.getByRole('button', { name: 'Servers' }))
-    expect(showServers).toHaveBeenCalledOnce()
-  })
-
-  it('as the phone layout\'s row, also names the server', () => {
-    const showServers = vi.fn()
-    inject({ showServers })
-    render(<ServersButton variant="row" />)
     const row = screen.getByRole('button', { name: 'Servers' })
     expect(row.textContent).toBe(`Servers${serverLabel(window.location.origin)}`)
     fireEvent.click(row)

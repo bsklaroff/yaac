@@ -1,9 +1,9 @@
 import { useState, type JSX } from 'react'
-import clsx from 'clsx'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '#lib/api'
 import { StepLog } from '#components/StepLog'
 import { byWorkflow } from '#lib/steps'
+import { YChip } from '#ui'
 
 /**
  * A stopped workspace's terminal logs (docs/workspace-steps.md "Logs"):
@@ -22,7 +22,7 @@ export function WorkspaceLogs({ workspaceId }: { workspaceId: string }): JSX.Ele
   const file = picked !== null && logs.includes(picked) ? picked : logs[0]
   if (isError || (data !== undefined && file === undefined)) {
     return (
-      <p className="flex flex-1 items-center justify-center text-xs text-text-faint">
+      <p className="flex flex-1 items-center justify-center text-md text-subtle">
         {isError ? 'Its logs could not be loaded.' : 'It kept no logs.'}
       </p>
     )
@@ -32,22 +32,17 @@ export function WorkspaceLogs({ workspaceId }: { workspaceId: string }): JSX.Ele
       <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto px-1.5 py-1">
         {byWorkflow(logs, (name) => name.replace(/\.log$/, '')).map((g) => (
           <div key={g.workflow} className="flex shrink-0 items-center gap-0.5" role="group" aria-label={g.workflow || 'Windows'}>
-            {g.workflow !== '' && <span className="pl-1 font-mono text-[10px] text-text-faint">{g.workflow}</span>}
+            {g.workflow !== '' && <span className="pl-1 font-mono text-xs text-subtle">{g.workflow}</span>}
             {g.items.map((name) => (
-              <button
-                key={name}
-                type="button"
-                onClick={() => setPicked(name)}
-                className={clsx('rounded px-2 py-0.5 font-mono text-[11px] transition',
-                  name === file ? 'bg-surface-3 text-text' : 'text-text-faint hover:text-text-dim')}
-              >
+              <YChip key={name} selected={name === file} onClick={() => setPicked(name)} className="font-mono">
                 {name.replace(/\.log$/, '').slice(g.workflow === '' ? 0 : g.workflow.length + 1)}
-              </button>
+              </YChip>
+
             ))}
           </div>
         ))}
       </div>
-      <div className="min-h-0 flex-1 bg-bg px-2.5 py-1.5">
+      <div className="min-h-0 flex-1 bg-sunken px-2.5 py-1.5">
         {last !== undefined && file !== undefined && (
           <StepLog key={`${last.life}/${file}`} workspaceId={workspaceId} life={last.life} file={file} follow={false} />
         )}

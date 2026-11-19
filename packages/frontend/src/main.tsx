@@ -1,8 +1,10 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import '@fontsource-variable/inter'
+import '@fontsource-variable/geist'
+import '@fontsource-variable/geist-mono'
 import App from './App'
+import { CatalogPage } from '#catalog/CatalogPage'
 import { ErrorBoundary } from '#components/ErrorBoundary'
 import './index.css'
 
@@ -23,7 +25,8 @@ ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <ErrorBoundary>
-        <App />
+        {/* `?catalog` shows the component catalog instead of the app. */}
+        {new URLSearchParams(window.location.search).has('catalog') ? <CatalogPage /> : <App />}
       </ErrorBoundary>
     </QueryClientProvider>
   </React.StrictMode>,

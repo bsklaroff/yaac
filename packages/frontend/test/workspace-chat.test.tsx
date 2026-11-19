@@ -372,7 +372,7 @@ describe('WorkspaceChat width', () => {
 
   it('toggles between a centered column and full width, and remembers the choice', () => {
     show()
-    const column = (): HTMLElement => box().closest('.rounded-xl')?.parentElement as HTMLElement
+    const column = (): HTMLElement => box().closest('.rounded-md')?.parentElement as HTMLElement
     expect(column().className).toContain('max-w-5xl')
 
     fireEvent.click(screen.getByRole('button', { name: 'Full-width chat' }))
@@ -473,8 +473,8 @@ describe('WorkspaceChat agent options', () => {
     holding({ agentOptions: { idleCompaction: false } })
     show()
     fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
-    const item = await screen.findByRole<HTMLInputElement>('checkbox', { name: /Compact when idle/ })
-    expect(item.checked).toBe(false)
+    const item = await screen.findByRole('checkbox', { name: /Compact when idle/ })
+    expect(item.getAttribute('aria-checked')).toBe('false')
     fireEvent.click(item)
     await waitFor(() => expect(server.called('POST /api/workspace/w1/sessions/sess-1/agent-options')[0]?.body)
       .toEqual({ idleCompaction: true }))
@@ -623,7 +623,7 @@ describe('WorkspaceChat condensed view', () => {
     ]
     show()
     for (const shown of [
-      'answer A', 'message B', 'Permission needed', 'adapter crashed', 'turn ended: cancelled',
+      'answer A', 'message B', 'rm -rf build: waiting for your answer below', 'adapter crashed', 'turn ended: cancelled',
       'reply two', 'working on it', 'long bash', 'also do X', 't3',
     ]) expect(screen.getByText(shown)).toBeTruthy()
     for (const hidden of ['bg check', 't1', 't2']) expect(screen.queryByText(hidden)).toBeNull()

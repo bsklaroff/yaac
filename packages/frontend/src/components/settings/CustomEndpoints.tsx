@@ -1,12 +1,8 @@
 import { useState, type FormEvent, type JSX } from 'react'
-import clsx from 'clsx'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import { AffectsBanner } from '#components/settings/AffectsBanner'
-import { Field } from '#components/settings/Field'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import {
   applyEndpointDiff,
   describeEndpointModel,
@@ -17,9 +13,7 @@ import {
 } from '@yaac/shared/endpoint-models'
 import { API_KEY_TOOLS, CUSTOM_PROVIDER, type ApiKeyTool, type EndpointModel } from '@yaac/shared/tool-providers'
 import type { CustomEndpointSummary, EndpointDiscovery, ToolAuthSummary } from '@yaac/shared/types'
-
-const INPUT = 'rounded-md border border-border bg-surface px-2.5 py-1.5 font-mono text-xs text-text outline-none '
-  + 'focus:border-border-strong'
+import { YButton, YCheckbox, YChip, YConfirm, YInput, YRowFrame, YSection, YSettingGroup, YTextArea } from '#ui'
 
 /**
  * The user's custom endpoints (docs/custom-endpoints.md): self-hosted
@@ -36,12 +30,20 @@ export function CustomEndpoints(): JSX.Element {
   const endpoints = auth?.customEndpoints ?? []
 
   return (
-    <Field
-      label="Custom endpoints"
-      hint="Self-hosted OpenAI-compatible servers (vLLM, Ollama, llama.cpp, llama-swap…) that opencode, pi and omp can sign in with. On a cluster, add the endpoint's host to each project's allowlist; a key is only sent over https there."
+    <YSection
+      title="Custom endpoints"
+      description="OpenAI-compatible servers that opencode, pi and omp can use."
+      actions={editing !== 'new' && (
+        <YButton size="sm" onClick={() => setEditing('new')}>
+          Add custom endpoint
+        </YButton>
+      )}
     >
-      <div className="space-y-2 text-xs">
-        {endpoints.map((e) => (
+      {endpoints.length === 0 && editing !== 'new' ? (
+        <YSettingGroup><p className="px-4 py-3 text-md text-subtle">No custom endpoints yet.</p></YSettingGroup>
+      ) : (
+        <YSettingGroup className="text-md">
+          {endpoints.map((e) => (
           <EndpointCard
             key={e.id}
             endpoint={e}
@@ -51,18 +53,15 @@ export function CustomEndpoints(): JSX.Element {
             onDone={() => { setEditing(null); void refresh() }}
             onChanged={() => void refresh()}
           />
-        ))}
-        {editing === 'new' ? (
-          <div className="rounded-md bg-bg px-2.5 py-2">
-            <EndpointEditor onDone={() => { setEditing(null); void refresh() }} onCancel={() => setEditing(null)} />
-          </div>
-        ) : (
-          <button type="button" onClick={() => setEditing('new')} className={BUTTON}>
-            Add custom endpoint
-          </button>
-        )}
-      </div>
-    </Field>
+          ))}
+          {editing === 'new' && (
+            <div className="px-4 py-3">
+              <EndpointEditor onDone={() => { setEditing(null); void refresh() }} onCancel={() => setEditing(null)} />
+            </div>
+          )}
+        </YSettingGroup>
+      )}
+    </YSection>
   )
 }
 
@@ -101,41 +100,42 @@ function EndpointCard({ endpoint: e, toolAuth, editing, onEdit, onDone, onChange
   const replacing = confirm?.kind === 'attach' ? toolAuth.find((s) => s.tool === confirm.tool) : undefined
 
   return (
-    <div data-endpoint={e.id} className="flex flex-col gap-1.5 rounded-md bg-bg px-2.5 py-1.5">
-      <div className="flex items-center gap-2">
+    <div data-endpoint={e.id} className="flex flex-col gap-1.5 px-4 py-2">
+      <YRowFrame
+        label={e.name}
+        actionsShown
+        actions={<>
+          <YButton variant="secondary" size="sm" onClick={onEdit}>{editing ? 'Close' : 'Edit'}</YButton>
+          <YButton variant="danger" size="sm" onClick={() => setConfirm({ kind: 'delete' })}>Delete</YButton>
+        </>}
+        className="min-h-7"
+      >
         <span className="truncate font-medium text-text">{e.name}</span>
-        <span className="truncate font-mono text-text-faint">{[e.baseUrl, e.keyPreview].filter(Boolean).join(' · ')}</span>
-        <span className="ml-auto flex shrink-0">
-          <button type="button" onClick={onEdit} className={TEXT_BUTTON}>{editing ? 'Close' : 'Edit'}</button>
-          <button type="button" onClick={() => setConfirm({ kind: 'delete' })} className={TEXT_BUTTON}>Delete</button>
-        </span>
-      </div>
+        <span className="truncate font-mono text-subtle">{[e.baseUrl, e.keyPreview].filter(Boolean).join(' · ')}</span>
+      </YRowFrame>
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] text-text-faint">Used by</span>
+        <span className="text-sm text-subtle">Used by</span>
         {API_KEY_TOOLS.map((tool) => (
-          <button
+          <YChip
             key={tool}
-            type="button"
             role="switch"
             aria-checked={e.tools.includes(tool)}
             aria-label={tool}
+            selected={e.tools.includes(tool)}
             disabled={change.isPending}
             onClick={() => toggle(tool)}
-            className={clsx(
-              'rounded-full border px-2 py-0.5 font-mono text-[11px]',
-              e.tools.includes(tool) ? 'border-accent/40 bg-accent/10 text-text' : 'border-border text-text-faint',
-            )}
+            className="font-mono"
           >
             {tool}
-          </button>
+          </YChip>
         ))}
       </div>
-      <p className="font-mono text-[11px] leading-relaxed text-text-dim">
+      <p className="font-mono text-sm leading-relaxed text-muted">
         {e.models.map(describeEndpointModel).join(', ')}
       </p>
       {editing && <EndpointEditor endpoint={e} onDone={onDone} onCancel={onEdit} />}
-      {change.error && <p className="text-[11px] text-red-400">{change.error.message}</p>}
-      <ConfirmDialog
+      {change.error && <p className="text-sm text-danger">{change.error.message}</p>}
+      <YConfirm
         open={confirm?.kind === 'attach'}
         onOpenChange={(open) => { if (!open) setConfirm(null) }}
         title={`Use ${e.name} for ${confirm?.kind === 'attach' ? confirm.tool : ''}?`}
@@ -144,7 +144,7 @@ function EndpointCard({ endpoint: e, toolAuth, editing, onEdit, onDone, onChange
         busy={change.isPending}
         onConfirm={() => { if (confirm?.kind === 'attach') attach(confirm.tool) }}
       />
-      <ConfirmDialog
+      <YConfirm
         open={confirm?.kind === 'detach'}
         onOpenChange={(open) => { if (!open) setConfirm(null) }}
         title={`Sign ${confirm?.kind === 'detach' ? confirm.tool : ''} out?`}
@@ -153,7 +153,7 @@ function EndpointCard({ endpoint: e, toolAuth, editing, onEdit, onDone, onChange
         busy={change.isPending}
         onConfirm={() => { if (confirm?.kind === 'detach') detach(confirm.tool) }}
       />
-      <ConfirmDialog
+      <YConfirm
         open={confirm?.kind === 'delete'}
         onOpenChange={(open) => { if (!open) setConfirm(null) }}
         title={`Delete ${e.name}?`}
@@ -260,7 +260,7 @@ function EndpointEditor({ endpoint, onDone, onCancel }: {
   }
 
   return (
-    <form onSubmit={submit} className="flex flex-col gap-2 border-t border-hairline-soft pt-2">
+    <form onSubmit={submit} className="flex flex-col gap-2 border-t border-line pt-2">
       {endpoint && (
         <AffectsBanner
           lead="Used by"
@@ -270,42 +270,41 @@ function EndpointEditor({ endpoint, onDone, onCancel }: {
         />
       )}
       <div className="flex gap-2">
-        <input aria-label="Endpoint name" value={name} onChange={(ev) => setName(ev.target.value)} placeholder="Name, e.g. my-llama" className={clsx(INPUT, 'w-40')} />
-        <input
+        <YInput aria-label="Endpoint name" value={name} onChange={(ev) => setName(ev.target.value)} placeholder="Name, e.g. my-llama" className="w-40 font-mono" />
+        <YInput
           aria-label="Endpoint URL"
           value={baseUrl}
           onChange={(ev) => setBaseUrl(ev.target.value)}
           onBlur={() => { if (endpoint === undefined && blank && baseUrl.trim() !== '') fetchModels.mutate() }}
           placeholder="Endpoint URL, e.g. http://my-box:8080/v1"
-          className={clsx(INPUT, 'min-w-0 flex-1')}
+          className="flex-1 font-mono"
         />
       </div>
       <div className="flex items-center gap-2">
-        <input
+        <YInput
           aria-label="Endpoint API key"
           type="password"
           value={apiKey}
           onChange={(ev) => { setApiKey(ev.target.value); setClearKey(false) }}
           placeholder={endpoint?.keyPreview && !clearKey ? `API key (keep ${endpoint.keyPreview})` : 'API key (optional)'}
-          className={clsx(INPUT, 'min-w-0 flex-1')}
+          className="flex-1 font-mono"
         />
         {endpoint?.keyPreview && !clearKey && (
-          <button type="button" onClick={() => { setClearKey(true); setApiKey('') }} className={TEXT_BUTTON}>Remove key</button>
+          <YButton variant="danger" size="sm" onClick={() => { setClearKey(true); setApiKey('') }}>Remove key</YButton>
         )}
-        <button
-          type="button"
+        <YButton
+          size="sm"
           disabled={baseUrl.trim() === '' || fetchModels.isPending || (!blank && models === null)}
           title={!blank && models === null ? 'Fix the models JSON first, so the fetched list can be compared with it' : undefined}
           onClick={() => fetchModels.mutate()}
-          className={BUTTON}
         >
           {fetchModels.isPending ? 'Fetching…' : endpoint ? 'Re-fetch from endpoint' : 'Fetch models'}
-        </button>
+        </YButton>
       </div>
       {endpoint?.keyPreview && !clearKey && apiKey.trim() === '' && hostOf(baseUrl) !== hostOf(endpoint.baseUrl) && (
-        <p className="text-[11px] text-amber-400">The stored key is removed when the host changes; enter it again to keep one.</p>
+        <p className="text-sm text-warning">The stored key is removed when the host changes; enter it again to keep one.</p>
       )}
-      {fetchModels.error && <p className="text-[11px] text-red-400">{fetchModels.error.message}</p>}
+      {fetchModels.error && <p className="text-sm text-danger">{fetchModels.error.message}</p>}
       {discovery?.diff && (
         <DiffPanel
           key={discovery.n}
@@ -320,33 +319,38 @@ function EndpointEditor({ endpoint, onDone, onCancel }: {
           onDismiss={() => setDiscovery(null)}
         />
       )}
-      <textarea
+      <YTextArea
         aria-label="Models (JSON)"
         value={modelsText}
         onChange={(ev) => setModelsText(ev.target.value)}
         placeholder={'[{ "id": "my-model", "efforts": { "levels": ["low", "medium", "high"], "default": "medium" } }]'}
         rows={Math.min(16, Math.max(4, modelsText.split('\n').length))}
         spellCheck={false}
-        className={clsx(INPUT, 'resize-y leading-relaxed')}
+        className="resize-y font-mono leading-relaxed"
       />
       {problems.length > 0 && (
-        <ul className="text-[11px] text-red-400">{problems.map((p) => <li key={p}>{p}</li>)}</ul>
+        <ul className="text-sm text-danger">{problems.map((p) => <li key={p}>{p}</li>)}</ul>
       )}
       {discovery && discovery.found.skipped.length > 0 && (
-        <p className="text-[11px] text-text-faint">
+        <p className="text-sm text-subtle">
           Left out: {discovery.found.skipped.map((s) => `${s.id} (${s.reason})`).join(', ')}
         </p>
       )}
-      <p className="text-[11px] text-text-faint">
+      <p className="text-sm text-subtle">
         Each model is an id, an optional name, and its reasoning levels (none minimal low medium high xhigh max) with a default.
       </p>
       <div className="flex gap-2">
-        <button type="submit" disabled={models === null || name.trim() === '' || baseUrl.trim() === '' || save.isPending} className={BUTTON}>
+        <YButton
+          variant="primary"
+          size="sm"
+          type="submit"
+          disabled={models === null || name.trim() === '' || baseUrl.trim() === '' || save.isPending}
+        >
           {save.isPending ? 'Saving…' : 'Save'}
-        </button>
-        <button type="button" onClick={onCancel} className={BUTTON}>Cancel</button>
+        </YButton>
+        <YButton variant="ghost" size="sm" onClick={onCancel}>Cancel</YButton>
       </div>
-      {save.error && <p className="text-[11px] text-red-400">{save.error.message}</p>}
+      {save.error && <p className="text-sm text-danger">{save.error.message}</p>}
     </form>
   )
 }
@@ -370,9 +374,9 @@ function DiffPanel({ diff, canApply, onApply, onReplace, onDismiss }: {
   const [removed, setRemoved] = useState(() => new Set<string>())
   if (emptyDiff(diff)) {
     return (
-      <div className="flex items-center gap-2 rounded-md border border-hairline-soft p-2 text-[11px] text-text-dim">
+      <div className="flex items-center gap-2 bg-sunken p-2 text-sm text-muted shadow-inset">
         The endpoint&apos;s list matches yours.
-        <button type="button" onClick={onDismiss} className={clsx(TEXT_BUTTON, 'ml-auto')}>Dismiss</button>
+        <YButton variant="ghost" size="sm" onClick={onDismiss} className="ml-auto">Dismiss</YButton>
       </div>
     )
   }
@@ -383,36 +387,36 @@ function DiffPanel({ diff, canApply, onApply, onReplace, onDismiss }: {
     update(next)
   }
   const row = (label: string, id: string, text: string, set: Set<string>, update: (s: Set<string>) => void): JSX.Element => (
-    <label key={`${label}-${id}`} className="flex items-center gap-2 font-mono text-[11px] text-text-dim">
-      <input type="checkbox" checked={set.has(id)} onChange={() => flip(set, update, id)} aria-label={`${label} ${id}`} />
-      <span className="w-14 shrink-0 font-sans text-text-faint">{label}</span>
-      <span className="truncate">{text}</span>
-    </label>
+    <YCheckbox key={`${label}-${id}`} checked={set.has(id)} onCheckedChange={() => flip(set, update, id)} aria-label={`${label} ${id}`}>
+      <span className="flex min-w-0 items-center gap-2 font-mono text-sm text-muted">
+        <span className="w-14 shrink-0 font-sans text-subtle">{label}</span>
+        <span className="truncate">{text}</span>
+      </span>
+    </YCheckbox>
   )
   return (
-    <div role="region" aria-label="Fetched changes" className="flex flex-col gap-1 rounded-md border border-accent/20 bg-accent/5 p-2">
+    <div role="region" aria-label="Fetched changes" className="flex flex-col gap-1 bg-info-soft p-2">
       {diff.added.map((m) => row('New', m.id, describeEndpointModel(m), added, setAdded))}
       {diff.changed.map(({ before, after }) => row(
         'Changed', after.id, `${describeEndpointModel(before)} → ${describeEndpointModel(after)}`, changed, setChanged,
       ))}
       {diff.removed.map((m) => row('Gone', m.id, describeEndpointModel(m), removed, setRemoved))}
-      {!canApply && <p className="text-[11px] text-red-400">Fix the models JSON below to apply these.</p>}
+      {!canApply && <p className="text-sm text-danger">Fix the models JSON below to apply these.</p>}
       <div className="mt-1 flex flex-wrap gap-2">
-        <button type="button" disabled={!canApply} onClick={() => onApply({ added, changed, removed })} className={BUTTON}>Apply selected</button>
-        <button
-          type="button"
+        <YButton size="sm" disabled={!canApply} onClick={() => onApply({ added, changed, removed })}>Apply selected</YButton>
+        <YButton
+          size="sm"
           disabled={!canApply}
           onClick={() => onApply({
             added: new Set(diff.added.map((m) => m.id)),
             changed: new Set(diff.changed.map((c) => c.after.id)),
             removed: new Set(diff.removed.map((m) => m.id)),
           })}
-          className={BUTTON}
         >
           Apply all
-        </button>
-        <button type="button" onClick={onReplace} className={BUTTON}>Replace list with fetched</button>
-        <button type="button" onClick={onDismiss} className={BUTTON}>Dismiss</button>
+        </YButton>
+        <YButton size="sm" onClick={onReplace}>Replace list with fetched</YButton>
+        <YButton variant="ghost" size="sm" onClick={onDismiss}>Dismiss</YButton>
       </div>
     </div>
   )

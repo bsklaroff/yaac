@@ -1,7 +1,8 @@
 /// <reference types="vite/client" />
 
 // @fontsource packages ship CSS without type declarations.
-declare module '@fontsource-variable/inter'
+declare module '@fontsource-variable/geist'
+declare module '@fontsource-variable/geist-mono'
 
 /** Stamped by vite.config.ts; undefined under the unit tests. */
 interface ImportMetaEnv {

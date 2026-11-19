@@ -73,12 +73,13 @@ try {
   check('sidebar: no separate group section', await page.locator(`[aria-label="Workflows"] ~ [role="group"][aria-label="${NAME}"]`).count() === 0)
   await page.screenshot({ path: `${SHOTS}/ux-sidebar-run.png` })
 
-  await section.getByText(NAME, { exact: true }).click()
+  await section.getByRole('button', { name: NAME, exact: true }).click()
   await page.getByText('echo building').waitFor()
   check('pane: workflow pane with Run now', await page.getByRole('button', { name: 'Run now', exact: true }).isVisible())
   await page.screenshot({ path: `${SHOTS}/ux-workflow-pane.png` })
 
-  await page.getByTitle('Settings').first().click()
+  await page.getByRole('button', { name: 'yaac menu' }).click()
+  await page.getByRole('menuitem', { name: 'Settings' }).click()
   const nav = page.getByRole('dialog')
   await nav.getByRole('group', { name: 'Project' }).waitFor()
   for (const label of ['General', 'Environment', 'Network', 'Storage']) {

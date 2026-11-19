@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { YButton } from '#ui'
 
 interface Props {
   children: ReactNode
@@ -36,19 +37,16 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children
     if (this.props.fallback) return this.props.fallback(error, this.reset)
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 bg-bg p-6 text-center">
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-sunken p-6 text-center">
         <div className="text-text">Something went wrong</div>
-        <div className="max-w-md text-sm text-text-faint">
+        <div className="max-w-md text-base text-subtle">
           The app hit an unexpected error. This can happen when the webapp
           and the server are running different versions.
         </div>
-        <pre className="max-w-md overflow-auto text-xs text-text-faint">{error.message}</pre>
-        <button
-          className="rounded bg-shell px-3 py-1 text-sm text-text"
-          onClick={() => window.location.reload()}
-        >
+        <pre className="max-w-md overflow-auto text-md text-subtle">{error.message}</pre>
+        <YButton variant="primary" onClick={() => window.location.reload()}>
           Reload
-        </button>
+        </YButton>
       </div>
     )
   }

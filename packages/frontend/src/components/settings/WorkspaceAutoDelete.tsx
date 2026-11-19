@@ -1,8 +1,7 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '#lib/api'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
+import { YButton, YConfirm, YInput, YSettingRow } from '#ui'
 
 const autoDelete = api.project[':projectId']['workspace-auto-delete']
 
@@ -52,43 +51,42 @@ export function WorkspaceAutoDelete({ projectId, name, days, readOnly }: {
   }
 
   return (
-    <div>
-      <div className="text-xs font-medium text-text">Stopped workspace auto-delete</div>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-        Delete this project&apos;s workspaces once they have been stopped this many days, with their
-        checkouts (unpushed commits and uncommitted changes included) and conversation history.
-        Deleted workspaces cannot be recovered. Leave it off to keep them until you delete them.
-      </p>
-      <form onSubmit={submit} className="mt-2 flex items-center gap-2">
-        <input
+    <YSettingRow
+      stacked
+      label="Stopped workspace auto-delete"
+      hint={'Delete this project\'s workspaces once they have been stopped this many days, with their '
+        + 'checkouts (unpushed commits and uncommitted changes included) and conversation history. '
+        + 'Deleted workspaces cannot be recovered. Leave it off to keep them until you delete them.'}
+    >
+      <form onSubmit={submit} className="flex items-center gap-2">
+        <YInput
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           inputMode="numeric"
           placeholder="off"
           aria-label="Days stopped before a workspace is deleted"
           disabled={readOnly}
-          className="w-20 rounded-md border border-border bg-bg px-2.5 py-1.5 font-mono text-xs text-text
-            outline-none focus:border-border-strong"
+          className="w-20 font-mono"
         />
-        <span className="text-[11px] text-text-dim">days</span>
+        <span className="text-sm text-muted">days</span>
         {!readOnly && <>
-          <button type="submit" disabled={!valid || parsed === days || preview.isPending} className={BUTTON}>Save</button>
+          <YButton type="submit" size="sm" disabled={!valid || parsed === days || preview.isPending}>Save</YButton>
           {days !== undefined && (
-            <button type="button" onClick={() => save.mutate(null)} disabled={save.isPending} className={TEXT_BUTTON}>
+            <YButton variant="secondary" size="sm" onClick={() => save.mutate(null)} disabled={save.isPending}>
               Turn off
-            </button>
+            </YButton>
           )}
         </>}
       </form>
-      {error && <p className="mt-2 text-xs text-red-400">{error.message}</p>}
+      {error && <p className="mt-2 text-md text-danger">{error.message}</p>}
       {outcome && (
-        <p className="mt-2 text-[11px] leading-relaxed text-text-dim">
+        <p className="mt-2 text-sm leading-relaxed text-muted">
           Deleted {plural(outcome.deleted)}.
           {outcome.kept.length > 0 && ` Kept ${plural(outcome.kept.length)} for now, deleted once they can be: `
             + outcome.kept.map((k) => k.reason).join('; ')}
         </p>
       )}
-      <ConfirmDialog
+      <YConfirm
         open={pending !== null}
         onOpenChange={(open) => { if (!open) setPending(null) }}
         title={pending && pending.expired > 0
@@ -111,6 +109,6 @@ export function WorkspaceAutoDelete({ projectId, name, days, readOnly }: {
         } : {})}
         onConfirm={() => { if (pending) save.mutate({ days: pending.days, before: pending.before }) }}
       />
-    </div>
+    </YSettingRow>
   )
 }

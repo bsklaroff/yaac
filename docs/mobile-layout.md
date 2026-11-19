@@ -33,6 +33,8 @@ app's own choices:
 | `openWorkspace` → `pane` (tray/notification jump, just-created workspace) | — |
 | `openNewWorkspace` → `pane` (the +, Alt+N, a draft or queued row) | — |
 | `openRoutine` → `pane` (a routine row, or a run's "from" link) | — |
+| `openHome` → `workspaces` (the rail's or projects screen's Home) | — |
+| `selectHomeWorkspace` → `pane` (a session picked on Home) | — |
 
 An eslint rule allows the two right-hand actions only in `App.tsx`, the store
 and the delete flow (`lib/stopWorkspaceFlow.ts`, which selects the row below a
@@ -96,15 +98,18 @@ state object, so the stored screen survives.
 
 ## The screens
 
-**Projects** is a list of named rows. The rail's 40px chips only work beside
-what they scope; alone they would be a column of unlabelled letters. Rows use
-the same identity color (`lib/projectIdentity.ts`), and `NewProjectButton`
-and `SettingsButton` render as rows (`variant="row"`). So does
-`ServersButton` inside the iPhone app (ios/README.md), naming the connected
-server, since this screen has no status row for the server badge.
+**Projects** is Home, then a list of named rows. The rail's tiles only work
+beside what they scope; alone they would be a column of unlabelled letters.
+Rows use the rail's `YProjectTile`, so a project shows what is going on in it
+the same way, and what the desktop keeps in the logo menu (switching user,
+adding a project, feedback, server health, settings) renders as rows. So
+does `ServersButton` inside the iPhone app (ios/README.md), naming the
+connected server, since this screen has no status row for the server badge.
 
 **Workspaces** reuses the desktop sidebar's `WorkspaceList` as is, so list
-order matches the Alt+K/J cycle order. It sits under a mobile header with the
+order matches the Alt+K/J cycle order. Opening Home (`openHome`) lands here
+too, on every project's sessions by status (`HomeSessionList`), with an
+Inbox button in the header that shows Home's inbox in the pane. It sits under a mobile header with the
 project menu and new-workspace, over the sidebar's status row (usage,
 and the server badge inside the iPhone app). Touch has no hover, so below `md` each
 row's rename, group and delete actions are always shown and finger-sized, and
@@ -117,8 +122,7 @@ the title's hover marquee is off. Dragging rows between groups is mouse-only
 - **Tabs mode is forced** at render, never written to the store, so a desktop
   tiles preference survives opening the server on a phone. Tabs are not
   draggable, which also avoids a drag vs. scroll conflict.
-- **The header folds.** The title and the alarm chips (git auth, blocked
-  hosts, unforwarded ports) stay, since they report problems. New shell,
+- **The header folds.** The title and the Details button stay; New shell,
   Changes, Files and Preview (in the iPhone app) move into a `⋯` menu
   (`PaneOverflowMenu`).
 - **Eager attach drops to 2** (from 12). Each pre-attached pane is a live PTY
@@ -265,7 +269,7 @@ every width) turns its left nav into a scrolling row of chips, and the
 
 Settings' Skills section and the image builds overlay are list/detail
 layouts, and a 20rem list leaves the detail a few dozen pixels at 390px.
-`components/ui/MasterDetail` is their shared body: side by side above `md`, one at a time below it (the list until
+`components/MasterDetail` is their shared body: side by side above `md`, one at a time below it (the list until
 a row is tapped, then the detail with a back chevron).
 
 - **The hidden side uses `max-md:hidden`** (`display: none`). Here that is

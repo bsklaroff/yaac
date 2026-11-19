@@ -77,12 +77,12 @@ describe('WorkspaceView: open-files', () => {
 
   it('follows a rebinding, and the old chord no longer opens it', () => {
     act(() => {
-      useUiStore.getState().setBinding('open-files', { ...DEFAULT_BINDINGS['open-files'], code: 'KeyO' })
+      useUiStore.getState().setBinding('open-files', { ...DEFAULT_BINDINGS['open-files'], code: 'KeyY' })
     })
     renderView()
     altE()
     expect(tabsOf()).not.toContain('files')
-    fireEvent.keyDown(window, { code: 'KeyO', key: 'o', altKey: true })
+    fireEvent.keyDown(window, { code: 'KeyY', key: 'y', altKey: true })
     expect(tabsOf()).toContain('files')
   })
 })

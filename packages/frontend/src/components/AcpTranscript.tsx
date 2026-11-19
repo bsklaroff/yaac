@@ -2,7 +2,7 @@ import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type
 import clsx from 'clsx'
 import { CodeView, DiffView } from '#components/DiffView'
 import { FileLink, FileLinksContext, Linked, Markdown } from '#components/Markdown'
-import { PathLabel } from '#components/ui/PathLabel'
+import { PathLabel } from '#components/PathLabel'
 import { formatModel } from '#lib/agentLabel'
 import { useImageSrc } from '#lib/attachments'
 import { codeLines, unfence } from '#lib/code'
@@ -15,7 +15,9 @@ import {
   InterruptedIcon, MonitorIcon, MoreIcon, MoveIcon, PendingIcon, PlanIcon, PreviewIcon, RenameIcon, SearchIcon, SubagentIcon,
   ThinkingIcon, ToolIcon, WarningIcon, WorkflowIcon, type Icon,
 } from '#lib/icons'
+import { YAsk, YButton, YStatus } from '#ui'
 import { stripAnsi } from '@yaac/shared/ansi'
+
 import type {
   AcpCompaction, AcpDiff, AcpEvent, AcpImage, AcpStoredImage, AcpPermissionOption, AcpPlanEntry, AcpSubagent, AcpTask, AcpToolCall,
   AcpToolContent, AcpToolKind, AcpWake,
@@ -95,7 +97,7 @@ function unfinished(call: AcpToolCall): boolean {
 const THREADED = ['user', 'agent', 'thought', 'tool', 'tool-output', 'plan', 'permission-request'] as const
 
 /** A user message, as plain text rather than markdown. */
-export const USER_BUBBLE = 'max-w-[85%] whitespace-pre-wrap rounded-xl border border-accent/20 bg-accent/10 px-3 py-2 '
+export const USER_BUBBLE = 'max-w-[85%] whitespace-pre-wrap rounded-md bg-selected px-3.5 py-2.5 '
   + 'text-text'
 
 /** How much streamed output a call keeps: its end, as a terminal shows. */
@@ -488,15 +490,15 @@ function MessageImages({ images, workspaceId }: { images: MessageImage[]; worksp
 function MessageImageView({ image, workspaceId }: { image: MessageImage; workspaceId: string }): JSX.Element {
   const [open, setOpen] = useState(false)
   return (
-    <button type="button" onClick={() => setOpen((o) => !o)} className="max-w-full">
+    <YButton variant="bare" onClick={() => setOpen((o) => !o)} className="max-w-full">
       <img
         src={useImageSrc(image, workspaceId)}
         alt=""
         loading="lazy"
         decoding="async"
-        className={clsx('max-w-full rounded border border-hairline', !open && 'max-h-48')}
+        className={clsx('max-w-full rounded border border-line', !open && 'max-h-48')}
       />
-    </button>
+    </YButton>
   )
 }
 
@@ -541,14 +543,14 @@ function EditGroupView({ group, showPath, location }: {
   return (
     <div>
       {showPath && (
-        <div className="border-b border-hairline px-2.5 py-1 font-mono text-[10px]">
+        <div className="border-b border-line px-2.5 py-1 font-mono text-xs">
           {file === undefined
             ? <PathLabel path={group.path} emphasis="dim" />
             : <FileLink file={file}><PathLabel path={group.path} emphasis="dim" /></FileLink>}
         </div>
       )}
       {group.hunks.map((lines, i) => (
-        <div key={i} className={clsx(i > 0 && 'border-t border-hairline')}>
+        <div key={i} className={clsx(i > 0 && 'border-t border-line')}>
           {/* No line numbers: they would count from the hunk, not the file. */}
           <DiffView lines={lines} language={language} showLineNumbers={false} />
         </div>
@@ -657,29 +659,29 @@ function DisclosureRow({
   children: ReactNode
 }): JSX.Element {
   return (
-    <button
-      type="button"
+    <YButton
+      variant="bare"
       onClick={expandable ? onToggle : undefined}
       aria-disabled={!expandable || undefined}
       aria-expanded={expandable ? open : undefined}
       className={clsx(
-        'group -mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs text-text-dim',
-        expandable ? 'hover:bg-surface-2 hover:text-text' : 'cursor-default',
+        'group -mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-md text-muted',
+        expandable ? 'hover:bg-hover hover:text-text' : 'cursor-default',
       )}
     >
       <ChevronIcon
         size={12}
         className={clsx(
-          'shrink-0 text-text-faint transition-transform',
+          'shrink-0 text-subtle transition-transform',
           open && 'rotate-90',
           !expandable && 'invisible',
         )}
       />
       {busy
-        ? <LoadingIcon size={13} aria-label="running" className="shrink-0 animate-spin text-text-faint" />
-        : <Icon size={13} className={clsx('shrink-0', tint ?? clsx('text-text-faint', expandable && 'group-hover:text-text-dim'))} />}
+        ? <LoadingIcon size={13} aria-label="running" className="shrink-0 animate-spin text-subtle" />
+        : <Icon size={13} className={clsx('shrink-0', tint ?? clsx('text-subtle', expandable && 'group-hover:text-muted'))} />}
       {children}
-    </button>
+    </YButton>
   )
 }
 
@@ -770,38 +772,38 @@ export function ToolRow({
       >
         <span
           ref={labelRef}
-          className={clsx('truncate', description === undefined && call.kind === 'execute' && 'font-mono text-[11px]')}
+          className={clsx('truncate', description === undefined && call.kind === 'execute' && 'font-mono text-sm')}
         >
           <Linked web {...(located ? { about: located } : {})}>{label}</Linked>
         </span>
         {unnamed && (
-          <span className="min-w-0 truncate font-mono text-[11px]">
+          <span className="min-w-0 truncate font-mono text-sm">
             <FileLink file={located}><PathLabel path={located.path} emphasis="dim" /></FileLink>
           </span>
         )}
         {edits.length > 0 && (
-          <span className="shrink-0 font-mono text-[10px]">
+          <span className="shrink-0 font-mono text-xs">
             {stats.additions > 0 && <span className="text-success">+{stats.additions}</span>}
             {stats.additions > 0 && stats.deletions > 0 && ' '}
-            {stats.deletions > 0 && <span className="text-error">−{stats.deletions}</span>}
+            {stats.deletions > 0 && <span className="text-danger">−{stats.deletions}</span>}
           </span>
         )}
         {unfinished(call) && progress === 'interrupted' && (
-          <span className="flex shrink-0 items-center gap-1 text-[11px] text-text-faint">
+          <span className="flex shrink-0 items-center gap-1 text-sm text-subtle">
             <InterruptedIcon size={12} />
             interrupted
           </span>
         )}
         {call.status === 'failed' && (
-          <FailedIcon size={12} aria-label="failed" className="shrink-0 text-error" />
+          <FailedIcon size={12} aria-label="failed" className="shrink-0 text-danger" />
         )}
       </DisclosureRow>
       {open && (
-        <div className="mt-1 mb-1.5 ml-[18px] max-h-96 overflow-auto rounded-lg border border-hairline bg-surface">
+        <div className="mt-1 mb-1.5 ml-[18px] max-h-96 overflow-auto rounded-lg border border-line bg-surface">
           {fullLabel && (
             <p className={clsx(
-              'px-2.5 py-1.5 text-[11px] leading-snug whitespace-pre-wrap text-text',
-              (call.shell === true || body !== '' || output !== '' || edits.length > 0) && 'border-b border-hairline',
+              'px-2.5 py-1.5 text-sm leading-snug whitespace-pre-wrap text-text',
+              (call.shell === true || body !== '' || output !== '' || edits.length > 0) && 'border-b border-line',
             )}>
               {label}
             </p>
@@ -809,15 +811,15 @@ export function ToolRow({
           {call.shell === true && (
             /* Capped on its own so a long command leaves its output in view. */
             <pre className={clsx(
-              'max-h-40 overflow-auto px-2.5 py-1.5 font-mono text-[11px] leading-snug whitespace-pre-wrap',
+              'max-h-40 overflow-auto px-2.5 py-1.5 font-mono text-sm leading-snug whitespace-pre-wrap',
               'break-all text-text',
-              (body !== '' || output !== '') && 'border-b border-hairline',
+              (body !== '' || output !== '') && 'border-b border-line',
             )}>
-              <span className="select-none text-text-faint">$ </span>{call.title}
+              <span className="select-none text-subtle">$ </span>{call.title}
             </pre>
           )}
           {edits.map((group, i) => (
-            <div key={i} className={clsx(i > 0 && 'border-t border-hairline')}>
+            <div key={i} className={clsx(i > 0 && 'border-t border-line')}>
               <EditGroupView
                 group={group}
                 showPath={edits.length > 1 || !call.locations?.length}
@@ -826,20 +828,20 @@ export function ToolRow({
             </div>
           ))}
           {body !== '' && (isRead ? (
-            <div className={clsx('overflow-x-auto', edits.length > 0 && 'border-t border-hairline')}>
+            <div className={clsx('overflow-x-auto', edits.length > 0 && 'border-t border-line')}>
               {/* Best effort: with several locations the first may not be
                   the file this body came from, which only affects colors. */}
               <ReadView path={call.locations?.[0]?.path} text={body} />
             </div>
           ) : (
-            <div className={clsx('px-2.5 py-1.5 text-[11px] leading-snug text-text-dim', edits.length > 0 && 'border-t border-hairline')}>
+            <div className={clsx('px-2.5 py-1.5 text-sm leading-snug text-muted', edits.length > 0 && 'border-t border-line')}>
               <Markdown>{body}</Markdown>
             </div>
           ))}
           {output !== '' && (
             <pre className={clsx(
-              'px-2.5 py-1.5 font-mono text-[11px] leading-snug whitespace-pre-wrap break-all text-text-dim',
-              (body !== '' || edits.length > 0) && 'border-t border-hairline',
+              'px-2.5 py-1.5 font-mono text-sm leading-snug whitespace-pre-wrap break-all text-muted',
+              (body !== '' || edits.length > 0) && 'border-t border-line',
             )}>
               {stripAnsi(output)}
             </pre>
@@ -863,7 +865,7 @@ function ThoughtRow({ text, reveal }: { text: string; reveal: boolean }): JSX.El
         Thinking
       </DisclosureRow>
       {open && (
-        <div className="mt-1 mb-1.5 ml-[18px] border-l-2 border-hairline pl-3 text-xs text-text-dim">
+        <div className="mt-1 mb-1.5 ml-[18px] border-l-2 border-line pl-3 text-md text-muted">
           <Markdown>{text}</Markdown>
         </div>
       )}
@@ -905,17 +907,17 @@ function CompactionRow({ compaction: c, live, reveal }: {
   const expandable = detail !== undefined && detail !== ''
   return (
     <div>
-      <div className="flex items-center gap-2 text-[11px] text-text-faint">
-        <span className="h-px flex-1 bg-hairline" />
-        <button
-          type="button"
+      <div className="flex items-center gap-2 text-sm text-subtle">
+        <span className="h-px flex-1 bg-line" />
+        <YButton
+          variant="bare"
           onClick={expandable ? () => setOpen(!open) : undefined}
           aria-disabled={!expandable || undefined}
           aria-expanded={expandable ? open : undefined}
           className={clsx(
             'flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-0.5',
-            expandable ? 'hover:bg-surface-2 hover:text-text-dim' : 'cursor-default',
-            c.status === 'failed' && 'text-error',
+            expandable ? 'hover:bg-hover hover:text-muted' : 'cursor-default',
+            c.status === 'failed' && 'text-danger',
           )}
         >
           {c.status === 'running' && live
@@ -923,11 +925,11 @@ function CompactionRow({ compaction: c, live, reveal }: {
             : <CompactionIcon size={12} className="shrink-0" />}
           <span className="truncate">{compactionLabel(c, live)}</span>
           {expandable && <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />}
-        </button>
-        <span className="h-px flex-1 bg-hairline" />
+        </YButton>
+        <span className="h-px flex-1 bg-line" />
       </div>
       {open && expandable && (
-        <div className="mt-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-xs leading-relaxed text-text-dim">
+        <div className="mt-2 rounded-lg border border-line bg-surface px-3 py-2 text-md leading-relaxed text-muted">
           <Markdown>{detail}</Markdown>
         </div>
       )}
@@ -943,10 +945,10 @@ function modelSwitchLabel(label: string): string {
  *  and what follows. */
 function Divider({ children }: { children: ReactNode }): JSX.Element {
   return (
-    <div className="flex items-center gap-2 text-[11px] text-text-faint">
-      <span className="h-px flex-1 bg-hairline" />
+    <div className="flex items-center gap-2 text-sm text-subtle">
+      <span className="h-px flex-1 bg-line" />
       {children}
-      <span className="h-px flex-1 bg-hairline" />
+      <span className="h-px flex-1 bg-line" />
     </div>
   )
 }
@@ -1009,7 +1011,7 @@ function PermissionRow({
           onToggle={() => setOpen(!open)}
           expandable={toolCall !== undefined && !inView}
           icon={allowed ? DoneIcon : FailedIcon}
-          tint={allowed ? 'text-success' : 'text-error'}
+          tint={allowed ? 'text-success' : 'text-danger'}
         >
           <span className="truncate">
             {decided.outcome === 'cancelled'
@@ -1034,7 +1036,7 @@ function PermissionRow({
 
   return (
     <div className="space-y-2 rounded-lg border border-warning/60 bg-warning/5 px-3 py-2">
-      <div className="flex items-center gap-1.5 text-xs font-medium text-warning">
+      <div className="flex items-center gap-1.5 text-md font-medium text-warning">
         <WarningIcon size={12} className="shrink-0" />
         {onAnswer !== undefined ? 'Permission needed'
           : waitingOn === undefined ? 'Permission was never answered'
@@ -1044,31 +1046,21 @@ function PermissionRow({
       {onAnswer !== undefined && (
         <div className="flex flex-wrap gap-1.5 pt-0.5">
           {options.map((o) => (
-            <button
+            <YButton
               key={o.optionId}
-              type="button"
+              variant={isAllow(o) ? 'primary' : 'secondary'}
               disabled={sending}
               onClick={() => answer(o.optionId)}
-              className={clsx(
-                'rounded-md px-2.5 py-1 text-xs font-medium disabled:opacity-40',
-                isAllow(o)
-                  ? 'bg-text text-bg hover:opacity-90'
-                  : 'border border-border text-text-dim hover:bg-surface-2 hover:text-text',
-              )}
             >
               {o.name}
-            </button>
+            </YButton>
           ))}
           {/* Always offered: the turn is blocked until the ask is answered,
               even when the agent offered only allow options. */}
-          <button
-            type="button"
-            disabled={sending}
-            onClick={() => answer()}
-            className="ml-auto rounded-md px-2 py-1 text-xs text-text-faint hover:text-text-dim disabled:opacity-40"
-          >
+          <YButton variant="ghost" disabled={sending} onClick={() => answer()} className="ml-auto">
             Dismiss
-          </button>
+          </YButton>
+
         </div>
       )}
     </div>
@@ -1084,11 +1076,11 @@ const PLAN_ICON: Record<AcpPlanEntry['status'], Icon> = {
 function PlanRow({ entries }: { entries: AcpPlanEntry[] }): JSX.Element {
   const done = entries.filter((e) => e.status === 'completed').length
   return (
-    <div className="rounded-lg border border-hairline bg-surface px-3 py-2 text-xs">
-      <div className="mb-1.5 flex items-center gap-1.5 text-text-dim">
-        <PlanIcon size={13} className="shrink-0 text-text-faint" />
+    <div className="rounded-lg border border-line bg-surface px-3 py-2 text-md">
+      <div className="mb-1.5 flex items-center gap-1.5 text-muted">
+        <PlanIcon size={13} className="shrink-0 text-subtle" />
         Plan
-        <span className="ml-auto text-text-faint">{done}/{entries.length}</span>
+        <span className="ml-auto text-subtle">{done}/{entries.length}</span>
       </div>
       <ul className="space-y-1">
         {entries.map((e, i) => {
@@ -1098,14 +1090,14 @@ function PlanRow({ entries }: { entries: AcpPlanEntry[] }): JSX.Element {
               key={i}
               className={clsx(
                 'flex items-start gap-2',
-                e.status === 'completed' && 'text-text-faint line-through',
+                e.status === 'completed' && 'text-subtle line-through',
                 e.status === 'in_progress' && 'text-text',
-                e.status === 'pending' && 'text-text-dim',
+                e.status === 'pending' && 'text-muted',
               )}
             >
               <Icon
                 size={12}
-                className={clsx('mt-0.5 shrink-0', e.status === 'in_progress' ? 'text-accent' : 'text-text-faint')}
+                className={clsx('mt-0.5 shrink-0', e.status === 'in_progress' ? 'text-accent' : 'text-subtle')}
               />
               <span>{e.content}</span>
             </li>
@@ -1147,7 +1139,7 @@ export function subagentCategory(subagent: AcpSubagent): ActivityCategory {
 }
 
 const TASK_CATEGORIES: Record<string, ActivityCategory> = {
-  shell: { icon: ExecuteIcon, label: 'Shell', plural: 'Shells', tint: 'text-link' },
+  shell: { icon: ExecuteIcon, label: 'Shell', plural: 'Shells', tint: 'text-info' },
   monitor: { icon: MonitorIcon, label: 'Monitor', plural: 'Monitors', tint: 'text-warning' },
   workflow: { icon: WorkflowIcon, label: 'Workflow', plural: 'Workflows', tint: 'text-accent' },
 }
@@ -1159,7 +1151,7 @@ export function taskCategory(task: AcpTask): ActivityCategory {
   if (known !== undefined) return known
   const kind = task.kind === '' ? 'task' : task.kind
   const label = kind.charAt(0).toUpperCase() + kind.slice(1)
-  return { icon: ToolIcon, label, plural: `${label}s`, tint: 'text-text-faint' }
+  return { icon: ToolIcon, label, plural: `${label}s`, tint: 'text-subtle' }
 }
 
 /**
@@ -1169,12 +1161,12 @@ export function taskCategory(task: AcpTask): ActivityCategory {
  */
 export function StateMark({ state, live }: { state: (AcpSubagent | AcpTask)['state']; live: boolean }): JSX.Element {
   if (state === 'running' && live) {
-    return <LoadingIcon size={12} aria-label="running" className="shrink-0 animate-spin text-text-faint" />
+    return <LoadingIcon size={12} aria-label="running" className="shrink-0 animate-spin text-subtle" />
   }
   if (state === 'completed') return <DoneIcon size={12} aria-label="completed" className="shrink-0 text-success" />
-  if (state === 'failed') return <FailedIcon size={12} aria-label="failed" className="shrink-0 text-error" />
+  if (state === 'failed') return <FailedIcon size={12} aria-label="failed" className="shrink-0 text-danger" />
   return (
-    <span className="flex shrink-0 items-center gap-1 text-[11px] text-text-faint">
+    <span className="flex shrink-0 items-center gap-1 text-sm text-subtle">
       <InterruptedIcon size={12} />
       {state === 'running' ? 'unfinished' : state}
     </span>
@@ -1199,26 +1191,27 @@ function ActivityCard({
   onOpen?: () => void
 }): JSX.Element {
   return (
-    <button
-      type="button"
+    <YButton
+      variant="bare"
       onClick={onOpen}
       disabled={onOpen === undefined}
-      className="group flex w-full items-center gap-2 rounded-lg border border-hairline bg-surface px-3 py-2 text-left
-        text-xs enabled:hover:border-border enabled:hover:bg-surface-2 disabled:cursor-default"
+      className="group flex w-full items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2 text-left
+        text-md enabled:hover:border-line-strong enabled:hover:bg-hover disabled:cursor-default
+        disabled:opacity-100"
     >
       <Icon size={14} className={clsx('shrink-0', tint)} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-1.5">
-          <span className="shrink-0 text-text-faint" title={hint}>{label}</span>
+          <span className="shrink-0 text-subtle" title={hint}>{label}</span>
           <span className="truncate text-text">{title}</span>
         </span>
-        {detail !== undefined && detail !== '' && <span className="truncate text-text-faint">{detail}</span>}
+        {detail !== undefined && detail !== '' && <span className="truncate text-subtle">{detail}</span>}
       </span>
       <StateMark state={state} live={live} />
       {onOpen !== undefined && (
-        <ChevronIcon size={12} className="shrink-0 text-text-faint group-hover:text-text-dim" />
+        <ChevronIcon size={12} className="shrink-0 text-subtle group-hover:text-muted" />
       )}
-    </button>
+    </YButton>
   )
 }
 
@@ -1236,6 +1229,7 @@ export function AcpTranscript({
   busy = false,
   live = false,
   onAnswerPermission,
+  dockAsks = false,
   waitingOn,
   onOpenSubagent,
   onOpenTask,
@@ -1244,6 +1238,9 @@ export function AcpTranscript({
 }: {
   workspaceId: string
   groups: Group[]
+  /** Unanswered asks are answered in `PendingAsks` above the composer; the
+   *  transcript marks where each was asked with one line. */
+  dockAsks?: boolean
   /** Hide all but the key messages behind expandable rows (see `condense`). */
   condensed?: boolean
   /** Whether a turn is in flight. Only then can an unfinished call of the
@@ -1293,7 +1290,7 @@ export function AcpTranscript({
     return asking.has(g.call.toolCallId) ? undefined : 'running'
   }
   return (
-    <div className="break-words text-sm">
+    <div className="break-words text-base">
       {rows.map((g, i) => (
         <div
           key={g.kind === 'folded' ? `f${String(g.seq)}` : g.seq}
@@ -1332,6 +1329,11 @@ export function AcpTranscript({
             />
           ) : g.kind === 'compaction' ? (
             <CompactionRow compaction={g.compaction} live={live} reveal={found?.hidden.has(g.seq) === true} />
+          ) : dockAsks && g.kind === 'permission' && g.decided === undefined ? (
+            <div className="flex items-center gap-2 text-md text-warning">
+              <YStatus kind="need" />
+              <span className="truncate">{g.toolCall?.title ?? 'Permission needed'}: waiting for your answer below</span>
+            </div>
           ) : (
             <GroupView
               workspaceId={workspaceId}
@@ -1365,7 +1367,7 @@ function WokenCaption({
   onOpenTask?: (id: string) => void
 }): JSX.Element {
   return (
-    <div className="mb-1 flex min-w-0 items-center gap-x-1 whitespace-nowrap text-[11px] text-text-faint">
+    <div className="mb-1 flex min-w-0 items-center gap-x-1 whitespace-nowrap text-sm text-subtle">
       {at !== undefined && (
         <>
           <MessageTime at={at} />
@@ -1383,9 +1385,9 @@ function WokenCaption({
             {open === undefined || id === undefined ? (
               <span className="truncate" title={label}>{label}</span>
             ) : (
-              <button type="button" className="truncate hover:text-text-dim hover:underline" title={label} onClick={() => open(id)}>
+              <YButton variant="link" className="truncate" title={label} onClick={() => open(id)}>
                 {label}
-              </button>
+              </YButton>
             )}
             {sep}
           </span>
@@ -1404,7 +1406,7 @@ export function MessageTime({ at }: { at: number }): JSX.Element {
     <time
       dateTime={date.toISOString()}
       title={date.toLocaleString(undefined, { timeZone, dateStyle: 'full', timeStyle: 'long' })}
-      className="shrink-0 whitespace-nowrap text-[11px] tabular-nums text-text-faint"
+      className="shrink-0 whitespace-nowrap text-sm tabular-nums text-subtle"
     >
       {messageTime(at, timeZone)}
     </time>
@@ -1439,7 +1441,7 @@ function GroupView({
     return (
       <div className="flex flex-col items-start gap-0.5">
         {(g.steered === true || g.at !== undefined) && (
-          <div className="flex gap-x-1 px-1 text-[11px] text-text-faint">
+          <div className="flex gap-x-1 px-1 text-sm text-subtle">
             {g.at !== undefined && <MessageTime at={g.at} />}
             {g.steered === true && g.at !== undefined && <span>·</span>}
             {g.steered === true && <span>Sent mid-turn</span>}
@@ -1492,9 +1494,56 @@ function GroupView({
   if (g.kind === 'turn-end') return <Divider>turn ended: {g.stopReason.replace(/_/g, ' ')}</Divider>
   if (g.kind === 'model-switch') return <Divider>{modelSwitchLabel(g.label)}</Divider>
   return (
-    <div className="flex items-start gap-1.5 rounded-lg border border-error/40 bg-error/5 px-3 py-2 text-xs text-error">
+    <div className="flex items-start gap-1.5 rounded-lg border border-danger/40 bg-danger/5 px-3 py-2 text-md text-danger">
       <WarningIcon size={13} className="mt-px shrink-0" />
       <span>{g.message}</span>
     </div>
+  )
+}
+
+/**
+ * The asks a live conversation is blocked on, docked above its composer:
+ * each unanswered permission ask as a YAsk, showing the call it is about,
+ * with the agent's options (an allow option is the primary answer) and
+ * Dismiss. Buttons disable on click; the ask leaves when the server's
+ * `permission-resolved` arrives, and a send that fails re-enables them.
+ */
+export function PendingAsks({ workspaceId, groups, onAnswer }: {
+  workspaceId: string
+  groups: Group[]
+  onAnswer: (requestId: string, optionId?: string) => boolean
+}): JSX.Element | null {
+  const open = groups.filter((g): g is Extract<Group, { kind: 'permission' }> => g.kind === 'permission' && g.decided === undefined)
+  if (open.length === 0) return null
+  return (
+    <div className="mb-2 flex flex-col gap-2">
+      {open.map((g) => <DockedAsk key={g.requestId} workspaceId={workspaceId} ask={g} onAnswer={onAnswer} />)}
+    </div>
+  )
+}
+
+function DockedAsk({ workspaceId, ask, onAnswer }: {
+  workspaceId: string
+  ask: Extract<Group, { kind: 'permission' }>
+  onAnswer: (requestId: string, optionId?: string) => boolean
+}): JSX.Element {
+  const [sending, setSending] = useState(false)
+  const answer = (optionId?: string): void => {
+    setSending(true)
+    if (!onAnswer(ask.requestId, optionId)) setSending(false)
+  }
+  return (
+    <YAsk
+      title={ask.toolCall !== undefined ? `Allow ${ask.toolCall.title}?` : 'Permission needed'}
+      busy={sending}
+      actions={[
+        ...ask.options.map((o) => ({ label: o.name, variant: isAllow(o) ? 'primary' as const : 'secondary' as const, onClick: () => answer(o.optionId) })),
+        // Always offered: the turn is blocked until the ask is answered, even
+        // when the agent offered only allow options.
+        { label: 'Dismiss', variant: 'ghost' as const, onClick: () => answer() },
+      ]}
+    >
+      {ask.toolCall !== undefined && <ToolRow workspaceId={workspaceId} call={ask.toolCall} asked />}
+    </YAsk>
   )
 }

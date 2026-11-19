@@ -1,122 +1,6 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
-
-/*
- * Design tokens ported from the code-design system. Tailwind v4 generates
- * utilities from these (bg-surface, text-text-dim, border-border, accent…).
- */
-@theme {
-  --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-
-  /* Deepest layer — the app shell the floating panes sit on. Light enough
-   * that the panes' drop shadows actually read against it. The elevated
-   * surface steps sit well clear of it so cards, popups and selected fills
-   * read as distinct elevation levels, not near-black on near-black.
-   *
-   * `shell`, not `base`: a `--color-<name>` token makes `text-<name>` a color
-   * utility, so `--color-base` would shadow Tailwind's own `text-base`
-   * font-size utility and quietly turn any `text-base` into shell-colored text
-   * on the shell. Same trap for any other token named after a size step. */
-  --color-shell: #0f0f12;
-  --color-bg: #0b0b0d;
-  --color-surface: #1b1b21;
-  --color-surface-2: #26262d;
-  --color-surface-3: #32323b;
-  --color-border: #3a3a44;
-  --color-border-strong: #4c4c56;
-  --color-text: #e7e7ea;
-  --color-text-dim: #9a9aa4;
-  --color-text-faint: #6a6a74;
-  --color-accent: #d4875f;
-  --color-accent-soft: #8a5a3d;
-
-  /* Status hues: diff add/delete, errors, destructive actions, warnings,
-   * links, and the purple file-type tint. */
-  --color-success: #3fb950;
-  --color-error: #f85149;
-  --color-danger: #d65858;
-  --color-warning: #d29922;
-  --color-link: #58a6ff;
-  --color-purple: #a371f7;
-
-  /* Card edges / dividers. A hair of white on the dark cards; the light
-   * palette flips these to a hair of black so edges still read on white
-   * (a plain white/[0.06] border would vanish there). */
-  --color-hairline: rgb(255 255 255 / 0.06);
-  --color-hairline-soft: rgb(255 255 255 / 0.04);
-
-  /* For transient states like SessionTerminal's connecting notice. */
-  --animate-fade-in: fade-in 200ms ease-out both;
-
-  @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-}
-
-/*
- * Braille spinner for the sidebar's "running" indicator — the cycling-dot
- * motion agent CLIs use to signal work in progress, so it reads as "working"
- * at a glance and can't be mistaken for the still, round unread-waiting bubble.
- *
- * Drawn as the six dot positions the classic ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ spinner lights, laid
- * out 2 columns × 3 rows, rather than a text glyph — the Braille Patterns block
- * is missing from many systems' monospace fonts and would render as tofu. Each
- * dot fades between lit and dim across the ten frames; step-end holds each
- * frame so the lit arc clicks crisply from one position to the next. The dots
- * are laid out row-major (d1 d4 / d2 d5 / d3 d6), which fixes the child order.
- */
-.braille-spinner {
-  display: inline-grid;
-  grid-template-columns: repeat(2, 3px);
-  grid-auto-rows: 3px;
-  gap: 1.5px;
-}
-.braille-spinner > i {
-  width: 3px;
-  height: 3px;
-  border-radius: 9999px;
-  background: currentColor;
-}
-.braille-spinner > i:nth-child(1) { animation: braille-d1 800ms step-end infinite; }
-.braille-spinner > i:nth-child(2) { animation: braille-d4 800ms step-end infinite; }
-.braille-spinner > i:nth-child(3) { animation: braille-d2 800ms step-end infinite; }
-.braille-spinner > i:nth-child(4) { animation: braille-d5 800ms step-end infinite; }
-.braille-spinner > i:nth-child(5) { animation: braille-d3 800ms step-end infinite; }
-.braille-spinner > i:nth-child(6) { animation: braille-d6 800ms step-end infinite; }
-
-@keyframes braille-d1 {
-  0%,20% { opacity: 1 } 30%,60% { opacity: .2 } 70%,90% { opacity: 1 }
-}
-@keyframes braille-d2 {
-  0% { opacity: 1 } 10%,50% { opacity: .2 } 60%,90% { opacity: 1 }
-}
-@keyframes braille-d3 {
-  0%,30% { opacity: .2 } 40%,90% { opacity: 1 }
-}
-@keyframes braille-d4 {
-  0%,40% { opacity: 1 } 50%,80% { opacity: .2 } 90% { opacity: 1 }
-}
-@keyframes braille-d5 {
-  0% { opacity: .2 } 10%,50% { opacity: 1 } 60%,90% { opacity: .2 }
-}
-@keyframes braille-d6 {
-  0%,10% { opacity: .2 } 20%,70% { opacity: 1 } 80%,90% { opacity: .2 }
-}
-
-/*
- * The sidebar's "background" indicator: the agent's turn is over but work it
- * started (a background shell, a monitor, a subagent) is still live. Same
- * six-dot grid as the spinner, so it reads as "still going", but the dots
- * breathe slowly in a smooth top-to-bottom swell instead of clicking around.
- */
-.braille-breathe > i:nth-child(-n+2) { animation: braille-breathe 2400ms ease-in-out infinite; }
-.braille-breathe > i:nth-child(n+3):nth-child(-n+4) { animation: braille-breathe 2400ms ease-in-out 300ms infinite; }
-.braille-breathe > i:nth-child(n+5) { animation: braille-breathe 2400ms ease-in-out 600ms infinite; }
-
-@keyframes braille-breathe {
-  0%, 100% { opacity: .2 } 50% { opacity: 1 }
-}
+@import "./styles/tokens.css";
 
 /*
  * Cycling ellipsis for the chat pane's "working" label — the dots run
@@ -139,121 +23,8 @@
 @keyframes working-dot-2 { 0% { opacity: 0 } 50%,100% { opacity: 1 } }
 @keyframes working-dot-3 { 0% { opacity: 0 } 75%,100% { opacity: 1 } }
 
-/*
- * Palettes. The @theme block above is the dark base; these override the same
- * custom properties — which every Tailwind color utility resolves through
- * var() — so the whole UI recolors with no per-class dark: variants.
- *
- * Selectors are attribute-based (not :root-scoped) so a SUBTREE can force its
- * own theme independent of the app (the way VS Code keeps its integrated
- * terminal dark under a light theme). That's why the dark block repeats the
- * base values — a nested data-theme="dark" must re-assert them to override an
- * inherited light palette.
- */
-[data-theme="dark"] {
-  --color-shell: #0f0f12;
-  --color-bg: #0b0b0d;
-  --color-surface: #1b1b21;
-  --color-surface-2: #26262d;
-  --color-surface-3: #32323b;
-  --color-border: #3a3a44;
-  --color-border-strong: #4c4c56;
-  --color-text: #e7e7ea;
-  --color-text-dim: #9a9aa4;
-  --color-text-faint: #6a6a74;
-  --color-accent: #d4875f;
-  --color-accent-soft: #8a5a3d;
-  --color-hairline: rgb(255 255 255 / 0.06);
-  --color-hairline-soft: rgb(255 255 255 / 0.04);
-  --color-success: #3fb950;
-  --color-error: #f85149;
-  --color-danger: #d65858;
-  --color-warning: #d29922;
-  --color-link: #58a6ff;
-  --color-purple: #a371f7;
-  /* Tailwind's own values, re-asserted against the light palette's remap. */
-  --color-red-400: oklch(70.4% 0.191 22.216);
-  --color-amber-400: oklch(82.8% 0.189 84.429);
-  --color-emerald-400: oklch(76.5% 0.177 163.223);
-}
-
-/* Light palette: off-white cards on a mid-gray shell, near-black text, rust
- * accent. Nothing is pure white, so the screen is not glaring, and each step
- * is far enough from its neighbours to read as its own level: the shell
- * sits visibly below the cards, sunken fields (bg) below the card around
- * them. Edges come from borders rather than shadow. Applied for a forced
- * light choice and, below, for system-follows-light — CSS can't share a
- * declaration list. */
-[data-theme="light"] {
-  --color-shell: #d3d2cc;       /* gray shell the cards sit on */
-  --color-bg: #e2e1dc;         /* sunken fields, chat/file panes, settings nav */
-  --color-surface: #eae9e4;    /* off-white cards, panes, popups */
-  --color-surface-2: #cccbc5;  /* hover/selected fills, menu popups */
-  --color-surface-3: #bfbeb8;  /* highlighted menu item — a touch deeper */
-  --color-border: #bcbab4;
-  --color-border-strong: #999791;
-  --color-text: #1a1918;       /* near-black */
-  --color-text-dim: #4b4a47;
-  --color-text-faint: #63615d;
-  --color-accent: #a3461a;     /* rust-orange accent */
-  --color-accent-soft: #d08a5a;
-  --color-hairline: rgb(0 0 0 / 0.16);
-  --color-hairline-soft: rgb(0 0 0 / 0.08);
-  /* Status hues, and the Tailwind -400 shades some components use: both are
-   * tuned for dark backgrounds and wash out on light, so light mode swaps in
-   * shades that reach 4.5:1 on the cards and sunken fields. */
-  --color-success: #116329;
-  --color-error: #b3121f;
-  --color-danger: #ad2a2a;
-  --color-warning: #7d5300;
-  --color-link: #0550ae;
-  --color-purple: #6639ba;
-  --color-red-400: var(--color-red-700);
-  --color-amber-400: var(--color-amber-800);
-  --color-emerald-400: var(--color-emerald-800);
-}
-
-@media (prefers-color-scheme: light) {
-  [data-theme="system"] {
-    --color-shell: #d3d2cc;
-    --color-bg: #e2e1dc;
-    --color-surface: #eae9e4;
-    --color-surface-2: #cccbc5;
-    --color-surface-3: #bfbeb8;
-    --color-border: #bcbab4;
-    --color-border-strong: #999791;
-    --color-text: #1a1918;
-    --color-text-dim: #4b4a47;
-    --color-text-faint: #63615d;
-    --color-accent: #a3461a;
-    --color-accent-soft: #d08a5a;
-    --color-hairline: rgb(0 0 0 / 0.16);
-    --color-hairline-soft: rgb(0 0 0 / 0.08);
-    --color-success: #116329;
-    --color-error: #b3121f;
-    --color-danger: #ad2a2a;
-    --color-warning: #7d5300;
-    --color-link: #0550ae;
-    --color-purple: #6639ba;
-    --color-red-400: var(--color-red-700);
-    --color-amber-400: var(--color-amber-800);
-    --color-emerald-400: var(--color-emerald-800);
-  }
-}
-
-/*
- * Card / menu / modal drop-shadow color: strong on the dark shell, a faint
- * hint on the light one, where borders separate the layers instead. Follows
- * the APP (root) theme only, and is deliberately kept off the nestable
- * [data-theme] blocks above so a dark subtree still casts the light-mode
- * shadow when it sits on the light base. Root-scoped, so
- * nested data-theme="dark" subtrees inherit it rather than resetting it.
- */
-:root { --shadow-color: rgb(0 0 0 / 0.44); }
-:root[data-theme="light"] { --shadow-color: rgb(0 0 0 / 0.06); }
-@media (prefers-color-scheme: light) {
-  :root[data-theme="system"] { --shadow-color: rgb(0 0 0 / 0.06); }
-}
+/* Drop-shadow colour for menus, popovers and dialogs. */
+:root { --shadow-color: light-dark(rgb(0 0 0 / 0.06), rgb(0 0 0 / 0.44)); }
 
 /*
  * Sidebar workspace-title marquee: on row hover, scroll a title that's too long
@@ -272,8 +43,8 @@ body,
 #root {
   height: 100%;
   margin: 0;
-  background: var(--color-shell);
-  color: var(--color-text);
+  background: var(--bg-shell);
+  color: var(--text);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -460,11 +231,11 @@ body.col-resizing * {
   height: 3px;
 }
 *::-webkit-scrollbar-thumb {
-  background: var(--color-border);
+  background: var(--line);
   border-radius: 3px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-strong);
+  background: var(--line-strong);
 }
 *::-webkit-scrollbar-track {
   background: transparent;
@@ -484,42 +255,19 @@ body.col-resizing * {
 
 /*
  * Syntax-highlight token colors, shared by the diff view (`.diff-hl`) and
- * every CodeMirror editor (`.cm-editor`) so the two always match. Same theming
- * model as the palette above — dark base, re-asserted for nested dark
- * subtrees, with a light override (and the system-follows-light variant CSS
- * can't share). @lezer/highlight's classHighlighter emits the `tok-*` classes
- * in both. Values are GitHub's prettylights palette, which is tuned for
- * exactly this: colored code over a diff's green/red line tints.
+ * every CodeMirror editor (`.cm-editor`) so the two always match, written
+ * as light-dark() like the tokens. @lezer/highlight's classHighlighter emits
+ * the `tok-*` classes in both. Values are GitHub's prettylights palette,
+ * which is tuned for coloured code over a diff's green and red line tints.
  */
-:root,
-[data-theme="dark"] {
-  --syntax-keyword: #ff7b72;
-  --syntax-string: #a5d6ff;
-  --syntax-comment: #8b949e;
-  --syntax-constant: #79c0ff;
-  --syntax-entity: #d2a8ff;
-  --syntax-type: #ffa657;
-  --syntax-invalid: #f85149;
-}
-[data-theme="light"] {
-  --syntax-keyword: #cf222e;
-  --syntax-string: #0a3069;
-  --syntax-comment: #6e7781;
-  --syntax-constant: #0550ae;
-  --syntax-entity: #8250df;
-  --syntax-type: #953800;
-  --syntax-invalid: #cf222e;
-}
-@media (prefers-color-scheme: light) {
-  [data-theme="system"] {
-    --syntax-keyword: #cf222e;
-    --syntax-string: #0a3069;
-    --syntax-comment: #6e7781;
-    --syntax-constant: #0550ae;
-    --syntax-entity: #8250df;
-    --syntax-type: #953800;
-    --syntax-invalid: #cf222e;
-  }
+:root {
+  --syntax-keyword: light-dark(#cf222e, #ff7b72);
+  --syntax-string: light-dark(#0a3069, #a5d6ff);
+  --syntax-comment: light-dark(#6e7781, #8b949e);
+  --syntax-constant: light-dark(#0550ae, #79c0ff);
+  --syntax-entity: light-dark(#8250df, #d2a8ff);
+  --syntax-type: light-dark(#953800, #ffa657);
+  --syntax-invalid: light-dark(#cf222e, #f85149);
 }
 
 :is(.diff-hl, .cm-editor) .tok-keyword { color: var(--syntax-keyword); }
@@ -556,19 +304,19 @@ body.col-resizing * {
  * colors rather than the typography plugin's grays. Unlayered, so it beats
  * the plugin's own `.prose` rule. */
 .prose {
-  --tw-prose-body: var(--color-text);
-  --tw-prose-headings: var(--color-text);
-  --tw-prose-lead: var(--color-text-dim);
-  --tw-prose-links: var(--color-link);
-  --tw-prose-bold: var(--color-text);
-  --tw-prose-counters: var(--color-text-faint);
-  --tw-prose-bullets: var(--color-text-faint);
-  --tw-prose-hr: var(--color-border);
-  --tw-prose-quotes: var(--color-text-dim);
-  --tw-prose-quote-borders: var(--color-border);
-  --tw-prose-captions: var(--color-text-dim);
-  --tw-prose-kbd: var(--color-text);
-  --tw-prose-code: var(--color-text);
-  --tw-prose-th-borders: var(--color-border);
-  --tw-prose-td-borders: var(--color-hairline);
+  --tw-prose-body: var(--text);
+  --tw-prose-headings: var(--text);
+  --tw-prose-lead: var(--text-muted);
+  --tw-prose-links: var(--info);
+  --tw-prose-bold: var(--text);
+  --tw-prose-counters: var(--text-subtle);
+  --tw-prose-bullets: var(--text-subtle);
+  --tw-prose-hr: var(--line-strong);
+  --tw-prose-quotes: var(--text-muted);
+  --tw-prose-quote-borders: var(--line-strong);
+  --tw-prose-captions: var(--text-muted);
+  --tw-prose-kbd: var(--text);
+  --tw-prose-code: var(--text);
+  --tw-prose-th-borders: var(--line-strong);
+  --tw-prose-td-borders: var(--line);
 }

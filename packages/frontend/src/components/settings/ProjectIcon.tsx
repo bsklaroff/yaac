@@ -1,12 +1,11 @@
 import { useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { ProjectChip, railChipStyle } from '#components/ProjectRail'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { api } from '#lib/api'
 import { imageFiles } from '#lib/attachments'
-import { identityColor, projectIconUrl } from '#lib/projectIdentity'
+import { projectIconUrl } from '#lib/projectIdentity'
 import type { ProjectSummary } from '@yaac/shared/types'
+import { YButton, yButtonClass, YConfirm, YFileInput, YRange, YSettingRow } from '#ui'
 
 /*
  * The project's icon setting: an image the user pastes, drops or picks is
@@ -115,11 +114,11 @@ function IconCropper({ src, busy, error, onCancel, onCrop }: {
   const shown = readError ?? error
 
   return (
-    <ConfirmDialog
+    <YConfirm
       open
       onOpenChange={(open) => { if (!open) onCancel() }}
       title="Crop icon"
-      description="Drag the image to choose what the icon shows, and zoom with the slider or the scroll wheel."
+      description="Drag to frame it; scroll or use the slider to zoom."
       confirmLabel="Save"
       destructive={false}
       busy={busy}
@@ -138,8 +137,8 @@ function IconCropper({ src, busy, error, onCancel, onCrop }: {
           if (e.key === '+' || e.key === '=') zoomTo(crop.zoom * 1.1)
           if (e.key === '-') zoomTo(crop.zoom / 1.1)
         }}
-        className="relative mx-auto mt-4 cursor-move touch-none select-none overflow-hidden rounded-md bg-bg
-          outline-none focus-visible:ring-2 focus-visible:ring-border-strong"
+        className="relative mx-auto mt-4 cursor-move touch-none select-none overflow-hidden bg-sunken
+          outline-none focus-visible:outline-2 focus-visible:outline-accent"
         style={{ width: VIEW, height: VIEW }}
       >
         <img
@@ -163,8 +162,7 @@ function IconCropper({ src, busy, error, onCancel, onCrop }: {
         {/* The chip's rounded outline; the shade outside it is cropped off by its corners. */}
         <div className="pointer-events-none absolute inset-0 rounded-[30%] shadow-[0_0_0_200px_rgb(0_0_0/0.45)]" />
       </div>
-      <input
-        type="range"
+      <YRange
         aria-label="Zoom"
         min={1}
         max={MAX_ZOOM}
@@ -174,7 +172,7 @@ function IconCropper({ src, busy, error, onCancel, onCrop }: {
         onChange={(e) => zoomTo(Number(e.target.value))}
         className="mx-auto mt-3 block w-[240px]"
       />
-    </ConfirmDialog>
+    </YConfirm>
   )
 }
 
@@ -186,6 +184,7 @@ function IconCropper({ src, busy, error, onCancel, onCrop }: {
  */
 export function ProjectIcon({ project, readOnly }: { project: ProjectSummary; readOnly: boolean }): JSX.Element {
   const param = { projectId: project.id }
+  const fileInput = useRef<HTMLInputElement>(null)
   const [picked, setPicked] = useState<string | null>(null)
   const upload = useMutation({
     mutationFn: (png: Blob) => icon.$put({ param }, { init: { body: png, headers: { 'Content-Type': 'image/png' } } }),
@@ -202,14 +201,16 @@ export function ProjectIcon({ project, readOnly }: { project: ProjectSummary; re
   const error = readError ?? remove.error?.message
 
   return (
-    <div>
-      <div className="text-xs font-medium text-text">Icon</div>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-        Shown in the project rail in place of the project&apos;s initial.
-        {!readOnly && ' Click the icon and paste an image, drop one on it, or choose a file.'}
-      </p>
+    <YSettingRow
+      label="Icon"
+      hint={<>
+        Replaces the initial in the rail.
+        {!readOnly && ' Paste, drop or choose an image.'}
+        {error && <span className="mt-1 block text-md text-danger">{error}</span>}
+      </>}
+    >
       <div
-        className="mt-2 flex items-center gap-2"
+        className="flex items-center gap-2"
         onPaste={(e) => take(imageFiles(e.clipboardData))}
         onDragOver={(e) => { if (!readOnly) e.preventDefault() }}
         onDrop={(e) => { e.preventDefault(); take(imageFiles(e.dataTransfer)) }}
@@ -217,39 +218,35 @@ export function ProjectIcon({ project, readOnly }: { project: ProjectSummary; re
         <div
           tabIndex={readOnly ? -1 : 0}
           aria-label="Project icon"
-          className="rounded-xl outline-none focus:ring-2 focus:ring-border-strong"
+          className="rounded-xl outline-none focus:outline-2 focus:outline-offset-1 focus:outline-accent"
         >
           <ProjectChip
             project={project}
             op={undefined}
             iconSize={18}
-            className="flex h-10 w-10 items-center justify-center rounded-xl text-[16px] font-semibold"
-            style={railChipStyle(identityColor(project.id), true)}
+            className="flex h-10 w-10 items-center justify-center rounded-xl text-lg font-semibold"
+            style={railChipStyle(project.id, true)}
           />
         </div>
-        {!readOnly && (
-          <label className={`${BUTTON} cursor-pointer`}>
-            Choose image…
-            <input
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => { take([...e.target.files ?? []]); e.target.value = '' }}
-            />
-          </label>
-        )}
+        {!readOnly && <>
+          <YButton size="sm" onClick={() => fileInput.current?.click()}>Choose image…</YButton>
+          <YFileInput
+            ref={fileInput}
+            accept="image/*"
+            onChange={(e) => { take([...e.target.files ?? []]); e.target.value = '' }}
+          />
+        </>}
         {project.iconHash !== undefined && <>
-          <a href={projectIconUrl(project.id, project.iconHash)} download={`${project.name.replaceAll('.', '-')} icon`} className={TEXT_BUTTON}>
+          <a href={projectIconUrl(project.id, project.iconHash)} download={`${project.name.replaceAll('.', '-')} icon`} className={yButtonClass('ghost', 'sm')}>
             Download
           </a>
           {!readOnly && (
-            <button type="button" onClick={() => remove.mutate()} disabled={remove.isPending} className={TEXT_BUTTON}>
+            <YButton variant="danger" size="sm" onClick={() => remove.mutate()} disabled={remove.isPending}>
               Remove
-            </button>
+            </YButton>
           )}
         </>}
       </div>
-      {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
       {picked !== null && (
         <IconCropper
           key={picked}
@@ -260,6 +257,6 @@ export function ProjectIcon({ project, readOnly }: { project: ProjectSummary; re
           onCrop={(png) => upload.mutate(png)}
         />
       )}
-    </div>
+    </YSettingRow>
   )
 }

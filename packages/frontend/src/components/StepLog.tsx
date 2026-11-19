@@ -104,7 +104,7 @@ export function StepLog({ workspaceId, life, file, follow }: {
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
       {empty && (
-        <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-text-faint">
+        <p className="pointer-events-none absolute inset-0 flex items-center justify-center text-md text-subtle">
           {follow ? 'No output yet' : 'It printed nothing'}
         </p>
       )}

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react'
 import type { EditorView } from '@uiw/react-codemirror'
 import { getSearchQuery, openSearchPanel } from '@codemirror/search'
-import { CodeEditor } from '#components/ui/CodeEditor'
+import { CodeEditor } from '#components/CodeEditor'
 import { COUNT_DEBOUNCE_MS, COUNT_TIMEOUT_MS } from '#lib/matchCount'
 import { HANGS } from './setup'
 

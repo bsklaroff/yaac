@@ -1,11 +1,10 @@
 import { useState, type JSX } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { GitCredentialPicker, INPUT, remoteKind } from '#components/GitCredentialPicker'
-import { SectionLabel } from '#components/settings/Field'
-import { BUTTON } from '#components/ui/button'
+import { GitCredentialPicker, remoteKind } from '#components/GitCredentialPicker'
 import { moveRepo, previewRepoMove } from '#lib/repoApi'
 import { WarningIcon } from '#lib/icons'
 import { useSnapshot } from '#lib/useSnapshot'
+import { YButton, YInput, YSectionLabel } from '#ui'
 
 /**
  * Move a repo yaac hosts to an empty repository elsewhere
@@ -37,15 +36,16 @@ export function MoveToRemote({ repoId, name, onMoved }: { repoId: string; name: 
 
   return (
     <div>
-      <SectionLabel>Move to a git host</SectionLabel>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
+      <YSectionLabel>Move to a git host</YSectionLabel>
+      <p className="mt-0.5 text-sm leading-relaxed text-subtle">
         Push every branch and tag to an empty repository elsewhere, such as a new GitHub one, and use it
         from then on instead of yaac&apos;s copy.
       </p>
       {open ? (
         <div className="mt-2 flex flex-col gap-2">
-          <div role="note" aria-label="What moving does" className="flex gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] leading-relaxed text-text-dim">
-            <WarningIcon size={14} className="mt-0.5 shrink-0 text-warning" />
+          <div role="note" aria-label="What moving does"
+            className="flex gap-2 border-l-2 border-warning bg-warning-soft px-3 py-2 text-sm leading-relaxed text-muted">
+            <WarningIcon size={14} aria-hidden className="mt-0.5 shrink-0 text-warning" />
             <ul className="list-disc space-y-0.5 pl-4">
               <li>
                 {preview.isPending ? 'Every running workspace' : `${running} running workspace${running === 1 ? '' : 's'}`} with
@@ -65,14 +65,14 @@ export function MoveToRemote({ repoId, name, onMoved }: { repoId: string; name: 
               <li>yaac keeps its own copy, read-only, until you have checked the new remote and remove it here.</li>
             </ul>
           </div>
-          {preview.error && <p className="text-[11px] text-red-400">{preview.error.message}</p>}
-          <input
+          {preview.error && <p className="text-sm text-danger">{preview.error.message}</p>}
+          <YInput
             aria-label="Repository URL"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             autoFocus
             placeholder="https://github.com/owner/repo.git"
-            className={INPUT}
+            className="font-mono"
           />
           <GitCredentialPicker
             kind={remoteKind(remoteUrl)}
@@ -84,7 +84,7 @@ export function MoveToRemote({ repoId, name, onMoved }: { repoId: string; name: 
           />
         </div>
       ) : (
-        <button type="button" onClick={() => setOpen(true)} className={`mt-2 ${BUTTON}`}>Move…</button>
+        <YButton size="sm" onClick={() => setOpen(true)} className="mt-2">Move…</YButton>
       )}
     </div>
   )

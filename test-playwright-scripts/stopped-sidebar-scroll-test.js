@@ -8,7 +8,6 @@
  *     scrolled to its end, until every stopped workspace is listed once.
  *  3. Selecting a stopped row opens it read-only in the main pane, with its
  *     facts and a Restart action, and puts its id in the URL.
- *  4. The search box narrows the section to the server's matches.
  *
  * Needs a running server whose project PROJECT (default `yaac`) has more
  * than one page (50) of stopped workspaces. It changes nothing on the server
@@ -36,7 +35,9 @@ try {
   check('the header shows the real count', (await header.innerText()).includes(String(total)), await header.innerText())
   if (await header.getAttribute('aria-expanded') === 'false') await header.click()
 
-  const rows = section.locator('button[title="Read this workspace\'s conversation"]')
+  // Each row is a YRowFrame: a whole-row button, named by the workspace's
+  // title, under the row's content.
+  const rows = section.locator('button.absolute.inset-0')
   await rows.first().waitFor({ timeout: 15_000 })
   check('one page is listed at first', await rows.count() === 50, String(await rows.count()))
   for (let i = 0; i < 10 && await rows.count() < total; i++) {
@@ -46,7 +47,7 @@ try {
   check('scrolling to the end lists every stopped workspace', await rows.count() === total, `${await rows.count()} of ${total}`)
 
   const pick = rows.nth(3)
-  const title = (await pick.locator('span.truncate').first().innerText()).trim()
+  const title = (await pick.getAttribute('aria-label') ?? '').trim()
   await pick.click()
   const pane = page.locator('main', { has: page.getByRole('button', { name: 'Restart' }) })
   await pane.waitFor({ timeout: 10_000 })
@@ -54,12 +55,6 @@ try {
   check('the pane lists its facts', /Stopped|Died/.test(await pane.locator('dl').innerText()))
   check('the URL names the workspace', new URL(page.url()).searchParams.has('workspace'))
   await page.screenshot({ path: path.join(SHOTS, 'stopped-sidebar-pane.png') })
-
-  await page.getByRole('textbox', { name: 'Search workspaces' }).fill(title)
-  await page.waitForTimeout(1000)
-  check('a search narrows the section to its match', await rows.count() === 1, String(await rows.count()))
-  check('the header counts the matches', (await header.innerText()).includes('1'), await header.innerText())
-  await page.screenshot({ path: path.join(SHOTS, 'stopped-sidebar-search.png') })
 } finally {
   await browser.close()
 }

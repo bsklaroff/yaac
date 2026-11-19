@@ -21,8 +21,8 @@ in-cluster one), so the connect flow has no "local server" case. Servers
 are chosen on the shell's own **Servers page** (`src/servers-page.ts`,
 docs/server-selection.md "The desktop shell"). When no server is selected
 or the selected one cannot be reached, the whole window is that page,
-showing the error. The SPA's Servers button (in the rail, above Settings),
-its server badge and the tray's **Servers…** open it over the server's page,
+showing the error. The yaac menu's **Servers** item (at the foot of the
+rail), its server badge and the tray's **Servers…** open it over the server's page,
 in a view laid on top of it, with "Back to" that server to uncover it
 without a reload. It lists the saved servers (Connect, Remove, and
 "(stopped)" or "(refused)" beside any that does not answer or will not
@@ -351,7 +351,7 @@ The Servers page:
   says Tailscale does not seem to be running, and Connect on the remote
   row fails naming Tailscale; start Tailscale and open the page again: the
   banner is gone.
-- With a server running, click the rail's Servers button: the page shows
+- With a server running, open the yaac menu and pick Servers: the page shows
   that server's row first with a green check and "← Back to" it, which
   returns to the workspace that was open without any loading screen.
 

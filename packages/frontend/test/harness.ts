@@ -103,6 +103,7 @@ export function testQueryClient(whoami: Whoami | null = TEST_WHOAMI, snapshot?: 
 export const serverSnapshot = (over: Partial<ServerSnapshot> = {}): ServerSnapshot => ({
   driver: 'k8s',
   feedbackHost: null,
+  startedAtMs: 0,
   workspaces: [],
   workspaceGroups: [],
   stale: [],

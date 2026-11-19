@@ -1,18 +1,16 @@
 import { Fragment, useState, type JSX } from 'react'
-import { Popover } from '@base-ui/react/popover'
 import { WORKTREE_REF, type CommitDetail, type WorkspaceChange, type WorkspaceDiff } from '@yaac/shared/types'
-import { PopoverPopup } from '#components/ui/menu'
-import { LineCountsLabel } from '#components/ui/LineCountsLabel'
-import { Typeahead, type TypeaheadItem } from '#components/ui/Typeahead'
+import { LineCountsLabel } from '#components/LineCountsLabel'
 import { isCommit, refName } from '#lib/commits'
 import { changesTarget, type ChangesRange } from '#lib/files'
 import { CHANGE_STAGES, lineTotals, stageTotals } from '#lib/gitStatus'
-import { RangeArrowIcon, BranchIcon, ChevronIcon, CommitsIcon, FileIcon } from '#lib/icons'
+import { RangeArrowIcon, BranchIcon, CommitsIcon, FileIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
 import { relativeAge } from '#lib/time'
 import { useRepoBranches } from '#lib/repoApi'
 import { useCheckout } from '#lib/checkouts'
 import { CheckoutSwitcher } from '#components/CheckoutSwitcher'
+import { YButton, YChip, YPopover, YPopoverPopup, YTypeahead, type YTypeaheadItem } from '#ui'
 
 /** A typed commit id (or a prefix of one) the ref pickers offer as is. */
 const COMMIT_PREFIX = /^[0-9a-f]{7,64}$/
@@ -47,9 +45,8 @@ export function ChangesStrip({ workspaceId, range, data, files }: {
     if (range) retargetRange(workspaceId, changesTarget(range), changesTarget(next))
   }
   const byStage = stageTotals(files)
-  const action = 'shrink-0 rounded px-1.5 py-0.5 transition hover:bg-surface-2 hover:text-text'
   return (
-    <div className="flex h-7 shrink-0 items-center gap-1 border-b border-hairline px-1.5 text-[11px] text-text-dim">
+    <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-1.5 text-sm text-muted">
       <CheckoutSwitcher workspaceId={workspaceId} />
       {range ? (
         <>
@@ -60,7 +57,7 @@ export function ChangesStrip({ workspaceId, range, data, files }: {
             parent={range.to !== WORKTREE_REF}
             onPick={(from) => retarget(from === PARENT ? { to: range.to } : { from, to: range.to })}
           />
-          <RangeArrowIcon size={11} className="shrink-0 text-text-faint" />
+          <RangeArrowIcon size={11} className="shrink-0 text-subtle" />
           <RefPicker
             repoId={repoId}
             value={range.to}
@@ -79,7 +76,7 @@ export function ChangesStrip({ workspaceId, range, data, files }: {
       )}
       {files.length > 0 && (
         // Baseline-aligned: the counts are monospace, the labels are not.
-        <span className="ml-1 flex shrink-0 items-baseline gap-1 text-text-faint">
+        <span className="ml-1 flex shrink-0 items-baseline gap-1 text-subtle">
           {[
             { key: 'total', label: 'total', counts: lineTotals(files) },
             ...range ? [] : CHANGE_STAGES.filter(({ stage }) => byStage[stage])
@@ -99,19 +96,20 @@ export function ChangesStrip({ workspaceId, range, data, files }: {
             uncommitted only
           </span>
         )}
-        {data?.truncated && <span className="text-text-faint">diff truncated (large changeset)</span>}
+        {data?.truncated && <span className="text-subtle">diff truncated (large changeset)</span>}
         {range ? (
-          <button onClick={() => openChanges(workspaceId)} title="The workspace's own changes" className={action}>
+          <YButton variant="ghost" size="sm" onClick={() => openChanges(workspaceId)} title="The workspace's own changes">
             Review diff
-          </button>
+          </YButton>
         ) : (
-          <button
+          <YButton
+            variant="ghost"
+            size="sm"
             onClick={() => openRange(workspaceId, { from: base ?? 'HEAD', to: WORKTREE_REF })}
             title="Compare any two branches or commits"
-            className={action}
           >
             Compare…
-          </button>
+          </YButton>
         )}
       </div>
     </div>
@@ -121,7 +119,7 @@ export function ChangesStrip({ workspaceId, range, data, files }: {
 function RefIcon({ value }: { value?: string }): JSX.Element {
   const Icon = value === WORKTREE_REF ? FileIcon : value !== undefined && (isCommit(value) || value === 'HEAD')
     ? CommitsIcon : BranchIcon
-  return <Icon size={11} className="shrink-0 text-text-faint" />
+  return <Icon size={11} className="shrink-0 text-subtle" />
 }
 
 /**
@@ -142,7 +140,7 @@ function RefPicker({ repoId, value, ariaLabel, worktree = false, parent = false,
   const [query, setQuery] = useState('')
   const listed = useRepoBranches(repoId, open)
   const typed = query.trim()
-  const items: TypeaheadItem[] = [
+  const items: YTypeaheadItem[] = [
     ...worktree ? [{ value: WORKTREE_REF, label: 'Working tree', detail: 'with uncommitted work' }] : [],
     ...parent && value !== undefined ? [{ value: PARENT, label: 'Parent', detail: 'show one commit' }] : [],
     { value: 'HEAD', label: 'HEAD', detail: 'committed only' },
@@ -150,19 +148,18 @@ function RefPicker({ repoId, value, ariaLabel, worktree = false, parent = false,
     ...COMMIT_PREFIX.test(typed) ? [{ value: typed, label: typed, detail: 'commit' }] : [],
   ]
   return (
-    <Popover.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) setQuery('') }}>
-      <Popover.Trigger
-        title={ariaLabel}
-        className="flex min-w-0 items-center gap-1 rounded px-1.5 py-0.5 outline-none transition
-          hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text"
-      >
-        <RefIcon value={value} />
-        <span className="max-w-[160px] truncate font-mono">{value === undefined ? 'parent' : refName(value)}</span>
-        <ChevronIcon size={10} className="shrink-0 rotate-90 text-text-faint" />
-      </Popover.Trigger>
-      <PopoverPopup side="bottom" align="start" sideOffset={6} className="w-[260px]">
-        <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">{ariaLabel}</div>
-        <Typeahead
+    <YPopover.Root open={open} onOpenChange={(o) => { setOpen(o); if (!o) setQuery('') }}>
+      <YPopover.Trigger
+        render={(
+          <YChip dropdown title={ariaLabel}>
+            <RefIcon value={value} />
+            <span className="max-w-[160px] truncate font-mono">{value === undefined ? 'parent' : refName(value)}</span>
+          </YChip>
+        )}
+      />
+      <YPopoverPopup side="bottom" align="start" sideOffset={6} className="w-[260px]">
+        <div className="px-2 pb-1 pt-1 text-sm uppercase tracking-wide text-subtle">{ariaLabel}</div>
+        <YTypeahead
           items={items}
           query={query}
           onQueryChange={setQuery}
@@ -176,8 +173,8 @@ function RefPicker({ repoId, value, ariaLabel, worktree = false, parent = false,
           ariaLabel={ariaLabel}
           className="px-1 pb-1"
         />
-      </PopoverPopup>
-    </Popover.Root>
+      </YPopoverPopup>
+    </YPopover.Root>
   )
 }
 
@@ -190,10 +187,10 @@ export function CommitHeader({ workspaceId, commit }: { workspaceId: string; com
   const body = newline === -1 ? '' : commit.message.slice(newline + 1).replace(/^\n+/, '')
   const when = new Date(commit.time * 1000)
   return (
-    <div className="max-h-48 shrink-0 overflow-auto border-b border-hairline px-3 py-2 text-xs">
+    <div className="max-h-48 shrink-0 overflow-auto border-b border-line px-3 py-2 text-md">
       <div className="font-medium text-text">{subject}</div>
-      {body && <div className="mt-1 whitespace-pre-wrap text-text-dim">{body}</div>}
-      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 text-[11px] text-text-faint">
+      {body && <div className="mt-1 whitespace-pre-wrap text-muted">{body}</div>}
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 text-sm text-subtle">
         <span>{commit.author}</span>
         <span title={when.toLocaleString()}>{relativeAge(when.toISOString())}</span>
         <span className="select-all font-mono" title={commit.sha}>{commit.sha.slice(0, 7)}</span>
@@ -201,14 +198,16 @@ export function CommitHeader({ workspaceId, commit }: { workspaceId: string; com
           <span className="flex items-center gap-1">
             {commit.parents.length > 1 ? 'parents' : 'parent'}
             {commit.parents.map((p) => (
-              <button
+              <YButton
                 key={p}
+                variant="ghost"
+                size="sm"
                 onClick={() => openRange(workspaceId, { to: p })}
                 title={`Show ${p}`}
-                className="font-mono text-link hover:underline"
+                className="font-mono"
               >
                 {p.slice(0, 7)}
-              </button>
+              </YButton>
             ))}
           </span>
         )}

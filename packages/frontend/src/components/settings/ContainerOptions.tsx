@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '#lib/api'
-import { SectionLabel } from '#components/settings/Field'
+import { YCheckbox, YSettingRow } from '#ui'
 
 const project = api.project[':projectId']
 
@@ -20,19 +20,20 @@ export function ContainerOptions({ projectId, npmCache, readOnly }: {
   })
 
   return (
-    <div>
-      <SectionLabel>Containers</SectionLabel>
-      <label className="mt-2 flex items-center gap-1.5 text-[11px] text-text-dim">
-        <input
-          type="checkbox"
-          checked={npmCache}
-          disabled={readOnly || npm.isPending}
-          onChange={(e) => npm.mutate(e.target.checked)}
-        />
-        npm cache: fetch packages through the install&apos;s shared cache rather than from npmjs
-      </label>
-      <p className="mt-1 text-[11px] text-text-faint">Applies to workspaces created after saving.</p>
-      {npm.error && <p className="mt-2 text-xs text-red-400">{npm.error.message}</p>}
-    </div>
+    <YSettingRow
+      label="npm cache"
+      hint={<>
+        Fetch packages through the install&apos;s shared cache rather than from npmjs. Applies to workspaces
+        created after saving.
+        {npm.error && <span className="mt-1 block text-md text-danger">{npm.error.message}</span>}
+      </>}
+    >
+      <YCheckbox
+        checked={npmCache}
+        disabled={readOnly || npm.isPending}
+        onCheckedChange={(on) => npm.mutate(on)}
+        aria-label="npm cache"
+      />
+    </YSettingRow>
   )
 }

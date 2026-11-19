@@ -8,7 +8,7 @@
  * diff body at 1 MB, which bounds it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FindQuery } from '#components/ui/FindPanel'
+import type { FindQuery } from '#components/FindPanel'
 import type { DiffLine } from '#lib/diff'
 import { COUNT_DEBOUNCE_MS, MatchCounter, NO_MATCHES, type Matches } from '#lib/matchCount'
 

@@ -27,6 +27,7 @@
  *   --wait <selector>   extra selector to wait for before acting
  *   --settle <ms>       pause after load for pushed /events to populate (default 3000)
  *   --full              full-page screenshot (shot only)
+ *   --theme dark|light  the OS colour scheme the page sees (default light)
  *
  * Playwright selector tips: text via `text=New session`, aria via
  * `[aria-label="Skills"]`, or any CSS. Combine --click + shot to reach and
@@ -93,7 +94,10 @@ const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
 let exitCode = 0
 try {
-  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+  const ctx = await browser.newContext({
+    viewport: { width: 1400, height: 900 },
+    colorScheme: flags.theme === 'dark' ? 'dark' : 'light',
+  })
   const page = await ctx.newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 

@@ -19,9 +19,8 @@ import type {
 /** Rows per page of the stopped listing. */
 export const STOPPED_PAGE_SIZE = 50
 
-/** What a stopped list is narrowed to (see `GET /workspace/list-stopped`). */
+/** Which stopped workspaces a list holds (see `GET /workspace/list-stopped`). */
 export interface StoppedFilter {
-  q?: string
   /** Only this group's members (a group's ghost rows). */
   group?: string
   /** Leave out these groups' members (the Stopped section, while those
@@ -43,8 +42,6 @@ export interface StoppedList {
   /** Any fetch in flight, including a refetch of the loaded pages. */
   isFetching: boolean
   isFetchingNextPage: boolean
-  /** The rows are not yet this filter's: its first page is still loading. */
-  settling: boolean
   isError: boolean
   fetchNextPage: () => void
 }
@@ -56,9 +53,9 @@ export interface StoppedList {
  * stopped counts) is what says it changed: a new value refetches every
  * loaded page. `hidden` names workspaces drawn elsewhere (live, provisioning
  * or held rows). Optimistic entries are shown until a fetched page lists
- * them, and only without a search, since the server does the matching.
+ * them.
  *
- * Every request carries the query's abort signal, so a superseded search,
+ * Every request carries the query's abort signal, so a superseded filter,
  * a cancelled refetch or an unmounted list drops its request rather than
  * leaving it to pile up on the server.
  */
@@ -70,18 +67,16 @@ export function useStoppedWorkspaces(
   const optimistic = useUiStore((s) => s.optimisticStopped)
   const removeOptimistic = useUiStore((s) => s.removeOptimisticStopped)
   const queryClient = useQueryClient()
-  const q = filter.q?.trim() ?? ''
   const excludeGroups = [...(filter.excludeGroups ?? [])].sort().join(',')
   const exclude = [...(filter.exclude ?? [])].sort().join(',')
   const query = useInfiniteQuery({
-    queryKey: ['stopped', projectId, q, filter.group ?? '', excludeGroups, exclude],
+    queryKey: ['stopped', projectId, filter.group ?? '', excludeGroups, exclude],
     queryFn: async ({ pageParam, signal }) => {
       const page = await api.workspace['list-stopped'].$get({
         query: {
           project: projectId ?? '',
           limit: String(STOPPED_PAGE_SIZE),
           ...(pageParam ? { cursor: pageParam } : {}),
-          ...(q ? { q } : {}),
           ...(filter.group !== undefined ? { group: filter.group } : {}),
           ...(excludeGroups ? { excludeGroups } : {}),
           ...(exclude ? { exclude } : {}),
@@ -95,7 +90,7 @@ export function useStoppedWorkspaces(
     getNextPageParam: (last) => last.nextCursor,
     enabled: projectId !== null && opts.enabled,
     staleTime: 2000,
-    // Keep the old rows while a new search or exclusion loads, so the list
+    // Keep the old rows while a new exclusion loads, so the list
     // changes in one step rather than flashing empty.
     placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === projectId ? prev : undefined),
   })
@@ -110,9 +105,9 @@ export function useStoppedWorkspaces(
     seen.current = version
     // A fetch still in flight may predate the change, and an invalidation
     // would only wait for it, so cancel it first.
-    const filters = { queryKey: ['stopped', projectId, q, group, excludeGroups, exclude], exact: true }
+    const filters = { queryKey: ['stopped', projectId, group, excludeGroups, exclude], exact: true }
     void queryClient.cancelQueries(filters).then(() => queryClient.invalidateQueries(filters))
-  }, [queryClient, projectId, q, group, excludeGroups, exclude, version])
+  }, [queryClient, projectId, group, excludeGroups, exclude, version])
 
   const { data, isPlaceholderData, isFetching, isFetchingNextPage, isError, fetchNextPage } = query
   const fetched = data?.pages.flatMap((p) => p.entries) ?? []
@@ -121,16 +116,13 @@ export function useStoppedWorkspaces(
   const inFilter = (e: StoppedWorkspaceEntry): boolean => filter.group !== undefined
     ? e.groupId === filter.group
     : e.groupId === undefined || !excluded.has(e.groupId)
-  const pending = q
-    ? []
-    : optimistic.filter((e) => e.projectId === projectId && !fetchedIds.has(e.workspaceId) && inFilter(e))
+  const pending = optimistic.filter((e) => e.projectId === projectId && !fetchedIds.has(e.workspaceId) && inFilter(e))
   return {
     entries: [...pending, ...fetched].filter((e) => !opts.hidden.has(e.workspaceId)),
     total: data?.pages[0]?.total,
     hasNextPage: query.hasNextPage && !isPlaceholderData,
     isFetching,
     isFetchingNextPage,
-    settling: isPlaceholderData || (data === undefined && isFetching),
     isError,
     // Never restart a page already loading.
     fetchNextPage: () => { void fetchNextPage({ cancelRefetch: false }) },
@@ -170,31 +162,6 @@ export function useStoppedEntry(
   })
   if (!enabled) return { entry: undefined, pending: false }
   return { entry: data ?? optimistic, pending: isLoading && optimistic === undefined }
-}
-
-/**
- * Whether the server's search `q` matches one stopped workspace, by the same
- * predicate that fills the Stopped list, so a caller can tell whether that
- * list will show it without loading every page. Undefined until the first
- * answer; the previous answer for the same workspace stands while a new
- * query loads.
- */
-export function useStoppedMatch(
-  projectId: string | null,
-  workspaceId: string | null,
-  q: string,
-  opts: { enabled: boolean; version: string },
-): boolean | undefined {
-  const enabled = opts.enabled && projectId !== null && workspaceId !== null && q !== ''
-  const { data } = useQuery({
-    queryKey: ['stopped-match', projectId, workspaceId, q, opts.version],
-    queryFn: async ({ signal }) => (await api.workspace['list-stopped'].$get({
-      query: { project: projectId ?? '', workspace: workspaceId ?? '', q, limit: '1' },
-    }, { init: { signal } })).entries.length > 0,
-    enabled,
-    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === workspaceId ? prev : undefined),
-  })
-  return enabled ? data : undefined
 }
 
 function cachedEntry(queryClient: QueryClient, projectId: string, workspaceId: string): StoppedWorkspaceEntry | undefined {

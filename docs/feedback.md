@@ -1,7 +1,7 @@
 # Feedback
 
-The feedback button at the top of the rail's bottom icons (a row on the
-mobile projects screen) opens a form. Send posts its message, any
+The yaac menu's **Send feedback** item (at the foot of the rail; a row on
+the mobile projects screen) opens a form. Send posts its message, any
 screenshots pasted, dropped or picked into it, and what the webapp knows
 about itself to the user's own yaac server (`POST /api/feedback`). The
 server forwards all of it to the endpoint named by `YAAC_FEEDBACK_URL`,

@@ -15,6 +15,7 @@ import { lifeDirName } from '@yaac/shared/steps'
 import {
   CONVERSATION_PROMPT_PREVIEW_LENGTH, TOOL_LABELS, type SessionEntry, type WorkspaceListEntry,
 } from '@yaac/shared/types'
+import { YButton } from '#ui'
 
 /** A session pane's pty target: its window, by name (`session:<name>`). */
 export function sessionPtyTarget(session: Pick<SessionEntry, 'window'>): string {
@@ -65,7 +66,7 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
   const onLog = view === 'log'
   if (onLog && session.exited !== true) setView('chat')
   const body = session.mode === 'tui' ? (
-    <div className="relative h-full w-full overflow-hidden rounded-md bg-bg px-2.5 py-1.5">
+    <div className="relative h-full w-full overflow-hidden bg-sunken px-2.5 py-1.5">
       {/* Its own boundary: a terminal that fails to mount (an xterm
           internal it reaches for has moved) takes down this pane, not the
           app. */}
@@ -86,7 +87,7 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
         focused={focused}
       />
       {tuiStarting && (
-        <div className="absolute inset-0 overflow-y-auto bg-bg px-4 py-4">
+        <div className="absolute inset-0 overflow-y-auto bg-sunken px-4 py-4">
           <div className={column}>
             <Launching {...opening} caption={`Starting ${TOOL_LABELS[session.tool]}…`} />
           </div>
@@ -136,19 +137,19 @@ function AcpStarting({ session, opening }: {
   const column = useChatColumn()
   const label = TOOL_LABELS[session.tool]
   return (
-    <div className="absolute inset-0 flex flex-col overflow-hidden rounded-md bg-bg">
+    <div className="absolute inset-0 flex flex-col overflow-hidden bg-sunken">
       <div className="flex-1 overflow-y-auto px-4 py-4">
         <div className={column}>
           {session.exited === true ? (
-            <div className="flex flex-col items-start break-words text-sm">
+            <div className="flex flex-col items-start break-words text-base">
               {opening?.prompt !== undefined && <div className={USER_BUBBLE}>{opening.prompt}</div>}
-              <div className="mt-3 text-text-dim">{label} exited before the chat opened.</div>
+              <div className="mt-3 text-muted">{label} exited before the chat opened.</div>
             </div>
           ) : <Launching {...opening} caption={`Starting ${label}…`} />}
         </div>
       </div>
       <ChatBottomBar>
-        <div className="truncate py-2 pl-3 pr-2 text-sm text-text-faint">
+        <div className="truncate py-2 pl-3 pr-2 text-base text-subtle">
           {session.exited === true ? 'Its log may say why.' : 'The chat opens once the agent is up.'}
         </div>
       </ChatBottomBar>
@@ -168,7 +169,7 @@ function AcpLog({ workspace, session, onBack }: {
   onBack: () => void
 }): JSX.Element {
   return (
-    <div className="absolute inset-0 flex flex-col overflow-hidden rounded-md bg-bg">
+    <div className="absolute inset-0 flex flex-col overflow-hidden bg-sunken">
       <div className="min-h-0 flex-1 px-2.5 py-1.5">
         {workspace.life !== undefined && (
           <StepLog
@@ -181,16 +182,14 @@ function AcpLog({ workspace, session, onBack }: {
       </div>
       <ChatBottomBar>
         <div className="flex items-center gap-2 py-2 pl-3 pr-2">
-          <span className="min-w-0 flex-1 truncate text-sm text-text-faint">{TOOL_LABELS[session.tool]}'s log</span>
-          <button type="button" onClick={onBack} className={BAR_BUTTON}>Back</button>
+          <span className="min-w-0 flex-1 truncate text-base text-subtle">{TOOL_LABELS[session.tool]}'s log</span>
+          <YButton onClick={onBack}>Back</YButton>
         </div>
       </ChatBottomBar>
     </div>
   )
 }
 
-const BAR_BUTTON = 'rounded-md bg-surface-2 px-3 py-1.5 text-xs text-text-dim transition hover:bg-surface-3 '
-  + 'hover:text-text disabled:opacity-50'
 
 /** Under a session whose agent exited: resume it on its conversation,
  *  close it, or read why it exited. */
@@ -210,23 +209,22 @@ function ExitedBar({ workspaceId, session, onShowLog }: {
       .finally(() => setBusy(false))
   }
   return (
-    <div className="flex shrink-0 items-center gap-2 border-t border-hairline bg-surface px-3 py-2 text-xs">
-      <span className="min-w-0 flex-1 break-words text-text-dim">
+    <div className="flex shrink-0 items-center gap-2 border-t border-line bg-surface px-3 py-2 text-md">
+      <span className="min-w-0 flex-1 break-words text-muted">
         {error ?? `${agentLabel(session.tool, session)} exited.`}
       </span>
       {onShowLog !== undefined && (
-        <button type="button" onClick={onShowLog} className={BAR_BUTTON}>Show log</button>
+        <YButton onClick={onShowLog}>Show log</YButton>
       )}
       {!readOnly && (
         <>
-          <button type="button" disabled={busy} onClick={() => act(() => resumeSession(workspaceId, session.sessionId))}
-            className={BAR_BUTTON}>
+          <YButton variant="primary" disabled={busy} onClick={() => act(() => resumeSession(workspaceId, session.sessionId))}>
             Resume
-          </button>
-          <button type="button" disabled={busy} onClick={() => act(() => closeSession(workspaceId, session.sessionId))}
-            className={BAR_BUTTON}>
+          </YButton>
+          <YButton disabled={busy} onClick={() => act(() => closeSession(workspaceId, session.sessionId))}>
             Close
-          </button>
+          </YButton>
+
         </>
       )}
     </div>

@@ -73,11 +73,11 @@ export function DiffView({
     [lines, language],
   )
   return (
-    <div className="diff-hl font-mono text-[11px] leading-[1.5]">
+    <div className="diff-hl font-mono text-sm leading-[1.5]">
       {lines.map((line, idx) => {
         if (line.kind === 'hunk') {
           return (
-            <div key={idx} className="whitespace-pre-wrap break-words bg-surface-2 px-2 text-text-faint">
+            <div key={idx} className="whitespace-pre-wrap break-words bg-selected px-2 text-subtle">
               {line.text}
             </div>
           )
@@ -95,12 +95,12 @@ export function DiffView({
             )}
           >
             {showLineNumbers && (
-              <span className="w-10 shrink-0 select-none px-1 text-right text-text-faint/70">{num ?? ''}</span>
+              <span className="w-10 shrink-0 select-none px-1 text-right text-subtle/70">{num ?? ''}</span>
             )}
             <span className={clsx(
               'w-3 shrink-0 select-none text-center',
               line.kind === 'add' && 'text-success',
-              line.kind === 'del' && 'text-error',
+              line.kind === 'del' && 'text-danger',
               line.kind === 'context' && 'text-transparent',
             )}>
               {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ' '}
@@ -138,11 +138,11 @@ export function CodeView({
   // Show the gutter for the whole block if any line is numbered.
   const numbered = lines.some((line) => line.no !== undefined)
   return (
-    <div className={clsx('diff-hl min-w-full font-mono text-[11px] leading-[1.5] text-text', className)}>
+    <div className={clsx('diff-hl min-w-full font-mono text-sm leading-[1.5] text-text', className)}>
       {lines.map((line, idx) => (
         <div key={idx} className="flex whitespace-pre">
           {numbered && (
-            <span className="w-10 shrink-0 select-none px-1 text-right text-text-faint/70">{line.no ?? ''}</span>
+            <span className="w-10 shrink-0 select-none px-1 text-right text-subtle/70">{line.no ?? ''}</span>
           )}
           <span className="pr-3">
             {spans(highlighted?.[idx] ?? null, line.text)}

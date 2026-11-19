@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import clsx from 'clsx'
-import { PopoverPopup } from '#components/ui/menu'
-import { Popover } from '@base-ui/react/popover'
 import { useQuery } from '@tanstack/react-query'
 import { EditorView, panels } from '@uiw/react-codemirror'
 import { openSearchPanel } from '@codemirror/search'
@@ -10,9 +8,9 @@ import { ServerError } from '@yaac/shared/errors'
 import { mediaType } from '@yaac/shared/media-types'
 import type { WorkspaceChange, WorkspaceFile as WorkspaceFileRead } from '@yaac/shared/types'
 import { DEFAULT_FONT_SIZE, paneViewKey, useUiStore, type FileDiffMode } from '#lib/store'
-import { CodeEditor } from '#components/ui/CodeEditor'
-import { TextSizeMenu } from '#components/ui/TextSizeMenu'
-import { LineCountsLabel } from '#components/ui/LineCountsLabel'
+import { CodeEditor } from '#components/CodeEditor'
+import { TextSizeMenu } from '#components/TextSizeMenu'
+import { LineCountsLabel } from '#components/LineCountsLabel'
 import { HtmlDocument } from '#components/HtmlDocument'
 import { MarkdownDocument } from '#components/Markdown'
 import { api } from '#lib/api'
@@ -41,6 +39,7 @@ import {
 import {
   CheckIcon, CopyIcon, DiffIcon, FileCodeIcon, LoadingIcon, SaveIcon, SearchIcon, ShowIcon, WarningIcon,
 } from '#lib/icons'
+import { YButton, YPopover, YPopoverPopup } from '#ui'
 
 /** Idle time after the last edit before autosave. */
 export const AUTOSAVE_MS = 1000
@@ -512,18 +511,16 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
         : status === 'saved' && !dirty ? 'Saved' : ''
 
   const body = ((): JSX.Element => {
-    const center = 'flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center text-xs text-text-dim'
+    const center = 'flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center text-md text-muted'
     switch (phase.kind) {
       case 'loading':
         return <div className={center}><LoadingIcon size={18} className="animate-spin" /></div>
       case 'error':
         return (
           <div className={center}>
-            <WarningIcon size={18} className="text-text-faint" />
+            <WarningIcon size={18} className="text-subtle" />
             <span>{phase.message}</span>
-            <button onClick={() => void saver.poll()} className="rounded bg-surface-2 px-2 py-1 text-[11px] hover:text-text">
-              Retry
-            </button>
+            <YButton size="sm" onClick={() => void saver.poll()}>Retry</YButton>
           </div>
         )
       case 'binary':
@@ -547,13 +544,9 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
               <span>Deleted on disk</span>
               <div className="flex gap-2">
                 {dirty && (
-                  <button onClick={() => void saver.overwrite()} className="rounded bg-surface-2 px-2 py-1 text-[11px] hover:text-text">
-                    Save to recreate
-                  </button>
+                  <YButton size="sm" onClick={() => void saver.overwrite()}>Save to recreate</YButton>
                 )}
-                <button onClick={onClose} className="rounded bg-surface-2 px-2 py-1 text-[11px] hover:text-text">
-                  Close
-                </button>
+                <YButton size="sm" onClick={onClose}>Close</YButton>
               </div>
             </div>
           )
@@ -596,82 +589,70 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
 
   return (
     <div
-      className="flex h-full flex-col bg-bg"
+      className="flex h-full flex-col bg-sunken"
       onKeyDown={onKeyDown}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget)) void saver.flush()
       }}
     >
-      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-hairline bg-surface px-2 text-[11px]">
-        {/* A long path truncates its folders from the left, never the name. */}
-        <span className="flex min-w-0 flex-1 items-center font-mono" title={path}>
+      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-line bg-surface px-2 text-sm">
+        {/* A long path truncates its folders from the left, never the name;
+            past that, in a narrow tile, the name clips under the controls. */}
+        <span className="flex min-w-0 flex-1 items-center overflow-hidden font-mono" title={path}>
           {slash > 0 && (
-            <span className="truncate text-text-faint [direction:rtl]">
+            <span className="truncate text-subtle [direction:rtl]">
               <span dir="ltr">{path.slice(0, slash + 1)}</span>
             </span>
           )}
           <span className="shrink-0 text-text">{path.slice(slash + 1)}</span>
-          {dirty && <span aria-label="Unsaved changes" className="ml-1.5 shrink-0 text-text-dim">●</span>}
+          {dirty && <span aria-label="Unsaved changes" className="ml-1.5 shrink-0 text-muted">●</span>}
           <CopyPathButton path={path} />
         </span>
         {change && <ChangeSummary change={change} />}
         {statusLabel && (
-          <span className={clsx('shrink-0', status === 'retrying' || conflict ? 'text-warning' : 'text-text-faint')}>
+          <span className={clsx('shrink-0', status === 'retrying' || conflict ? 'text-warning' : 'text-subtle')}>
             {statusLabel}
           </span>
         )}
         {dirty && phase.kind === 'ready' && !conflict && (
-          <button
-            onClick={() => void saver.flush()}
-            title="Save"
-            aria-label="Save"
-            className="flex h-5 shrink-0 items-center gap-1 rounded px-1.5 text-text-dim transition
-              hover:bg-surface-2 hover:text-text"
-          >
-            <SaveIcon size={11} />
+          <YButton variant="ghost" size="sm" icon={SaveIcon} onClick={() => void saver.flush()} title="Save" aria-label="Save">
             Save
-          </button>
+          </YButton>
         )}
         {phase.kind === 'ready' && !conflict && (
           <div className="flex shrink-0 items-center">
             {kind !== null && (
-              <button
+              <YButton
+                variant="ghost"
+                size="sm"
+                icon={previewing ? FileCodeIcon : ShowIcon}
                 onClick={() => setPreview(!preview)}
                 title={previewing ? 'Show source' : 'Show rendered'}
                 aria-label={previewing ? 'Show source' : 'Show rendered'}
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint transition
-                  hover:bg-surface-2 hover:text-text"
-              >
-                {previewing ? <FileCodeIcon size={12} /> : <ShowIcon size={12} />}
-              </button>
+              />
             )}
             {!previewing && <DiffModeMenu mode={diffMode} active={diffing} onChange={setDiffMode} />}
-            {!(previewing && kind === 'html') && <TextSizeMenu size={fontSize} onChange={setFontSize} className="h-5 w-5" />}
+            {!(previewing && kind === 'html') && <TextSizeMenu size={fontSize} onChange={setFontSize} />}
             {!previewing && (
-              <button
+              <YButton
+                variant="ghost"
+                size="sm"
+                icon={SearchIcon}
                 onClick={openFind}
                 title={`Find (${formatChord(findChord(), IS_MAC)})`}
                 aria-label="Find"
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint transition
-                  hover:bg-surface-2 hover:text-text"
-              >
-                <SearchIcon size={12} />
-              </button>
+              />
             )}
           </div>
         )}
       </div>
       {conflict?.version != null && (
-        <div role="alert" className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-hairline
-          bg-warning/10 px-2 py-1 text-[11px] text-text-dim">
+        <div role="alert" className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-line
+          bg-warning/10 px-2 py-1 text-sm text-muted">
           <span>Changed on disk since you started editing:</span>
-          <button onClick={() => void saver.reload()} className="font-medium text-text hover:underline">
-            Reload
-          </button>
-          <span className="text-text-faint">(discard yours) ·</span>
-          <button onClick={() => void saver.overwrite()} className="font-medium text-text hover:underline">
-            Overwrite
-          </button>
+          <YButton variant="ghost" size="sm" onClick={() => void saver.reload()}>Reload</YButton>
+          <span className="text-subtle">(discard yours) ·</span>
+          <YButton variant="ghost" size="sm" onClick={() => void saver.overwrite()}>Overwrite</YButton>
         </div>
       )}
       {body}
@@ -690,15 +671,15 @@ function CopyPathButton({ path }: { path: string }): JSX.Element {
     setTimeout(() => setCopied(false), 1500)
   }
   return (
-    <button
+    <YButton
+      variant="ghost"
+      size="sm"
+      icon={copied ? CheckIcon : CopyIcon}
       onClick={copy}
       title={copied ? 'Copied' : 'Copy path'}
       aria-label="Copy path"
-      className="ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-faint transition
-        hover:bg-surface-2 hover:text-text"
-    >
-      {copied ? <CheckIcon size={11} /> : <CopyIcon size={11} />}
-    </button>
+      className="ml-1"
+    />
   )
 }
 
@@ -710,11 +691,11 @@ function ChangeSummary({ change }: { change: WorkspaceChange }): JSX.Element {
     .map(({ stage, label }) => `${label}: +${change.stages[stage]!.additions} −${change.stages[stage]!.deletions}`)
     .join('\n')
   return (
-    <span className="flex shrink-0 items-center gap-1.5 text-[10px]" title={title || undefined}>
-      {change.binary ? <span className="text-text-faint">binary</span> : <LineCountsLabel counts={change} />}
-      {change.status === 'deleted' && <span className="text-error">deleted</span>}
+    <span className="flex shrink-0 items-center gap-1.5 text-xs" title={title || undefined}>
+      {change.binary ? <span className="text-subtle">binary</span> : <LineCountsLabel counts={change} />}
+      {change.status === 'deleted' && <span className="text-danger">deleted</span>}
       {stages.map(({ stage, label }) => (
-        <span key={stage} className="rounded bg-surface-2 px-1 text-text-dim">{label}</span>
+        <span key={stage} className="rounded bg-selected px-1 text-muted">{label}</span>
       ))}
     </span>
   )
@@ -736,31 +717,35 @@ function DiffModeMenu({ mode, active, onChange }: {
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger
-        title="Show changes against the diff base"
-        aria-label="Diff mode"
-        className={clsx('flex h-5 w-5 shrink-0 items-center justify-center rounded outline-none transition',
-          'hover:bg-surface-2 hover:text-text data-[popup-open]:bg-surface-2 data-[popup-open]:text-text',
-          active ? 'text-text' : 'text-text-faint')}
-      >
-        <DiffIcon size={12} />
-      </Popover.Trigger>
-      <PopoverPopup side="bottom" align="end" sideOffset={6} className="min-w-[200px] text-xs">
-        <div className="px-2 pb-1 pt-1 text-[11px] uppercase tracking-wide text-text-faint">Show changes</div>
+    <YPopover.Root open={open} onOpenChange={setOpen}>
+      <YPopover.Trigger
+        render={(
+          <YButton
+            variant="ghost"
+            size="sm"
+            icon={DiffIcon}
+            title="Show changes against the diff base"
+            aria-label="Diff mode"
+            data-active={active || undefined}
+            className="data-active:text-text"
+          />
+        )}
+      />
+      <YPopoverPopup side="bottom" align="end" sideOffset={6} className="min-w-[200px] text-md">
+        <div className="px-2 pb-1 pt-1 text-sm uppercase tracking-wide text-subtle">Show changes</div>
         {DIFF_MODES.map((m) => (
-          <button
+          <YButton
             key={m.mode}
+            variant="ghost"
             onClick={() => { onChange(m.mode); setOpen(false) }}
             aria-pressed={m.mode === mode}
-            className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-text-dim transition
-              hover:bg-surface-3 hover:text-text"
+            className="w-full justify-start"
           >
             <CheckIcon size={12} className={clsx('shrink-0', m.mode !== mode && 'invisible')} />
             {m.label}
-          </button>
+          </YButton>
         ))}
-      </PopoverPopup>
-    </Popover.Root>
+      </YPopoverPopup>
+    </YPopover.Root>
   )
 }

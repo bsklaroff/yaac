@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 import { encode } from 'uqr'
-import { Field } from '#components/settings/Field'
+import { YSettingRow } from '#ui'
 
 /**
  * The link the iPhone app opens to add this server (ios/README.md). It is
@@ -19,12 +19,13 @@ export function PhoneLinkField(): JSX.Element | null {
   const link = phoneLink(window.location.origin)
   if (!link) return null
   return (
-    <Field
+    <YSettingRow
+      stacked
       label="Open on your phone"
-      hint="Scan with the iPhone camera to add this server to the yaac app. The phone must be on your tailnet."
+      hint="Scan to add this server to the iPhone app. The phone must be on your tailnet."
     >
       <QrCode text={link} />
-    </Field>
+    </YSettingRow>
   )
 }
 
@@ -38,7 +39,7 @@ function QrCode({ text }: { text: string }): JSX.Element {
       aria-label={`QR code for ${text}`}
       viewBox={`0 0 ${size} ${size}`}
       shapeRendering="crispEdges"
-      className="h-40 w-40 rounded-md"
+      className="h-40 w-40"
     >
       <rect width={size} height={size} fill="#fff" />
       <path d={path} fill="#000" />

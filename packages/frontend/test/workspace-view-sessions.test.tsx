@@ -198,10 +198,10 @@ describe('WorkspaceView sessions', () => {
     server.route(OPEN, serverError('CONFLICT', refusal, 409))
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
     expect(await screen.findByText(refusal)).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'tidy the docs' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'tidy the docs' }))
     expect(await screen.findByText('the docs are tidy')).toBeTruthy()
     expect(screen.queryByText(refusal)).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'fix the parser' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'fix the parser' }))
     expect(await screen.findByText(refusal)).toBeTruthy()
 
     server.route(OPEN, { sessionId: 'sn', workspaceId: 's1' })

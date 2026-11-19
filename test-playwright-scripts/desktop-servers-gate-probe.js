@@ -112,7 +112,8 @@ async function overlayPage(app) {
 }
 
 async function openOverlay(app, win) {
-  await win.click('button[aria-label="Servers"]')
+  await win.click('button[aria-label="yaac menu"]')
+  await win.getByRole('menuitem', { name: 'Servers' }).click()
   return overlayPage(app)
 }
 
@@ -135,7 +136,7 @@ async function main() {
     shell.openExternal = async (url) => { globalThis.__opened.push(url) }
   })
   const win = await app.firstWindow()
-  await until(() => win.evaluate((o) => location.origin === o && !!document.querySelector('button[aria-label="Servers"]'), origin), 60_000, 'the SPA')
+  await until(() => win.evaluate((o) => location.origin === o && !!document.querySelector('button[aria-label="yaac menu"]'), origin), 60_000, 'the SPA')
 
   console.log('\n1. privileged calls from the SPA')
   const bare = await callAll(win)

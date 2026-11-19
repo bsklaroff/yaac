@@ -1,13 +1,11 @@
 import { useState, type JSX } from 'react'
-import clsx from 'clsx'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  AllowlistAddNotice, GitCredentialPicker, INPUT, remoteKind, remoteProjectName, TrustedHostKey,
+  AllowlistAddNotice, GitCredentialPicker, remoteKind, remoteProjectName, TrustedHostKey,
 } from '#components/GitCredentialPicker'
-import { SectionLabel } from '#components/settings/Field'
 import { repoName } from '#components/settings/Repos'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
 import { api } from '#lib/api'
+import { PrevMatchIcon as MoveUpIcon, NextMatchIcon as MoveDownIcon } from '#lib/icons'
 import {
   addProjectRepo, refreshRepos, removeProjectRepo, renameProjectRepo, setProjectRepoFlag, setProjectRepoOrder, useRepos,
   type RepoToLink,
@@ -18,6 +16,7 @@ import { useSnapshot } from '#lib/useSnapshot'
 import { isGitHubHost } from '@yaac/shared/credentials'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { REPO_DIR_RE, type ProjectRepo, type ProjectSummary } from '@yaac/shared/types'
+import { YButton, YCheckbox, YInput, YSectionLabel, YSelect, YSettingRow } from '#ui'
 
 /** Whether a repo's token can be `GH_TOKEN` at all: an https remote on
  *  GitHub. */
@@ -32,7 +31,8 @@ function isGithubHttps(remoteUrl: string): boolean {
 
 /**
  * The repos a project links (docs/project-repos.md): each one's folder
- * name, its place in the order, and under an egress proxy whether this
+ * name, its place in the order (which the create screen, the checkout
+ * switcher and Home's project card follow), and under an egress proxy whether this
  * project may only read it and whether its token may be `GH_TOKEN`. A repo
  * is linked by cloning a URL, by picking one the owner has or was shared,
  * or by creating one yaac hosts. Unlinking leaves the repo in
@@ -57,15 +57,15 @@ export function ProjectRepos({ project, readOnly }: { project: ProjectSummary; r
   }
 
   return (
-    <div>
-      <div className="text-xs font-medium text-text">Repos</div>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
-        The git repos a workspace of this project can start with. Each create picks which; one sits at the
-        workspace root or in its folder, several each in their folder.
-      </p>
-      <div className="mt-2 space-y-2 text-xs">
+    <YSettingRow
+      stacked
+      label="Repos"
+      hint={'The git repos a workspace of this project can start with. Each create picks which; one sits at the '
+        + 'workspace root or in its folder, several each in their folder.'}
+    >
+      <div className="divide-y divide-line text-md">
         {project.repos.map((r, i) => (
-          <div key={r.id} data-repo={r.id} className="flex flex-col gap-1.5 rounded-md bg-bg px-2.5 py-1.5">
+          <div key={r.id} data-repo={r.id} className="flex flex-col gap-1.5 py-1.5">
             <div className="flex min-w-0 items-center gap-2">
               <RepoDir
                 dir={r.dir}
@@ -73,28 +73,36 @@ export function ProjectRepos({ project, readOnly }: { project: ProjectSummary; r
                 readOnly={readOnly}
                 onRename={(dir) => change.mutate(() => renameProjectRepo(project.id, r.id, dir))}
               />
-              <span title={r.remoteUrl} className="min-w-0 flex-1 truncate font-mono text-[11px] text-text-faint">
+              <span title={r.remoteUrl} className="min-w-0 flex-1 truncate font-mono text-sm text-subtle">
                 {r.hosted ? 'hosted by yaac' : r.remoteUrl}
               </span>
-              {!r.hosted && r.gitCredential === null && <span className="shrink-0 text-[11px] text-amber-400">no git credential</span>}
+              {!r.hosted && r.gitCredential === null && <span className="shrink-0 text-sm text-warning">no git credential</span>}
               {!readOnly && (
                 <span className="flex shrink-0 items-center">
-                  <button type="button" disabled={i === 0 || change.isPending} onClick={() => move(i, -1)}
-                    aria-label={`Move ${r.dir} up`} className={TEXT_BUTTON}>↑</button>
-                  <button type="button" disabled={i === project.repos.length - 1 || change.isPending} onClick={() => move(i, 1)}
-                    aria-label={`Move ${r.dir} down`} className={TEXT_BUTTON}>↓</button>
-                  <button type="button" onClick={() => openSettings('repos', undefined, r.id)} className={TEXT_BUTTON}>
+                  {/* Reordering needs a second repo. An arrow with nowhere to go
+                      leaves a gap, so the arrows line up down the list. */}
+                  {project.repos.length > 1 && <>
+                    {i === 0 ? <span aria-hidden className="size-6" /> : (
+                      <YButton variant="ghost" size="sm" icon={MoveUpIcon} disabled={change.isPending}
+                        onClick={() => move(i, -1)} aria-label={`Move ${r.dir} up`} title="Move up" />
+                    )}
+                    {i === project.repos.length - 1 ? <span aria-hidden className="size-6" /> : (
+                      <YButton variant="ghost" size="sm" icon={MoveDownIcon} disabled={change.isPending}
+                        onClick={() => move(i, 1)} aria-label={`Move ${r.dir} down`} title="Move down" />
+                    )}
+                  </>}
+                  <YButton variant="secondary" size="sm" onClick={() => openSettings('repos', undefined, r.id)}>
                     Manage repo
-                  </button>
-                  <button
-                    type="button"
+                  </YButton>
+                  <YButton
+                    variant="danger"
+                    size="sm"
                     disabled={change.isPending}
                     onClick={() => change.mutate(() => removeProjectRepo(project.id, r.id))}
                     title="Unlink it from this project. The repo and every workspace's checkout of it stay."
-                    className={TEXT_BUTTON}
                   >
                     Unlink
-                  </button>
+                  </YButton>
                 </span>
               )}
             </div>
@@ -102,13 +110,13 @@ export function ProjectRepos({ project, readOnly }: { project: ProjectSummary; r
               onChange={(flag, enabled) => change.mutate(() => setProjectRepoFlag(project.id, r.id, flag, enabled))} />}
           </div>
         ))}
-        {project.repos.length === 0 && (
-          <p className="text-[11px] text-text-faint">No repos: its workspaces start with an empty directory.</p>
-        )}
       </div>
-      {change.error && <p className="mt-2 text-[11px] text-red-400">{change.error.message}</p>}
+      {project.repos.length === 0 && (
+        <p className="text-md text-subtle">No repos: its workspaces start with an empty directory.</p>
+      )}
+      {change.error && <p className="mt-2 text-sm text-danger">{change.error.message}</p>}
       {!readOnly && <AddRepo project={project} />}
-    </div>
+    </YSettingRow>
   )
 }
 
@@ -125,28 +133,27 @@ function RepoDir({ dir, taken, readOnly, onRename }: {
   })
   if (rename.editing) {
     return (
-      <input
+      <YInput
         ref={rename.inputRef}
         aria-label="Folder name"
         defaultValue={rename.seed}
         maxLength={100}
         onKeyDown={rename.handleKeyDown}
         onBlur={rename.handleBlur}
-        className="w-32 shrink-0 rounded border border-border bg-surface px-1.5 py-0.5 font-mono text-xs text-text
-          outline-none focus:border-border-strong"
+        className="h-6 w-32 shrink-0 px-1.5 font-mono"
       />
     )
   }
   return (
-    <button
-      type="button"
+    <YButton
+      variant="bare"
       onClick={rename.start}
       disabled={readOnly}
       title="The folder its checkout takes when a workspace nests its repos. Click to rename."
-      className="shrink-0 truncate font-mono font-medium text-text"
+      className="shrink-0 truncate font-mono font-medium text-text enabled:hover:underline disabled:opacity-100"
     >
       {dir}/
-    </button>
+    </YButton>
   )
 }
 
@@ -164,27 +171,26 @@ function LinkFlags({ project, repo, readOnly, onChange }: {
 }): JSX.Element {
   const github = isGithubHttps(repo.remoteUrl)
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-text-dim">
-      <label className="flex items-center gap-1.5" title={`Workspaces of ${project.name} can fetch it but not push to it`}>
-        <input
-          type="checkbox"
-          checked={repo.readOnly}
-          disabled={readOnly}
-          onChange={(e) => onChange('read-only', e.target.checked)}
-        />
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
+      <YCheckbox
+        checked={repo.readOnly}
+        disabled={readOnly}
+        onCheckedChange={(on) => onChange('read-only', on)}
+        title={`Workspaces of ${project.name} can fetch it but not push to it`}
+        className="text-sm"
+      >
         Read-only in this project
-      </label>
+      </YCheckbox>
       {github && (
-        <label className={clsx('flex items-center gap-1.5', repo.readOnly && 'text-text-faint')}>
-          <input
-            type="checkbox"
-            checked={repo.ghToken && !repo.readOnly}
-            disabled={readOnly || repo.readOnly}
-            onChange={(e) => onChange('gh-token', e.target.checked)}
-          />
+        <YCheckbox
+          checked={repo.ghToken && !repo.readOnly}
+          disabled={readOnly || repo.readOnly}
+          onCheckedChange={(on) => onChange('gh-token', on)}
+          className="text-sm"
+        >
           Use its token as GH_TOKEN
           {repo.readOnly && <span>(off while read-only: through the GitHub API the token could write the repo)</span>}
-        </label>
+        </YCheckbox>
       )}
     </div>
   )
@@ -204,7 +210,7 @@ function AddRepo({ project }: { project: ProjectSummary }): JSX.Element {
   return (
     <div className="mt-2 flex flex-col gap-2">
       {trusted !== null && <TrustedHostKey entry={trusted} />}
-      <button type="button" onClick={() => setOpen(true)} className={BUTTON}>Add repo…</button>
+      <YButton size="sm" onClick={() => setOpen(true)} className="self-start">Add repo…</YButton>
     </div>
   )
 }
@@ -247,14 +253,9 @@ function AddRepoForm({ project, onCancel, onAdded }: {
   })
 
   return (
-    <div className="mt-3 flex flex-col gap-2 rounded-md border border-hairline-soft p-2.5 text-xs">
-      <SectionLabel>Add repo</SectionLabel>
-      <select
-        aria-label="Repo to add"
-        value={what}
-        onChange={(e) => setWhat(e.target.value)}
-        className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-text outline-none"
-      >
+    <div className="mt-3 flex flex-col gap-2 border-t border-line pt-3 text-md">
+      <YSectionLabel>Add repo</YSectionLabel>
+      <YSelect aria-label="Repo to add" value={what} onChange={(e) => setWhat(e.target.value)}>
         <option value={NEW_URL}>Clone a repository…</option>
         {offered.map((r) => (
           <option key={r.id} value={r.id}>
@@ -262,30 +263,30 @@ function AddRepoForm({ project, onCancel, onAdded }: {
           </option>
         ))}
         <option value={NEW_HOSTED}>New repo hosted by yaac</option>
-      </select>
+      </YSelect>
       {what === NEW_URL && (
-        <input
+        <YInput
           aria-label="Repository URL"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           autoFocus
           placeholder="https://github.com/owner/repo.git"
-          className={INPUT}
+          className="font-mono"
         />
       )}
-      <input
+      <YInput
         aria-label="Folder name"
         value={dir}
         onChange={(e) => setDir(e.target.value)}
         placeholder={`folder name (default: ${what === NEW_URL ? remoteProjectName(remoteUrl) || 'the repo\'s name' : 'the repo\'s name'})`}
-        className={INPUT}
+        className="font-mono"
       />
       <AllowlistAddNotice
         remoteUrl={what === NEW_URL ? remoteUrl : picked?.hosted === false ? picked.remoteUrl : ''}
         allowlist={allowlist}
       />
       {badDir && (
-        <p className="text-[11px] text-red-400">
+        <p className="text-sm text-danger">
           A folder name is letters, digits, &quot;.&quot;, &quot;_&quot; and &quot;-&quot;, and no other repo of this project has it.
         </p>
       )}
@@ -300,16 +301,16 @@ function AddRepoForm({ project, onCancel, onAdded }: {
         />
       ) : (
         <div className="flex items-center gap-2">
-          <button
-            type="button"
+          <YButton
+            variant="primary"
+            size="sm"
             disabled={badDir || link.isPending}
             onClick={() => link.mutate(what === NEW_HOSTED ? { hosted: true } : { repoId: what })}
-            className={BUTTON}
           >
             {link.isPending ? 'Adding…' : 'Add'}
-          </button>
-          <button type="button" onClick={onCancel} className={TEXT_BUTTON}>Cancel</button>
-          {link.error && <span className="text-[11px] text-red-400">{link.error.message}</span>}
+          </YButton>
+          <YButton variant="ghost" size="sm" onClick={onCancel}>Cancel</YButton>
+          {link.error && <span className="text-sm text-danger">{link.error.message}</span>}
         </div>
       )}
     </div>

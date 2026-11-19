@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
-import clsx from 'clsx'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GitCredentialPicker, remoteKind, remoteProjectName, TrustedHostKey } from '#components/GitCredentialPicker'
-import { SectionLabel } from '#components/settings/Field'
 import { HostedRemote } from '#components/settings/HostedRemote'
 import { KeptHostedRepo } from '#components/settings/KeptHostedRepo'
 import { MoveToRemote } from '#components/settings/MoveToRemote'
-import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
-import { ConfirmDialog } from '#components/ui/ConfirmDialog'
+import { SettingsPageTitle } from '#components/settings/SettingsPage'
 import { DeleteIcon } from '#lib/icons'
 import {
   assignRepoCredential, deleteRepo, previewRepoDelete, refreshRepos, shareRepo, unshareRepo, useRepos,
@@ -16,6 +13,7 @@ import { useUiStore } from '#lib/store'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useTeammateView, useViewedUserId, useWhoami } from '#lib/viewer'
 import type { RepoSummary } from '@yaac/shared/types'
+import { cn, YBadge, YButton, YConfirm, YRowFrame, YSection, YSectionLabel, YSelect } from '#ui'
 
 /** A repo as a row or a dialog names it: its remote's last path segment, or
  *  for one yaac hosts the folder a project links it under. */
@@ -64,27 +62,24 @@ export function ReposSettings(): JSX.Element {
   ]
 
   return (
-    <section>
-      <h2 className="text-sm font-semibold">Repos</h2>
-      <p className="mt-1 text-[11px] leading-relaxed text-text-faint">
+    <>
+      <SettingsPageTitle title="Repos">
         A repo is one git remote as you reach it, with the credential that authenticates to it. Projects link
         repos, and removing a project or unlinking a repo leaves the repo here.
-      </p>
+      </SettingsPageTitle>
       {repos !== undefined && groups.every((g) => g.repos.length === 0) && (
-        <p className="mt-6 text-xs text-text-faint">No repos yet. Adding a project adds its repo.</p>
+        <p className="text-md text-subtle">No repos yet. Adding a project adds its repo.</p>
       )}
       {groups.filter((g) => g.repos.length > 0).map((g) => (
-        <div key={g.label} className="mt-6">
-          <SectionLabel>{g.label}</SectionLabel>
-          {g.hint !== undefined && <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">{g.hint}</p>}
-          <div className="mt-2 space-y-2 text-xs">
+        <YSection key={g.label} title={g.label} description={g.hint}>
+          <div className="divide-y divide-line border-y border-line text-md">
             {g.repos.map((r) => (
               <RepoRow key={r.id} repo={r} readOnly={readOnly || r.owner !== viewed} focused={focus === r.id} />
             ))}
           </div>
-        </div>
+        </YSection>
       ))}
-    </section>
+    </>
   )
 }
 
@@ -121,28 +116,25 @@ function RepoRow({ repo, readOnly, focused }: { repo: RepoSummary; readOnly: boo
     <div
       ref={ref}
       data-repo={repo.id}
-      className={clsx(
-        'flex flex-col gap-1.5 rounded-md bg-bg px-2.5 py-1.5',
-        missing && !readOnly && 'border border-amber-500/30',
-        focused && 'ring-1 ring-accent',
+      className={cn(
+        'flex flex-col gap-1.5 px-1 py-2.5',
+        missing && !readOnly && 'border-l-2 border-l-warning pl-2',
       )}
     >
       <div className="flex min-w-0 items-center gap-2">
-        <span className="shrink-0 rounded bg-surface-3 px-1.5 py-0.5 text-[11px] font-medium text-text-dim">
-          {repo.hosted ? 'HOSTED BY YAAC' : remoteKind(repo.remoteUrl).toUpperCase()}
-        </span>
+        <YBadge>{repo.hosted ? 'Hosted by yaac' : remoteKind(repo.remoteUrl).toUpperCase()}</YBadge>
         <span title={repo.hosted ? name : repo.remoteUrl} className="min-w-0 truncate font-mono text-text">
           {repo.hosted ? name : repo.remoteUrl}
         </span>
-        {readOnly && owner !== undefined && <span className="shrink-0 text-[11px] text-text-faint">owned by {owner}</span>}
-        {missing && !readOnly && <span className="shrink-0 text-[11px] text-amber-400">no git credential</span>}
+        {readOnly && owner !== undefined && <span className="shrink-0 text-sm text-subtle">owned by {owner}</span>}
+        {missing && !readOnly && <span className="shrink-0 text-sm text-warning">no git credential</span>}
         {repo.deleted === undefined && !readOnly && (
-          <button type="button" onClick={() => setOpen((o) => !o)} className={clsx(TEXT_BUTTON, 'ml-auto')}>
+          <YButton variant="secondary" size="sm" onClick={() => setOpen((o) => !o)} className="ml-auto">
             {open ? 'Close' : 'Manage'}
-          </button>
+          </YButton>
         )}
       </div>
-      <p className="truncate text-[11px] text-text-faint">
+      <p className="truncate text-sm text-subtle">
         {repo.projects.length === 0
           ? 'No project links it.'
           : `Linked by ${repo.projects.map((p) => p.name).join(', ')}.`}
@@ -154,7 +146,7 @@ function RepoRow({ repo, readOnly, focused }: { repo: RepoSummary; readOnly: boo
         <GitCredentialPicker kind={remoteKind(repo.remoteUrl)} projectName={name} actionLabel="Assign" onSubmit={assign} />
       )}
       {open && repo.deleted === undefined && !readOnly && (
-        <div className="flex flex-col gap-4 border-t border-hairline-soft pt-2.5">
+        <div className="flex flex-col gap-4 border-t border-line pt-3">
           {!repo.hosted && !missing && (
             <Part label="Git credential">
               {changing ? (
@@ -169,7 +161,7 @@ function RepoRow({ repo, readOnly, focused }: { repo: RepoSummary; readOnly: boo
               ) : (
                 <div className="flex items-center gap-2">
                   <span className="truncate font-medium text-text">{repo.gitCredential?.name}</span>
-                  <button type="button" onClick={() => setChanging(true)} className={TEXT_BUTTON}>Change</button>
+                  <YButton variant="secondary" size="sm" onClick={() => setChanging(true)}>Change</YButton>
                 </div>
               )}
             </Part>
@@ -201,7 +193,7 @@ function RepoRow({ repo, readOnly, focused }: { repo: RepoSummary; readOnly: boo
 function Part({ label, children }: { label: string; children: ReactNode }): JSX.Element {
   return (
     <div>
-      <SectionLabel>{label}</SectionLabel>
+      <YSectionLabel>{label}</YSectionLabel>
       <div className="mt-1.5">{children}</div>
     </div>
   )
@@ -212,7 +204,7 @@ function Holders({ repo }: { repo: RepoSummary }): JSX.Element {
   const users = useWhoami()?.users ?? []
   const holders = repo.deleted?.heldBy ?? []
   return (
-    <ul className="space-y-0.5 text-[11px] text-text-dim">
+    <ul className="space-y-0.5 text-sm text-muted">
       {holders.map((h) => (
         <li key={h.workspaceId} className="truncate">
           Workspace <span className="font-mono">{h.workspaceId.slice(0, 8)}</span> in {h.projectName}
@@ -245,53 +237,48 @@ function RepoSharing({ repo, onChanged }: { repo: RepoSummary; onChanged: () => 
 
   return (
     <div>
-      <SectionLabel>Sharing</SectionLabel>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
+      <YSectionLabel>Sharing</YSectionLabel>
+      <p className="mt-0.5 text-sm leading-relaxed text-subtle">
         Someone you share this repo with can link it into their own projects, and reads and pushes this
         repository. Ending a share stops their workspaces that hold a checkout of it; their projects and
         checkouts stay, and work again if you share it again.
       </p>
-      <div className="mt-3 space-y-1">
+      <div className="mt-2 divide-y divide-line">
         {others.filter((u) => shared.has(u.id)).map((u) => (
-          <div key={u.id} className="flex items-center gap-2 rounded-md bg-surface px-2.5 py-1.5 text-xs">
+          <YRowFrame
+            key={u.id}
+            label={u.name}
+            actionsShown
+            actions={(
+              <YButton
+                variant="ghost"
+                size="sm"
+                icon={DeleteIcon}
+                onClick={() => unshare.mutate(u.id)}
+                disabled={unshare.isPending}
+                aria-label={`Stop sharing with ${u.name}`}
+              />
+            )}
+            className="min-h-8 text-md"
+          >
             <span className="flex-1 truncate text-text">{u.name}</span>
-            {u.login !== null && <span className="truncate text-[11px] text-text-faint">{u.login}</span>}
-            <button
-              type="button"
-              onClick={() => unshare.mutate(u.id)}
-              disabled={unshare.isPending}
-              aria-label={`Stop sharing with ${u.name}`}
-              className="shrink-0 text-text-faint transition hover:text-text disabled:opacity-50"
-            >
-              <DeleteIcon size={12} />
-            </button>
-          </div>
+            {u.login !== null && <span className="truncate text-sm text-subtle">{u.login}</span>}
+          </YRowFrame>
         ))}
-        {shared.size === 0 && <p className="text-[11px] text-text-faint">Not shared with anyone.</p>}
+        {shared.size === 0 && <p className="text-sm text-subtle">Not shared with anyone.</p>}
       </div>
       {candidates.length > 0 && (
         <div className="mt-3 flex gap-2">
-          <select
-            value={picked}
-            onChange={(e) => setPicked(e.target.value)}
-            aria-label="Share with"
-            className="flex-1 rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-text
-              outline-none focus:border-border-strong"
-          >
+          <YSelect value={picked} onChange={(e) => setPicked(e.target.value)} aria-label="Share with" className="flex-1">
             <option value="">Share with…</option>
             {candidates.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
-          <button
-            type="button"
-            onClick={() => share.mutate(picked)}
-            disabled={picked === '' || share.isPending}
-            className={BUTTON}
-          >
+          </YSelect>
+          <YButton onClick={() => share.mutate(picked)} disabled={picked === '' || share.isPending}>
             {share.isPending ? 'Sharing…' : 'Share'}
-          </button>
+          </YButton>
         </div>
       )}
-      {error && <p className="mt-2 text-xs text-red-400">{error.message}</p>}
+      {error && <p className="mt-2 text-md text-danger">{error.message}</p>}
     </div>
   )
 }
@@ -318,14 +305,14 @@ function DeleteRepo({ repo, name, onDeleted }: { repo: RepoSummary; name: string
   const reached = preview.data
   return (
     <div>
-      <SectionLabel>Delete</SectionLabel>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
+      <YSectionLabel>Delete</YSectionLabel>
+      <p className="mt-0.5 text-sm leading-relaxed text-subtle">
         Unlinks the repo from every project and removes it from yaac. Workspaces keep their checkouts.
       </p>
-      <button type="button" onClick={() => { remove.reset(); setConfirm(true) }} className={`mt-2 ${BUTTON}`}>
+      <YButton variant="danger" size="sm" onClick={() => { remove.reset(); setConfirm(true) }} className="mt-2">
         Delete repo…
-      </button>
-      <ConfirmDialog
+      </YButton>
+      <YConfirm
         open={confirm}
         onOpenChange={setConfirm}
         title={`Delete ${name}?`}
