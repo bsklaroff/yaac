@@ -157,12 +157,13 @@ async function createWindow(): Promise<BrowserWindow> {
     /*
      * On macOS the title bar is hidden and the native traffic lights sit in
      * the room the SPA leaves for them (YTrafficLights) at the left of its
-     * top bar, past the bar's 12px padding and centred in its 44px height.
+     * top bar, past the bar's 12px padding. The 14px buttons are centred on
+     * the bar's text, which sits in the 43px above its 1px bottom border.
      * Elsewhere the window keeps its native frame, with the menu bar hidden
      * until Alt is pressed; its accelerators work either way.
      */
     ...(process.platform === 'darwin'
-      ? { titleBarStyle: 'hidden' as const, trafficLightPosition: { x: 12, y: 16 } }
+      ? { titleBarStyle: 'hidden' as const, trafficLightPosition: { x: 12, y: 15 } }
       : { autoHideMenuBar: true }),
     // The renderer is web content from the server: sandboxed, no Node.
     webPreferences: {

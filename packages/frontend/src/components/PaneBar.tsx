@@ -55,7 +55,7 @@ export function PaneBarLeading(): JSX.Element | null {
   // The traffic lights overhang the rail into this bar, which starts 45px in.
   return (
     <>
-      <YTrafficLights className="w-4" />
+      <YTrafficLights className="w-6" />
       <ShowSidebarButton />
     </>
   )
