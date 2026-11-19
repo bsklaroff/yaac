@@ -7,7 +7,7 @@
  * `workspace-bin/yaac-workspace-init`; only steps needing host coordination
  * are here.
  */
-import { tmuxCmd, windowTarget } from './agent-command'
+import { NEW_WINDOW_TARGET, tmuxCmd, windowTarget } from './agent-command'
 import { nameSessionCommand } from './agent-tools'
 import { KEEPER_STARTING, KEEPER_WINDOW, type WorkspacePaths } from '#drivers/contract'
 import type { AgentMode, AgentTool } from '@yaac/shared/types'
@@ -78,7 +78,7 @@ export function buildWindowsExec(
   // further start of tmux costs tens of milliseconds in a gVisor pod.
   const sessionCmds = sessions.map((spec) => {
     const target = windowTarget(spec.window)
-    return `new-window -d -t yaac -n ${spec.window} -c ${spec.cwd} '${spec.cmd}'`
+    return `new-window -d -t ${NEW_WINDOW_TARGET} -n ${spec.window} -c ${spec.cwd} '${spec.cmd}'`
       + ` \\; set-option -t ${target} remain-on-exit on`
       + (spec.mode === 'acp' ? ` \\; ${pipeToLogCommand(target)}` : '')
       + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')

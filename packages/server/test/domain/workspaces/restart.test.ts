@@ -164,7 +164,7 @@ async function restart(idOrPrefix: string, onProgress?: (message: string) => voi
 }
 
 /** The command that opened the relaunch's session windows. */
-const windowsExec = (): string | undefined => calls.find((c) => c.includes('new-window -d -t yaac -n '))
+const windowsExec = (): string | undefined => calls.find((c) => c.includes('new-window -d -t =yaac: -n '))
 
 /** The workspace's first session, which its create opened. */
 const lead = async (workspaceId: string): Promise<SessionRow> => (await listWorkspaceSessions(workspaceId))[0]

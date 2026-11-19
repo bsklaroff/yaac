@@ -49,7 +49,7 @@ function listed(...names: string[]): void {
 }
 
 /** The session windows the workspace has been asked to open. */
-const opened = (): string[] => execs.flatMap((c) => [...c.matchAll(/new-window -d -t yaac -n (\S+)/g)].map((m) => m[1]))
+const opened = (): string[] => execs.flatMap((c) => [...c.matchAll(/new-window -d -t =yaac: -n (\S+)/g)].map((m) => m[1]))
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
