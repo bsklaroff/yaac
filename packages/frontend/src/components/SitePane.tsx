@@ -2,6 +2,7 @@ import { useState, type FormEvent, type JSX, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Menu } from '@base-ui/react/menu'
+import { ApprovalDetails } from '#components/ApprovalDetails'
 import { BAR_BUTTON } from '#components/WorkflowPane'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
 import { BUTTON, TEXT_BUTTON } from '#components/ui/button'
@@ -47,26 +48,39 @@ function useSiteEdge(): SiteEdgeStatus | undefined {
   return useQuery({ queryKey: ['site-edge'], queryFn: () => api.site.edge.$get() }).data
 }
 
+/** Who asked for a requested deploy, as its pane and review say it. */
+const REQUESTER: Record<NonNullable<SiteEntry['requested']>['from'], string> = {
+  agent: 'An agent',
+  following: 'Following',
+  person: 'A deploy of content no person approved',
+}
+
+const UNPUBLISHED = 'Unpublished: only you reach it, as its release’s preview.'
+
 /** Commits per repo: `<dir>@<short>` each, bare for a lone repo. */
 const short = (commits: SiteCommit[]): string => formatCommits(commits, 8)
 
 /** A site's state in a few words, for its sidebar row. */
 export function siteState(site: SiteSummary): string {
   if (site.deploy !== undefined) return site.deploy.replacing ? 'replacing its release' : PHASE[site.deploy.phase]
-  if (site.live !== undefined) return 'serving'
+  if (site.awaitingApproval === true) return 'awaiting approval'
+  if (site.live !== undefined) return site.published ? 'serving' : 'previewing'
   if (site.lastDeploy?.outcome === 'failed') return 'deploy failed'
   return 'not serving'
 }
 
-type Action = 'deploy' | 'stop' | 'delete'
+type Action = 'deploy' | 'approve' | 'publish' | 'unpublish' | 'stop' | 'delete'
 
 /** What can be done to a site, from its sidebar row or its pane. */
 export interface SiteActions {
-  /** Ask, then deploy, stop or delete. */
+  /** Ask, then act. `approve` reviews the deploy waiting for approval. */
   ask: (action: Action) => void
   start: () => void
   edit: () => void
-  /** Deploy and Start need an admin; Stop and Delete the owner too. */
+  /** The owner deploys, starts and edits an unpublished site; a published
+   *  one, and publishing, need an admin. Stop, Unpublish and Delete need
+   *  the owner or an admin. */
+  canDeploy: boolean
   canPublish: boolean
   canEnd: boolean
   error: string | null
@@ -74,13 +88,18 @@ export interface SiteActions {
 }
 
 /** A site's actions (docs/public-sites.md). A deploy of a site that does
- *  not follow its branches asks which ref of each repo to deploy. */
+ *  not follow its branches asks which ref of each repo to deploy. A review
+ *  shows the requested deploy as it was when opened, and approves exactly
+ *  that. */
 export function useSiteActions(site: SiteSummary): SiteActions {
   const admin = useIsAdmin()
   const readOnly = useReadOnly()
   const openObject = useUiStore((s) => s.openObject)
   const [confirm, setConfirm] = useState<Action | null>(null)
   const [refs, setRefs] = useState<Record<string, string>>({})
+  const [hostname, setHostname] = useState('')
+  const [reviewing, setReviewing] = useState<SiteEntry['requested']>(undefined)
+  const siteDomain = useSiteEdge()?.siteDomain
   const json = { project: site.projectId, name: site.name }
   const { data: entry } = useQuery({
     queryKey: ['site', site.projectId, site.name],
@@ -96,6 +115,17 @@ export function useSiteActions(site: SiteSummary): SiteActions {
           await api.site.deploy.$post({ json: { ...json, ...(Object.keys(named).length > 0 ? { refs: named } : {}) } })
           return
         }
+        case 'approve': {
+          if (reviewing === undefined) return
+          await api.site.deploy.$post({ json: { ...json, approve: { workflowId: reviewing.workflowId, commits: reviewing.commits } } })
+          return
+        }
+        case 'publish': {
+          const release = site.live?.workspaceId
+          await api.site.publish.$post({ json: { ...json, hostname: hostname.trim(), ...(release !== undefined ? { release } : {}) } })
+          return
+        }
+        case 'unpublish': await api.site.unpublish.$post({ json }); return
         case 'start': await api.site.start.$post({ json }); return
         case 'stop': await api.site.stop.$post({ json }); return
         case 'delete': await api.site.delete.$post({ json })
@@ -103,15 +133,26 @@ export function useSiteActions(site: SiteSummary): SiteActions {
     },
     onSuccess: () => setConfirm(null),
   })
+  const canPublish = admin && !readOnly
   return {
     ask: (action) => {
       act.reset()
       setRefs({})
-      setConfirm(action)
+      setHostname(site.hostname ?? '')
+      if (action !== 'approve') {
+        setConfirm(action)
+        return
+      }
+      // Freeze what the review shows: that is what gets approved.
+      void api.site.show.$get({ query: json }).then((e) => {
+        setReviewing(e.requested)
+        setConfirm('approve')
+      })
     },
     start: () => act.mutate('start'),
     edit: () => openObject(site.projectId, { kind: 'site', id: site.name, edit: true }),
-    canPublish: admin && !readOnly,
+    canDeploy: !readOnly && (!site.published || canPublish),
+    canPublish,
     canEnd: admin || !readOnly,
     error: confirm === null && act.error ? act.error.message : null,
     dialog: (
@@ -120,10 +161,41 @@ export function useSiteActions(site: SiteSummary): SiteActions {
         onOpenChange={(open) => { if (!open) { setConfirm(null); act.reset() } }}
         {...confirmText(confirm, site.name)}
         busy={act.isPending}
-        error={act.error?.message}
+        error={act.error?.message ?? (confirm === 'approve' && reviewing === undefined ? 'Nothing is waiting for approval now' : undefined)}
         onConfirm={() => { if (confirm !== null) act.mutate(confirm) }}
       >
-        {confirm === 'deploy' && <p className="mt-3 text-[11px] text-text-faint">{EDGE_REACH[site.edge]}</p>}
+        {(confirm === 'deploy' || confirm === 'approve') && (
+          <p className="mt-3 text-[11px] text-text-faint">{site.edge !== undefined ? EDGE_REACH[site.edge] : UNPUBLISHED}</p>
+        )}
+        {confirm === 'approve' && reviewing !== undefined && (
+          <>
+            <p className="mt-3 text-[11px] text-text-faint">
+              {REQUESTER[reviewing.from]} asked to deploy this. Approving deploys exactly these commits with this
+              workflow, approving them for this site&apos;s settings; it approves no branch.
+              {reviewing.changes.length > 0 && ` It changes the live release's ${reviewing.changes.join(', ')}.`}
+            </p>
+            <ApprovalDetails request={reviewing} />
+          </>
+        )}
+        {confirm === 'publish' && (
+          <>
+            <input
+              aria-label="Hostname"
+              value={hostname}
+              onChange={(e) => setHostname(e.target.value)}
+              placeholder={siteDomain !== undefined ? `app.${siteDomain}` : 'app.example.com'}
+              className={`${INPUT} mt-3 w-full font-mono`}
+            />
+            {hostname.trim() !== '' && (
+              <p className="mt-2 text-[11px] text-text-faint">{EDGE_REACH[siteEdgeOf(hostname.trim(), siteDomain)]}</p>
+            )}
+            <p className="mt-2 text-[11px] text-text-faint">
+              {site.live !== undefined
+                ? <>It goes live serving release {short(site.live.commits)}, the one you can preview now.</>
+                : 'It serves nothing until it is deployed.'}
+            </p>
+          </>
+        )}
         {confirm === 'deploy' && site.follow && (
           <p className="mt-3 text-[11px] text-text-faint">It follows its branches, so it deploys their tips.</p>
         )}
@@ -151,13 +223,31 @@ function confirmText(action: Action | null, site: string): {
   switch (action) {
     case 'deploy': return {
       title: `Deploy “${site}”?`,
-      description: 'A new release runs the site’s workflow at these commits and takes over the hostname once it is ready.',
+      description: 'A new release runs the site’s workflow at these commits and takes over once it is ready.',
       confirmLabel: 'Deploy',
       destructive: false,
     }
+    case 'approve': return {
+      title: `Approve and deploy “${site}”?`,
+      description: 'Review what runs: a new release runs this workflow at these commits, with its run secrets, and takes over once it is ready.',
+      confirmLabel: 'Approve and deploy',
+      destructive: false,
+    }
+    case 'publish': return {
+      title: `Publish “${site}”?`,
+      description: 'Its hostname is routed to the release it serves, and to each release it deploys from now on.',
+      confirmLabel: 'Publish',
+      destructive: false,
+    }
+    case 'unpublish': return {
+      title: `Unpublish “${site}”?`,
+      description: 'Its hostname stops answering and is let go; its release keeps running for your preview.',
+      confirmLabel: 'Unpublish',
+      destructive: true,
+    }
     case 'stop': return {
       title: `Stop “${site}”?`,
-      description: 'Its live release stops, and the hostname answers 503 until the site is started again.',
+      description: 'Its live release stops, and a published site’s hostname answers 503 until it is started again.',
       confirmLabel: 'Stop',
       destructive: true,
     }
@@ -172,10 +262,11 @@ function confirmText(action: Action | null, site: string): {
 
 /**
  * A site in the main pane (docs/public-sites.md), opened from its sidebar
- * row. The bar holds Deploy and Stop or Start, and Edit and Delete. The
- * body shows its address and who reaches it, its live release, a deploy in
- * progress, the last deploy and what following is doing, and its recent
- * releases. With `site` absent, or `editing`, it is the site's form.
+ * row. The bar holds Deploy and Stop or Start, and Edit, Publish,
+ * Unpublish and Delete. The body shows its address and who reaches it (or
+ * that it is unpublished), its live release, a deploy in progress, one
+ * waiting for approval, the last deploy and what following is doing, and
+ * its recent releases. With `site` absent, or `editing`, it is the site's form.
  */
 export function SitePane({ project, site, editing, bar }: {
   project: ProjectSummary
@@ -236,13 +327,13 @@ function SiteDetail({ site, bar }: { site: SiteSummary; bar: HTMLElement | null 
             <h2 className="min-w-0 truncate font-medium text-text">{site.name}</h2>
             {actions.error !== null && <span className="truncate text-danger" title={actions.error}>{actions.error}</span>}
           </span>
-          {actions.canPublish && deploy === undefined && (
+          {actions.canDeploy && deploy === undefined && (
             <button type="button" onClick={() => actions.ask('deploy')} className={BAR_BUTTON}>Deploy</button>
           )}
           {actions.canEnd && live !== undefined && (
             <button type="button" onClick={() => actions.ask('stop')} className={BAR_BUTTON}>Stop</button>
           )}
-          {actions.canPublish && live === undefined && deploy === undefined && lastDeploy !== undefined && (
+          {actions.canDeploy && live === undefined && deploy === undefined && lastDeploy !== undefined && (
             <button type="button" onClick={actions.start} className={BAR_BUTTON}>Start</button>
           )}
           {actions.canEnd && (
@@ -251,7 +342,11 @@ function SiteDetail({ site, bar }: { site: SiteSummary; bar: HTMLElement | null 
                 <MoreIcon size={14} />
               </Menu.Trigger>
               <MenuPopup side="bottom" align="end" sideOffset={4} className="min-w-[140px]">
-                {actions.canPublish && <Menu.Item className={MENU_ITEM} onClick={actions.edit}>Edit…</Menu.Item>}
+                {actions.canDeploy && <Menu.Item className={MENU_ITEM} onClick={actions.edit}>Edit…</Menu.Item>}
+                {actions.canPublish && (
+                  <Menu.Item className={MENU_ITEM} onClick={() => actions.ask('publish')}>{site.published ? 'Move…' : 'Publish…'}</Menu.Item>
+                )}
+                {site.published && <Menu.Item className={MENU_ITEM} onClick={() => actions.ask('unpublish')}>Unpublish…</Menu.Item>}
                 <Menu.Item className={MENU_ITEM} onClick={() => actions.ask('delete')}>Delete…</Menu.Item>
               </MenuPopup>
             </Menu.Root>
@@ -262,18 +357,25 @@ function SiteDetail({ site, bar }: { site: SiteSummary; bar: HTMLElement | null 
       )}
       <div className="mx-auto flex max-w-2xl flex-col gap-5 text-xs">
         <Section title="Address">
-          <a href={`https://${site.hostname}`} target="_blank" rel="noreferrer noopener" className="font-mono text-text hover:underline">
-            https://{site.hostname}
-          </a>
-          <p className="text-text-faint">{EDGE_REACH[site.edge]}</p>
-          {site.edge === 'public' && (
-            <p className="text-text-faint">
-              It answers once the install&apos;s Cloudflare tunnel has a public hostname{' '}
-              <code className="text-text-dim">{site.hostname}</code> whose service is the router
-              (<code className="text-text-dim">yaac-site-router</code>, port 8080).
+          {site.hostname !== undefined && site.edge !== undefined ? <>
+            <a href={`https://${site.hostname}`} target="_blank" rel="noreferrer noopener" className="font-mono text-text hover:underline">
+              https://{site.hostname}
+            </a>
+            <p className="text-text-faint">{EDGE_REACH[site.edge]}</p>
+            {site.edge === 'public' && (
+              <p className="text-text-faint">
+                It answers once the install&apos;s Cloudflare tunnel has a public hostname{' '}
+                <code className="text-text-dim">{site.hostname}</code> whose service is the router
+                (<code className="text-text-dim">yaac-site-router</code>, port 8080).
+              </p>
+            )}
+            <EdgeStatus edge={edge} siteEdge={site.edge} />
+          </> : (
+            <p className="text-text-dim">
+              {UNPUBLISHED} The project&apos;s agents may build and deploy it; once published, a deploy you did not
+              make waits for your approval.
             </p>
           )}
-          <EdgeStatus edge={edge} siteEdge={site.edge} />
         </Section>
 
         <Section title="Releases">
@@ -285,6 +387,15 @@ function SiteDetail({ site, bar }: { site: SiteSummary; bar: HTMLElement | null 
           {deploy !== undefined && (
             <p className="text-text-dim">
               {deploy.replacing ? 'Replacing the release at ' : 'Deploying '}{release(deploy.workspaceId, deploy.commits)} · {PHASE[deploy.phase]}
+            </p>
+          )}
+          {detail?.requested !== undefined && (
+            <p className="text-warning">
+              {REQUESTER[detail.requested.from]} asked to deploy {short(detail.requested.commits)}{' '}
+              {relativeAge(detail.requested.at)} · awaiting approval
+              {actions.canDeploy && deploy === undefined && (
+                <button type="button" onClick={() => actions.ask('approve')} className={`${TEXT_BUTTON} ml-2`}>Review…</button>
+              )}
             </p>
           )}
           {lastDeploy !== undefined && (
@@ -366,9 +477,10 @@ function EdgeStatus({ edge, siteEdge }: { edge: SiteEdgeStatus | undefined; site
 }
 
 /**
- * Create a site, or edit the one named `site`. Its releases start with the
- * repos ticked, each at the branch or full commit its field names, which
- * starts empty: which branch is published is the owner's choice. They run
+ * Create a site, unpublished, or edit how the one named `site` is built.
+ * Its releases start with the repos ticked, each at the branch or full
+ * commit its field names, which starts empty: which branch is deployed is
+ * the owner's choice. They run
  * one of the project's workflows. `onDone` gets the site's name.
  */
 export function SiteForm({ project, site: editing, onDone, onCancel }: {
@@ -397,9 +509,7 @@ function SiteFields({ project, site, onDone, onCancel }: {
   const workflows = (useSnapshot()?.workflows ?? []).filter((w) => w.projectId === projectId)
   const openObject = useUiStore((s) => s.openObject)
   const admin = useIsAdmin()
-  const siteDomain = useSiteEdge()?.siteDomain
   const [name, setName] = useState('')
-  const [hostname, setHostname] = useState(site?.hostname ?? '')
   const [port, setPort] = useState(site !== undefined ? String(site.port) : '')
   const [adminPort, setAdminPort] = useState(site?.adminPort !== undefined ? String(site.adminPort) : '')
   const [volume, setVolume] = useState(site?.volume ?? '')
@@ -417,10 +527,9 @@ function SiteFields({ project, site, onDone, onCancel }: {
   }
   const selection = useStartSelection(project, { repos: picks }, seed, {}, false)
   const pick = (id: string, change: RepoPick): void => setPicks({ ...picks, [id]: { ...picks[id], ...change } })
-  const blocked = !admin ? 'Only an admin of this yaac install can publish sites'
+  const blocked = site?.published === true && !admin ? 'Only an admin of this yaac install can change a published site'
     : selection.included.length === 0 ? 'Tick a repo'
     : selection.included.some((r) => r.branch.trim() === '') ? 'Give each repo a branch or a full commit'
-    : hostname.trim() === '' ? 'Give it a hostname'
     : workflow === '' ? 'Pick a workflow'
     : site === undefined && name.trim() === '' ? 'Name the site'
     : null
@@ -428,7 +537,7 @@ function SiteFields({ project, site, onDone, onCancel }: {
   const save = useMutation({
     mutationFn: async () => {
       const repos = selection.request.repos
-      const body = { project: projectId, hostname: hostname.trim(), port: Number(port), workflow, repos, follow }
+      const body = { project: projectId, port: Number(port), workflow, repos, follow }
       const admin = adminPort.trim() === '' ? null : Number(adminPort)
       if (site !== undefined) {
         await api.site.edit.$post({ json: { ...body, name: site.name, adminPort: admin, volume: volume === '' ? null : volume } })
@@ -453,15 +562,6 @@ function SiteFields({ project, site, onDone, onCancel }: {
           <input aria-label="Site name" value={name} onChange={(e) => setName(e.target.value)} placeholder="app" className={INPUT} />
         </Labelled>
       )}
-      <Labelled label="Hostname" hint={hostname.trim() !== '' ? EDGE_REACH[siteEdgeOf(hostname.trim(), siteDomain)] : undefined}>
-        <input
-          aria-label="Hostname"
-          value={hostname}
-          onChange={(e) => setHostname(e.target.value)}
-          placeholder={siteDomain !== undefined ? `app.${siteDomain}` : 'app.example.com'}
-          className={`${INPUT} font-mono`}
-        />
-      </Labelled>
       <div className="flex gap-3">
         <Labelled label="Port">
           <input aria-label="Port" value={port} onChange={(e) => setPort(e.target.value)} placeholder="3000" inputMode="numeric" className={`${INPUT} w-24`} />
@@ -536,9 +636,11 @@ function SiteFields({ project, site, onDone, onCancel }: {
       <p className="text-[11px] leading-relaxed text-text-faint">
         Steps that use the volume need <code className="text-text-dim">{'"volume"'}</code>, and run only once the old
         release has let it go. An admin port is one only you can open, as the release&apos;s preview; the internet
-        never reaches it. A following site deploys whenever one of its branches moves, so whoever can push one, the
-        project&apos;s agents included, publishes the site unless the remote&apos;s branch protection stops them. What
-        fails to deploy leaves the last good release serving.
+        never reaches it. A new site is unpublished until you publish it at a hostname. A following site deploys
+        whenever one of its branches moves, so once it is published, whoever can push one, the project&apos;s agents
+        included, publishes what they push unless the remote&apos;s branch protection stops them. A change here is
+        new settings, so a published site&apos;s next deploy waits for your approval. What fails to deploy leaves
+        the last good release serving.
       </p>
       {save.error && <p className="text-red-400">{save.error.message}</p>}
       <div className="flex justify-end gap-2">

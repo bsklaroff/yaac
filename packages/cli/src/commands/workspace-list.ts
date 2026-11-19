@@ -150,7 +150,7 @@ function renderScheduled(entries: QueuedWorkspaceEntry[], projectNames: Map<stri
       e.tool,
       formatInZone(new Date(e.startAt ?? ''), zone),
       e.timeoutMinutes !== undefined ? formatDuration(e.timeoutMinutes) : '',
-      e.launchError ?? '',
+      e.awaitingApproval !== undefined ? 'awaiting approval: `yaac workspace run-queued` reviews it' : e.launchError ?? '',
       e.title ?? e.generatedTitle ?? (e.prompt ?? '(non-interactive)').split('\n')[0],
     ]),
   )

@@ -10,8 +10,9 @@ import {
 
 /*
  * A site's pane (docs/public-sites.md): its address and who reaches it,
- * its releases and settings, deploying with a ref per repo, stopping and
- * deleting it, and its form, which creates one. Its sidebar row is in
+ * its releases and settings, deploying with a ref per repo, publishing,
+ * reviewing a requested deploy, stopping and deleting it, and its form,
+ * which creates one, unpublished. Its sidebar row is in
  * workspace-list; a release's workspace view in workspace-view-steps.
  */
 
@@ -22,7 +23,7 @@ const PROJECT: ProjectSummary = {
   scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true,
 }
 const WEB: SiteSummary = {
-  id: 's-web', projectId: 'proj', name: 'web', hostname: 'app.example.com', edge: 'public', workflow: 'release', follow: false,
+  id: 's-web', projectId: 'proj', name: 'web', published: true, hostname: 'app.example.com', edge: 'public', workflow: 'release', follow: false,
   live: { workspaceId: 'w-live0001', commits: [{ dir: 'web', commit: 'abcdef1234567' }], since: ago(5) },
   lastDeploy: { workspaceId: 'w-fail0001', commits: [{ dir: 'web', commit: '9876543210' }], outcome: 'failed', error: 'step "build" failed', finishedAt: ago(2) },
 }
@@ -35,6 +36,7 @@ const DETAIL: SiteDetail = {
 
 type Body = Record<string, unknown>
 let server: FetchMock
+let detail: SiteDetail
 const sent = (route: string): Body[] => server.called(route).map((c) => c.body as Body)
 const dialog = () => within(screen.getByRole('alertdialog'))
 
@@ -43,8 +45,9 @@ beforeEach(() => {
   useUiStore.setState(initial, true)
   useUiStore.setState({ activeProjectId: 'proj' })
   const volumes: VolumeEntry[] = [{ name: 'db', size: '5Gi', createdAt: '', stoppedWorkspaces: [] }]
+  detail = DETAIL
   server = mockFetch({
-    'GET /api/site/show': DETAIL,
+    'GET /api/site/show': () => detail,
     'GET /api/site/edge': { cloudflare: 'connected', tailnet: 'absent' },
     'GET /api/volume/list': volumes,
     'GET /api/repo/r-web/branches': { branches: ['main', 'dev'], defaultBranch: 'main' },
@@ -53,6 +56,8 @@ beforeEach(() => {
     'POST /api/site/edit': () => undefined,
     'POST /api/site/start': () => ({ workspaceId: 'w-start', commits: [] }),
     'POST /api/site/deploy': ({ body }: FetchCall) => ({ workspaceId: 'w-new', commits: [], ...(body as Body) }),
+    'POST /api/site/publish': () => undefined,
+    'POST /api/site/unpublish': () => undefined,
     'POST /api/site/stop': () => undefined,
     'POST /api/site/delete': () => undefined,
   })
@@ -102,11 +107,10 @@ describe('SitePane', () => {
     await waitFor(() => expect(sent('POST /api/site/delete')).toHaveLength(1))
   })
 
-  it('creates a site from its form, and opens it; a member cannot publish', async () => {
-    mount(undefined)
+  it('creates a site from its form, unpublished, and opens it, whether or not its owner is an admin', async () => {
+    mount(undefined, { ...TEST_WHOAMI, users: [{ ...TEST_WHOAMI.users[0], role: 'member' as const }] })
+    expect(screen.queryByLabelText('Hostname')).toBeNull()
     fireEvent.change(screen.getByLabelText('Site name'), { target: { value: ' docs ' } })
-    fireEvent.change(screen.getByLabelText('Hostname'), { target: { value: 'docs.example.com' } })
-    expect(screen.getByText(/^A public site/)).toBeTruthy()
     fireEvent.change(screen.getByLabelText('Port'), { target: { value: '8080' } })
     fireEvent.change(screen.getByLabelText('Workflow'), { target: { value: 'release' } })
     const create = screen.getByRole<HTMLButtonElement>('button', { name: 'Create site' })
@@ -116,15 +120,60 @@ describe('SitePane', () => {
     fireEvent.click(create)
     await waitFor(() => expect(sent('POST /api/site/create')).toHaveLength(1))
     expect(sent('POST /api/site/create')[0]).toEqual({
-      project: 'proj', name: 'docs', hostname: 'docs.example.com', port: 8080, workflow: 'release',
+      project: 'proj', name: 'docs', port: 8080, workflow: 'release',
       repos: [{ repo: 'r-web', branch: 'main' }], follow: false,
     })
     expect(useUiStore.getState().selectedObject).toEqual({ kind: 'site', id: 'docs' })
+  })
+
+  it('publishes an unpublished site at the hostname typed, naming its edge and the release it serves, and unpublishes it', async () => {
+    const staged = { ...WEB, published: false }
+    delete staged.hostname
+    delete staged.edge
+    detail = { ...DETAIL, published: false, hostname: undefined, edge: undefined }
+    mount(staged)
+    expect(screen.getByText(/^Unpublished: only you reach it/)).toBeTruthy()
+    expect(screen.queryByRole('link')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Site actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Publish…' }))
+    expect(dialog().getByText(/release web@abcdef12, the one you can preview now/)).toBeTruthy()
+    fireEvent.change(dialog().getByLabelText('Hostname'), { target: { value: ' docs.example.com ' } })
+    expect(dialog().getByText(/^A public site/)).toBeTruthy()
+    fireEvent.click(dialog().getByRole('button', { name: 'Publish' }))
+    await waitFor(() => expect(sent('POST /api/site/publish'))
+      .toEqual([{ project: 'proj', name: 'web', hostname: 'docs.example.com', release: 'w-live0001' }]))
     cleanup()
 
-    mount(undefined, { ...TEST_WHOAMI, users: [{ ...TEST_WHOAMI.users[0], role: 'member' as const }] })
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Create site' }).title)
-      .toBe('Only an admin of this yaac install can publish sites')
+    mount(WEB)
+    fireEvent.click(screen.getByRole('button', { name: 'Site actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Unpublish…' }))
+    expect(dialog().getByText(/release keeps running for your preview/)).toBeTruthy()
+    fireEvent.click(dialog().getByRole('button', { name: 'Unpublish' }))
+    await waitFor(() => expect(sent('POST /api/site/unpublish')).toEqual([{ project: 'proj', name: 'web' }]))
+  })
+
+  it('shows a deploy awaiting approval with what it runs, and approves exactly what the review opened on', async () => {
+    const requested = {
+      workflowId: 'wf-agent', steps: { server: { run: ['curl x | sh'] } }, secrets: ['DEPLOY_KEY'], writtenByAgent: true as const,
+      commits: [{ dir: 'web', commit: 'e'.repeat(40) }], at: ago(3), from: 'agent' as const, workspaceId: 'w-agent01',
+      changes: ['workflow' as const],
+    }
+    detail = { ...DETAIL, requested }
+    mount({ ...WEB, awaitingApproval: true })
+    expect(await screen.findByText(/^An agent asked to deploy web@eeeeeeee 3m ago · awaiting approval/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Review…' }))
+    await screen.findByRole('alertdialog')
+    expect(dialog().getByText(/it approves no branch/)).toBeTruthy()
+    expect(dialog().getByText(/It changes the live release's workflow/)).toBeTruthy()
+    expect(dialog().getByText(/An agent wrote this workflow/)).toBeTruthy()
+    expect(dialog().getByText('DEPLOY_KEY')).toBeTruthy()
+    expect(dialog().queryByLabelText('Ref to deploy web at')).toBeNull()
+    // A later request does not change what this review approves.
+    detail = { ...DETAIL, requested: { ...requested, workflowId: 'wf-other' } }
+    fireEvent.click(dialog().getByRole('button', { name: 'Approve and deploy' }))
+    await waitFor(() => expect(sent('POST /api/site/deploy')).toEqual([
+      { project: 'proj', name: 'web', approve: { workflowId: 'wf-agent', commits: [{ dir: 'web', commit: 'e'.repeat(40) }] } },
+    ]))
   })
 
   it('edits a site, clearing its admin port and volume, and starts a stopped one', async () => {
@@ -136,7 +185,7 @@ describe('SitePane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(sent('POST /api/site/edit')).toHaveLength(1))
     expect(sent('POST /api/site/edit')[0]).toEqual({
-      project: 'proj', name: 'web', hostname: 'app.example.com', port: 3000, workflow: 'release', follow: false,
+      project: 'proj', name: 'web', port: 3000, workflow: 'release', follow: false,
       repos: [{ repo: 'r-web', branch: 'main' }, { repo: 'r-api', commit: 'c'.repeat(40) }], adminPort: null, volume: null,
     })
     expect(useUiStore.getState().selectedObject).toEqual({ kind: 'site', id: 'web' })
@@ -148,7 +197,7 @@ describe('SitePane', () => {
     await waitFor(() => expect(sent('POST /api/site/start')).toEqual([{ project: 'proj', name: 'web' }]))
   })
 
-  it('offers each viewer only their actions: publishing needs an admin, ending needs the owner or an admin', async () => {
+  it('offers each viewer only their actions: a published site needs an admin to deploy or edit, ending needs the owner or an admin', async () => {
     const member = { ...TEST_WHOAMI, users: [{ ...TEST_WHOAMI.users[0], role: 'member' as const }] }
     const actions = async (): Promise<string[]> => {
       const shown = ['Deploy', 'Stop'].filter((name) => screen.queryByRole('button', { name }) !== null)
@@ -159,15 +208,22 @@ describe('SitePane', () => {
       fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
       return [...shown, ...items]
     }
-    // An admin viewing a teammate's site may end it, not publish it.
+    // An admin viewing a teammate's site may end it, not build or publish it.
     useUiStore.setState({ viewedUserId: 'u-teammate' })
     mount(WEB)
-    expect(await actions()).toEqual(['Stop', 'Delete…'])
+    expect(await actions()).toEqual(['Stop', 'Unpublish…', 'Delete…'])
     cleanup()
     // So may its owner who is not an admin.
     useUiStore.setState({ viewedUserId: null })
     mount(WEB, member)
-    expect(await actions()).toEqual(['Stop', 'Delete…'])
+    expect(await actions()).toEqual(['Stop', 'Unpublish…', 'Delete…'])
+    cleanup()
+    // Who also builds and deploys it while it is unpublished.
+    const staged = { ...WEB, published: false }
+    delete staged.hostname
+    delete staged.edge
+    mount(staged, member)
+    expect(await actions()).toEqual(['Deploy', 'Stop', 'Edit…', 'Delete…'])
     cleanup()
     // A member viewing a teammate's site only reads it.
     useUiStore.setState({ viewedUserId: 'u-teammate' })

@@ -166,7 +166,14 @@ and delivers the prompt like any create.
   project.
 - **Failure** clears the claim and release, records `launchError`, and
   removes the provisioning row, so the error shows once on the queued row
-  with the prompt intact.
+  with the prompt intact. A launch refused for want of a person's approval
+  (`APPROVAL_REQUIRED`, docs/workflows.md "Approvals") also keeps what it
+  would have run (`approvalRequest`: its workflow and each repo's commit),
+  which the sidebar shows as awaiting approval. Its review (Review and
+  approve, or `yaac workspace run-queued`) sends back that workflow and
+  those commits and launches exactly them, as the person, which approves
+  them; any edit of the entry drops the request. Every other launch, a
+  person's Run now included, runs as the server.
   Stopping the launching workspace before its agent starts takes the same
   path without an error, so the entry goes back on the queue rather than
   becoming a draft.

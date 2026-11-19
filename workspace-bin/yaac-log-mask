@@ -1,0 +1,158 @@
+#!/usr/bin/env node
+// Copy stdin to stdout with each run secret's value replaced by ***, for a
+// window logged in a workspace given run secrets (docs/workspace-steps.md
+// "Logs"). The values come from this process's own environment, under the
+// names $YAAC_MASK_NAMES lists, so nothing writes one to disk.
+//
+// Values are matched in the text as a reader sees it once terminal escapes
+// and control characters are stripped, as `yaac-mama logs` and the log
+// viewer strip them, so an escape or a carriage return inside a value
+// does not hide it. Values shorter than 8 characters are left alone, since
+// they would mask ordinary words; each line of a multi-line value of that
+// length is masked on its own too. To catch a value split across two
+// reads, up to the longest value less one visible byte is held back, and
+// flushed after 100 ms with no new input so a prompt or progress bar still
+// shows promptly; a value split by a longer pause is missed. Encoded or
+// changed forms of a value are not caught: this is for accidents, not for
+// a step that means to print one.
+//
+// No imports, so it runs the same as a CommonJS or an ES module.
+//
+// Usage: yaac-log-mask
+
+const MIN_LENGTH = 8
+const IDLE_MS = 100
+const MASK = Buffer.from('***')
+const ESC = 0x1b
+
+const values = new Set()
+for (const name of (process.env.YAAC_MASK_NAMES ?? '').split(/\s+/)) {
+  const value = name === '' ? undefined : process.env[name]
+  if (value === undefined) continue
+  for (const s of [value, ...value.split(/\r?\n/)]) if (s.length >= MIN_LENGTH) values.add(s)
+}
+// Longest first, so a value containing another is masked whole.
+const secrets = [...values].sort((a, b) => b.length - a.length).map((s) => Buffer.from(s))
+const keep = secrets.length > 0 ? secrets[0].length - 1 : 0
+
+/** The length of the terminal escape at `i`, 0 for none, or -1 for one cut
+ *  off by the end of `buf` (the patterns `stripAnsi` strips). */
+function escapeAt(buf, i) {
+  if (buf[i] !== ESC) return 0
+  if (i + 1 >= buf.length) return -1
+  const next = buf[i + 1]
+  if (next === 0x3d || next === 0x3e) return 2
+  if (next === 0x5b) {
+    for (let j = i + 2; j < buf.length; j++) {
+      const c = buf[j]
+      if ((c >= 0x30 && c <= 0x39) || c === 0x3b || c === 0x3f) continue
+      return (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) ? j - i + 1 : 0
+    }
+    return -1
+  }
+  if (next === 0x5d) {
+    for (let j = i + 2; j < buf.length; j++) {
+      if (buf[j] === 0x07) return j - i + 1
+      if (buf[j] === ESC) return j + 1 < buf.length ? (buf[j + 1] === 0x5c ? j - i + 2 : 0) : -1
+    }
+    return -1
+  }
+  return 0
+}
+
+/** Whether the byte at `i` is a control character a reader strips: C0 but
+ *  newline and tab, DEL, and a C1 character's two UTF-8 bytes. */
+function controlAt(buf, i) {
+  const c = buf[i]
+  if ((c < 0x20 && c !== 0x0a && c !== 0x09) || c === 0x7f) return 1
+  if (c === 0xc2 && i + 1 < buf.length && buf[i + 1] >= 0x80 && buf[i + 1] <= 0x9f) return 2
+  return 0
+}
+
+/** Whether `buf` holds a byte a reader strips, or one that may start a C1
+ *  character: else what a reader sees is `buf` itself. */
+function hasHidden(buf) {
+  for (let i = 0; i < buf.length; i++) {
+    const c = buf[i]
+    if ((c < 0x20 && c !== 0x0a && c !== 0x09) || c === 0x7f || c === 0xc2) return true
+  }
+  return false
+}
+
+/** `buf`'s visible bytes, each one's offset in `buf`, and where an escape
+ *  cut off by the end of `buf` starts (else its length). */
+function visible(buf) {
+  if (!hasHidden(buf)) return { bytes: buf, at: undefined, cut: buf.length }
+  const bytes = Buffer.allocUnsafe(buf.length)
+  const at = new Int32Array(buf.length)
+  let n = 0
+  let i = 0
+  while (i < buf.length) {
+    const esc = escapeAt(buf, i)
+    if (esc === -1) return { bytes: bytes.subarray(0, n), at, cut: i }
+    const skip = esc > 0 ? esc : controlAt(buf, i)
+    if (skip > 0) {
+      i += skip
+      continue
+    }
+    bytes[n] = buf[i]
+    at[n] = i
+    n++
+    i++
+  }
+  return { bytes: bytes.subarray(0, n), at, cut: buf.length }
+}
+
+/** The offset in the original of a view's visible byte. */
+const offset = (view, i) => (view.at === undefined ? i : view.at[i])
+
+/** `buf` with each value found in its visible text replaced by ***, the
+ *  escapes inside a match going with it. */
+function mask(buf) {
+  if (secrets.length === 0) return buf
+  const view = visible(buf)
+  const taken = new Uint8Array(view.bytes.length)
+  const ranges = []
+  for (const secret of secrets) {
+    for (let at = view.bytes.indexOf(secret); at >= 0; at = view.bytes.indexOf(secret, at + 1)) {
+      if (taken.subarray(at, at + secret.length).some((t) => t === 1)) continue
+      taken.fill(1, at, at + secret.length)
+      ranges.push([offset(view, at), offset(view, at + secret.length - 1) + 1])
+    }
+  }
+  if (ranges.length === 0) return buf
+  ranges.sort((a, b) => a[0] - b[0])
+  const parts = []
+  let from = 0
+  for (const [start, end] of ranges) {
+    parts.push(buf.subarray(from, start), MASK)
+    from = end
+  }
+  parts.push(buf.subarray(from))
+  return Buffer.concat(parts)
+}
+
+process.stdout.on('error', () => process.exit(0))
+let pending = Buffer.alloc(0)
+let timer
+const flush = () => {
+  timer = undefined
+  if (pending.length > 0) process.stdout.write(pending)
+  pending = Buffer.alloc(0)
+}
+process.stdin.on('data', (chunk) => {
+  if (timer !== undefined) clearTimeout(timer)
+  const masked = mask(Buffer.concat([pending, chunk]))
+  // Hold back what could still begin a value: the last `keep` visible
+  // bytes, and an escape the read cut off.
+  const view = visible(masked)
+  const held = view.bytes.length > keep ? offset(view, view.bytes.length - keep) : 0
+  const cut = keep === 0 ? view.cut : Math.min(held, view.cut)
+  if (cut > 0) process.stdout.write(masked.subarray(0, cut))
+  pending = masked.subarray(cut)
+  timer = setTimeout(flush, IDLE_MS)
+})
+process.stdin.on('end', () => {
+  if (timer !== undefined) clearTimeout(timer)
+  flush()
+})

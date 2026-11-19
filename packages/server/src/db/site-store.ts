@@ -33,12 +33,10 @@ export function siteBuiltFrom(site: SiteRow, repoId: string): boolean {
   return site.repos.some((r) => r.repo === repoId) || site.releaseCommits?.[repoId] !== undefined
 }
 
-/** Insert a site, refusing a name its project uses or a hostname any site
- *  uses. */
+/** Insert a site, unpublished, refusing a name its project uses. */
 export async function insertSite(values: {
   projectId: string
   name: string
-  hostname: string
   port: number
   adminPort?: number
   namedWorkflowId: string
@@ -52,10 +50,7 @@ export async function insertSite(values: {
     notifyWorkspaceListChanged()
     return toRow(row)
   }
-  if (await findSiteByName(values.projectId, values.name)) {
-    throw new ServerError('CONFLICT', `this project already has a site named "${values.name}"`)
-  }
-  throw new ServerError('CONFLICT', `another site already serves ${values.hostname}`)
+  throw new ServerError('CONFLICT', `this project already has a site named "${values.name}"`)
 }
 
 export async function listProjectSites(projectId: string): Promise<SiteRow[]> {
@@ -98,11 +93,12 @@ async function hostnameTaken(hostname: string, id?: string): Promise<boolean> {
 export async function updateSite(id: string, patch: SitePatch): Promise<void> {
   const db = await getDb()
   const taken = (): ServerError => new ServerError('CONFLICT', `another site already serves ${patch.hostname ?? ''}`)
-  if (patch.hostname !== undefined && await hostnameTaken(patch.hostname, id)) throw taken()
+  const hostname = patch.hostname ?? undefined
+  if (hostname !== undefined && await hostnameTaken(hostname, id)) throw taken()
   try {
     await db.update(sites).set(patch).where(eq(sites.id, id))
   } catch (err) {
-    if (patch.hostname !== undefined && await hostnameTaken(patch.hostname, id)) throw taken()
+    if (hostname !== undefined && await hostnameTaken(hostname, id)) throw taken()
     throw err
   }
   notifyWorkspaceListChanged()

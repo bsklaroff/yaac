@@ -325,6 +325,20 @@ writer appends to `<window>.log` and at 64 MiB moves it to `<window>.log.1`,
 replacing the one before, so a window that runs for days holds at most twice
 that.
 
+A workspace given run secrets (docs/workflows.md "Run secrets") names them
+in `YAAC_MASK_NAMES`, and the writer pipes each window through
+`workspace-bin/yaac-log-mask` first, which replaces each value with `***`.
+Masking where the log is written, as CI runners do, keeps the value off
+disk for the log's whole retention, and a rotated value is masked as the
+workspace was given it. The masker reads the values from its own
+environment, so nothing writes one to disk. It holds back up to the
+longest value less one byte, to catch a value split across two reads, and
+flushes them after 100 ms with no input, so a prompt still shows. It skips
+values under 8 characters, which would mask ordinary words, masks each
+such line of a multi-line value too, and catches no encoded or changed
+form. An image without `node` (a standalone `Dockerfile.yaac`) logs
+unmasked and says so on the log's first line.
+
 The dir is `terminalLogDir` (`global/projects/<project>/logs/<workspace>`),
 one subdir per life named after its start time, mounted in a pod at
 `/home/yaac/.yaac-logs` and used where it is under containerless. The server
@@ -369,7 +383,7 @@ row, its last run's logs, and Rerun.
 | Step rows and a life's workflows | `packages/server/src/db/step-store.ts` |
 | Life rows and the current life | `packages/server/src/db/workspace-store.ts`, `current-life.ts` |
 | Reconcile, add, rerun, cancel, the non-interactive lock | `packages/server/src/domain/workspaces/steps.ts` |
-| Logs | `packages/server/src/domain/workspaces/logs.ts`, `workspace-bin/yaac-log-writer` |
+| Logs | `packages/server/src/domain/workspaces/logs.ts`, `workspace-bin/yaac-log-writer`, `workspace-bin/yaac-log-mask` |
 | Scripts and hooks | `packages/server/src/runtime/terminals/steps.ts` |
 | A life's start workflows | `startStepsOf` in `packages/server/src/domain/workspaces/life.ts` |
 | Rerun | `prepareRerun` in `packages/server/src/domain/workspaces/restart.ts` |

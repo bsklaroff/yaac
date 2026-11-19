@@ -4,7 +4,9 @@ import type { ServerError } from '@yaac/shared/errors'
 import { BUILT_IN_USER_ID, closeDb, recordProject, seeTailnetUser } from '#db'
 import {
   authorizeProject,
+  isPerson,
   isProjectHeld,
+  requirePerson,
   systemPrincipal,
   withProjectsHeld,
   workspacePrincipal,
@@ -52,6 +54,24 @@ describe('authorizeProject', () => {
 
   it('is NOT_FOUND for a project that does not exist, never open', async () => {
     expect(await codeOf(authorizeProject(user(BOB), MISSING))).toBe('NOT_FOUND')
+  })
+})
+
+describe('isPerson', () => {
+  it('answers for a request\'s principal, never the server or a workspace\'s agent', () => {
+    expect(isPerson(user(BOB))).toBe(true)
+    expect(isPerson({ kind: 'local', userId: BUILT_IN_USER_ID })).toBe(true)
+    expect(isPerson(systemPrincipal)).toBe(false)
+    expect(isPerson({ kind: 'workspace', workspaceId: 'w1', userId: BOB })).toBe(false)
+  })
+})
+
+describe('requirePerson', () => {
+  it('refuses the server and an agent with FORBIDDEN, naming what only a person may do', () => {
+    expect(() => requirePerson(user(BOB), 'publish a site')).not.toThrow()
+    expect(() => requirePerson({ kind: 'workspace', workspaceId: 'w1', userId: BOB }, 'publish a site'))
+      .toThrow(expect.objectContaining({ code: 'FORBIDDEN', message: expect.stringContaining('publish a site') as unknown }) as Error)
+    expect(() => requirePerson(systemPrincipal, 'x')).toThrow()
   })
 })
 

@@ -1,12 +1,10 @@
 import { createHash } from 'node:crypto'
-import { and, eq, exists, inArray, isNotNull, lt, notExists, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
 import type { AnyPgColumn } from 'drizzle-orm/pg-core'
 import { getDb } from './client'
 import { releaseOwnedGroups } from './group-store'
 import { notifyWorkspaceListChanged } from '#lib/notify'
-import {
-  namedWorkflows, queuedWorkspaces, workflowApprovals, workflows, workspaceLifeWorkflows, workspaceRepos, workspaces,
-} from './schema'
+import { launchApprovals, namedWorkflows, queuedWorkspaces, workflows, workspaceLifeWorkflows, workspaces } from './schema'
 import { ServerError } from '@yaac/shared/errors'
 import { isUuid } from '#lib/uuid'
 import type { StepGraph } from '@yaac/shared/steps'
@@ -16,8 +14,8 @@ import type { StepGraph } from '@yaac/shared/steps'
  * secrets it names and the repos its steps are written for, stored once per
  * content and never changed; the names a project points at them by, and
  * which of those are init workflows; and the commits and branches people
- * approved a named workflow's current workflow to run on. Writes to the
- * names notify the snapshot hub, which carries every named workflow.
+ * approved each privileged launch's spec to run on. Writes to the names
+ * notify the snapshot hub, which carries every named workflow.
  */
 
 export interface WorkflowRow {
@@ -27,6 +25,9 @@ export interface WorkflowRow {
   secrets: string[]
   /** Repo ids, sorted. */
   repos: string[]
+  /** A person wrote or approved this content (docs/workflows.md
+   *  "Approvals"). */
+  personWritten: boolean
 }
 
 /** A named workflow, with the workflow it points at. */
@@ -56,20 +57,31 @@ const workflowColumns = {
   steps: workflows.steps,
   secrets: workflows.secrets,
   repos: workflows.repos,
+  personWritten: workflows.personWritten,
 }
 
-/** The workflow holding this content, stored if none does yet. */
+/** The workflow holding this content, stored if none does yet, marked as
+ *  a person's when `byPerson`. */
 export async function storeWorkflow(
   projectId: string,
   content: { steps: StepGraph; secrets: string[]; repos?: string[] },
+  byPerson = false,
 ): Promise<WorkflowRow> {
   const db = await getDb()
   const repos = [...new Set(content.repos ?? [])].sort()
   const hash = workflowHash(content.steps, content.secrets, repos)
-  await db.insert(workflows).values({ projectId, steps: content.steps, secrets: content.secrets, repos, hash }).onConflictDoNothing()
-  const [row] = await db.select(workflowColumns).from(workflows)
-    .where(and(eq(workflows.projectId, projectId), eq(workflows.hash, hash)))
+  await db.insert(workflows).values({ projectId, steps: content.steps, secrets: content.secrets, repos, hash, personWritten: byPerson })
+    .onConflictDoNothing()
+  const where = and(eq(workflows.projectId, projectId), eq(workflows.hash, hash))
+  if (byPerson) await db.update(workflows).set({ personWritten: true }).where(where)
+  const [row] = await db.select(workflowColumns).from(workflows).where(where)
   return row
+}
+
+/** Mark a workflow's content as approved by a person who was shown it. */
+export async function markPersonWritten(id: string): Promise<void> {
+  const db = await getDb()
+  await db.update(workflows).set({ personWritten: true }).where(eq(workflows.id, id))
 }
 
 export async function getWorkflow(id: string): Promise<WorkflowRow | undefined> {
@@ -132,8 +144,8 @@ export async function setInitWorkflows(projectId: string, ids: string[]): Promis
   notifyWorkspaceListChanged()
 }
 
-/** Delete a named workflow and its approvals; the workflows stay while
- *  anything names them. */
+/** Delete a named workflow; the workflows, and their approvals, stay
+ *  while anything names them. */
 export async function deleteNamedWorkflow(id: string): Promise<void> {
   const db = await getDb()
   await db.delete(namedWorkflows).where(eq(namedWorkflows.id, id))
@@ -170,47 +182,30 @@ export async function deleteUnnamedWorkflows(): Promise<number> {
   return rows.length
 }
 
-/** Approve a commit or `refs/heads/<branch>` for a named workflow. */
-export async function addWorkflowApproval(namedWorkflowId: string, ref: string): Promise<void> {
-  const db = await getDb()
-  await db.insert(workflowApprovals).values({ namedWorkflowId, ref }).onConflictDoNothing()
-}
-
-/** What a named workflow is approved to run on, in order. */
-export async function listWorkflowApprovals(namedWorkflowId: string): Promise<string[]> {
-  const db = await getDb()
-  return (await db.select({ ref: workflowApprovals.ref }).from(workflowApprovals)
-    .where(eq(workflowApprovals.namedWorkflowId, namedWorkflowId)).orderBy(workflowApprovals.ref)).map((r) => r.ref)
-}
-
-/** Whether a named workflow that points at `workflowId` now is approved to
- *  run on one of `refs`. */
-export async function workflowApproved(workflowId: string, refs: string[]): Promise<boolean> {
-  if (refs.length === 0) return false
-  const db = await getDb()
-  const rows = await db.select({ ref: workflowApprovals.ref }).from(workflowApprovals)
-    .innerJoin(namedWorkflows, eq(namedWorkflows.id, workflowApprovals.namedWorkflowId))
-    .where(and(eq(namedWorkflows.workflowId, workflowId), inArray(workflowApprovals.ref, refs)))
-  return rows.length > 0
-}
-
 /**
- * Whether a workspace that ran `workflowId` with its secrets (a
- * non-interactive one, or a site's release) started a checkout of
- * `repoId` at `commit`. Such a workspace exists only because its launch
- * passed the launch check, so it is the record of the run.
+ * What a privileged launch runs apart from its commits (docs/workflows.md
+ * "Approvals"): `spec` keys its approvals, and the approvals go away with
+ * its workflow, and its site where it is a site's deploy.
  */
-export async function workflowRanAt(workflowId: string, repoId: string, commit: string): Promise<boolean> {
+export interface LaunchSpec {
+  spec: string
+  workflowId: string
+  siteId?: string
+}
+
+/** Approve `refs` (commits, or `<repo id>:refs/heads/<branch>`) for a
+ *  spec. */
+export async function addApprovals(spec: LaunchSpec, refs: string[]): Promise<void> {
+  if (refs.length === 0) return
   const db = await getDb()
-  const rows = await db.select({ one: sql`1` }).from(workspaces)
-    .where(and(
-      eq(workspaces.workflowId, workflowId),
-      or(eq(workspaces.nonInteractive, true), isNotNull(workspaces.siteId)),
-      exists(db.select({ one: sql`1` }).from(workspaceRepos).where(and(
-        eq(workspaceRepos.workspaceId, workspaces.workspaceId),
-        eq(workspaceRepos.repoId, repoId),
-        eq(workspaceRepos.startCommit, commit),
-      ))),
-    )).limit(1)
-  return rows.length > 0
+  await db.insert(launchApprovals)
+    .values(refs.map((ref) => ({ spec: spec.spec, ref, workflowId: spec.workflowId, siteId: spec.siteId ?? null })))
+    .onConflictDoNothing()
+}
+
+/** What a spec is approved to run on, in order. */
+export async function listApprovals(spec: string): Promise<string[]> {
+  const db = await getDb()
+  return (await db.select({ ref: launchApprovals.ref }).from(launchApprovals)
+    .where(eq(launchApprovals.spec, spec)).orderBy(launchApprovals.ref)).map((r) => r.ref)
 }

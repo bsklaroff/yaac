@@ -4,6 +4,7 @@ import { Collapsible } from '@base-ui/react/collapsible'
 import { ChevronIcon, DraftIcon, QueuedIcon } from '#lib/icons'
 import { RowMenu } from '#components/sidebar/RowMenu'
 import { ConfirmDialog } from '#components/ui/ConfirmDialog'
+import { ApprovalDetails } from '#components/ApprovalDetails'
 import { agentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { fetchFullPrompt, queuedTitle, clip } from '#lib/queued'
@@ -12,7 +13,7 @@ import { useCreateWorkspace } from '#lib/useCreateDefaults'
 import { relativeAge, timeUntil, useNow, useTimeZone } from '#lib/time'
 import { useReadOnly } from '#lib/viewer'
 import { formatInZone } from '@yaac/shared/schedule'
-import type { DraftWorkspaceEntry, QueuedWorkspaceEntry } from '@yaac/shared/types'
+import type { DraftWorkspaceEntry, LaunchApprovalRequest, QueuedWorkspaceEntry } from '@yaac/shared/types'
 
 /** The row a discarded entry's children would move under, as its discard
  *  confirmation describes it. */
@@ -56,7 +57,8 @@ export function QueuedSet({ parentId, waiting = false }: { parentId: string; wai
   }
   walk(parentId)
   const n = entries.length
-  const failed = entries.filter((e) => e.launchError !== undefined).length
+  const awaiting = entries.filter((e) => e.awaitingApproval !== undefined).length
+  const failed = entries.filter((e) => e.launchError !== undefined).length - awaiting
   const open = expanded.has(parentId)
   return (
     <Collapsible.Root open={open} onOpenChange={(next) => setOpen(parentId, next)}>
@@ -64,6 +66,7 @@ export function QueuedSet({ parentId, waiting = false }: { parentId: string; wai
         text-text-faint outline-none transition hover:text-text-dim">
         <ChevronIcon size={12} className={clsx('shrink-0 transition-transform', open && 'rotate-90')} />
         {waiting ? `${n} waiting for room` : `${n} queued workspace${n === 1 ? '' : 's'}`}
+        {awaiting > 0 && <span className="text-warning">· {awaiting} awaiting approval</span>}
         {failed > 0 && <span className="text-danger">· {failed} failed</span>}
       </Collapsible.Trigger>
       <Collapsible.Panel>
@@ -117,13 +120,17 @@ function discardDescription(entry: QueuedWorkspaceEntry, context: QueueContextVa
  * (docs/queued-workspaces.md), or at a time (docs/routines.md), which it
  * shows relative to now and in full on hover. Clicking it edits it; its
  * menu runs it now, edits it, queues another after it, or discards it. A
- * failed launch shows its error until run again. Not selectable (see
+ * failed launch shows its error until run again, and one that needs a
+ * person's approval says so, and its menu reviews what it would run before
+ * approving exactly that. Not selectable (see
  * `sidebarRowIds`).
  */
 export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEntry; depth: number }): JSX.Element {
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const context = useContext(QueueContext)
   const [confirmDiscard, setConfirmDiscard] = useState(false)
+  // What the review dialog shows, frozen when it opens: what is approved.
+  const [review, setReview] = useState<LaunchApprovalRequest | null>(null)
   const [error, setError] = useState<string | null>(null)
   const edit = (): void => openNewWorkspace({ projectId: entry.projectId, editId: entry.id })
   const report = (e: unknown): void => setError(e instanceof Error ? e.message : String(e))
@@ -147,7 +154,9 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
           <span className="truncate text-text-dim">{queuedTitle(entry)}</span>
         </span>
         <span className="flex items-center gap-2 text-xs text-text-faint">
-          {failure !== undefined
+          {error === null && entry.awaitingApproval !== undefined
+            ? <span className="truncate text-warning" title={failure}>awaiting your approval · review it from its menu</span>
+            : failure !== undefined
             ? <span className="truncate text-danger" title={failure}>{failure}</span>
             : entry.startAt !== undefined
               ? <span className="truncate" title={`${formatInZone(new Date(entry.startAt), zone)} ${zone}`}>
@@ -162,13 +171,15 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
       <RowMenu
         label="Queued workspace actions"
         items={[
-          {
-            label: 'Run now',
-            onSelect: () => {
-              setError(null)
-              api.workspace.queue.run.$post({ json: { id: entry.id } }).catch(report)
+          entry.awaitingApproval !== undefined
+            ? { label: 'Review and approve…', onSelect: () => setReview(entry.awaitingApproval ?? null) }
+            : {
+              label: 'Run now',
+              onSelect: () => {
+                setError(null)
+                api.workspace.queue.run.$post({ json: { id: entry.id } }).catch(report)
+              },
             },
-          },
           { label: 'Edit…', onSelect: edit },
           {
             label: 'Queue workspace after this…',
@@ -178,6 +189,25 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
           { label: 'Discard…', onSelect: () => setConfirmDiscard(true) },
         ]}
       />
+
+      {review !== null && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => { if (!open) setReview(null) }}
+          title="Approve and run?"
+          description="It runs with run secrets. Approving runs exactly what is shown here, as you, and approves it for later runs."
+          confirmLabel="Approve and run"
+          destructive={false}
+          onConfirm={() => {
+            setReview(null)
+            setError(null)
+            const approve = { workflowId: review.workflowId, commits: review.commits }
+            api.workspace.queue.run.$post({ json: { id: entry.id, approve } }).catch(report)
+          }}
+        >
+          <ApprovalDetails request={review} />
+        </ConfirmDialog>
+      )}
 
       <ConfirmDialog
         open={confirmDiscard}

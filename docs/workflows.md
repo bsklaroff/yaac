@@ -20,12 +20,12 @@ but it would also let any branch rewrite a graph that gets secrets.
 |---|---|
 | `workflows` | a graph, the secrets and the repos it names, unique by project and a hash of all three (`workflowHash`; the repos enter it only when there are any), so a graph given twice is one row |
 | `named_workflows` | a project's name pointing at one workflow, and whether it is an init workflow |
-| `workflow_approvals` | the commits, and branches of a repo, a named workflow was approved to run on |
+| `launch_approvals` | the commits, and branches of a repo, a person approved each privileged launch's spec to run on (see "Approvals") |
 
 A graph given by itself (`--steps`) names no secrets, so it never lands on a
 row that does. Nothing keeps a named workflow's earlier workflows as
 history; the retention sweep deletes a workflow once nothing names it and it
-is an hour old.
+is an hour old, and its approvals with it.
 
 A named workflow's name follows a step's rule (letters, digits, `-` and
 `_`, starting with a letter or digit, at most 48 long), so it holds no `.`:
@@ -56,9 +56,9 @@ too, since what they start with is known then. An init workflow is not
 named by the create, so one whose repo the workspace lacks is skipped
 instead, and the create says so.
 
-Repos are content: an edit makes a new workflow, and an agent may not edit
-a named workflow that names secrets, so it cannot move a secret-bearing
-graph into another repo's root. Unlinking or deleting a repo that a named
+Repos are content: an edit makes a new workflow, which nothing approved, so
+moving a secret-bearing graph into another repo's root needs a person's
+approval before it runs with the secrets. Unlinking or deleting a repo that a named
 workflow names is refused, since every later launch would be refused or,
 for an init workflow, silently skipped. Steps added to a running workspace take
 repos too (`yaac workspace step add --run … --repo web`, `yaac-mama create
@@ -105,56 +105,82 @@ edited; editing the routine is how the next run changes.
 
 Every guarantee in this section rests on agents reaching the server only
 through `yaac-mama`, which is true under k8s only. Under containerless an
-agent's shell reaches the API over loopback as the user, so it can set,
-name and approve run secrets; there they only keep values out of
-interactive workspaces' environments (docs/project-config.md "Run
-secrets").
+agent's shell reaches the API over loopback as the user, so it can set and
+approve run secrets; there they only keep values out of interactive
+workspaces' environments (docs/project-config.md "Run secrets").
 
-**Only a person names them.** A workspace's agent may not name secrets, nor
-edit a named workflow whose workflow names any. An edit that names secrets
-carries its whole graph, so a person never gives secrets to steps they did
-not see; a person changing only its repos need not, since its steps stay
-the ones they saw. Anything may launch a named workflow that names them (a routine, a
-site, a create through the webapp, the CLI, the API or `yaac-mama`), since
-launching what a person made changes when it runs, not what.
+**Names are free; launches are gated.** Anyone who may write the project,
+its agents included, may write a workflow and name run secrets in it, as
+anyone may write a GitHub Actions job that names an environment's secrets.
+Naming a secret approves nothing. What gets one is a **privileged launch**:
+a non-interactive launch, or a site's release, of a workflow that names
+any. It runs only on commits a person approved for its **spec**, the exact
+content it runs. Only a person sets a secret's value
+(docs/project-config.md "Run secrets"), and nothing an agent does approves
+anything.
 
-**Approvals.** A workflow runs whatever the repositories hold at their
-commits, so the commits are checked too. An approval is one commit, or one
-branch of one repo, for a named workflow (`workflow_approvals.ref`: a bare
-commit, which names its content whichever repo holds it, or
-`<repo id>:refs/heads/<branch>`). Only running something approves it, and
-only a person's action:
+### Approvals
+
+A launch's spec is what it runs apart from its commits:
+
+- for a workflow launched outside a site (a create, a queued entry, a
+  routine's run, `step add --workflow`), its workflow's id, which covers the
+  graph, the secret names and the repos, since a workflow is stored once
+  per content;
+- for a site's deploy, its site, workflow, port and volume
+  (docs/public-sites.md "Publishing"), so approving one site approves no
+  other, and an approved deploy cannot be pointed at another volume.
+
+An approval (`launch_approvals`) is a spec and a ref: a bare commit, which
+names its content whichever repo holds it, `<repo id>:refs/heads/<branch>`,
+or `-` for a launch with no repos, which approves the spec alone. Approvals
+key on content, never on a name: an edit to a named workflow is a new spec
+with none, so its secret-bearing runs wait for a person, and pointing the
+name back at the old graph is the old spec again.
+
+**Who saw the content.** Each workflow row records whether a person wrote
+that content or was shown it and approved it (`personWritten`). A person
+saving a workflow's steps (the webapp's form, `yaac workflow create`, or
+`edit --file`) writes it; an agent's `yaac-mama workflow create|edit` does
+not, and nor does a person's edit that gives an agent's steps secrets or
+repos without sending the steps, since the person was not shown them.
+Content an agent wrote stays the agent's until a person writes the same
+steps or approves it in a review. A person's own action approves runs only of
+content a person saw, never of what an agent put behind a name meanwhile:
 
 - A person saving an unattended routine approves the commit or branch each
   repo it starts with is at (the repo's default branch when it names none),
-  when the save sets or changes its workflow or start; an edit of anything
-  else approves nothing. Every
-  agent of the project can push to a branch with the project's git
-  credential, so approving one approves whatever is pushed there.
+  for its named workflow's current workflow, when the save sets or changes
+  its workflow or start; an edit of anything else approves nothing.
 - A person queuing a named workflow to run unattended later (a scheduled
   or queued create) marks the entry (`queued_workspaces.personSaved`), and
   its launch approves each commit it runs, as their own launch would. It
   approves no branch: a one-off run is not a standing setup. An agent's
-  queue, or an agent's edit of the entry's workflow or start, is refused
-  unless each start is approved already, and clears the mark.
-- A person deploying a site, or launching a named workflow
-  non-interactively by hand (webapp, CLI, API), approves each commit it
-  runs.
-- A person setting a site to follow (docs/public-sites.md "Following"),
-  changing the repos or workflow of a following site, or deploying one,
-  approves each branch and commit the site names, so each follow deploy
-  passes.
+  queue, or an agent's edit of the entry's workflow or start, clears the
+  mark, and its launch waits for a review where it needs one.
+- A person launching a workflow non-interactively by hand (webapp, CLI,
+  API) approves each commit it runs.
+- A person deploying a site, publishing one, or setting a site to follow
+  approves its commits or branches for the site's spec
+  (docs/public-sites.md "Following").
+
+For content an agent wrote, none of these approve anything, and the launch
+waits for a **review**: a person is shown what it would run (the
+workflow's graph, the run secrets it names and each repo's commit) and
+approves it by sending back that workflow's id and those commits. The
+server refuses a review where either is no longer what would run, so an
+edit or a newer request made meanwhile cannot ride on it, and runs exactly
+the commits shown, never a branch's newer tip. A review marks the content
+as seen, so the person's later actions approve runs of it as above. Every
+agent of the project can push to a branch with the project's git
+credential, so approving a branch approves whatever is pushed there.
 
 A branch is approved for its repo, so in a project with several repos the
 same branch name in another repo is not approved by it.
 
-Nothing an agent does approves anything, and no verb approves on its own.
-An approval reaches only the workflow its named workflow points at now, but
-every launch of it: not only the routine or site whose setup made it.
-
 **A branch approval gives the secrets to whoever can push the branch.**
 Code pushed there runs with the real values at the next follow deploy,
-routine run, or any launch of the workflow on that branch, `yaac-mama
+routine run, or any launch of the spec on that branch, `yaac-mama
 create --workflow` included, and can print them into its step logs, which
 the project's agents read. That includes the project's agents themselves,
 which push with its git credential, so approve a branch only where an agent
@@ -166,48 +192,56 @@ branch gives the secrets to whoever it is shared with. A read-only link
 may link the repo writable, so who can push a branch is still the remote's
 to bound.
 
-**The launch check** (`workflowLaunch` in `#domain/projects`). A
-non-interactive launch, or a site's release, of workflow W gets the secrets
-W names when every repo it starts with is at a commit that passes on its
-own, where a commit passes if
-
-1. it is approved for a named workflow that points at W now, or
-2. a workspace that ran W with its secrets started that repo there, or
-3. it is now the tip of a branch of its repo approved for such a named
-   workflow.
-
-A repo at a branch runs at its tip, resolved after a fetch before anything
-is provisioned, and every checkout of the launch is created at its commit.
-A launch with no repos passes, since it runs only steps a person wrote.
-Every repo of the workspace is checked, not only those the workflow names,
-since a step can reach any checkout beside its own. Nothing else is
-checked: not who started it, nor through which path. A refusal names the
-repo: "no person has run it on `web@1a2b3c4`".
+**The launch check** (`admitLaunch` in `#domain/projects`). A privileged
+launch of spec S passes when every repo it starts with is at a commit that
+passes on its own: one approved for S, or the tip of a branch of its repo
+approved for S. A repo at a branch runs at its tip, resolved after a fetch
+before anything is provisioned, and every checkout of the launch is created
+at its commit. A launch with no repos passes once its spec is approved
+(`-`). Every repo of the workspace is checked, not only those the
+workflow names, since a step can reach any checkout beside its own. Nothing
+else is checked: not who started it, nor through which path. A launch that
+passes records its commits as approved for S, so a rerun, a replacement and
+`site start` repeat it after the branch has moved on. Approvals are never
+taken back, so an agent may launch S again at any commit it was ever
+approved on, a site's rollback to an earlier approved release included.
 
 Per repo rather than per combination: in a passing launch every checkout
-holds code a person approved for this workflow, and a branch is approved
-per repo by nature. What it gives up is that two commits no person ran
+holds code a person approved for this spec, and a branch is approved per
+repo by nature. What it gives up is that two commits no person ran
 together can run with the secrets, such as a newer deploy script beside an
 older app.
 
-Rule 2 is read from workspaces: one that ran W with its secrets is a
-non-interactive workspace or a site's release whose `workflowId` is W, and
-each of its checkouts records the commit it started at
-(`workspace_repos.startCommit`). Such a workspace exists only because its
-launch passed this check, so it is the record. What a rerun, a replacement
-and `site start` need is always there, since each starts from the
-workspace it repeats; deleting the workspaces that ran a workflow takes
-rule 2 back for it.
+What a launch that fails the check does depends on who launched it:
 
-- A launch that fails the check is refused rather than run without the
-  secrets, which would only fail later and less clearly. A routine's run
-  fails with a launch error, as any broken routine does.
+- A queued entry, a routine's run included, waits: its launch error says
+  no person approved it, and it keeps what it would have run
+  (`approvalRequest`: the workflow and each repo's commit). Its review (the
+  sidebar's Review and approve, or `yaac workspace run-queued`, which prints
+  it and asks) approves exactly that and launches it pinned there, as that
+  person. Any edit of the entry drops the request, and a review is refused
+  unless the request covers each of the entry's repos. Any other run of an
+  entry, a person's Run now included, launches as the server and approves
+  nothing.
+- A site's deploy that needs approval becomes its requested deploy, which
+  a person reviews the same way (docs/public-sites.md "Publishing").
+- Any other launch is refused with `APPROVAL_REQUIRED`, rather than run
+  without the secrets, which would only fail later and less clearly. An
+  agent that needs one queues it for the user, and a person whose launch
+  is refused for content an agent wrote saves or reviews it first.
 - An interactive launch never gets secrets and is not refused: `rerun
   --interactive`, to debug a failed run, opens without them.
 - Values are read at each launch, as GitHub Actions reads a secret when each
   job starts, so a rotated value reaches every later launch, an earlier
   workflow's rerun or replacement included. A workflow naming a secret that
   was deleted, or no longer opens, fails to launch.
+
+**Logs.** A workspace given run secrets names them in `YAAC_MASK_NAMES`,
+and each window's log is written through `workspace-bin/yaac-log-mask`,
+which blanks every value as it is written (docs/workspace-steps.md
+"Logs"), as CI runners do. It misses an encoded or changed value and one
+under 8 characters, so approval is the control and masking only catches
+accidents: a step must not print a secret.
 
 **Revoking.** Approvals are never taken back, and workflows never change,
 so a secret taken off a named workflow still reaches reruns of the
@@ -220,9 +254,8 @@ the value it started with, so stop the releases and runs that have it.
 ## Lifecycle
 
 - A named workflow that a routine, site or queued entry follows cannot be
-  deleted; an init workflow can, which is how its steps stop running.
-  Deleting one drops its approvals; its workflows stay while anything names
-  them.
+  deleted; an init workflow can, which is how its steps stop running. Its
+  workflows, and their approvals, stay while anything names them.
 - A site edit is refused while a deploy runs, and a deploy fixes its
   workflow when it starts.
 
@@ -234,25 +267,30 @@ the value it started with, so stop the releases and runs that have it.
   /project/:id/init-workflows` takes the names that are to be the project's
   init workflows. `workflow` on `/workspace/create`, the queue routes,
   `/routine/create` and `/update`, `/site/create` and `/edit`, and `POST
-  /workspace/:id/steps`.
+  /workspace/:id/steps`. A launch no person approved answers
+  `APPROVAL_REQUIRED` (403).
 - **CLI**: `yaac workflow create|edit|list|show|delete <project> <name>`,
   `--file`, `--secret` and `--repo` (`--no-secrets` and `--no-repos` on
   edit), `--init` (`--no-init` on edit); `yaac config init-workflows
   <project> [workflows...] [--none]`; `--workflow <name>` on `workspace
   create`, `workspace step add`, `routine create|edit` and `site
-  create|edit` (docs/cli.md).
-- **yaac-mama**: `workflow list|show` (with each one's repos and whether it
-  is an init workflow), and `--workflow` on `create`, `create --workspace`
-  (adds its steps), `queue`, `edit-queued` and `routine create|edit`.
+  create|edit`; `yaac workspace run-queued <id>` approves and runs a queued
+  entry awaiting approval (docs/cli.md).
+- **yaac-mama**: `workflow list|show|create|edit|delete` (each with its
+  repos and whether it is an init workflow), and `--workflow` on `create`,
+  `create --workspace` (adds its steps), `queue`, `edit-queued` and
+  `routine create|edit`.
 - **Webapp**: the sidebar's Workflows section lists each named workflow,
   with Run now on its row and its unattended runs under it (they go in a
   group the workflow owns, docs/workspace-groups.md "Owned groups"). Its
-  pane shows its steps, repos, run secrets, approvals, a "Run at workspace
-  start" switch and the routines and sites that run it, and edits it. The
-  new-workspace pane's Workflow tab runs one unattended now, later or on a
-  schedule, and its Agent tab's Steps row starts an agent workspace with
-  one in place of the init workflows. Run secrets are set under Settings →
-  Project › Environment; a site's form picks its workflow.
+  pane shows its steps, repos, run secrets, approvals, whether an agent
+  wrote it, a "Run at workspace start" switch and the routines and sites
+  that run it, and edits it. The new-workspace pane's Workflow tab runs one
+  unattended now, later or on a schedule, and its Agent tab's Steps row
+  starts an agent workspace with one in place of the init workflows. Run
+  secrets are set under Settings → Project › Environment; a site's form
+  picks its workflow. A queued entry awaiting approval says so in the
+  sidebar, where its review approves it.
 
 | Concern | Path |
 |---|---|

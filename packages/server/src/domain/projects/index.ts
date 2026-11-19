@@ -55,9 +55,12 @@ export {
 } from './env'
 export { listProjectRunSecrets, removeRunSecret, setRunSecret } from './run-secrets'
 export {
+  admitLaunch,
+  ApprovalRequiredError,
+  approveContent,
+  approveStart,
   approveWorkflowStart,
   assertWorkflowRepos,
-  checkWorkflowStart,
   createWorkflow,
   deleteWorkflow,
   editWorkflow,
@@ -71,6 +74,7 @@ export {
   setInitWorkflows,
   showWorkflow,
   workflowLaunch,
+  workflowSpec,
 } from './workflows'
 export {
   assertProjectExists,

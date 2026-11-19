@@ -34,7 +34,7 @@ import { getQueuedWorkspaceRow, insertQueuedWorkspace } from '#db/queued-workspa
 import { getRoutineRow, insertRoutine } from '#db/routine-store'
 import { insertDraftWorkspace, listDraftWorkspaceRows } from '#db/draft-workspace-store'
 import { getSiteRow, insertSite, updateSite } from '#db/site-store'
-import { findNamedWorkflow, getWorkflow, insertNamedWorkflow, storeWorkflow } from '#db/workflow-store'
+import { addApprovals, findNamedWorkflow, getWorkflow, insertNamedWorkflow, listApprovals, storeWorkflow } from '#db/workflow-store'
 import { BUILT_IN_USER_ID, seeTailnetUser } from '#db/user-store'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
@@ -346,14 +346,21 @@ describe('repointProjectRepos', () => {
     }
     const workflow = await storeWorkflow(Q, { steps: {}, secrets: [] })
     await insertNamedWorkflow(Q, 'site', workflow.id)
-    const site = await insertSite({ projectId: Q, repos: [{ repo: API, branch: 'main' }], follow: false, name: 's', hostname: 's.example.com', port: 80, namedWorkflowId: (await findNamedWorkflow(Q, 'site'))!.id })
-    await updateSite(site.id, { releaseCommits: { [API]: 'a'.repeat(40) }, failedCommits: { [API]: 'b'.repeat(40) } })
+    const site = await insertSite({ projectId: Q, repos: [{ repo: API, branch: 'main' }], follow: false, name: 's', port: 80, namedWorkflowId: (await findNamedWorkflow(Q, 'site'))!.id })
+    await updateSite(site.id, {
+      releaseCommits: { [API]: 'a'.repeat(40) }, failedCommits: { [API]: 'b'.repeat(40) }, requestedCommits: { [API]: 'c'.repeat(40) },
+    })
     // A workflow's repos move with their hash; where the project already
     // holds the moved content, its name points there.
     const runs = await storeWorkflow(Q, { steps: { t: { run: ['make'] } }, secrets: [], repos: [API] })
     await insertNamedWorkflow(Q, 'ci', runs.id)
     const held = await storeWorkflow(Q, { steps: {}, secrets: [], repos: [WEB] })
-    await insertNamedWorkflow(Q, 'clash', (await storeWorkflow(Q, { steps: {}, secrets: [], repos: [API] })).id)
+    const clash = await storeWorkflow(Q, { steps: {}, secrets: [], repos: [API] })
+    await insertNamedWorkflow(Q, 'clash', clash.id)
+    // Approvals are the content's, so they follow it; an approved branch of
+    // the repo names the repo it moved to.
+    await addApprovals({ spec: clash.id, workflowId: clash.id }, [`${API}:refs/heads/main`, 'd'.repeat(40)])
+    await addApprovals({ spec: runs.id, workflowId: runs.id }, [`${API}:refs/heads/dev`])
 
     await repointProjectRepos(bob, API, WEB)
 
@@ -377,7 +384,10 @@ describe('repointProjectRepos', () => {
     expect(await named(P)).toEqual(naming(API))
     expect(await getSiteRow(site.id)).toMatchObject({
       repos: [{ repo: WEB, branch: 'main' }], releaseCommits: { [WEB]: 'a'.repeat(40) }, failedCommits: { [WEB]: 'b'.repeat(40) },
+      requestedCommits: { [WEB]: 'c'.repeat(40) },
     })
+    expect((await listApprovals(held.id)).sort()).toEqual([`${WEB}:refs/heads/main`, 'd'.repeat(40)].sort())
+    expect(await listApprovals(runs.id)).toEqual([`${WEB}:refs/heads/dev`])
     expect(await getWorkflow(runs.id)).toMatchObject({ repos: [WEB] })
     expect((await storeWorkflow(Q, { steps: { t: { run: ['make'] } }, secrets: [], repos: [WEB] })).id).toBe(runs.id)
     expect((await findNamedWorkflow(Q, 'clash'))?.workflow.id).toBe(held.id)

@@ -89,7 +89,7 @@ export async function prepareRestart(
   // already holds its own.
   refuseFullGroup(await readGroupRoom(projectId, row.groupId), workspaceId)
   // Before anything is torn down, so a held volume leaves it running.
-  const volume = await volumeForLaunch(projectId, workspaceId, opts.volume)
+  const volume = await volumeForLaunch(principal, projectId, workspaceId, opts.volume)
 
   // The row also keeps `inFlightWorkspaceIds` reporting the workspace, which
   // stops the stale reaper deleting the dirs the new launch is about to

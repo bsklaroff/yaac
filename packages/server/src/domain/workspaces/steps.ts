@@ -85,14 +85,15 @@ const serviceRestarts = new Map<string, { count: number; notBefore: number }>()
 /**
  * Refuse a change to a workspace nobody may touch while it runs, only stop:
  * a non-interactive one (docs/workspace-steps.md "Non-interactive
- * workspaces"), and a public site's release (docs/public-sites.md), which
- * only its site's routes manage. A `forward` into a release is let through,
- * since the one port a release offers is its site's admin port
+ * workspaces"), until it has stopped, since one given run secrets holds
+ * them until then, and a public site's release (docs/public-sites.md),
+ * which only its site's routes manage. A `forward` into a release is let
+ * through, since a release offers only its site's ports
  * (`offeredForwards`).
  */
 export async function assertInteractive(workspaceId: string, opts: { forward?: boolean } = {}): Promise<void> {
   const row = await findWorkspaceRow(workspaceId)
-  if (row?.nonInteractive === true && row.stepsOutcome === undefined && row.stoppedAt === undefined) {
+  if (row?.nonInteractive === true && row.stoppedAt === undefined) {
     throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is non-interactive: `
       + 'nothing can change it while it runs, but it can be stopped')
   }
@@ -517,11 +518,26 @@ async function reconcilePass(p: { projectId: string; workspaceId: string; jobNam
         return state === 'succeeded' || state === 'ready' || state === 'running'
       }) ? 'succeeded' : 'failed'
       await applyWorkspaceEvent({ type: 'steps-settled', projectId: live.projectId, workspaceId: live.workspaceId, outcome })
-      // Not awaited: a slow stop must not hold up the next pass.
-      void stopWorkspace(systemPrincipal, live.workspaceId)
-        .catch((err: unknown) => serverLog(`[server] stopping settled ${live.workspaceId}: ${String(err)}`))
+      stopSettled(live.workspaceId)
     }
+  } else if (live.row.nonInteractive && live.row.stoppedAt === undefined) {
+    // Settled, but still running: the stop failed, so try again.
+    stopSettled(live.workspaceId)
   }
+}
+
+/** Settled non-interactive workspaces whose stop is under way. */
+const settledStops = new Set<string>()
+
+/** Stop a settled non-interactive workspace, once at a time. Not awaited:
+ *  a slow stop must not hold up the next pass, which retries one that
+ *  failed. */
+function stopSettled(workspaceId: string): void {
+  if (settledStops.has(workspaceId)) return
+  settledStops.add(workspaceId)
+  void stopWorkspace(systemPrincipal, workspaceId)
+    .catch((err: unknown) => serverLog(`[server] stopping settled ${workspaceId}: ${String(err)}`))
+    .finally(() => settledStops.delete(workspaceId))
 }
 
 /**

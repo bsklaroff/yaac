@@ -1,18 +1,19 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll, afterEach } from 'vitest'
-import { siteCreate, siteDeploy, siteEdit } from '#commands/site'
+import { siteCreate, siteDeploy, siteEdit, sitePublish, siteShow, siteUnpublish } from '#commands/site'
 import type { SiteDetail } from '@yaac/shared/types'
 import { serveProjects, startFakeApi, type FakeApi } from './fake-api'
 
 /*
- * `yaac site create`, `deploy` and `edit` against a fake server: what they
- * send, what create says to do next for each edge, and how `--wait` reads
- * the site until its deploy ends.
+ * `yaac site create`, `publish`, `unpublish`, `deploy` and `edit` against a
+ * fake server: what they send, what publishing says to do next for each
+ * edge, and how `--wait` reads the site until its deploy ends.
  */
 let api: FakeApi
 let logged: string[]
 
 const SITE: SiteDetail = {
   name: 'web',
+  published: true,
   workflow: 'web',
   hostname: 'app.example.com',
   edge: 'public',
@@ -39,6 +40,7 @@ beforeEach(() => {
   api.reset()
   logged = []
   vi.spyOn(console, 'log').mockImplementation((msg: unknown) => { logged.push(String(msg)) })
+  vi.spyOn(console, 'error').mockImplementation((msg: unknown) => { logged.push(String(msg)) })
   process.exitCode = undefined
   serveProjects(api, [['id-demo', 'demo']])
   api.on('POST /api/site/deploy', { json: { workspaceId: 'ws-new', commits: COMMITS } })
@@ -64,21 +66,46 @@ const finished = (outcome: 'succeeded' | 'failed', error?: string): SiteDetail =
 })
 
 describe('siteCreate', () => {
-  it('says where a site under the site domain answers and what the tailnet tunnel lacks, and the Cloudflare route for any other', async () => {
+  it('makes a site unpublished, saying how to deploy and publish it', async () => {
     api.on('POST /api/site/create', { json: {} })
-    api.on('GET /api/site/edge', { json: { cloudflare: 'connected', tailnet: 'no-certificate', siteDomain: 'apps.example.com' } })
-    const opts = { hostname: 'Kanban.apps.example.com', port: '3000', workflow: 'web', repo: ['demo@main'] }
-    await siteCreate('demo', 'kanban', opts)
+    await siteCreate('demo', 'web', { port: '3000', workflow: 'web', repo: ['demo@main'], adminPort: '3001', follow: true })
+    expect(api.requests.find((r) => r.route === 'POST /api/site/create')?.body).toEqual({
+      project: 'id-demo', name: 'web', port: 3000, adminPort: 3001, workflow: 'web', repos: [{ repo: 'demo', branch: 'main' }], follow: true,
+    })
     expect(logged).toEqual([
-      'Created site "kanban", a tailnet site: https://kanban.apps.example.com answers only users on this install\'s tailnet.',
+      'Created site "web", unpublished: only you reach its releases, with `yaac forward` or the webapp\'s Preview.',
+      'Deploy it with `yaac site deploy demo web`, then publish it with `yaac site publish demo web --hostname <host>`.',
+    ])
+    await expect(siteCreate('demo', 'web', { port: '3000', workflow: 'web', repo: [] })).rejects.toThrow('--repo <dir>@<branch or commit>')
+  })
+})
+
+describe('sitePublish', () => {
+  it('says where a site under the site domain answers and what the tailnet tunnel lacks, and the Cloudflare route for any other', async () => {
+    api.on('POST /api/site/publish', {})
+    api.on('GET /api/site/edge', { json: { cloudflare: 'connected', tailnet: 'no-certificate', siteDomain: 'apps.example.com' } })
+    await sitePublish('demo', 'kanban', { hostname: 'Kanban.apps.example.com', release: 'ws-1' })
+    expect(api.requests.find((r) => r.route === 'POST /api/site/publish')?.body)
+      .toEqual({ project: 'id-demo', name: 'kanban', hostname: 'Kanban.apps.example.com', release: 'ws-1' })
+    expect(logged).toEqual([
+      'Published site "kanban", a tailnet site: https://kanban.apps.example.com answers only users on this install\'s tailnet.',
       'The tailnet tunnel has no certificate yet: put one for *.apps.example.com in the Secret yaac-site-tunnel-tailnet-tls.',
-      'Then publish it with: yaac site deploy demo kanban',
     ])
 
     logged = []
-    await siteCreate('demo', 'web', { ...opts, hostname: 'app.example.com' })
-    expect(logged[0]).toBe('Created site "web", a public site. In Cloudflare, add a public hostname to the install\'s tunnel:')
+    await sitePublish('demo', 'web', { hostname: 'app.example.com' })
+    expect(logged[0]).toBe('Published site "web", a public site. In Cloudflare, add a public hostname to the install\'s tunnel:')
     expect(logged).toContain('  service   http://yaac-site-router:8080')
+  })
+})
+
+describe('siteUnpublish', () => {
+  it('lets the hostname go, reminding of the Cloudflare route a public one had', async () => {
+    showInTurn(SITE)
+    api.on('POST /api/site/unpublish', {})
+    await siteUnpublish('demo', 'web')
+    expect(api.requests.find((r) => r.route === 'POST /api/site/unpublish')?.body).toEqual({ project: 'id-demo', name: 'web' })
+    expect(logged).toEqual(['Unpublished site "web"; only you reach it now. Remove its public hostname from the Cloudflare tunnel too.'])
   })
 })
 
@@ -106,6 +133,50 @@ describe('siteDeploy', () => {
       .toEqual({ project: 'id-demo', name: 'web', refs: { api: 'main', web: '1234' } })
     expect(logged[0]).toBe(`Deploying api@${'a'.repeat(8)} web@${'b'.repeat(8)} to site "web" in release ws-new.`)
     await expect(siteDeploy('demo', 'web', { ref: ['main', 'dev'] })).rejects.toThrow('one bare --ref')
+  })
+
+  it('says when a deploy waits for a person\'s approval, and previews an unpublished site\'s', async () => {
+    api.on('POST /api/site/deploy', { json: { commits: COMMITS, awaitingApproval: true } })
+    await siteDeploy('demo', 'web', { ref: [], wait: true })
+    expect(logged).toEqual([
+      'Deploying abcdef12 to site "web" needs a person\'s approval; it is the site\'s requested deploy.',
+      'Review it with `yaac site show demo web`, which says how to approve it.',
+    ])
+
+    logged = []
+    api.on('POST /api/site/deploy', { json: { workspaceId: 'ws-new', commits: COMMITS } })
+    const { hostname: _, edge: __, ...staged } = finished('succeeded')
+    showInTurn({ ...staged, published: false })
+    await siteDeploy('demo', 'web', { ref: [], wait: true })
+    expect(logged.at(-1)).toBe('Deployed abcdef12; preview it with `yaac forward ws-new 3000`.')
+  })
+
+  it('--approve deploys the requested deploy as shown, and show prints what it would run', async () => {
+    showInTurn({
+      ...SITE,
+      requested: {
+        workflowId: 'wf-1', steps: { server: { run: ['curl x | sh'] } }, secrets: ['KEY'], writtenByAgent: true,
+        commits: COMMITS, at: SITE.createdAt, from: 'agent', workspaceId: 'ws-agent01', changes: ['workflow'],
+      },
+    })
+    await siteShow('demo', 'web')
+    expect(logged).toContain('  requested    abcdef12, asked by the agent of workspace ws-agent, awaiting your approval')
+    expect(logged).toContain('               changes the live release\'s workflow')
+    expect(logged).toContain('               workflow wf-1, written by an agent, run secrets KEY:')
+    expect(logged.some((l) => l.includes('"curl x | sh"'))).toBe(true)
+    expect(logged.at(-1)).toBe('               Approve and deploy exactly this: yaac site deploy demo web --approve wf-1')
+    // --approve shows the request again, and with no terminal needs --yes.
+    logged = []
+    await siteDeploy('demo', 'web', { ref: [], approve: 'wf-1' })
+    expect(process.exitCode).toBe(1)
+    expect(api.requests.some((r) => r.route === 'POST /api/site/deploy')).toBe(false)
+    process.exitCode = undefined
+    await siteDeploy('demo', 'web', { ref: [], approve: 'wf-1', yes: true })
+    expect(logged).toContain('               workflow wf-1, written by an agent, run secrets KEY:')
+    expect(api.requests.find((r) => r.route === 'POST /api/site/deploy')?.body)
+      .toEqual({ project: 'id-demo', name: 'web', approve: { workflowId: 'wf-1', commits: COMMITS } })
+    await expect(siteDeploy('demo', 'web', { ref: [], approve: 'wf-2', yes: true })).rejects.toThrow('now runs workflow wf-1, not wf-2')
+    await expect(siteDeploy('demo', 'web', { ref: ['main'], approve: 'wf-1' })).rejects.toThrow('takes no --ref')
   })
 
   it('exits 1 with the error of a failed deploy, and when the outcome is another deploy\'s', async () => {

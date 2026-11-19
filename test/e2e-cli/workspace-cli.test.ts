@@ -994,7 +994,13 @@ describe('with seeded projects', () => {
         selection: { repos: [{ repo: repoId, commit: sha }] }, nonInteractive: true, steps: { check: { run: ['true'] } },
       })
       expect(entries.find((e) => e.id === queuedId)?.prompt).toBeUndefined()
-      expect((await runYaac(testEnv.env, 'workspace', 'delete', queuedId)).exitCode).toBe(0)
+      // run-queued runs it now, by prefix, as the webapp's Run now does.
+      const unknown = await runYaac(testEnv.env, 'workspace', 'run-queued', 'ffffffff')
+      expect(unknown.exitCode).not.toBe(0)
+      expect(unknown.stderr).toContain('No queued workspace "ffffffff"')
+      const ran = await runYaac(testEnv.env, 'workspace', 'run-queued', queuedId.slice(0, 8))
+      expect(ran.exitCode, ran.stderr).toBe(0)
+      expect(ran.stdout).toMatch(new RegExp(`^Queued workspace ${queuedId} is launching as workspace [0-9a-f-]{36}, unless it needs`))
 
       // A routine runs a named workflow.
       expect((await runYaac(testEnv.env, 'workflow', 'create', NAME, 'ci', '--file', stepsFile)).exitCode).toBe(0)

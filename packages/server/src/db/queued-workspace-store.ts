@@ -125,8 +125,9 @@ export async function insertQueuedWorkspace(
 
 /**
  * Replace all of an entry's settings and, if given, its parent. A changed
- * prompt clears the generated title. Returns undefined if the entry is gone
- * or mid-launch.
+ * prompt clears the generated title, and any edit the approval request of
+ * its last launch, which is no longer what it would run. Returns undefined
+ * if the entry is gone or mid-launch.
  *
  * A new parent that is the entry itself or one of its descendants would form
  * a cycle and is refused (VALIDATION). The check walks up from the new
@@ -155,8 +156,10 @@ export async function updateQueuedWorkspace(
         ...settingsColumns(settings),
         ...(parent !== undefined ? parentColumns(parent) : {}),
         ...(self.prompt !== (settings.prompt ?? null) ? { generatedTitle: null } : {}),
-        // A new start time is a new attempt, so its old failure goes.
+        // A new start time is a new attempt, so its old failure goes; any
+        // edit makes what awaited approval no longer what it runs.
         ...(parent != null && 'startAt' in parent ? { launchError: null } : {}),
+        approvalRequest: null,
       })
       .where(and(eq(queuedWorkspaces.id, id), notLaunching))
       .returning()
@@ -332,7 +335,7 @@ export async function releaseQueuedChildren(
 ): Promise<QueuedWorkspaceRow[]> {
   const db = await getDb()
   const rows = await db.update(queuedWorkspaces)
-    .set({ releasedAt: new Date(), launchError: null })
+    .set({ releasedAt: new Date(), launchError: null, approvalRequest: null })
     .where(and(
       eq(queuedWorkspaces.projectId, projectId),
       eq(queuedWorkspaces.parentWorkspaceId, workspaceId),
@@ -368,7 +371,7 @@ export async function releaseDueQueuedWorkspaces(now: Date): Promise<QueuedWorks
 export async function releaseQueuedWorkspace(id: string): Promise<QueuedWorkspaceRow | undefined> {
   const db = await getDb()
   const rows = await db.update(queuedWorkspaces)
-    .set({ releasedAt: new Date(), launchError: null })
+    .set({ releasedAt: new Date(), launchError: null, approvalRequest: null })
     .where(and(eq(queuedWorkspaces.id, id), notLaunching))
     .returning()
   notifyWorkspaceListChanged()
@@ -426,16 +429,22 @@ export async function finishQueuedLaunch(id: string, workspaceId: string): Promi
 
 /**
  * The launch under `workspaceId` failed, or was stopped (no error). The
- * entry returns to the queue, unreleased and with the error, and the workspace's unreleased children
+ * entry returns to the queue, unreleased and with the error, and with what
+ * it would have run when it waits for a person's approval, and the workspace's unreleased children
  * (including any queued during the launch) move back under it. Already
  * released children stay put. A no-op unless the entry is still claimed by
  * this launch.
  */
-export async function failQueuedLaunch(id: string, workspaceId: string, error: string | null): Promise<void> {
+export async function failQueuedLaunch(
+  id: string,
+  workspaceId: string,
+  error: string | null,
+  approvalRequest: { workflowId: string; commits: Record<string, string> } | null = null,
+): Promise<void> {
   const db = await getDb()
   await db.transaction(async (tx) => {
     const [row] = await tx.update(queuedWorkspaces)
-      .set({ launchWorkspaceId: null, releasedAt: null, launchError: error })
+      .set({ launchWorkspaceId: null, releasedAt: null, launchError: error, approvalRequest })
       .where(claimedBy(id, workspaceId))
       .returning()
     if (!row) return

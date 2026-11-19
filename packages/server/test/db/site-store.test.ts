@@ -39,19 +39,26 @@ const site = async (projectId: string, name: string, hostname: string, volumeId?
   const workflow = await storeWorkflow(projectId, { steps: APP, secrets: [] })
   await insertNamedWorkflow(projectId, `${name}-${hostname}`, workflow.id)
   const named = await findNamedWorkflow(projectId, `${name}-${hostname}`)
-  return await insertSite({
-    projectId, repos: [{ repo: projectId, branch: 'main' }], follow: false, name, hostname, port: 3000, namedWorkflowId: named!.id,
+  const row = await insertSite({
+    projectId, repos: [{ repo: projectId, branch: 'main' }], follow: false, name, port: 3000, namedWorkflowId: named!.id,
     ...(volumeId !== undefined ? { volumeId } : {}),
   })
+  await updateSite(row.id, { published: true, hostname })
+  return { ...row, published: true, hostname }
 }
 
 describe('insertSite', () => {
-  it('refuses a name the project uses, and a hostname any site uses', async () => {
-    const row = await site(PROJ, 'shop', 'shop.example.com')
-    expect(row).toMatchObject({ name: 'shop', port: 3000, deployReplacing: false, replaceFailures: 0 })
-    await expect(site(PROJ, 'shop', 'b.example.com')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('named "shop"') as unknown })
-    await expect(site(OTHER, 'other', 'shop.example.com')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('shop.example.com') as unknown })
-    await site(OTHER, 'shop', 'other.example.com')
+  it('inserts a site unpublished, refusing a name the project uses', async () => {
+    const workflow = await storeWorkflow(PROJ, { steps: APP, secrets: [] })
+    await insertNamedWorkflow(PROJ, 'serve', workflow.id)
+    const named = (await findNamedWorkflow(PROJ, 'serve'))!
+    const insert = (projectId: string) => insertSite({
+      projectId, repos: [{ repo: PROJ, branch: 'main' }], follow: false, name: 'shop', port: 3000, namedWorkflowId: named.id,
+    })
+    expect(await insert(PROJ)).toMatchObject({ name: 'shop', port: 3000, published: false, deployReplacing: false, replaceFailures: 0 })
+    expect((await getSiteRow((await findSiteByName(PROJ, 'shop'))!.id))?.hostname).toBeUndefined()
+    await expect(insert(PROJ)).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('named "shop"') as unknown })
+    await insert(OTHER)
   })
 })
 
@@ -96,7 +103,11 @@ describe('updateSite', () => {
     expect(await getSiteRow(a.id)).toMatchObject({ liveWorkspaceId: 'rel-1', port: 4000 })
     await updateSite(a.id, { liveWorkspaceId: null })
     expect((await getSiteRow(a.id))?.liveWorkspaceId).toBeUndefined()
-    await expect(updateSite(a.id, { hostname: 'b.example.com' })).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(updateSite(a.id, { hostname: 'b.example.com' })).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('b.example.com') as unknown })
+    await updateSite(a.id, { published: false, hostname: null })
+    const cleared = await getSiteRow(a.id)
+    expect(cleared?.published).toBe(false)
+    expect(cleared?.hostname).toBeUndefined()
   })
 })
 

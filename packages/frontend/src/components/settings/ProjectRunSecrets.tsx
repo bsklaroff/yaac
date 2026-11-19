@@ -64,8 +64,8 @@ export function ProjectRunSecrets({ projectId, readOnly }: { projectId: string; 
       <SectionLabel>Run secrets</SectionLabel>
       <p className="mt-0.5 text-[11px] leading-relaxed text-text-faint">
         Real values, kept apart from the secrets above, that reach a workspace's environment only
-        through a workflow that names them, on a commit you ran it on. Interactive workspaces never
-        get them.
+        through a workflow that names them, on commits you approved it for by running it. Interactive
+        workspaces never get them. A value under 8 characters cannot be masked in step logs.
       </p>
 
       {secrets !== undefined && secrets.length > 0 && <div className="mt-3 space-y-1">

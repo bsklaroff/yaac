@@ -521,8 +521,19 @@ export const workspaceApp = new Hono<IdentityEnv>()
   )
   .post(
     '/queue/run',
-    zv('json', z.object({ id: z.string().min(1) })),
-    async (c) => c.json(await runQueuedWorkspace(c.get('principal'), c.req.valid('json').id)),
+    // `approve`: the workflow and commits of its approval request the person
+    // was shown, which approves it (docs/workflows.md "Approvals").
+    zv('json', z.object({
+      id: z.string().min(1),
+      approve: z.object({
+        workflowId: z.string().min(1),
+        commits: z.array(z.object({ dir: z.string().max(255), commit: z.string().min(1).max(64) })).max(100),
+      }).optional(),
+    })),
+    async (c) => {
+      const { id, approve } = c.req.valid('json')
+      return c.json(await runQueuedWorkspace(c.get('principal'), id, approve))
+    },
   )
   // A queued entry's, draft's, routine's or session's whole prompt, which the
   // snapshot carries only a preview of. A session's comes from its create's

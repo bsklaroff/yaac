@@ -20,7 +20,9 @@ All yaac variables are read, with their defaults and validation, in
 | `BROWSER` | the platform's opener | Command `yaac auth update` opens a sign-in page with. Set, the CLI also takes it that a browser it opens runs on this machine, so the vendor's redirect can come back to it (docs/tool-sign-in.md). |
 
 Every workspace gets `YAAC_WORKSPACE_ID` set automatically, and
-`YAAC_PORT_<n>` for each forwarded port (docs/workspace-hostnames.md). The other variables
+`YAAC_PORT_<n>` for each forwarded port (docs/workspace-hostnames.md). One
+given run secrets also gets `YAAC_MASK_NAMES`, their names, which its logs
+blank (docs/workspace-steps.md "Logs"). The other variables
 in `env.ts` are set by the build, the server's own Deployment, or the test
 harness.
 

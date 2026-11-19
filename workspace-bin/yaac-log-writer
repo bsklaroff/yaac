@@ -17,8 +17,20 @@
 # logging. A log that cannot be opened at all does, so the writer never
 # spins without reading its input.
 #
+# A workspace given run secrets names them in $YAAC_MASK_NAMES, and its
+# windows are logged through yaac-log-mask, which blanks their values, so
+# the log never holds one. An image without node logs them as they are, and
+# says so at the top of the log.
+#
 # Usage: yaac-log-writer <file>
 f=$1
+if [ -n "${YAAC_MASK_NAMES:-}" ] && [ -z "${YAAC_LOG_MASKED:-}" ]; then
+  if command -v node >/dev/null 2>&1; then
+    node "$(dirname "$0")/yaac-log-mask" | YAAC_LOG_MASKED=1 "$0" "$f"
+    exit
+  fi
+  printf '[yaac: this image has no node, so run secrets are not masked in this log]\n' >> "$f"
+fi
 cap=67108864
 size=0
 [ ! -f "$f" ] || size=$(wc -c < "$f")

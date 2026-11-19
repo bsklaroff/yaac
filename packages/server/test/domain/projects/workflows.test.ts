@@ -5,17 +5,18 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import {
-  addRepoShare, BUILT_IN_USER_ID, closeDb, deleteWorkspaceRecords, insertRepo, insertRoutine, insertSite, linkProjectRepo,
+  addRepoShare, BUILT_IN_USER_ID, closeDb, insertRepo, insertRoutine, insertSite, linkProjectRepo, listApprovals,
   upsertRunSecret,
 } from '#db'
-import { setWorkspaceRepoStart } from '#db/repo-store'
-import { recordWorkspaceCreated } from '#db/workspace-store'
 import { seeTailnetUser } from '#db/user-store'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import {
+  admitLaunch,
+  ApprovalRequiredError,
+  approveContent,
+  approveStart,
   approveWorkflowStart,
   assertWorkflowRepos,
-  checkWorkflowStart,
   createWorkflow,
   deleteWorkflow,
   editWorkflow,
@@ -32,18 +33,22 @@ import {
   setRunSecret,
   showWorkflow,
   workflowLaunch,
+  workflowSpec,
 } from '#domain/projects'
 
 /**
- * Workflows above the store: their repos and the init flag, only a person
- * names run secrets or approves, and a launch gets them only when every
- * repo it starts with is at a commit that passes.
+ * Workflows above the store: their repos and the init flag, anyone who may
+ * write the project names run secrets, only a person approves, and a launch
+ * gets them only when every repo it starts with is at a commit approved for
+ * exactly the content it runs.
  */
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const agent = { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const
 const server = { kind: 'system' } as const
 const CI = { test: { run: ['pnpm test'] } }
+/** A graph an agent writes, which no person wrote. */
+const LEAK = { leak: { run: ['printenv P8_KEY | base64'] } }
 /** A second repo of the project, in the folder `docs`. */
 const DOCS = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
 
@@ -91,10 +96,13 @@ const relay = () => createWorkflow(local, DEMO_PROJECT_ID, { name: 'relay', step
 const current = async (name: string) => (await resolveWorkflow(DEMO_PROJECT_ID, name))
 
 describe('createWorkflow', () => {
-  it('names a workflow, giving run secrets only for a person and only ones that exist, with its repos', async () => {
+  it('names a workflow, with run secrets that exist, whoever writes it, and its repos', async () => {
     expect(await relay()).toMatchObject({ name: 'relay', steps: CI, secrets: ['P8_KEY'], repos: [], init: false })
-    await expect(createWorkflow(agent, DEMO_PROJECT_ID, { name: 'leak', steps: CI, secrets: ['P8_KEY'] }))
-      .rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect((await showWorkflow(DEMO_PROJECT_ID, 'relay')).writtenByAgent).toBeUndefined()
+    // An agent names them too: naming approves nothing, and the content is
+    // marked as an agent's.
+    expect(await createWorkflow(agent, DEMO_PROJECT_ID, { name: 'agents', steps: LEAK, secrets: ['P8_KEY', 'P8_KEY'] }))
+      .toMatchObject({ secrets: ['P8_KEY'], writtenByAgent: true, approvedCommits: [], approvedBranches: [] })
     expect((await createWorkflow(agent, DEMO_PROJECT_ID, { name: 'plain', steps: CI })).secrets).toEqual([])
     await expect(createWorkflow(local, DEMO_PROJECT_ID, { name: 'x', steps: CI, secrets: ['NOPE'] }))
       .rejects.toMatchObject({ code: 'VALIDATION' })
@@ -117,33 +125,32 @@ describe('createWorkflow', () => {
 })
 
 describe('editWorkflow', () => {
-  it('points the name at new content; naming secrets is a person\'s and carries its graph', async () => {
+  it('points the name at new content, whoever edits it, keeping what is left out', async () => {
     await createWorkflow(local, DEMO_PROJECT_ID, { name: 'ci', steps: CI })
     const first = (await current('ci')).workflow.id
-    // An agent may edit one that names none, but not give it secrets.
     expect((await editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { steps: { t: { run: 'true' } } })).steps).toEqual({ t: { run: ['true'] } })
     expect((await current('ci')).workflow.id).not.toBe(first)
-    await expect(editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { steps: CI, secrets: ['P8_KEY'] }))
-      .rejects.toMatchObject({ code: 'FORBIDDEN' })
-    // Naming secrets without the graph would vouch for steps unseen.
-    await expect(editWorkflow(local, DEMO_PROJECT_ID, 'ci', { secrets: ['P8_KEY'] })).rejects.toMatchObject({ code: 'VALIDATION' })
-    expect(await editWorkflow(local, DEMO_PROJECT_ID, 'ci', { steps: CI, secrets: ['P8_KEY'] })).toMatchObject({ secrets: ['P8_KEY'] })
-    // Now only a person edits it, its repos included, so an agent cannot
-    // move a secret-bearing graph into another repo's root.
+    // Secrets alone keep the graph, and an agent may give them; what it
+    // writes is an agent's until a person writes the same content.
+    expect(await editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { steps: CI, secrets: ['P8_KEY'] })).toMatchObject({ steps: CI, secrets: ['P8_KEY'], writtenByAgent: true })
+    expect((await editWorkflow(local, DEMO_PROJECT_ID, 'ci', { steps: CI })).writtenByAgent).toBeUndefined()
+    expect((await editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { steps: CI })).writtenByAgent).toBeUndefined()
+    // A person giving an agent's steps secrets or repos was not shown the
+    // steps, so they stay the agent's; steps a person wrote stay theirs.
+    await editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { steps: LEAK })
+    expect((await editWorkflow(local, DEMO_PROJECT_ID, 'ci', { secrets: [] })).writtenByAgent).toBe(true)
+    expect((await editWorkflow(local, DEMO_PROJECT_ID, 'ci', { secrets: ['P8_KEY'] })).writtenByAgent).toBe(true)
+    await approveStart(local, workflowSpec((await current('ci')).workflow.id), [{ repo: DEMO_PROJECT_ID, branch: 'main' }])
+    expect((await showWorkflow(DEMO_PROJECT_ID, 'ci')).approvedBranches).toEqual([])
+    await editWorkflow(local, DEMO_PROJECT_ID, 'ci', { steps: CI })
+    expect((await editWorkflow(local, DEMO_PROJECT_ID, 'ci', { secrets: ['P8_KEY'] })).writtenByAgent).toBeUndefined()
     await linkDocs()
-    await expect(editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { steps: CI })).rejects.toMatchObject({ code: 'FORBIDDEN' })
-    await expect(editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { repos: ['docs'] })).rejects.toMatchObject({ code: 'FORBIDDEN' })
-    // A person moves it to other repos without its graph, which they saw.
-    expect(await editWorkflow(local, DEMO_PROJECT_ID, 'ci', { repos: ['docs'] })).toMatchObject({ steps: CI, secrets: ['P8_KEY'], repos: ['docs'] })
+    expect(await editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { repos: ['docs'] })).toMatchObject({ steps: CI, secrets: ['P8_KEY'], repos: ['docs'] })
     expect(await editWorkflow(local, DEMO_PROJECT_ID, 'ci', { repos: [] })).toMatchObject({ secrets: ['P8_KEY'], repos: [] })
     expect(await editWorkflow(local, DEMO_PROJECT_ID, 'ci', { secrets: [] })).toMatchObject({ steps: CI, secrets: [] })
     expect((await current('ci')).workflow.id).toBe(first)
     await expect(editWorkflow(local, DEMO_PROJECT_ID, 'ci', {})).rejects.toMatchObject({ code: 'VALIDATION' })
-    // Other repos are other content; none is what it was.
-    expect(await editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { repos: ['docs'] })).toMatchObject({ steps: CI, repos: ['docs'] })
-    expect((await current('ci')).workflow.id).not.toBe(first)
-    expect(await editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { repos: [] })).toMatchObject({ repos: [] })
-    expect((await current('ci')).workflow.id).toBe(first)
+    await expect(editWorkflow(local, DEMO_PROJECT_ID, 'ci', { secrets: ['NOPE'] })).rejects.toMatchObject({ code: 'VALIDATION' })
     // Marking it init changes no content.
     expect(await editWorkflow(agent, DEMO_PROJECT_ID, 'ci', { init: true })).toMatchObject({ init: true })
     expect((await current('ci')).workflow.id).toBe(first)
@@ -176,7 +183,7 @@ describe('deleteWorkflow', () => {
     const named = await current('relay')
     await insertSite({
       projectId: DEMO_PROJECT_ID, repos: [{ repo: DEMO_PROJECT_ID, branch: 'main' }], follow: false, name: 'push',
-      hostname: 'push.example.com', port: 3000, namedWorkflowId: named.id,
+      port: 3000, namedWorkflowId: named.id,
     })
     await expect(deleteWorkflow(local, DEMO_PROJECT_ID, 'relay')).rejects.toMatchObject({ code: 'CONFLICT' })
     await createWorkflow(local, DEMO_PROJECT_ID, { name: 'nightly', steps: CI })
@@ -216,16 +223,12 @@ describe('listWorkflowSummaries', () => {
 })
 
 describe('savedByPerson', () => {
-  it('answers whether a person saved an unattended start, refusing an agent\'s on a start no person approved', async () => {
+  it('answers whether a person saved an unattended start, which by itself approves nothing', async () => {
     await relay()
-    const { id } = await current('relay')
-    const start = [{ repo: DEMO_PROJECT_ID, branch: 'main' }]
-    await expect(savedByPerson(agent, id, start)).rejects.toMatchObject({ code: 'FORBIDDEN' })
-    // A person's save approves nothing by itself.
-    expect(await savedByPerson(local, id, start)).toBe(true)
+    expect(savedByPerson(agent)).toBe(false)
+    expect(savedByPerson(server)).toBe(false)
+    expect(savedByPerson(local)).toBe(true)
     expect((await listProjectWorkflows(DEMO_PROJECT_ID))[0].approvedBranches).toEqual([])
-    await approveWorkflowStart(local, id, start)
-    expect(await savedByPerson(agent, id, start)).toBe(false)
   })
 })
 
@@ -276,47 +279,120 @@ describe('assertWorkflowRepos', () => {
   })
 })
 
-describe('checkWorkflowStart', () => {
-  it('refuses what a write would approve for every repo, recording nothing', async () => {
+describe('workflowSpec', () => {
+  it('keys a launch outside a site by its workflow\'s content alone', () => {
+    expect(workflowSpec('w1')).toEqual({ spec: 'w1', workflowId: 'w1' })
+  })
+})
+
+describe('approveContent', () => {
+  it('marks content a person was shown as theirs, so their own actions approve runs of it', async () => {
+    await createWorkflow(agent, DEMO_PROJECT_ID, { name: 'leak', steps: CI, secrets: ['P8_KEY'] })
+    const id = (await current('leak')).workflow.id
+    await expect(approveContent(agent, DEMO_PROJECT_ID, id)).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await expect(approveContent(local, DOCS, id)).rejects.toMatchObject({ code: 'NOT_FOUND' })
+    await approveStart(local, workflowSpec(id), [{ repo: DEMO_PROJECT_ID, commit: main }])
+    expect(await listApprovals(id)).toEqual([])
+    await approveContent(local, DEMO_PROJECT_ID, id)
+    expect((await showWorkflow(DEMO_PROJECT_ID, 'leak')).writtenByAgent).toBeUndefined()
+    await approveStart(local, workflowSpec(id), [{ repo: DEMO_PROJECT_ID, commit: main }])
+    expect(await listApprovals(id)).toEqual([main])
+  })
+})
+
+describe('approveStart', () => {
+  it('records a person\'s approval of each repo\'s branch or commit for a spec, and nothing for anyone else', async () => {
     await relay()
-    const named = await current('relay')
+    const spec = workflowSpec((await current('relay')).workflow.id)
     await linkDocs()
-    await expect(checkWorkflowStart(agent, named.id, [{ repo: DEMO_PROJECT_ID, commit: main }]))
-      .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining(`demo@${main.slice(0, 12)}`) as unknown })
-    await checkWorkflowStart(local, named.id, [{ repo: DEMO_PROJECT_ID, branch: 'main' }, { repo: DOCS, commit: dev }])
-    expect((await listProjectWorkflows(DEMO_PROJECT_ID))[0]).toMatchObject({ approvedBranches: [], approvedCommits: [] })
+    const start = [{ repo: DEMO_PROJECT_ID, branch: 'main' }, { repo: DOCS, commit: dev }]
+    await approveStart(agent, spec, start)
+    await approveStart(server, spec, start)
+    expect(await listApprovals(spec.spec)).toEqual([])
+    await approveStart(local, spec, start)
+    expect((await listApprovals(spec.spec)).sort()).toEqual([`${DEMO_PROJECT_ID}:refs/heads/main`, dev].sort())
+    await expect(approveStart(local, spec, [{ repo: DOCS }])).rejects.toMatchObject({ code: 'VALIDATION' })
+    // A start with no repos approves the spec alone.
+    await approveStart(local, spec, [])
+    expect(await listApprovals(spec.spec)).toContain('-')
+    // Content an agent wrote is approved by no person's action until a
+    // person is shown it.
+    await createWorkflow(agent, DEMO_PROJECT_ID, { name: 'agents', steps: LEAK, secrets: ['P8_KEY'] })
+    const theirs = workflowSpec((await current('agents')).workflow.id)
+    await approveStart(local, theirs, start)
+    expect(await listApprovals(theirs.spec)).toEqual([])
     // A branch of a shared repo is approved like any other.
     await shareRepo()
-    await checkWorkflowStart(local, named.id, [{ repo: DEMO_PROJECT_ID, branch: 'main' }])
+    await approveStart(local, spec, [{ repo: DEMO_PROJECT_ID, branch: 'dev' }])
+    expect(await listApprovals(spec.spec)).toContain(`${DEMO_PROJECT_ID}:refs/heads/dev`)
   })
 })
 
 describe('approveWorkflowStart', () => {
-  it('records a person\'s approval of each repo, and holds anyone else to ones already made', async () => {
+  it('approves a named workflow\'s current content for a person, only where it names secrets', async () => {
     await relay()
     const named = await current('relay')
     await linkDocs()
     const start = [{ repo: DEMO_PROJECT_ID, branch: 'main' }, { repo: DOCS, commit: dev }]
-    await expect(approveWorkflowStart(agent, named.id, start)).rejects.toMatchObject({ code: 'FORBIDDEN' })
-    await approveWorkflowStart(local, named.id, start)
     await approveWorkflowStart(agent, named.id, start)
+    expect(await showWorkflow(DEMO_PROJECT_ID, 'relay')).toMatchObject({ approvedCommits: [], approvedBranches: [] })
+    await approveWorkflowStart(local, named.id, start)
     expect(await showWorkflow(DEMO_PROJECT_ID, 'relay')).toMatchObject({ approvedCommits: [dev], approvedBranches: ['demo@main'] })
-    // An agent's start with one repo not yet approved is refused whole.
-    await expect(approveWorkflowStart(agent, named.id, [...start, { repo: DOCS, commit: main }])).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    // An edit is new content, which the approvals do not reach.
+    await editWorkflow(agent, DEMO_PROJECT_ID, 'relay', { steps: { t: { run: 'true' } } })
+    expect(await showWorkflow(DEMO_PROJECT_ID, 'relay')).toMatchObject({ approvedCommits: [], approvedBranches: [] })
     // A workflow that names no secrets needs no approval.
     await createWorkflow(local, DEMO_PROJECT_ID, { name: 'plain', steps: CI })
-    await approveWorkflowStart(agent, (await current('plain')).id, [{ repo: DEMO_PROJECT_ID, commit: dev }])
+    await approveWorkflowStart(local, (await current('plain')).id, [{ repo: DEMO_PROJECT_ID, commit: dev }])
     expect((await showWorkflow(DEMO_PROJECT_ID, 'plain')).approvedCommits).toEqual([])
   })
 })
 
+describe('admitLaunch', () => {
+  it('approves a person\'s launch, and passes anyone else\'s only on approved commits, recording them', async () => {
+    await relay()
+    const spec = workflowSpec((await current('relay')).workflow.id)
+    await expect(admitLaunch(false, DEMO_PROJECT_ID, spec, { [DEMO_PROJECT_ID]: dev }))
+      .rejects.toMatchObject({ code: 'APPROVAL_REQUIRED', message: expect.stringContaining(`demo@${dev.slice(0, 12)}`) as unknown })
+    await admitLaunch(true, DEMO_PROJECT_ID, spec, { [DEMO_PROJECT_ID]: main })
+    await admitLaunch(false, DEMO_PROJECT_ID, spec, { [DEMO_PROJECT_ID]: main })
+    expect(await listApprovals(spec.spec)).toEqual([main])
+    // The tip of an approved branch passes, and is recorded, so it still
+    // passes once the branch moves on.
+    await approveStart(local, spec, [{ repo: DEMO_PROJECT_ID, branch: 'dev' }])
+    await admitLaunch(false, DEMO_PROJECT_ID, spec, { [DEMO_PROJECT_ID]: dev })
+    expect(await listApprovals(spec.spec)).toContain(dev)
+    // Another spec of the same workflow, such as a site's, is approved apart.
+    await expect(admitLaunch(false, DEMO_PROJECT_ID, { ...spec, spec: `site:${spec.spec}` }, { [DEMO_PROJECT_ID]: main }))
+      .rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    // A launch with no repos needs its spec approved, which only a
+    // person's launch of it does.
+    await expect(admitLaunch(false, DEMO_PROJECT_ID, spec, {})).rejects.toMatchObject({
+      code: 'APPROVAL_REQUIRED', message: expect.stringContaining('no person has approved this workflow') as unknown,
+    })
+    await admitLaunch(true, DEMO_PROJECT_ID, spec, {})
+    await admitLaunch(false, DEMO_PROJECT_ID, spec, {})
+    // A person's launch of content an agent wrote approves nothing, and the
+    // refusal carries what it would run, for a person to be shown.
+    await createWorkflow(agent, DEMO_PROJECT_ID, { name: 'agents', steps: LEAK, secrets: ['P8_KEY'] })
+    const theirs = workflowSpec((await current('agents')).workflow.id)
+    const refused = await admitLaunch(true, DEMO_PROJECT_ID, theirs, { [DEMO_PROJECT_ID]: main }).catch((err: unknown) => err)
+    expect(refused).toBeInstanceOf(ApprovalRequiredError)
+    expect(refused).toMatchObject({
+      message: expect.stringContaining('last written by an agent') as unknown,
+      request: { workflowId: theirs.workflowId, commits: { [DEMO_PROJECT_ID]: main } },
+    })
+    expect(await listApprovals(theirs.spec)).toEqual([])
+  })
+})
+
 describe('workflowLaunch', () => {
-  it('hands the secrets only when each repo is at a commit a person ran, refusing rather than running without them', async () => {
+  it('hands the secrets only when each repo is at a commit a person approved, refusing rather than running without them', async () => {
     await relay()
     const named = await current('relay')
     const first = named.workflow.id
     type Repo = { repoId: string; branch?: string; commit?: string }
-    const launch = (actor: typeof local | typeof agent | typeof server, workflowId: string, more: { namedWorkflowId?: string; repos?: Repo[]; secrets?: boolean; commit?: string; branch?: string } = {}) => {
+    const launch = (actor: typeof local | typeof agent | typeof server, workflowId: string, more: { repos?: Repo[]; secrets?: boolean; commit?: string; branch?: string } = {}) => {
       const { commit, branch, ...rest } = more
       return workflowLaunch(actor, DEMO_PROJECT_ID, {
         workflowId, secrets: true,
@@ -325,14 +401,17 @@ describe('workflowLaunch', () => {
     }
     // Interactive, it gets none and is not refused.
     expect((await launch(server, first, { commit: dev, secrets: false })).runSecrets).toEqual({})
-    // A start with no repos runs only steps a person wrote, and passes.
+    // A start with no repos is approved by a person's launch of it, as a
+    // start with repos is.
+    await expect(launch(server, first, { repos: [] })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    expect((await launch(local, first, { repos: [] })).runSecrets).toEqual({ P8_KEY: 'pem' })
     expect((await launch(server, first, { repos: [] })).runSecrets).toEqual({ P8_KEY: 'pem' })
     // No person ran it on dev: refused, naming the repo, for the server as
     // for an agent.
-    await expect(launch(server, first, { commit: dev })).rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining('demo@') as unknown })
-    // A person's launch through its name approves its commit and gets them,
-    // current values handed to the runtime first.
-    expect((await launch(local, first, { namedWorkflowId: named.id, commit: main })).runSecrets).toEqual({ P8_KEY: 'pem' })
+    await expect(launch(server, first, { commit: dev })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED', message: expect.stringContaining('demo@') as unknown })
+    // A person's launch approves its commit and gets them, current values
+    // handed to the runtime first.
+    expect((await launch(local, first, { commit: main })).runSecrets).toEqual({ P8_KEY: 'pem' })
     expect(pushed.at(-1)).toEqual({ P8_KEY: 'pem' })
     expect((await launch(agent, first, { commit: main })).runSecrets).toEqual({ P8_KEY: 'pem' })
 
@@ -342,17 +421,29 @@ describe('workflowLaunch', () => {
     expect(await launch(server, first, { branch: 'dev' })).toMatchObject({ commits: { [DEMO_PROJECT_ID]: dev }, runSecrets: { P8_KEY: 'pem' } })
     expect((await launch(server, first, { commit: dev })).runSecrets).toEqual({ P8_KEY: 'pem' })
 
-    // After an edit the old workflow keeps only the commits it ran on;
-    // approvals reach the one the name points at now.
-    await editWorkflow(local, DEMO_PROJECT_ID, 'relay', { steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
+    // An agent's edit is new content, which nothing approved: its runs wait
+    // for a person, on commits and branches alike, while the old content
+    // keeps what it had. Pointing the name back is the same content again.
+    await editWorkflow(agent, DEMO_PROJECT_ID, 'relay', { steps: { t: { run: 'true' } } })
     const second = (await current('relay')).workflow.id
+    await expect(launch(server, second, { commit: main })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    await expect(launch(server, second, { branch: 'dev' })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    expect((await launch(server, first, { commit: main })).runSecrets).toEqual({ P8_KEY: 'pem' })
+    await editWorkflow(agent, DEMO_PROJECT_ID, 'relay', { steps: CI })
+    expect((await current('relay')).workflow.id).toBe(first)
+    await editWorkflow(local, DEMO_PROJECT_ID, 'relay', { steps: { t: { run: 'true' } } })
     await git(repoDir(DEMO_PROJECT_ID), ['commit', '--allow-empty', '-m', 'newer'])
     const newer = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'HEAD'])).trim()
     await approveWorkflowStart(local, named.id, [{ repo: DEMO_PROJECT_ID, commit: newer }])
-    await expect(launch(server, first, { commit: newer })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await expect(launch(server, first, { commit: newer })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' })
     expect((await launch(server, second, { commit: newer })).runSecrets).toEqual({ P8_KEY: 'pem' })
+    // A site's deploy names its own spec, approved apart.
+    await expect(workflowLaunch(server, DEMO_PROJECT_ID, {
+      workflowId: second, spec: { spec: `site:${second}`, workflowId: second }, secrets: true, repos: [{ repoId: DEMO_PROJECT_ID, commit: newer }],
+    })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' })
 
     // A branch of a repo shared with another user still passes.
+    await approveWorkflowStart(local, named.id, [{ repo: DEMO_PROJECT_ID, branch: 'dev' }])
     await shareRepo()
     expect((await launch(server, second, { branch: 'dev' })).runSecrets).toEqual({ P8_KEY: 'pem' })
 
@@ -374,32 +465,15 @@ describe('workflowLaunch', () => {
     await approveWorkflowStart(local, named.id, [{ repo: DEMO_PROJECT_ID, commit: main }, { repo: DOCS, branch: 'dev' }])
     const two = (docs: { commit?: string; branch?: string }) =>
       workflowLaunch(agent, DEMO_PROJECT_ID, { workflowId: flow, secrets: true, repos: [{ repoId: DEMO_PROJECT_ID, commit: main }, { repoId: DOCS, ...docs }] })
-    expect(await two({ branch: 'dev' })).toMatchObject({ commits: { [DEMO_PROJECT_ID]: main, [DOCS]: dev } })
     // The branch is approved for docs alone, not for the first repo.
     await expect(workflowLaunch(agent, DEMO_PROJECT_ID, { workflowId: flow, secrets: true, repos: [{ repoId: DEMO_PROJECT_ID, branch: 'dev' }] }))
-      .rejects.toMatchObject({ code: 'FORBIDDEN' })
+      .rejects.toMatchObject({ code: 'APPROVAL_REQUIRED' })
+    expect(await two({ branch: 'dev' })).toMatchObject({ commits: { [DEMO_PROJECT_ID]: main, [DOCS]: dev } })
     // One repo unapproved: refused, with nothing approved by the try.
     await expect(two({ commit: main })).resolves.toBeDefined()
     await git(repoDir(DEMO_PROJECT_ID), ['commit', '--allow-empty', '-m', 'newer'])
     const newer = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'HEAD'])).trim()
-    await expect(two({ commit: newer })).rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining(`docs@${newer.slice(0, 12)}`) as unknown })
+    await expect(two({ commit: newer })).rejects.toMatchObject({ code: 'APPROVAL_REQUIRED', message: expect.stringContaining(`docs@${newer.slice(0, 12)}`) as unknown })
     expect((await showWorkflow(DEMO_PROJECT_ID, 'relay')).approvedCommits).not.toContain(newer)
-
-    // A commit an earlier non-interactive workspace of the workflow started
-    // at passes, until that workspace is deleted; an interactive one never
-    // counts.
-    const ran = async (workspaceId: string, nonInteractive: boolean): Promise<void> => {
-      await recordWorkspaceCreated({
-        projectId: DEMO_PROJECT_ID, workspaceId, workflowId: flow, workflowName: 'relay', nonInteractive,
-        repos: [{ repoId: DOCS, path: 'docs' }],
-      })
-      await setWorkspaceRepoStart(workspaceId, DOCS, { startCommit: newer })
-    }
-    await ran('w-interactive', false)
-    await expect(two({ commit: newer })).rejects.toMatchObject({ code: 'FORBIDDEN' })
-    await ran('w-ci', true)
-    expect((await two({ commit: newer })).runSecrets).toEqual({ P8_KEY: 'pem' })
-    await deleteWorkspaceRecords(DEMO_PROJECT_ID, 'w-ci')
-    await expect(two({ commit: newer })).rejects.toMatchObject({ code: 'FORBIDDEN' })
   })
 })

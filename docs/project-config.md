@@ -116,12 +116,16 @@ own wins over it.
 A **run secret** is a value a workspace needs as it is, under k8s too: a
 key it signs with, say, which no proxy swap can stand in for. Run secrets
 are kept apart from the secrets above (`project_run_secrets`), encrypted
-the same way, and reach a workspace only through a named workflow that
-names them, when each repo it starts with is at a commit a person ran it on
-(docs/workflows.md). An interactive workspace never gets one. Only a person
-sets them, under Settings → Project → Environment → Run secrets or with `yaac
-config env <project> NAME --run-secret`, the value on stdin (`--unset NAME`
-removes one); `yaac-mama` has no verb for them.
+the same way, and reach a workspace only through a workflow that names
+them, when each repo it starts with is at a commit a person approved for
+exactly that workflow (docs/workflows.md "Approvals"). An agent may name
+them in a workflow it writes, which approves nothing. An interactive
+workspace never gets one. Only a person sets their values, under Settings →
+Project → Environment → Run secrets or with `yaac config env <project> NAME
+--run-secret`, the value on stdin (`--unset NAME` removes one); `yaac-mama`
+has no verb for them. A step's log blanks each value of 8 characters or
+more as it is written (docs/workspace-steps.md "Logs"), so a shorter value
+warns when it is set.
 
 Under k8s a workspace that gets one mounts nothing the project's other
 workspaces write, as a release does (docs/public-sites.md "Sites and

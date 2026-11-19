@@ -847,7 +847,9 @@ describe('prepareStart', () => {
       expect((await listWorkspaceRepos(workspaceId)).map((c) => [c.repoId, c.startCommit, c.baseBranch])).toEqual([
         [DEMO_PROJECT_ID, head, undefined], [web, webHead, undefined],
       ])
-      expect((await showWorkflow(DEMO_PROJECT_ID, 'relay')).approvedCommits.sort()).toEqual([head, webHead].sort())
+      // The second repo is seeded as a copy, so the two may share a commit,
+      // which is approved once.
+      expect((await showWorkflow(DEMO_PROJECT_ID, 'relay')).approvedCommits.sort()).toEqual([...new Set([head, webHead])].sort())
     })
 
     it('gives opencode, pi and omp each their own key for one provider, in the config each tool reads', async () => {

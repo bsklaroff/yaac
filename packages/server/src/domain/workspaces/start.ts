@@ -17,7 +17,7 @@ import { VOLUME_NEED } from './steps'
 import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, type Actor } from '#domain/access'
 import { assertWorkflowRepos, resolveWorkflow, workflowLaunch } from '#domain/projects'
-import { getProjectRow, getWorkflow, listWorkspaceRepos, recordProjectCreate, storeWorkflow } from '#db'
+import { getProjectRow, getWorkflow, listWorkspaceRepos, recordProjectCreate, storeWorkflow, type LaunchSpec } from '#db'
 import { resolveStart, storedSelection, type StartRequest, type WorkspaceStart } from './checkouts'
 import { ServerError } from '@yaac/shared/errors'
 import { FULL_COMMIT_PATTERN, graphHasTask, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
@@ -88,8 +88,10 @@ export interface StartWorkspaceRequest {
   /** A volume to mount, by name (docs/workspace-volumes.md). */
   volume?: string
   /** A public site's release: see `WorkspaceCreateOptions`. Its `steps`
-   *  may need the `volume` step when it stages one. */
+   *  may need the `volume` step when it stages one, and its run secrets are
+   *  admitted for the deploy's `spec` (docs/workflows.md "Approvals"). */
   siteId?: string
+  spec?: LaunchSpec
   image?: string
   stageVolumeId?: string
   colocateWith?: string
@@ -139,7 +141,7 @@ export async function prepareStart(
   const flow = workflow !== undefined
     ? await workflowLaunch(principal, projectId, {
       workflowId: workflow.id,
-      ...(workflow.namedWorkflowId !== undefined ? { namedWorkflowId: workflow.namedWorkflowId } : {}),
+      ...(request.spec !== undefined ? { spec: request.spec } : {}),
       repos: start.repos.map((r) => ({
         repoId: r.link.repo.id,
         ...(r.commit !== undefined ? { commit: r.commit } : {}),
@@ -178,7 +180,7 @@ export async function prepareStart(
   // or for a held volume leaves neither behind.
   refuseLiveProvision(workspaceId)
   const volume = request.volume !== undefined
-    ? await volumeForLaunch(projectId, workspaceId, request.volume)
+    ? await volumeForLaunch(principal, projectId, workspaceId, request.volume)
     : undefined
   const groupId = request.groupId !== undefined ? request.groupId ?? undefined
     : request.group !== undefined ? (await resolveGroup(projectId, request.group, { create: true })).groupId

@@ -1,22 +1,22 @@
 import {
-  addWorkflowApproval,
+  addApprovals,
   deleteNamedWorkflow,
   findNamedWorkflow,
   getNamedWorkflow,
   getProjectRow,
   getWorkflow,
   insertNamedWorkflow,
+  listApprovals,
   listNamedWorkflows,
   listProjectSites,
   listQueuedWorkspaceRows,
   listRoutineRows,
   listRunSecrets,
-  listWorkflowApprovals,
+  markPersonWritten,
   setInitWorkflows as storeInitWorkflows,
   storeWorkflow,
   updateNamedWorkflow,
-  workflowApproved,
-  workflowRanAt,
+  type LaunchSpec,
   type NamedWorkflowRow,
   type ProjectRow,
 } from '#db'
@@ -24,7 +24,7 @@ import { ServerError } from '@yaac/shared/errors'
 import { isStepName, NAME_RULE, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { RepoStart, WorkflowEntry, WorkflowSummary } from '@yaac/shared/types'
-import { authorizeProject, type Actor } from '#domain/access'
+import { authorizeProject, isPerson, requirePerson, type Actor } from '#domain/access'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import { fetchRepoOrigin } from '#domain/repos'
 import { testEnv } from '@yaac/shared/env'
@@ -37,29 +37,22 @@ import { projectRepo } from './repos'
  * Workflows (docs/workflows.md): a project's step graphs, each with the run
  * secrets it names and the repos its steps are written for, stored once per
  * content and never changed, and the names a project points at them by,
- * any number of which are init workflows. A named workflow's secrets reach
- * a launch only when every repo it starts with is at a commit a person
- * approved:
+ * any number of which are init workflows.
  *
- * - Only a person names secrets, in an edit carrying the whole graph, so no
- *   one vouches for steps they did not see. A workspace's agent may not name
- *   any, nor edit a named workflow whose workflow does.
- * - A person's action approves the commits or branches it names (a
- *   routine's setup, a site's deploy or follow, a launch by hand); an
- *   agent's never does, and none waits for one.
- * - A repo's commit passes when it is approved for a named workflow that
- *   points at the workflow now, when a workspace that ran the workflow with
- *   them started that repo there, or when it is the tip of a branch of that
- *   repo approved for such a named workflow.
+ * Anyone who may write the project, its agents included, may write a
+ * workflow and name secrets in it. What a person controls is the launch: a
+ * privileged one (docs/workflows.md "Approvals") runs only once each repo
+ * it starts with is at a commit a person approved for its spec, the content
+ * it runs. A person's own action approves only content a person wrote or
+ * was shown; nothing an agent does approves anything. Approvals are keyed
+ * by content, so an edit makes a spec with none, and no edit races an
+ * approval.
  */
 
 /** What an approved branch of a repo is stored as, beside approved commits. */
 function branchRef(repoId: string, branch: string): string {
   return `${repoId}:refs/heads/${branch}`
 }
-
-/** A request's principal, as opposed to the server or a workspace's agent. */
-const isPerson = (actor: Actor): boolean => actor.kind === 'local' || actor.kind === 'tailnet'
 
 /** A repo of the project by its folder, or its id where it is linked no
  *  more. */
@@ -76,14 +69,16 @@ function summary(w: NamedWorkflowRow, project: ProjectRow | undefined): Workflow
     secrets: w.workflow.secrets,
     repos: w.workflow.repos.map((r) => dirOf(project, r)),
     init: w.init,
+    ...(w.workflow.personWritten ? {} : { writtenByAgent: true as const }),
     createdAt: formatUtcTimestamp(w.createdAt.getTime()),
   }
 }
 
-/** A workflow as listed. An approved branch of a repo that is not the
- *  project's only one reads `<repo's folder>@<branch>`. */
+/** A workflow as listed, with what its current workflow is approved on
+ *  outside a site. An approved branch of a repo that is not the project's
+ *  only one reads `<repo's folder>@<branch>`. */
 async function entry(w: NamedWorkflowRow): Promise<WorkflowEntry> {
-  const approvals = await listWorkflowApprovals(w.id)
+  const approvals = await listApprovals(w.workflow.id)
   const project = await getProjectRow(w.projectId)
   const links = project?.repos ?? []
   const branches = approvals.flatMap((a) => {
@@ -93,7 +88,7 @@ async function entry(w: NamedWorkflowRow): Promise<WorkflowEntry> {
   })
   return {
     ...summary(w, project),
-    approvedCommits: approvals.filter((a) => !a.includes('refs/heads/')),
+    approvedCommits: approvals.filter((a) => a !== NO_REPOS && !a.includes('refs/heads/')),
     approvedBranches: branches,
   }
 }
@@ -134,13 +129,9 @@ function checkSteps(raw: unknown): StepGraph {
   }
 }
 
-/** Secrets a workflow may name: a person's, each a run secret of the
- *  project, in order. */
-async function checkSecrets(actor: Actor, projectId: string, secrets: string[]): Promise<string[]> {
+/** Secrets a workflow may name: run secrets of the project, sorted. */
+async function checkSecrets(projectId: string, secrets: string[]): Promise<string[]> {
   if (secrets.length === 0) return []
-  if (!isPerson(actor)) {
-    throw new ServerError('FORBIDDEN', 'only a person names a workflow\'s run secrets, in the webapp or with `yaac workflow`')
-  }
   const known = new Set((await listRunSecrets(projectId)).map((r) => r.name))
   const missing = secrets.find((n) => !known.has(n))
   if (missing !== undefined) throw new ServerError('VALIDATION', `this project has no run secret named ${missing}`)
@@ -188,20 +179,18 @@ export async function createWorkflow(actor: Actor, projectId: string, input: {
   if (!isStepName(name)) throw new ServerError('VALIDATION', `"${name}" is not a workflow name (${NAME_RULE})`)
   const workflow = await storeWorkflow(projectId, {
     steps: checkSteps(input.steps),
-    secrets: await checkSecrets(actor, projectId, input.secrets ?? []),
+    secrets: await checkSecrets(projectId, input.secrets ?? []),
     repos: await projectRepoIds(projectId, input.repos ?? []),
-  })
+  }, isPerson(actor))
   await insertNamedWorkflow(projectId, name, workflow.id, input.init === true)
   return await showWorkflow(projectId, name)
 }
 
 /**
  * Point a named workflow at new content, or mark or unmark it as an init
- * workflow. An edit that names secrets carries its whole graph, so the
- * person naming them saw every step; without a graph secrets change only
- * to none. A person may change the repos of a workflow that has secrets
- * without its graph, since its steps stay the ones they saw. An agent's
- * edit names none, and may not replace a workflow that does.
+ * workflow. Content left out stays as it is. The new content is a new spec,
+ * so nothing approved for the old one runs it with secrets, and it is a
+ * person's only when a person saw its steps.
  */
 export async function editWorkflow(actor: Actor, projectId: string, name: string, input: {
   steps?: unknown
@@ -219,19 +208,15 @@ export async function editWorkflow(actor: Actor, projectId: string, name: string
     await updateNamedWorkflow(row.id, { init: input.init })
     return await showWorkflow(projectId, name)
   }
-  if (!isPerson(actor) && row.workflow.secrets.length > 0) {
-    throw new ServerError('FORBIDDEN', `workflow "${name}" is given run secrets, so only a person edits it`)
-  }
-  const secrets = await checkSecrets(actor, projectId, input.secrets ?? row.workflow.secrets)
-  if (input.secrets !== undefined && secrets.length > 0 && input.steps === undefined) {
-    throw new ServerError('VALIDATION', 'an edit that gives a workflow run secrets carries its whole graph, '
-      + 'so the steps they reach are the ones you saw')
-  }
+  // A person's edit makes the content theirs only when they sent the steps,
+  // or kept steps a person already wrote: secrets or repos given to an
+  // agent's steps leave them the agent's.
+  const byPerson = isPerson(actor) && (input.steps !== undefined || row.workflow.personWritten)
   const workflow = await storeWorkflow(projectId, {
     steps: input.steps !== undefined ? checkSteps(input.steps) : row.workflow.steps,
-    secrets,
+    secrets: input.secrets !== undefined ? await checkSecrets(projectId, input.secrets) : row.workflow.secrets,
     repos: input.repos !== undefined ? await projectRepoIds(projectId, input.repos) : row.workflow.repos,
-  })
+  }, byPerson)
   await updateNamedWorkflow(row.id, { workflowId: workflow.id, ...(input.init !== undefined ? { init: input.init } : {}) })
   return await showWorkflow(projectId, name)
 }
@@ -246,7 +231,8 @@ export async function setInitWorkflows(actor: Actor, projectId: string, names: s
 }
 
 /** Delete a named workflow, refused while a routine, site or queued entry
- *  follows it. Deleting an init workflow is how its steps stop running. */
+ *  follows it. Deleting an init workflow is how its steps stop running.
+ *  Its workflows' approvals stay while anything names them. */
 export async function deleteWorkflow(actor: Actor, projectId: string, name: string): Promise<void> {
   await authorizeProject(actor, projectId)
   const row = await resolveWorkflow(projectId, name)
@@ -267,92 +253,137 @@ export async function listInitWorkflows(projectId: string): Promise<NamedWorkflo
   return (await listNamedWorkflows(projectId)).filter((w) => w.init)
 }
 
-/** What each repo of a start is approved as: its commit, or its branch of
- *  that repo. Stored selections name repos by id. */
-function startRefs(repos: RepoStart[]): Array<{ repoId: string; ref: string; label: string }> {
+/** The spec of a launch of `workflowId` that is not a site's deploy. */
+export function workflowSpec(workflowId: string): LaunchSpec {
+  return { spec: workflowId, workflowId }
+}
+
+/** What a launch with no repos is approved as: its spec alone. */
+const NO_REPOS = '-'
+
+/**
+ * A privileged launch no person approved (docs/workflows.md "Approvals"),
+ * with what it would have run, so a person can be shown exactly that and
+ * approve it.
+ */
+export class ApprovalRequiredError extends ServerError {
+  readonly request: { workflowId: string; commits: Record<string, string> }
+
+  constructor(message: string, request: { workflowId: string; commits: Record<string, string> }) {
+    super('APPROVAL_REQUIRED', message)
+    this.request = request
+  }
+}
+
+/** Whether a person wrote, or was shown and approved, a workflow's content,
+ *  so a person's own action may approve commits for it. */
+async function personWrote(workflowId: string): Promise<boolean> {
+  return (await getWorkflow(workflowId))?.personWritten === true
+}
+
+/**
+ * A person approves a workflow's content they were shown, by its id, so
+ * what an agent wrote meanwhile is not what they approve: the review of a
+ * queued launch or a site's requested deploy.
+ */
+export async function approveContent(actor: Actor, projectId: string, workflowId: string): Promise<void> {
+  requirePerson(actor, 'approve what a launch runs')
+  const workflow = await getWorkflow(workflowId)
+  if (workflow?.projectId !== projectId) throw new ServerError('NOT_FOUND', 'that workflow is gone')
+  await markPersonWritten(workflowId)
+}
+
+/** What each repo of a stored start is approved as: its commit, or its
+ *  branch of that repo, or the spec alone for a start with none. Stored
+ *  selections name repos by id. */
+function startRefs(repos: RepoStart[]): string[] {
+  if (repos.length === 0) return [NO_REPOS]
   return repos.map((r) => {
-    if (r.commit !== undefined) return { repoId: r.repo, ref: r.commit, label: r.commit.slice(0, 12) }
-    if (r.branch === undefined) throw new ServerError('VALIDATION', 'a start approved for a workflow names a branch or commit per repo')
-    return { repoId: r.repo, ref: branchRef(r.repo, r.branch), label: `branch ${r.branch}` }
+    if (r.commit !== undefined) return r.commit
+    if (r.branch === undefined) throw new ServerError('VALIDATION', 'a start approved for a launch names a branch or commit per repo')
+    return branchRef(r.repo, r.branch)
   })
 }
 
 /**
- * Whether a routine or site may run a named workflow on the start it is
- * about to store (each repo at a commit or a branch), refusing before
- * anything is written. Nothing an agent does approves, so an agent's start
- * must be approved already when the workflow names secrets.
+ * Whether a save of an unattended entry is a person's, whose launch then
+ * approves what it runs as the person's own launch would: commits of
+ * content a person wrote. An agent's save approves nothing, and its launch
+ * waits for a review where it needs one.
  */
-export async function checkWorkflowStart(actor: Actor, namedWorkflowId: string, repos: RepoStart[]): Promise<void> {
-  await startApprovals(actor, namedWorkflowId, repos)
-}
-
-/** `checkWorkflowStart`, answering the refs to approve; none for a
- *  workflow that names no secrets, which needs no approval. */
-async function startApprovals(actor: Actor, namedWorkflowId: string, repos: RepoStart[]): Promise<string[]> {
-  const named = await getNamedWorkflow(namedWorkflowId)
-  if (named === undefined || named.workflow.secrets.length === 0) return []
-  const refs = startRefs(repos)
-  if (!isPerson(actor)) {
-    const approved = new Set(await listWorkflowApprovals(namedWorkflowId))
-    const missing = refs.find((r) => !approved.has(r.ref))
-    if (missing !== undefined) {
-      const project = await getProjectRow(named.projectId)
-      throw new ServerError('FORBIDDEN', `workflow "${named.name}" is given run secrets, and no person has run it on `
-        + `${dirOf(project, missing.repoId)}@${missing.label.replace(/^branch /, '')}`)
-    }
-  }
-  return refs.map((r) => r.ref)
-}
-
-/**
- * Whether a save of an unattended entry starting `namedWorkflowId` on
- * `repos` is a person's, whose launch then approves the commits it runs.
- * An agent's is refused unless each start is approved already, since its
- * launch approves nothing.
- */
-export async function savedByPerson(actor: Actor, namedWorkflowId: string, repos: RepoStart[]): Promise<boolean> {
-  await startApprovals(actor, namedWorkflowId, repos)
+export function savedByPerson(actor: Actor): boolean {
   return isPerson(actor)
 }
 
-/** `checkWorkflowStart`, then a person's action approves each repo's
- *  commit or branch: once what names them is written, for a caller that
- *  checked first. */
-export async function approveWorkflowStart(actor: Actor, namedWorkflowId: string, repos: RepoStart[]): Promise<void> {
-  const refs = await startApprovals(actor, namedWorkflowId, repos)
-  if (!isPerson(actor)) return
-  for (const ref of refs) await addWorkflowApproval(namedWorkflowId, ref)
+/**
+ * A person's action approves each repo's commit or branch of a start it
+ * stores (a routine's, a following site's) for `spec`, where a person
+ * wrote or approved the spec's workflow; anything else approves nothing,
+ * and its launches wait for a person's review.
+ */
+export async function approveStart(actor: Actor, spec: LaunchSpec, repos: RepoStart[]): Promise<void> {
+  if (isPerson(actor) && await personWrote(spec.workflowId)) await addApprovals(spec, startRefs(repos))
 }
 
-/** Whether `commit` is now the tip of a branch of `repoId` approved for a
- *  named workflow that points at `workflowId`. */
-async function approvedTip(workflowId: string, projectId: string, repoId: string, commit: string): Promise<boolean> {
+/** `approveStart` for a routine's start of a named workflow: its current
+ *  workflow's spec, when that names secrets, so its runs get them. */
+export async function approveWorkflowStart(actor: Actor, namedWorkflowId: string, repos: RepoStart[]): Promise<void> {
+  const named = await getNamedWorkflow(namedWorkflowId)
+  if (named !== undefined && named.workflow.secrets.length > 0) await approveStart(actor, workflowSpec(named.workflow.id), repos)
+}
+
+/** Whether `commit` is now the tip of a branch of `repoId` approved for
+ *  `spec`. */
+async function approvedTip(spec: string, repoId: string, commit: string): Promise<boolean> {
   const prefix = `${repoId}:refs/heads/`
-  const branches = (await Promise.all((await listNamedWorkflows(projectId))
-    .filter((n) => n.workflow.id === workflowId)
-    .map((n) => listWorkflowApprovals(n.id))))
-    .flat().filter((a) => a.startsWith(prefix)).map((a) => a.slice(prefix.length))
-  for (const branch of new Set(branches)) {
+  const branches = (await listApprovals(spec)).filter((a) => a.startsWith(prefix)).map((a) => a.slice(prefix.length))
+  for (const branch of branches) {
     if (await resolveRemoteRef(repoDir(repoId), branch).catch(() => undefined) === commit) return true
   }
   return false
 }
 
 /**
+ * Admit a privileged launch of `spec` with each repo at a commit (by repo
+ * id). A person's launch (`byPerson`) approves its commits, where a person
+ * wrote or approved the spec's workflow. Any other passes when each commit is
+ * approved for the spec or is the tip of a branch approved for it, or, with
+ * no repos, when the spec itself is; what passes is then recorded as
+ * approved, so a rerun or replacement repeats it once the branch moves on.
+ * Refuses with an `ApprovalRequiredError` carrying what it would run.
+ */
+export async function admitLaunch(byPerson: boolean, projectId: string, spec: LaunchSpec, commits: Record<string, string>): Promise<void> {
+  const refs = Object.keys(commits).length > 0 ? Object.values(commits) : [NO_REPOS]
+  const request = { workflowId: spec.workflowId, commits }
+  if (!(byPerson && await personWrote(spec.workflowId))) {
+    const approved = new Set(await listApprovals(spec.spec))
+    const agentWrote = byPerson ? 'its workflow was last written by an agent, so ' : ''
+    if (refs[0] === NO_REPOS && !approved.has(NO_REPOS)) {
+      throw new ApprovalRequiredError(`${agentWrote}no person has approved this workflow; a person approves it by reviewing it`, request)
+    }
+    for (const [repoId, commit] of Object.entries(commits)) {
+      if (approved.has(commit) || await approvedTip(spec.spec, repoId, commit)) continue
+      const project = await getProjectRow(projectId)
+      throw new ApprovalRequiredError(`${agentWrote}no person has approved this on ${dirOf(project, repoId)}@${commit.slice(0, 12)}; `
+        + 'a person approves it by reviewing it', request)
+    }
+  }
+  await addApprovals(spec, refs)
+}
+
+/**
  * The values of the run secrets a launch of `workflowId` gets, when
  * `secrets` (a non-interactive launch or a site's release), with the
  * commit each repo starts at. A repo at a branch runs at its tip, resolved
- * here after a fetch. A person's launch through a named workflow, or the
- * launch of an entry a person saved (`personSaved`), approves each commit
- * for it first. Each repo's commit must pass on its own
- * (docs/workflows.md "The launch check"); a launch with no repos passes.
- * A launch the secrets may not reach is refused rather than run without
- * them.
+ * here after a fetch. The launch is admitted for `spec`, the workflow's own
+ * unless a site's deploy names its own (`admitLaunch`), as a person's when
+ * a person launched it or saved the entry it launches (`personSaved`); a
+ * launch with no repos passes once its spec is approved. One no person
+ * approved is refused rather than run without the secrets.
  */
 export async function workflowLaunch(actor: Actor, projectId: string, opts: {
   workflowId: string
-  namedWorkflowId?: string
+  spec?: LaunchSpec
   repos: Array<{ repoId: string; branch?: string; commit?: string }>
   secrets: boolean
   personSaved?: boolean
@@ -374,15 +405,7 @@ export async function workflowLaunch(actor: Actor, projectId: string, opts: {
       throw new ServerError('VALIDATION', `${dirOf(project, r.repoId)}: branch "${branch}" not found on origin.`)
     })
   }
-  if ((isPerson(actor) || opts.personSaved === true) && opts.namedWorkflowId !== undefined) {
-    for (const commit of Object.values(commits)) await addWorkflowApproval(opts.namedWorkflowId, commit)
-  }
-  for (const [repoId, commit] of Object.entries(commits)) {
-    if (await workflowApproved(workflow.id, [commit]) || await workflowRanAt(workflow.id, repoId, commit)
-      || await approvedTip(workflow.id, projectId, repoId, commit)) continue
-    throw new ServerError('FORBIDDEN', 'this workflow is given run secrets, and no person has run it on '
-      + `${dirOf(project, repoId)}@${commit.slice(0, 12)}; launch it yourself, or from a routine or site you set up`)
-  }
+  await admitLaunch(isPerson(actor) || opts.personSaved === true, projectId, opts.spec ?? workflowSpec(workflow.id), commits)
   const stored = new Map((await listRunSecrets(projectId)).map((r) => [r.name, r.value]))
   const runSecrets: Record<string, string> = {}
   for (const name of workflow.secrets) {

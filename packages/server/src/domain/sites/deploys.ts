@@ -6,10 +6,17 @@
  * restart mid-deploy resumes it. A live release whose runtime is gone is
  * replaced by a deploy of the same commits and image, with backoff, and a
  * following site deploys its target when a branch of it moves.
+ *
+ * A deploy of a published site, or of a workflow that names run secrets,
+ * is privileged (docs/workflows.md "Approvals"): it runs only on commits a
+ * person approved for its spec (`siteSpec`). A person's deploy approves
+ * them; one that is not approved, an agent's or following's, is kept as
+ * the site's requested deploy for a person to make.
  */
 import { randomUUID } from 'node:crypto'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import {
+  addApprovals,
   beginSiteDeploy,
   findWorkspaceRow,
   getProjectRow,
@@ -17,18 +24,20 @@ import {
   getUser,
   getVolumeRow,
   getNamedWorkflow,
+  getWorkflow,
   handOverVolume,
   leaseOf,
   listSites,
   listWorkspaceSteps,
   unstageVolume,
   updateSite,
+  type LaunchSpec,
   type SitePatch,
   type SiteRow,
   type StepRow,
 } from '#db'
-import { isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
-import { approveWorkflowStart, projectRepo } from '#domain/projects'
+import { authorizeProject, isPerson, isProjectHeld, requireAdmin, requirePerson, systemPrincipal, type Actor } from '#domain/access'
+import { admitLaunch, ApprovalRequiredError, approveContent, approveStart, projectRepo } from '#domain/projects'
 import { fetchRepoOrigin, freshenOrigin } from '#domain/repos'
 import { getDefaultBranch, resolveRemoteRef } from '#domain/git'
 import {
@@ -46,9 +55,9 @@ import { notifyWorkspaceListChanged } from '#lib/notify'
 import { testEnv } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir } from '@yaac/shared/project-paths'
-import { FULL_COMMIT_PATTERN, formatCommits, stepFullName } from '@yaac/shared/steps'
+import { FULL_COMMIT_PATTERN, formatCommits, sameCommitList, stepFullName } from '@yaac/shared/steps'
 import type { RepoCommits, RepoStart, SiteCommit } from '@yaac/shared/types'
-import { authorizeSiteEnd, authorizeSitePublish, requireSite, siteCommits, syncSiteRoutes } from './sites'
+import { authorizeSiteEnd, requireSite, siteCommits, syncSiteRoutes } from './sites'
 
 /** How long a deploy may take to be ready, unless it names its own. */
 const DEFAULT_DEPLOY_TIMEOUT_MS = 15 * 60_000
@@ -129,21 +138,40 @@ export async function siteTarget(site: SiteRow): Promise<RepoCommits | undefined
 
 /** What a release runs with besides its commits and image: its named
  *  workflow's current workflow, or the workflow a release ran, by id with
- *  the name it had there (docs/workflows.md); and how its repos sit, where
+ *  the name it has there (docs/workflows.md); and how its repos sit, where
  *  it repeats a release. */
 interface ReleaseConfig {
-  workflow: { name: string } | { id: string; name?: string }
+  workflow: { id: string; name?: string }
   port: number
   volumeId?: string
   start?: { repos: RepoStart[]; nested: boolean; cwd: string }
 }
 
-/** The site's current settings, which a new deploy runs with. */
-async function siteConfig(site: SiteRow): Promise<ReleaseConfig> {
+/**
+ * The spec a deploy of `site` with `config` is approved for
+ * (docs/workflows.md "Approvals"): the site, its workflow, port and volume,
+ * so approving one site approves no other, and an edit to any of them,
+ * such as a volume swapped under an approved deploy, needs a new approval.
+ */
+export function siteSpec(siteId: string, config: ReleaseConfig): LaunchSpec {
+  const spec = `${siteId}:${config.workflow.id}:${String(config.port)}:${config.volumeId ?? ''}`
+  return { spec, workflowId: config.workflow.id, siteId }
+}
+
+/** Whether a deploy is privileged: of a published site, or of a workflow
+ *  that names run secrets. */
+async function privileged(site: SiteRow, config: ReleaseConfig): Promise<boolean> {
+  return site.published || ((await getWorkflow(config.workflow.id))?.secrets.length ?? 0) > 0
+}
+
+/** The site's current settings, which a new deploy runs with: its named
+ *  workflow's current workflow, pinned by id, so the spec approved is the
+ *  one launched. */
+export async function siteConfig(site: SiteRow): Promise<ReleaseConfig> {
   const named = await getNamedWorkflow(site.namedWorkflowId)
   if (!named) throw new ServerError('NOT_FOUND', `site "${site.name}" names a workflow that is gone`)
   return {
-    workflow: { name: named.name },
+    workflow: { id: named.workflow.id, name: named.name },
     port: site.port,
     ...(site.volumeId !== undefined ? { volumeId: site.volumeId } : {}),
   }
@@ -174,6 +202,26 @@ async function lockedSite(id: string, name: string): Promise<SiteRow> {
   return site
 }
 
+/** Refuse a change to what a published site serves unless a person who is
+ *  an admin of the install makes it (docs/multi-user.md "Roles"). */
+export async function authorizeExposure(principal: Actor, site: SiteRow, what: string): Promise<void> {
+  if (!site.published) return
+  requirePerson(principal, what)
+  await requireAdmin(principal, 'publish sites')
+}
+
+/** Keep a privileged deploy no person approved as the site's requested
+ *  deploy, for a person to be shown and approve. */
+async function requestDeploy(site: SiteRow, request: { workflowId: string; commits: RepoCommits }, by: string): Promise<void> {
+  await updateSite(site.id, {
+    requestedCommits: request.commits,
+    requestedWorkflowId: request.workflowId,
+    requestedAt: new Date(),
+    requestedBy: by,
+  })
+  notifyWorkspaceListChanged()
+}
+
 /**
  * Deploy a site: each repo at the ref `refs` names for it (by folder or
  * id; `ref` alone for a site of one repo), else at its setting, its
@@ -181,16 +229,29 @@ async function lockedSite(id: string, name: string): Promise<SiteRow> {
  * which the next reconcile would put back over anything else. A deploy of
  * the commits already deploying, as following may have started on the
  * fetch this one made, is that deploy. Resolves with its release and
- * commits.
+ * commits; or, for a privileged deploy no person has approved, with
+ * `awaitingApproval`, having kept it as the site's requested deploy. A
+ * person's deploy approves what it runs only where a person wrote or
+ * approved the site's workflow; `approve` instead deploys the requested
+ * deploy itself, approving the workflow the person was shown and exactly
+ * its commits.
  */
 export async function deploySite(
   principal: Actor,
   projectId: string,
   name: string,
-  opts: { ref?: string; refs?: Record<string, string>; timeoutMinutes?: number } = {},
-): Promise<{ workspaceId: string; commits: SiteCommit[] }> {
-  await authorizeSitePublish(principal, projectId)
+  opts: {
+    ref?: string
+    refs?: Record<string, string>
+    timeoutMinutes?: number
+    approve?: { workflowId: string; commits: SiteCommit[] }
+  } = {},
+): Promise<{ workspaceId?: string; commits: SiteCommit[]; awaitingApproval?: true }> {
+  await authorizeProject(principal, projectId)
   const found = await requireSite(projectId, name)
+  if (isPerson(principal)) await authorizeExposure(principal, found, 'deploy a published site')
+  const timeoutMs = opts.timeoutMinutes !== undefined ? opts.timeoutMinutes * 60_000 : DEFAULT_DEPLOY_TIMEOUT_MS
+  if (opts.approve !== undefined) return await deployRequested(principal, found, opts.approve, timeoutMs)
   const project = await getProjectRow(projectId)
   const named = new Map<string, string>()
   if (opts.ref !== undefined) {
@@ -215,31 +276,85 @@ export async function deploySite(
   }
   const commits: RepoCommits = {}
   for (const r of found.repos) commits[r.repo] = await resolveDeployCommit(r.repo, named.get(r.repo) ?? await settingOf(r))
-  const timeoutMs = opts.timeoutMinutes !== undefined ? opts.timeoutMinutes * 60_000 : DEFAULT_DEPLOY_TIMEOUT_MS
   return await withSiteLock(found.id, async () => {
     const site = await lockedSite(found.id, name)
     if (site.deployWorkspaceId !== undefined && sameCommits(site.deployCommits, commits) && !site.deployReplacing) {
       return { workspaceId: site.deployWorkspaceId, commits: siteCommits(project, commits) }
     }
-    // A person deploying a following site approves what it follows for its
-    // workflow, as setting it to follow does.
-    if (site.follow) await approveWorkflowStart(principal, site.namedWorkflowId, site.repos)
-    return await startDeploy(principal, site, { ...await siteConfig(site), commits, timeoutMs })
+    const config = await siteConfig(site)
+    const spec = siteSpec(site.id, config)
+    if (await privileged(site, config)) {
+      try {
+        await admitLaunch(isPerson(principal), projectId, spec, commits)
+      } catch (err) {
+        if (!(err instanceof ApprovalRequiredError)) throw err
+        await requestDeploy(site, err.request, principal.kind === 'workspace' ? principal.workspaceId : 'person')
+        return { commits: siteCommits(project, commits), awaitingApproval: true }
+      }
+    }
+    // A person deploying a following site approves what it follows, as
+    // setting it to follow does, where a person wrote its workflow.
+    if (site.follow) await approveStart(principal, spec, site.repos)
+    return await startDeploy(principal, site, { ...config, commits, timeoutMs })
   })
+}
+
+/**
+ * Deploy a site's requested deploy as a person reviewed it: the workflow
+ * and commits they were shown, which must still be the request's, its
+ * workflow the site's too. It approves that content and exactly those
+ * commits, never a branch.
+ */
+async function deployRequested(
+  principal: Actor,
+  found: SiteRow,
+  shown: { workflowId: string; commits: SiteCommit[] },
+  timeoutMs: number,
+): Promise<{ workspaceId: string; commits: SiteCommit[] }> {
+  return await withSiteLock(found.id, async () => {
+    const site = await lockedSite(found.id, found.name)
+    const commits = site.requestedCommits
+    if (commits === undefined) throw new ServerError('CONFLICT', `site "${site.name}" has no deploy awaiting approval`)
+    const config = await siteConfig(site)
+    const { workflowId } = shown
+    if (site.requestedWorkflowId !== workflowId || config.workflow.id !== workflowId
+      || !sameCommitList(siteCommits(await getProjectRow(site.projectId), commits), shown.commits)) {
+      throw new ServerError('CONFLICT', `what site "${site.name}" would deploy changed since you reviewed it; review it again`)
+    }
+    await approveContent(principal, site.projectId, workflowId)
+    await admitLaunch(isPerson(principal), site.projectId, siteSpec(site.id, config), commits)
+    return await startDeploy(principal, site, { ...config, commits, timeoutMs })
+  })
+}
+
+/**
+ * Approve the release a site serves, for the spec it ran: what a person
+ * publishing it, having previewed it, does, so its replacement passes, as
+ * does a deploy of the same commits. A following site's branches are
+ * approved for that spec too, where a person wrote its workflow.
+ */
+export async function approveRelease(principal: Actor, site: SiteRow): Promise<void> {
+  if (site.releaseCommits === undefined || site.liveWorkspaceId === undefined) return
+  const spec = siteSpec(site.id, await lastReleaseConfig(site))
+  await addApprovals(spec, Object.values(site.releaseCommits))
+  if (site.follow) await approveStart(principal, spec, site.repos)
 }
 
 /** Serve a stopped site again: a deploy of the release it last ran, at
  *  its commits and image, with its graph and volume. */
 export async function startSite(principal: Actor, projectId: string, name: string): Promise<{ workspaceId: string; commits: SiteCommit[] }> {
-  await authorizeSitePublish(principal, projectId)
-  const { id } = await requireSite(projectId, name)
-  return await withSiteLock(id, async () => {
-    const site = await lockedSite(id, name)
+  await authorizeProject(principal, projectId)
+  const found = await requireSite(projectId, name)
+  await authorizeExposure(principal, found, 'start a published site')
+  return await withSiteLock(found.id, async () => {
+    const site = await lockedSite(found.id, name)
     if (site.liveWorkspaceId !== undefined) throw new ServerError('CONFLICT', `site "${name}" is already serving`)
     const commits = site.releaseCommits
     if (commits === undefined) throw new ServerError('CONFLICT', `site "${name}" has never been deployed; deploy it`)
+    const config = await lastReleaseConfig(site)
+    if (await privileged(site, config)) await admitLaunch(isPerson(principal), projectId, siteSpec(site.id, config), commits)
     return await startDeploy(principal, site, {
-      ...await lastReleaseConfig(site),
+      ...config,
       commits,
       ...(site.releaseImage !== undefined ? { image: site.releaseImage } : {}),
       timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS,
@@ -251,7 +366,8 @@ export async function startSite(principal: Actor, projectId: string, name: strin
  *  hostname answers 503 until it is started or deployed again. */
 export async function stopSite(principal: Actor, projectId: string, name: string): Promise<void> {
   await authorizeSiteEnd(principal, projectId)
-  const { id } = await requireSite(projectId, name)
+  const { id, published } = await requireSite(projectId, name)
+  if (published) requirePerson(principal, 'stop a published site')
   await withSiteLock(id, () => endReleases(id))
   await syncSiteRoutes()
 }
@@ -359,6 +475,7 @@ async function startDeploy(
     deployDeadline: new Date(now + opts.timeoutMs),
     deployReplacing: opts.replacing !== undefined,
     deployHandoffFrom: null,
+    ...(opts.replacing === undefined ? { requestedCommits: null, requestedWorkflowId: null, requestedAt: null, requestedBy: null } : {}),
   })
   if (!begun) throw new ServerError('CONFLICT', `site "${site.name}" is already deploying`)
   try {
@@ -367,9 +484,9 @@ async function startDeploy(
       projectId: site.projectId,
       workspaceId,
       ...start,
-      ...('id' in opts.workflow
-        ? { workflowId: opts.workflow.id, ...(opts.workflow.name !== undefined ? { workflowName: opts.workflow.name } : {}) }
-        : { workflow: opts.workflow.name }),
+      workflowId: opts.workflow.id,
+      ...(opts.workflow.name !== undefined ? { workflowName: opts.workflow.name } : {}),
+      spec: siteSpec(site.id, opts),
       noSession: true,
       title: `${site.name} @ ${formatCommits(commits, 8)}`,
       groupId: await ownedGroup(site.projectId, { kind: 'site', id: site.id }, site.name),
@@ -601,11 +718,12 @@ const targetSeen = new Map<string, { target: string; at: number }>()
 const pauseLogged = new Set<string>()
 
 /**
- * Why a following site deploys nothing now, if it does not: following
- * publishes as the project's owner, who must be an admin, as for a deploy
- * they start.
+ * Why a following site deploys nothing now, if it does not: following a
+ * published site publishes as the project's owner, who must be an admin,
+ * as for a deploy they start.
  */
 export async function followPause(row: SiteRow): Promise<string | undefined> {
+  if (!row.published) return undefined
   const owner = (await getProjectRow(row.projectId))?.owner
   return owner !== undefined && (await getUser(owner))?.role === 'admin' ? undefined : 'its owner is not an admin'
 }
@@ -614,13 +732,13 @@ export async function followPause(row: SiteRow): Promise<string | undefined> {
  * Deploy a serving site's target once it differs from what the site
  * serves (docs/public-sites.md "Following"). Targets whose deploy failed
  * are not tried again, so the site keeps serving the last release that
- * worked until a branch moves on. Before a deploy starts, each repo at a
- * branch must have been fetched by a fetch that started after this target
- * was first seen; one that was not is fetched in the background, whose
- * landing runs this again, so a refresh that fetches every repo deploys
- * once. Not while following is paused
- * (`followPause`), nor while the project is held, which would fail the
- * deploy.
+ * worked until a branch moves on. A privileged target no person approved
+ * becomes the site's requested deploy instead. Before a deploy starts,
+ * each repo at a branch must have been fetched by a fetch that started
+ * after this target was first seen; one that was not is fetched in the
+ * background, whose landing runs this again, so a refresh that fetches
+ * every repo deploys once. Not while following is paused (`followPause`),
+ * nor while the project is held, which would fail the deploy.
  */
 async function followSite(row: SiteRow): Promise<void> {
   if (!row.follow || isProjectHeld(row.projectId)) return
@@ -644,8 +762,20 @@ async function followSite(row: SiteRow): Promise<void> {
   if (stale.length > 0) return
   targetSeen.delete(row.id)
   const at = formatCommits(siteCommits(await getProjectRow(row.projectId), target))
+  const config = await siteConfig(row)
+  if (await privileged(row, config)) {
+    try {
+      await admitLaunch(false, row.projectId, siteSpec(row.id, config), target)
+    } catch (err) {
+      if (!(err instanceof ApprovalRequiredError)) throw err
+      if (sameCommits(target, row.requestedCommits) && row.requestedWorkflowId === config.workflow.id) return
+      serverLog(`[sites] ${row.name}: following, ${at} waits for a person's approval`)
+      await requestDeploy(row, err.request, 'following')
+      return
+    }
+  }
   serverLog(`[sites] ${row.name}: following, deploying ${at}`)
-  await startDeploy(systemPrincipal, row, { ...await siteConfig(row), commits: target, timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS })
+  await startDeploy(systemPrincipal, row, { ...config, commits: target, timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS })
 }
 
 /**

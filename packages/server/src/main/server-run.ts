@@ -27,10 +27,10 @@ import { TmpDirRefusal } from '@yaac/shared/paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver, workspacesSandboxed } from '#drivers/driver'
 import { importProjectConfigFiles, pushProjectSecrets } from '#domain/projects'
-import { backfillSiteBranches } from '#domain/sites'
+import { backfillSiteBranches, runSiteCommand } from '#domain/sites'
 import { moveLegacyMainClones } from '#domain/repos'
 import { rememberFeedbackUrl } from '#domain/feedback'
-import { resumeQueuedWorkspaces } from '#domain/workspaces'
+import { answerSiteCommands, resumeQueuedWorkspaces } from '#domain/workspaces'
 import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
@@ -245,6 +245,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   await moveLegacyMainClones()
   // Reads the main clones, so after they are where they belong.
   await backfillSiteBranches()
+  // A containerless server has no sites, so `yaac-mama site` refuses there.
+  if (workspaceDriver().kind !== 'containerless') answerSiteCommands(runSiteCommand)
 
   // Set synchronously so it is true before any queued request runs.
   ready = true
