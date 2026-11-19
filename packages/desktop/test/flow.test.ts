@@ -102,7 +102,7 @@ describe('runFlow', () => {
     // A server on this machine: the hint points at the Servers page's and the
     // tray's Start.
     if (!result.ok) {
-      expect(result.error.hint).toMatch(/Start it below or from the yaac menu-bar icon/)
+      expect(result.error.hint).toMatch(/Start it below or from the Yaac menu-bar icon/)
       expect(result.error.hint).toMatch(/pick a different server/)
     }
   })

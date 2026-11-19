@@ -51,7 +51,7 @@ and `brew` is macOS behavior.
   the servers keep running. Reopening (tray click or Dock activate) repeats
   the connect flow, so it notices a server that came back. A failed connect
   does not quit either. A Linux tray reports no clicks, so its menu leads
-  with **Show yaac**. Stock GNOME shows no tray icon without the
+  with **Show Yaac**. Stock GNOME shows no tray icon without the
   AppIndicator extension; there, launching the app again brings the hidden
   window back. On Windows the glyph is drawn white or black to suit the
   taskbar's theme. A Linux panel may be dark whatever the theme says
@@ -252,7 +252,7 @@ pnpm desktop:release-mac   # or -linux, -win: one platform's
 
 | | `desktop:package` | `desktop:release` |
 |---|---|---|
-| macOS | `mac-arm64/yaac.app`, unsigned | `yaac-<v>-arm64.dmg`, signed and notarized, for the Homebrew cask |
+| macOS | `mac-arm64/Yaac.app`, unsigned | `yaac-<v>-arm64.dmg`, signed and notarized, for the Homebrew cask |
 | Linux | `linux-unpacked/yaac-desktop` | `yaac-desktop_<v>_<arch>.deb`, unsigned |
 | Windows | `win-unpacked/yaac.exe` | `yaac-<v>-<arch>-setup.exe`, a per-user NSIS installer, unsigned |
 
@@ -382,7 +382,7 @@ On Linux and Windows:
   lands on that server. The window has its native frame, the SPA draws no
   window controls, and Alt shows the menu bar.
 - Linux (GNOME with the AppIndicator extension, and KDE): the tray icon
-  reads on the panel, **Show yaac** brings the window back, the launcher shows
+  reads on the panel, **Show Yaac** brings the window back, the launcher shows
   the waiting count, and the window groups under the launcher's icon.
 - Windows: the installer needs no admin prompt and adds a Start menu entry;
   a waiting workspace puts a red dot on the taskbar button and shows a

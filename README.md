@@ -55,7 +55,7 @@ To install from source on macOS or Linux, see
 
 ## Getting started
 
-Open yaac from /Applications. With no server yet, the window shows its
+Open Yaac from /Applications. With no server yet, the window shows its
 Servers page, which sets one up locally (containerless, or a kind cluster) or
 adds a remote one.
 The app lives in the tray (closing the window hides it), starts and stops

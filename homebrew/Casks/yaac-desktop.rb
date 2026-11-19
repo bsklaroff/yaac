@@ -11,7 +11,7 @@ cask "yaac-desktop" do
   sha256 "REPLACE_WITH_DMG_SHA256_AFTER_RELEASE"
 
   url "https://github.com/bsklaroff/yaac/releases/download/v#{version}/yaac-#{version}-arm64.dmg"
-  name "yaac"
+  name "Yaac"
   desc "Desktop app for the yaac agent sandbox manager"
   homepage "https://github.com/bsklaroff/yaac"
 
@@ -22,7 +22,7 @@ cask "yaac-desktop" do
 
   depends_on arch: :arm64
 
-  app "yaac.app"
+  app "Yaac.app"
 
   # Not ~/.yaac-server, ~/.yaac-cluster or ~/.yaac-client: those are the servers'
   # data and their registration, which the formula's CLI owns.

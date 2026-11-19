@@ -26,7 +26,7 @@ export function splashHtml(status: string): string {
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>yaac</title>
+    <title>Yaac</title>
     <style>
       :root { color-scheme: light dark; }
       body {

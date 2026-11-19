@@ -73,7 +73,7 @@ export async function runFlow(deps: FlowDeps): Promise<FlowResult> {
       title: `Could not connect to ${target.baseUrl}`,
       detail: message(err),
       hint: isLoopbackOrigin(target.baseUrl)
-        ? 'Start it below or from the yaac menu-bar icon — or pick a '
+        ? 'Start it below or from the Yaac menu-bar icon — or pick a '
           + 'different server below.'
         : 'Check that the server is running, then connect again — or pick a '
           + 'different server below.',
