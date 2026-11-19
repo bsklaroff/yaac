@@ -28,9 +28,10 @@ export function listedProjects(
 
 type ChipProject = Pick<ProjectSummary, 'id' | 'name' | 'iconHash'>
 
-/** A project's picture, else its initial, on a chip tinted with its
- *  identity color; a spinner while an op runs on it and a warning once that
- *  op failed. A picture that fails to load falls back to the initial. */
+/** A project's picture, else its initial on a chip tinted with its
+ *  identity color (`style`); a spinner while an op runs on it and a warning
+ *  once that op failed. The picture gets no tint, as on the rail's tile,
+ *  and one that fails to load falls back to the initial. */
 export function ProjectChip({ project, op, iconSize, className, style }: {
   project: ChipProject
   op: ProjectOp | undefined
@@ -40,14 +41,15 @@ export function ProjectChip({ project, op, iconSize, className, style }: {
 }): JSX.Element {
   const src = project.iconHash === undefined ? undefined : projectIconUrl(project.id, project.iconHash)
   const [failed, setFailed] = useState<string>()
+  const picture = op === undefined && src !== undefined && src !== failed ? src : undefined
   return (
-    <span className={clsx(className, 'overflow-hidden')} style={style}>
+    <span className={clsx(className, 'overflow-hidden')} style={picture ? undefined : style}>
       {op !== undefined
         ? op.error === undefined
           ? <LoadingIcon size={iconSize} className="animate-spin" aria-label={`${op.kind === 'add' ? 'Adding' : 'Removing'} project`} />
           : <WarningIcon size={iconSize} className="text-danger" aria-label="Failed" />
-        : src !== undefined && src !== failed
-          ? <img src={src} alt="" className="h-full w-full object-cover" onError={() => setFailed(src)} />
+        : picture
+          ? <img src={picture} alt="" className="h-full w-full object-cover" onError={() => setFailed(picture)} />
           : identityInitial(project.name)}
     </span>
   )
@@ -80,7 +82,8 @@ export interface RailTileState {
  * The rail: Home, the viewed user's projects as tiles, adding a project,
  * and the logo menu at the foot. A tile shows its project's state
  * (`tiles`, plus `attentionByProject` for what waits on the viewer); the
- * current project's is lit, unless Home is open. A project being added or
+ * current project's is lit and marked by a bar on the rail's left edge,
+ * unless Home is open. A project being added or
  * removed (`ops`) shows a spinner, or a warning once its request failed.
  *
  * The user can drag their own tiles with the mouse to reorder them. The
@@ -214,6 +217,9 @@ export function ProjectRail({
                     lit={hovered === p.id}
                   />
                 )}
+                {/* In the text colour, so it contrasts with the app in either theme. */}
+                <span aria-hidden className={clsx('absolute left-0 top-1/2 w-[3px] -translate-y-1/2 bg-text transition-all',
+                  current ? 'h-full' : hovered === p.id ? 'h-6' : 'h-0')} />
             </YRailItem>
           )
         })}

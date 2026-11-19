@@ -98,7 +98,6 @@ export function ProjectsScreen({
                   agents={tiles[p.id]?.agents ?? 0}
                   waiting={waiting}
                   failed={tiles[p.id]?.failed ?? false}
-                  notch={false}
                 />
               )}
               <span className="min-w-0 flex-1 truncate text-base font-medium text-text">{p.name}</span>

@@ -21,11 +21,10 @@ export interface YProjectTileProps {
   waiting?: number
   /** Something failed: a red "!" in the corner, ahead of a count. */
   failed?: boolean
-  /** The project in view: solid fill, and a notch into the sidebar. */
+  /** The project in view: solid fill. */
   current?: boolean
   /** Lit by hover or focus. */
   lit?: boolean
-  notch?: boolean
   className?: string
 }
 
@@ -33,11 +32,12 @@ export interface YProjectTileProps {
  * A project's tile. Colour only when something is going on: a quiet
  * project is a softened initial; one that is working, waiting or failed
  * sits on its family's tint; the current or hovered one is solid. A
- * picture fills the tile; while agents work, its own background is keyed
- * out (keyedPicture) and the lanes run behind it in the dark or light
- * shades that background had.
+ * picture fills the tile over whatever the tile sits on, never a family
+ * colour, so a transparent one looks the same in every state; while agents
+ * work, its own background is keyed out (keyedPicture) and the lanes run
+ * behind it in the dark or light shades that background had.
  */
-export function YProjectTile({ id, name, imageUrl, size = 38, agents = 0, waiting = 0, failed = false, current = false, lit = false, notch = true, className }: YProjectTileProps): JSX.Element {
+export function YProjectTile({ id, name, imageUrl, size = 38, agents = 0, waiting = 0, failed = false, current = false, lit = false, className }: YProjectTileProps): JSX.Element {
   const family = identityFamily(id)
   const solid = current || lit
   const active = solid || agents > 0 || waiting > 0 || failed
@@ -55,7 +55,7 @@ export function YProjectTile({ id, name, imageUrl, size = 38, agents = 0, waitin
         width: size,
         height: size,
         fontSize: Math.round(size * 0.4),
-        background: active ? colours.background : 'transparent',
+        background: active && !picture ? colours.background : 'transparent',
         color: active ? colours.color : `var(--proj-${family}-ink)`,
       }}
     >
@@ -69,9 +69,6 @@ export function YProjectTile({ id, name, imageUrl, size = 38, agents = 0, waitin
       {picture
         ? <img src={keyed?.src ?? picture} alt="" onError={() => setFailedUrl(picture)} className="absolute inset-0 h-full w-full object-cover" />
         : <span className="relative" style={{ opacity: active ? 1 : 0.55 }}>{identityInitial(name)}</span>}
-      {current && notch && (
-        <span aria-hidden className="absolute -right-px top-1/2 -mt-[5px] h-0 w-0 border-y-[5px] border-r-[5px] border-y-transparent border-r-shell" />
-      )}
       {failed ? (
         <span className="absolute right-0 top-0 flex h-[13px] w-[13px] items-center justify-center bg-danger text-xs font-bold leading-none
           text-on-danger">!</span>
@@ -104,7 +101,7 @@ export function YProjectCard({ id, name, remote, imageUrl, waiting = 0, working 
       <button type="button" aria-label={`Open ${name}`} onClick={onOpen}
         className="absolute inset-0 outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent" />
       <div className="pointer-events-none flex items-center gap-3">
-        <YProjectTile id={id} name={name} imageUrl={imageUrl} size={44} agents={working} waiting={waiting} failed={failed} notch={false} />
+        <YProjectTile id={id} name={name} imageUrl={imageUrl} size={44} agents={working} waiting={waiting} failed={failed} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-base font-semibold text-text">{name}</div>
           {remote && <div className="truncate text-sm text-subtle">{remote}</div>}
