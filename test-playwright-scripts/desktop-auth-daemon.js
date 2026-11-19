@@ -26,7 +26,7 @@
  *
  * Set YAAC_DESKTOP_APP to a packaged build's executable (e.g.
  * packages/desktop/dist-app/linux-unpacked/yaac-desktop, or
- * yaac.app/Contents/MacOS/yaac) to check the packaged layout too.
+ * Yaac.app/Contents/MacOS/Yaac) to check the packaged layout too.
  */
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'

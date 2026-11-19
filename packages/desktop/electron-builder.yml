@@ -1,5 +1,5 @@
 appId: com.bsklaroff.yaac
-productName: yaac
+productName: Yaac
 directories:
   output: dist-app
 npmRebuild: false
@@ -20,6 +20,9 @@ mac:
   # notarize the app, inside the .dmg the cask downloads.
   identity: null
   category: public.app-category.developer-tools
+# Release filenames stay lowercase, unlike the Yaac display name.
+dmg:
+  artifactName: yaac-${version}-${arch}.${ext}
 linux:
   target:
     - dir
@@ -56,13 +59,15 @@ win:
   target:
     - dir
   icon: build/icon.png
+  # Keeps the lowercase yaac.exe; the Start menu shortcut is still Yaac.
+  executableName: yaac
 # A per-user install: no admin prompt, and the Start menu shortcut it makes
 # registers the app ID that Windows notifications need.
 nsis:
   oneClick: true
   perMachine: false
   # Named per arch, since the x64 and arm64 installers share a release.
-  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+  artifactName: yaac-${version}-${arch}-setup.${ext}
 # No update feed: brew upgrades the macOS app, and the Linux and Windows
 # builds are downloaded from the GitHub Release by hand (homebrew/README.md).
 # Without this, a GH_TOKEN in the environment makes electron-builder assume a

@@ -204,14 +204,14 @@ describe('serversPageHtml', () => {
     expect(withCli).toContain(clusterCommands)
     // With no saved server either, it is a welcome rather than an error.
     const welcome = serversPageHtml({ ...unselected, local: view(NO_CLI) })
-    expect(welcome).toContain('<h1>Set up yaac</h1>')
+    expect(welcome).toContain('<h1>Set up Yaac</h1>')
     expect(welcome).not.toContain('Could not connect')
     expect(welcome).not.toContain('<h2>Servers</h2>')
     expect(welcome).toContain('id="add"')
     // A fresh Mac has nothing to retry, with or without the CLI.
     expect(welcome).not.toContain('id="back"')
     expect(welcome).not.toContain('Try again')
-    expect(withCli).toContain('<h1>Set up yaac</h1>')
+    expect(withCli).toContain('<h1>Set up Yaac</h1>')
     expect(withCli).not.toContain('id="back"')
     expect(serversPageHtml({ ...STATE, local: view(NO_CLI) })).toContain('Could not connect to http://127.0.0.1:8787')
     // A selected server that is down is not a fresh Mac: its setups stay folded.

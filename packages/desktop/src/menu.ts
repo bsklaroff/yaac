@@ -2,7 +2,7 @@ import type { MenuItemConstructorOptions } from 'electron'
 
 /**
  * The application menu, built from standard roles. On macOS the first menu
- * is the app menu labeled "yaac"; elsewhere it is a File menu, since the
+ * is the app menu labeled "Yaac"; elsewhere it is a File menu, since the
  * app menu role exists only on macOS and closing the window only hides it,
  * so Quit needs a home. The Edit menu makes Cmd/Ctrl-C, -V and Select All
  * work in the xterm terminals. main.ts builds it.

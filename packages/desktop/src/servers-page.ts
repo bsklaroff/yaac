@@ -185,7 +185,7 @@ export function serversPageHtml(state: ServersPageState): string {
   const onboarding = showsOnboarding(state)
   // A Mac with nothing set up and no saved server gets a welcome, not an error.
   const fresh = onboarding && targets.saved.length === 0
-  const heading = fresh ? { title: 'Set up yaac' } : error ?? { title: 'Servers' }
+  const heading = fresh ? { title: 'Set up Yaac' } : error ?? { title: 'Servers' }
 
   const scopes = (['server', 'cluster'] as const).filter((s) => local.installs[s] !== null)
   const installed = scopes.filter((s) => local.installs[s] !== 'missing')
@@ -224,7 +224,7 @@ export function serversPageHtml(state: ServersPageState): string {
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>yaac</title>
+    <title>Yaac</title>
     <style>
       :root { color-scheme: light dark; }
       * { box-sizing: border-box; }

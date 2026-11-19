@@ -52,7 +52,13 @@ import { watchMemoryPressure } from '#memory-pressure'
 import { hardenGuestWebPreferences, isAllowedPreviewUrl, isSameOriginNavigation, sanitizeWebviewSrc } from '#webview-guard'
 import { boundsVisibleOn, readWindowState, saveWindowState } from '#window-state'
 
-app.setName('yaac')
+app.setName('Yaac')
+// The data dir keeps its lowercase name: it holds every origin's storage, and
+// on a case-sensitive disk a renamed dir would start from an empty profile.
+// An explicit --user-data-dir (the Playwright scripts' isolated profile) wins.
+if (!app.commandLine.hasSwitch('user-data-dir')) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'yaac'))
+}
 // Windows shows a notification only for an app ID its Start menu shortcut
 // registers. This is electron-builder.yml's appId, which the installer uses.
 if (process.platform === 'win32') app.setAppUserModelId('com.bsklaroff.yaac')
@@ -145,7 +151,7 @@ async function createWindow(): Promise<BrowserWindow> {
     ...(bounds ? { x: bounds.x, y: bounds.y } : {}),
     minWidth: 880,
     minHeight: 560,
-    title: 'yaac',
+    title: 'Yaac',
     show: false,
     backgroundColor: backgroundColorFor(nativeTheme.shouldUseDarkColors),
     /*
@@ -290,7 +296,7 @@ async function openWindow(): Promise<boolean> {
     void refreshLocalServer()
     return true
   } catch (err) {
-    dialog.showErrorBox('Could not open yaac', err instanceof Error ? err.message : String(err))
+    dialog.showErrorBox('Could not open Yaac', err instanceof Error ? err.message : String(err))
     return false
   }
 }
@@ -413,12 +419,12 @@ function updateTray(): void {
   }))
   const menu = Menu.buildFromTemplate([
     // A Linux tray reports no clicks, so the window needs a menu item.
-    ...(process.platform === 'linux' ? [{ label: 'Show yaac', click: () => showWindow() }] : []),
+    ...(process.platform === 'linux' ? [{ label: 'Show Yaac', click: () => showWindow() }] : []),
     { label: 'Servers…', click: () => void openServersPage() },
     { type: 'separator' },
     ...serverItems,
     ...(serverItems.length > 0 ? [{ type: 'separator' as const }] : []),
-    { label: 'Quit yaac', click: () => app.quit() },
+    { label: 'Quit Yaac', click: () => app.quit() },
   ])
   // An open menu cannot change, so this refresh is for the next opening.
   menu.on('menu-will-show', () => void refreshLocalServer())

@@ -39,8 +39,8 @@ import { fileURLToPath } from 'node:url'
 import { check, finish, requirePlaywright, SHOTS } from './lib.js'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const APP_BUNDLE = path.join(REPO, 'packages/desktop/dist-app/mac-arm64/yaac.app')
-const APP = path.join(APP_BUNDLE, 'Contents/MacOS/yaac')
+const APP_BUNDLE = path.join(REPO, 'packages/desktop/dist-app/mac-arm64/Yaac.app')
+const APP = path.join(APP_BUNDLE, 'Contents/MacOS/Yaac')
 const BUILD_ID_FILE = path.join(REPO, 'dist', '.build-id')
 const BREW_YAAC = '/opt/homebrew/bin/yaac'
 const REMOTE = process.env.REMOTE_URL
@@ -157,13 +157,13 @@ async function finderLaunch(shell, userData) {
     '--env', `SHELL=${shell}`, '--env', `YAAC_DATA_DIR=${DATA_DIR}`, '--env', `YAAC_SERVER_PORT=${ENV.YAAC_SERVER_PORT}`,
     '--args', `--user-data-dir=${userData}`])
   return waitFor('the launched app', () => {
-    const r = spawnSync('pgrep', ['-n', '-f', `yaac.app/Contents/MacOS/yaac .*--user-data-dir=${userData}`], { encoding: 'utf8' })
+    const r = spawnSync('pgrep', ['-n', '-f', `Yaac.app/Contents/MacOS/Yaac .*--user-data-dir=${userData}`], { encoding: 'utf8' })
     return r.status === 0 ? Number(r.stdout.trim()) : undefined
   })
 }
 
 async function quit(pid) {
-  clickTray(pid, 'Quit yaac')
+  clickTray(pid, 'Quit Yaac')
   await waitFor('the app to quit', () => spawnSync('kill', ['-0', String(pid)]).status !== 0)
 }
 

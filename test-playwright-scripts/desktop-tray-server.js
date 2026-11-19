@@ -38,7 +38,7 @@ import { check, finish, requirePlaywright, SHOTS } from './lib.js'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const APP = process.env.YAAC_APP
-  ?? path.join(REPO, 'packages/desktop/dist-app/mac-arm64/yaac.app/Contents/MacOS/yaac')
+  ?? path.join(REPO, 'packages/desktop/dist-app/mac-arm64/Yaac.app/Contents/MacOS/Yaac')
 const BUILD_ID_FILE = path.join(REPO, 'dist', '.build-id')
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-tray-'))

@@ -1,4 +1,4 @@
-# yaac for iPhone
+# Yaac for iPhone
 
 A native shell around the yaac webapp, the iPhone counterpart of the desktop
 app's Servers page (docs/server-selection.md "The desktop shell"). It keeps a
@@ -34,7 +34,7 @@ The project uses Xcode 16 synchronized folders, so a file added under
 ## Set up your iPhone
 
 You need a yaac server reachable over Tailscale, the Tailscale app on the
-phone, and the yaac app installed on it. In order:
+phone, and the Yaac app installed on it. In order:
 
 1. **Put the server on your tailnet.** Publish it as
    [docs/remote-hosting.md](../docs/remote-hosting.md) "Server setup"
@@ -42,7 +42,7 @@ phone, and the yaac app installed on it. In order:
    browser on a device that is on your tailnet.
 2. **Connect the phone to Tailscale.** Install Tailscale from the App Store
    and sign in as a person, not a tagged device. A tagged device is refused.
-3. **Install the yaac app.** It is not on the App Store. If you are on
+3. **Install the Yaac app.** It is not on the App Store. If you are on
    the maintainer's App Store Connect team, accept their TestFlight invite
    (see "Distribute through TestFlight"). Otherwise build it yourself on a
    Mac with Xcode (see "Build and run"); a free Apple ID build stops opening
@@ -50,8 +50,8 @@ phone, and the yaac app installed on it. In order:
 4. **Add the server.** Two ways:
    - On a computer, open the webapp at its `https://…ts.net` address, go to
      **Settings → General → Open on your phone**, and scan the QR code with
-     the phone's Camera app. Tap "Open in yaac", then Add.
-   - Or open the yaac app and, on the server list, type the host
+     the phone's Camera app. Tap "Open in Yaac", then Add.
+   - Or open the Yaac app and, on the server list, type the host
      (`srv.<tailnet>.ts.net`) and tap **Add server**, or tap **Scan QR
      code** to use the in-app scanner.
 5. **Check it worked.** The webapp loads. The projects screen's **Servers**
@@ -60,7 +60,7 @@ phone, and the yaac app installed on it. In order:
 
 ### If something goes wrong
 
-- **Camera says "No usable data found".** The yaac app is probably not
+- **Camera says "No usable data found".** The Yaac app is probably not
   installed on the phone, so nothing handles the `yaac://` link (install it,
   step 3). To test the link without the code, paste
   `yaac://connect?origin=https%3A%2F%2F<host>` into Notes on the phone and
@@ -134,7 +134,7 @@ yaac://connect?origin=<the page's origin, percent-encoded>
 
 (`PhoneLinkField` in `packages/frontend/src/components/settings/PhoneLink.tsx`),
 only on an https origin. The app's own scheme, rather than the bare origin,
-lets the system Camera app offer "Open in yaac"; a bare https URL would open
+lets the system Camera app offer "Open in Yaac"; a bare https URL would open
 Safari. Universal Links cannot replace it, since they need a file on the
 scanned domain and every install has its own `*.ts.net` name. The in-app
 scanner accepts both forms.

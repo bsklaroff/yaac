@@ -37,7 +37,7 @@ replaced by the next newer tap version or removed by `brew uninstall --cask`.
 
 ## Packages
 
-- **`Casks/yaac-desktop.rb`** installs the signed, notarized `yaac.app` from
+- **`Casks/yaac-desktop.rb`** installs the signed, notarized `Yaac.app` from
   the `.dmg` on the `v<version>` GitHub Release. The app runs the
   `yaac-server` formula's CLI for any server on this Mac, so the server code
   has one copy, but the cask does not depend on it (see above). It has no

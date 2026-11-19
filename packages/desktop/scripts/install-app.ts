@@ -18,25 +18,26 @@ const outDir = path.join(pkgRoot, 'dist-app')
 
 const app = readdirSync(outDir, { withFileTypes: true })
   .filter((d) => d.isDirectory())
-  .map((d) => path.join(outDir, d.name, 'yaac.app'))
+  .map((d) => path.join(outDir, d.name, 'Yaac.app'))
   .find((p) => existsSync(p))
-if (!app) throw new Error('no built yaac.app under dist-app/ — run `pnpm app:build` first')
+if (!app) throw new Error('no built Yaac.app under dist-app/ — run `pnpm app:build` first')
 
 function install(dest: string): void {
-  rmSync(dest, { recursive: true, force: true })
+  // A case-sensitive volume would keep an older install's yaac.app beside it.
+  for (const old of [dest, path.join(path.dirname(dest), 'yaac.app')]) rmSync(old, { recursive: true, force: true })
   // `ditto` preserves the bundle's internal symlinks (Electron's
   // `Versions/Current → A`); cpSync breaks them and Electron then crashes on
   // launch because it can't find icudtl.dat.
   execFileSync('ditto', [app as string, dest])
 }
 
-let dest = '/Applications/yaac.app'
+let dest = '/Applications/Yaac.app'
 try {
   install(dest)
 } catch {
   const userApps = path.join(os.homedir(), 'Applications')
   mkdirSync(userApps, { recursive: true })
-  dest = path.join(userApps, 'yaac.app')
+  dest = path.join(userApps, 'Yaac.app')
   install(dest)
 }
 console.log(`[install] ${app} → ${dest}`)

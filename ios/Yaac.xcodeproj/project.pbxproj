@@ -330,7 +330,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = yaac;
+				INFOPLIST_KEY_CFBundleDisplayName = Yaac;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a yaac server's QR code to add it.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A dev server you preview may load from your local network.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -367,7 +367,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = yaac;
+				INFOPLIST_KEY_CFBundleDisplayName = Yaac;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Scan a yaac server's QR code to add it.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "A dev server you preview may load from your local network.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

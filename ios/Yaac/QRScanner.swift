@@ -29,7 +29,7 @@ struct QRScannerSheet: View {
           ContentUnavailableView(
             "Camera access needed",
             systemImage: "camera",
-            description: Text("Allow camera access for yaac in Settings, or type the server's address.")
+            description: Text("Allow camera access for Yaac in Settings, or type the server's address.")
           )
         }
       }

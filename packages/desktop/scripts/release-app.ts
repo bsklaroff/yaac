@@ -89,7 +89,7 @@ for (const build of planned) {
   if (!existsSync(artifact)) throw new Error(`electron-builder made no ${artifact}`)
   if (build.platform === 'mac') {
     try {
-      execFileSync('xcrun', ['stapler', 'validate', path.join(outDir, build.appDir, 'yaac.app')], { stdio: 'inherit' })
+      execFileSync('xcrun', ['stapler', 'validate', path.join(outDir, build.appDir, 'Yaac.app')], { stdio: 'inherit' })
     } catch {
       for (const f of [artifact, `${artifact}.blockmap`]) rmSync(f, { force: true })
       throw new Error(`the app has no stapled notarization ticket; deleted ${artifact}`)
