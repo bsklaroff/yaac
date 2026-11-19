@@ -66,12 +66,13 @@ export function YRailItem({ icon: IconGlyph, label, tip, active = false, dot = f
   )
 }
 
-/** The sidebar: a header, the New session row (`newSession`, usually a
- *  YSidebarNewSession), its sections, and at the foot a way to all
- *  sessions. */
-export function YSidebar({ header, newSession, children, footer, width, className }: {
+/** The sidebar: a header, the New workspace row (`newWorkspace`, usually a
+ *  YSidebarNewWorkspace), a `status` strip fixed above the scrolling
+ *  sections, and at the foot a way to all sessions. */
+export function YSidebar({ header, newWorkspace, status, children, footer, width, className }: {
   header?: ReactNode
-  newSession?: ReactNode
+  newWorkspace?: ReactNode
+  status?: ReactNode
   children: ReactNode
   footer?: ReactNode
   width?: number
@@ -80,17 +81,21 @@ export function YSidebar({ header, newSession, children, footer, width, classNam
   return (
     <aside className={cn('relative flex shrink-0 flex-col border-r border-line bg-shell', className)} style={width ? { width } : undefined}>
       {header}
-      {newSession && <div className="px-1.5 pt-1.5">{newSession}</div>}
+      {newWorkspace && <div className="px-1.5 py-1.5">{newWorkspace}</div>}
+      {status}
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">{children}</div>
       {footer}
     </aside>
   )
 }
 
-/** The sidebar's New session row. Pass-through props and `ref` let a menu
- *  trigger render it. */
-export function YSidebarNewSession({ kbd, className, ref, ...props }: {
+/** The sidebar's New workspace row, highlighted (and `aria-current`) while
+ *  its pane is `active`. The shortcut hides in a narrow sidebar so the label
+ *  keeps the room. Pass-through props and `ref` let a menu trigger render
+ *  it. */
+export function YSidebarNewWorkspace({ kbd, active, className, ref, ...props }: {
   kbd?: string
+  active?: boolean
   className?: string
   ref?: Ref<HTMLButtonElement>
 } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'className' | 'children'>): JSX.Element {
@@ -98,13 +103,15 @@ export function YSidebarNewSession({ kbd, className, ref, ...props }: {
     <button
       ref={ref}
       type="button"
+      aria-current={active || undefined}
       {...props}
-      className={cn('flex h-8 w-full items-center gap-2.5 rounded-sm px-2.5 text-md text-text outline-none hover:bg-hover',
-        'focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50 data-[popup-open]:bg-selected', className)}
+      className={cn('@container flex h-8 w-full items-center gap-2.5 px-2.5 text-md text-text outline-none hover:bg-hover',
+        'focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-50 data-[popup-open]:bg-selected',
+        active && 'bg-selected hover:bg-selected', className)}
     >
       <AddIcon size={14} strokeWidth={1.75} aria-hidden />
-      <span className="flex-1 text-left">New session</span>
-      {kbd && <YKbd>{kbd}</YKbd>}
+      <span className="min-w-0 flex-1 truncate text-left">New workspace</span>
+      {kbd && <YKbd className="@max-[13rem]:hidden">{kbd}</YKbd>}
     </button>
   )
 }
@@ -114,7 +121,7 @@ export function YSidebarAll({ count, onClick, label = 'All sessions' }: { count?
   return (
     <div className="px-1.5 pb-2">
       <button type="button" onClick={onClick}
-        className="flex h-8 w-full items-center gap-2.5 rounded-sm px-2.5 text-md text-subtle outline-none hover:bg-hover hover:text-text
+        className="flex h-8 w-full items-center gap-2.5 px-2.5 text-md text-subtle outline-none hover:bg-hover hover:text-text
           focus-visible:outline-2 focus-visible:outline-accent">
         <ChevronIcon size={12} strokeWidth={2} aria-hidden />
         <span className="flex-1 text-left">{label}</span>

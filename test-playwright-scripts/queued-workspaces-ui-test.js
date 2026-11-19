@@ -33,7 +33,7 @@
  * (PROJECT defaults to yaac)
  */
 import path from 'node:path'
-import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject, until } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject, until, newWorkspaceButton } from './lib.js'
 
 const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 const { workspaces } = await api(`/workspace/list?project=${PROJECT}`)
@@ -168,9 +168,9 @@ try {
   check('Edit closes the stop dialog and opens the entry in the pane', true)
   await prompt.click()
   await page.keyboard.type(' x')
-  await aside.getByRole('button', { name: /^New session/ }).click()
+  await newWorkspaceButton(page).click()
   await promptIs('')
-  check('New session leaves the edit without asking', await page.getByRole('alertdialog').count() === 0)
+  check('New workspace leaves the edit without asking', await page.getByRole('alertdialog').count() === 0)
   await page.waitForTimeout(500)
   check('…and saves nothing', await aside.getByText(`${first} edited x`).count() === 0)
   const listed = await api(`/workspace/list?project=${PROJECT}`)

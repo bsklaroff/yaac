@@ -13,7 +13,7 @@ import {
   MIN_SIDEBAR_WIDTH,
   useUiStore,
 } from '#lib/store'
-import { YButton, YMenu, YMenuItem, YMenuLabel, YMenuPopup, YSidebar, YSidebarNewSession, YTrafficLights } from '#ui'
+import { YButton, YMenu, YMenuItem, YMenuLabel, YMenuPopup, YSidebar, YSidebarNewWorkspace, YTrafficLights } from '#ui'
 
 // The list body lives in WorkspaceList, shared with the mobile screen.
 // Re-exported for App's Alt+K/J row cycling and the tests.
@@ -98,10 +98,12 @@ function ResizeHandle(): JSX.Element {
  * spans the rail as well, so the traffic lights sit in it, and the rail
  * starts under it. Elsewhere the rail starts under an empty corner of its
  * own, so its line runs beside the whole sidebar. On a project:
- * its name and actions, New session, then its workspaces, groups,
+ * its name and actions, New workspace, then its workspaces, groups,
  * workflows, routines and sites in the order WorkspaceList keeps. On Home
- * (`home`): every project's sessions in status sections, and New session
- * asks which project.
+ * (`home`): every project's sessions in status sections, and New workspace
+ * asks which project. New workspace is highlighted while its pane shows a
+ * fresh workspace form, rather than a session in a running one or a saved
+ * draft, queued workspace or routine reopened for editing.
  */
 export function Sidebar({ scope, connected, home, rail }: {
   scope: ProjectScope
@@ -115,23 +117,26 @@ export function Sidebar({ scope, connected, home, rail }: {
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const bindings = useUiStore((s) => s.bindings)
   const readOnly = useReadOnly()
+  const paneOpen = useUiStore((s) => !s.homeOpen && s.selectedWorkspaceId === null && s.selectedObject === null
+    && s.newWorkspace?.inWorkspace === undefined && s.newWorkspace?.editId === undefined
+    && s.newWorkspace?.editRoutineId === undefined && s.newWorkspace?.draftId === undefined)
   const kbd = formatChord(bindings['new-workspace'], IS_MAC) || undefined
   const projects = home?.projects ?? []
-  const newSession = readOnly ? undefined
+  const newWorkspace = readOnly ? undefined
     : home ? (projects.length === 1
-      ? <YSidebarNewSession kbd={kbd} onClick={() => openNewWorkspace({ projectId: projects[0].id })} />
+      ? <YSidebarNewWorkspace kbd={kbd} active={paneOpen} onClick={() => openNewWorkspace({ projectId: projects[0].id })} />
       : projects.length > 1 && (
         <YMenu.Root>
-          <YMenu.Trigger render={<YSidebarNewSession kbd={kbd} />} />
+          <YMenu.Trigger render={<YSidebarNewWorkspace kbd={kbd} active={paneOpen} />} />
           <YMenuPopup align="start" className="w-56">
-            <YMenuLabel>New session in</YMenuLabel>
+            <YMenuLabel>New workspace in</YMenuLabel>
             {projects.map((p) => (
               <YMenuItem key={p.id} onClick={() => openNewWorkspace({ projectId: p.id })}>{p.name}</YMenuItem>
             ))}
           </YMenuPopup>
         </YMenu.Root>
       ))
-    : scope.projectId && <YSidebarNewSession kbd={kbd} onClick={() => openNewWorkspace({ projectId: scope.projectId ?? '' })} />
+    : scope.projectId && <YSidebarNewWorkspace kbd={kbd} active={paneOpen} onClick={() => openNewWorkspace({ projectId: scope.projectId ?? '' })} />
 
   const lights = hidesTitleBar()
   const header = (
@@ -147,11 +152,17 @@ export function Sidebar({ scope, connected, home, rail }: {
     </div>
   )
   const list = (
-    <YSidebar width={sidebarWidth} className="isolate" newSession={newSession || undefined}>
-      <ListBadges
-        projectIds={home ? home.projects.map((p) => p.id) : scope.projectId !== null ? [scope.projectId] : []}
-        className="px-1 pt-2"
-      />
+    <YSidebar
+      width={sidebarWidth}
+      className="isolate"
+      newWorkspace={newWorkspace || undefined}
+      status={(
+        <ListBadges
+          projectIds={home ? home.projects.map((p) => p.id) : scope.projectId !== null ? [scope.projectId] : []}
+          className="mb-1.5 border-y border-line px-4 py-1 first:border-t-0 empty:border-b-0 empty:p-0"
+        />
+      )}
+    >
       {home ? <HomeSessionList rows={home.rows} projects={home.projects} /> : <WorkspaceList {...scope} />}
       <ResizeHandle />
     </YSidebar>

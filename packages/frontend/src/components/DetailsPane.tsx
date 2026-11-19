@@ -78,7 +78,7 @@ export function DetailsPane({ workspace, project, gitAuthFailures, interactive }
       <YDetailCard title="Git" summary={gitAuthFailures.length > 0 ? 'sign-in failed' : undefined} tone="danger">
         <GitStatusRows workspaceId={workspace.workspaceId} />
         {gitAuthFailures.length > 0 && (
-          <GitAuthFailureBadge projectId={workspace.projectId} failures={gitAuthFailures} iconSize={12} />
+          <GitAuthFailureBadge projectIds={[workspace.projectId]} failures={gitAuthFailures} iconSize={12} />
         )}
       </YDetailCard>
 

@@ -39,7 +39,7 @@ export function WorkspacesScreen({ scope, connected, onBack, home }: {
         title={<ListTitle scope={scope} />}
         actions={<ListActions projectId={scope.projectId} connected={connected} />}
       />
-      <ListBadges projectIds={scope.projectId !== null ? [scope.projectId] : []} className="shrink-0 px-3 py-2" />
+      <ListBadges projectIds={scope.projectId !== null ? [scope.projectId] : []} className="shrink-0 px-3 py-2 empty:hidden" />
       <WorkspaceList {...scope} />
     </>
   )

@@ -179,23 +179,25 @@ export function ListActions({ projectId, connected }: { projectId: string | null
   )
 }
 
-/** The status badges over the list, in a row that hides when all are
- *  empty: plan usage, the server, and each listed project's image builds
- *  and git sign-in failures (one project's, or on Home every project's). */
+/** The status badges over the list, on one line: each listed project's git
+ *  sign-in failures and image builds (on Home, one chit each for every
+ *  project), plan usage, and the server. The error chits come first so they
+ *  stay in view. When the row runs out of room the server's name truncates
+ *  first, then the build and git-auth labels, down to their icons. The row
+ *  renders empty when there are none, so `className` decides how an empty
+ *  row looks. */
 export function ListBadges({ projectIds, className }: { projectIds: string[]; className: string }): JSX.Element {
-  const failures = useSnapshot()?.gitAuthFailures ?? {}
+  const byProject = useSnapshot()?.gitAuthFailures ?? {}
+  // One entry per host: two projects can share a rejected host.
+  const failures = [...new Map(projectIds.flatMap((id) => byProject[id] ?? []).map((f) => [f.host, f])).values()]
   return (
-    <div className={clsx('flex flex-wrap items-center gap-2 empty:hidden', className)}>
+    <div className={clsx('flex min-w-0 items-center gap-1.5 overflow-hidden', className)}>
+      {failures.length > 0 && (
+        <GitAuthFailureBadge projectIds={projectIds} failures={failures} iconSize={11} className="min-w-5 shrink hover:bg-danger/25" />
+      )}
+      <ImageBuildIndicator projectIds={projectIds} />
       <UsageBadge />
       <ServerBadge />
-      {projectIds.map((id) => (
-        <Fragment key={id}>
-          <ImageBuildIndicator projectId={id} />
-          {(failures[id]?.length ?? 0) > 0 && (
-            <GitAuthFailureBadge projectId={id} failures={failures[id] ?? []} iconSize={11} className="hover:bg-danger/25" />
-          )}
-        </Fragment>
-      ))}
     </div>
   )
 }
@@ -585,7 +587,7 @@ export function WorkspaceList({
             compact
             className="py-10"
             title="No workspaces yet"
-            description={readOnly ? undefined : 'Start one with New session above.'}
+            description={readOnly ? undefined : 'Start one with New workspace above.'}
           />
         )}
         {drafts.length > 0 && <DraftsSection drafts={drafts} />}

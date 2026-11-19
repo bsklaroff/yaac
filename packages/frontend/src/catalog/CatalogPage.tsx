@@ -195,8 +195,8 @@ function Overlays(): JSX.Element {
         ))}
       </Item>
       <Item name="YTooltip">
-        <YTooltip tip={<YTip title="New session" keys="⌘N" hint="In the project in scope" />}>
-          <YButton icon={icons.AddIcon} aria-label="New session" />
+        <YTooltip tip={<YTip title="New workspace" keys="⌘N" hint="In the project in scope" />}>
+          <YButton icon={icons.AddIcon} aria-label="New workspace" />
         </YTooltip>
       </Item>
       <Item name="YDialog">

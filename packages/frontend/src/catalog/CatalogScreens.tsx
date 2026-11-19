@@ -2,7 +2,7 @@ import { useState, type JSX } from 'react'
 import {
   YAgentText, YAsk, YBars, YButton, YChip, YCmdK, YComposer, YDetailCard, YDetailRow, YDetailsPanel,
   YListRow, YListSection, YMachineCard, YMeter, YPanel, YPanelHeader, YPanelTab, YPersonRow, YProjectCard, YProjectRail,
-  YProjectTile, YRailItem, YRoutineRow, YSessionRow, YSidebar, YSidebarAll, YSidebarNewSession, YStatCard, YStep, YTopBar, YUserMessage,
+  YProjectTile, YRailItem, YRoutineRow, YSessionRow, YSidebar, YSidebarAll, YSidebarNewWorkspace, YStatCard, YStep, YTopBar, YUserMessage,
 } from '#ui'
 import * as icons from '#lib/icons'
 import { YInput, YSection, YSettingGroup, YSettingRow, YSwitch } from '#ui'
@@ -112,7 +112,7 @@ export function NavigationSection(): JSX.Element {
             <YButton variant="ghost" icon={icons.DetailsIcon} aria-label="Details" /></>} />
       </Item>
       <Item name="YSidebar · Home scope">
-        <YSidebar width={248} className="h-[380px]" newSession={<YSidebarNewSession kbd="⌘N" onClick={noop} />} footer={<YSidebarAll count={48} onClick={noop} />}>
+        <YSidebar width={248} className="h-[380px]" newWorkspace={<YSidebarNewWorkspace kbd="⌘N" onClick={noop} />} footer={<YSidebarAll count={48} onClick={noop} />}>
           <YListSection label="Needs you" />
           <YSessionRow label="Fix flaky e2e login test" status="need" strong selected title="Fix flaky e2e login test" sub="Wants to run pnpm install" project={P.yaac} onSelect={noop} />
           <YSessionRow label="Rate-limit" status="need" strong title="Rate-limit the public API" sub="Asked a question" project={P.site} onSelect={noop} />
@@ -130,7 +130,7 @@ export function NavigationSection(): JSX.Element {
           { label: 'Needs you', items: [
             { id: 'a', title: 'Rate-limit the public API', meta: 'site', detail: 'question', onSelect: noop },
             { id: 'b', title: 'Fix flaky e2e login test', meta: 'yaac', detail: 'approve pnpm install', onSelect: noop }] },
-          { label: 'Actions', items: [{ id: 'n', title: 'New session in yaac', kbd: '⌘N', onSelect: noop }] },
+          { label: 'Actions', items: [{ id: 'n', title: 'New workspace in yaac', kbd: '⌘N', onSelect: noop }] },
         ]} />
       </Item>
     </Section>

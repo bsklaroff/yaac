@@ -11,17 +11,21 @@ const FAILURES = [{ host: 'github.com', status: 401, atMs: 1751700000000 }]
 
 describe('GitAuthFailureBadge', () => {
   it('renders a labeled trigger', () => {
-    render(<GitAuthFailureBadge projectId="proj" failures={FAILURES} iconSize={12} />)
+    render(<GitAuthFailureBadge projectIds={['proj']} failures={FAILURES} iconSize={12} />)
 
     const trigger = screen.getByRole('button', { name: 'Git authentication failed' })
     expect(trigger.textContent).toBe('git auth')
   })
 
-  it('explains the failure, and its button opens settings on the project\'s repo on that host', () => {
+  it('explains the failure, and its button opens settings on a listed project\'s repo on that host', () => {
+    // Home lists every project in one badge; the rejected repo can be in any.
     useUiStore.getState().receiveSnapshot(serverSnapshot({
-      projects: [{ id: 'proj', repos: [projectRepo({ id: 'repo-gh' })] } as ProjectSummary],
+      projects: [
+        { id: 'proj', repos: [] },
+        { id: 'other', repos: [projectRepo({ id: 'repo-gh' })] },
+      ] as unknown as ProjectSummary[],
     }))
-    render(<GitAuthFailureBadge projectId="proj" failures={FAILURES} iconSize={12} />)
+    render(<GitAuthFailureBadge projectIds={['proj', 'other']} failures={FAILURES} iconSize={12} />)
 
     expect(screen.queryByText('github.com — HTTP 401')).toBeNull()
 

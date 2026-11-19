@@ -20,7 +20,7 @@
  *        node test-playwright-scripts/typeahead-combobox-test.js
  */
 import path from 'node:path'
-import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject } from './lib.js'
+import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject, newWorkspaceButton } from './lib.js'
 
 if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
 const PROJECT = (await resolveProject(process.env.PROJECT)).id
@@ -47,7 +47,7 @@ try {
   // land while the list is open, changing its rows and so the highlight.
   // Through a workspace's proxy that fetch can take a while.
   const refreshed = page.waitForResponse((r) => r.url().includes(`/repo/${repo.id}/branches?refresh=1`), { timeout: 60_000 })
-  await page.getByRole('button', { name: /^New session/ }).click()
+  await newWorkspaceButton(page).click()
   await refreshed
 
   // (1) Base branch.

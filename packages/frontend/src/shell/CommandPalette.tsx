@@ -37,7 +37,7 @@ export function CommandPalette({ scope, rows, projects }: {
   const active = scope.project
   const actions: YCmdKItem[] = [
     ...(active && !readOnly ? [{
-      id: 'a:new', title: `New session in ${active.name}`, kbd: key(bindings['new-workspace']),
+      id: 'a:new', title: `New workspace in ${active.name}`, kbd: key(bindings['new-workspace']),
       onSelect: () => st().openNewWorkspace({ projectId: active.id }),
     }] : []),
     { id: 'a:home', title: 'Go to Home', onSelect: () => st().openHome() },

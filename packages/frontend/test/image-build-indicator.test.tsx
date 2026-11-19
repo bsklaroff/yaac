@@ -24,9 +24,9 @@ function build(overrides: Partial<ImageBuildEntry> = {}): ImageBuildEntry {
 
 /** Render the indicator over a snapshot holding `imageBuilds` (none:
  *  before the first snapshot). */
-function show(imageBuilds?: ImageBuildEntry[], projectId: string | null = 'proj'): void {
+function show(imageBuilds?: ImageBuildEntry[], projectIds: string[] = ['proj']): void {
   renderWithClient(
-    <ImageBuildIndicator projectId={projectId} />,
+    <ImageBuildIndicator projectIds={projectIds} />,
     testQueryClient(undefined, imageBuilds && serverSnapshot({ imageBuilds })),
   )
 }
@@ -86,8 +86,15 @@ describe('ImageBuildIndicator', () => {
     expect(screen.queryByRole('button')).toBeNull()
   })
 
-  it('shows nothing with no active project', () => {
-    show([build()], null)
+  it('shows nothing with no project in scope', () => {
+    show([build()], [])
     expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('shows one pill for the builds of every project in scope', () => {
+    show([build(), build({ id: 'build-2', projectIds: ['other'] }), build({ id: 'build-3', projectIds: ['third'] })],
+      ['proj', 'other'])
+    const pill = screen.getByRole('button', { name: 'Show image build progress' })
+    expect(pill.textContent).toBe('building 2')
   })
 })

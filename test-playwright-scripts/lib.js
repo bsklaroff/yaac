@@ -106,6 +106,14 @@ export async function createWorkspaces(bodies) {
 }
 
 /**
+ * The sidebar's New workspace button. An untitled workspace row's select
+ * button is also named "New workspace"; the button comes before the list.
+ */
+export function newWorkspaceButton(page) {
+  return page.locator('aside').getByRole('button', { name: /^New workspace/ }).first()
+}
+
+/**
  * Open one of the yaac menu's items (Settings, Server health, Send
  * feedback, …): from the menu at the foot of the rail on desktop, or on a
  * phone from the projects screen's row of the same name.

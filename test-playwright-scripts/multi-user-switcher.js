@@ -9,7 +9,7 @@
  *     of the yaac menu) lists Ada with her one active workspace and Bob as
  *     idle, and says this containerless server does not separate users.
  *  3. Switching to Ada shows her project and workspace laid out as hers,
- *     read-only: banner, no New session button, no row menu; the
+ *     read-only: banner, no New workspace button, no row menu; the
  *     workspace opens in the transcript view, with no terminal.
  *  4. Settings → Project → Network shows Ada's project with no Save button.
  *  5. A fresh page deep-linked to Ada's workspace selects Ada by itself, and
@@ -36,7 +36,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { check, finish, openMenuItem, requirePlaywright, SHOTS, until, projectPage } from './lib.js'
+import { check, finish, openMenuItem, requirePlaywright, SHOTS, until, projectPage, newWorkspaceButton } from './lib.js'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = path.join(REPO, 'dist', 'cli.js')
@@ -144,9 +144,8 @@ async function main() {
   const ada = await (await contextFor(ADA)).newPage()
   await ada.goto(`${ORIGIN}/?project=${projectId}`)
   await ada.getByText('Parser fix').first().waitFor()
-  // New session's name ends with its shortcut.
-  const newSession = (page) => page.locator('aside').getByRole('button', { name: /^New session/ })
-  check('Ada sees her New session button', await newSession(ada).count() > 0)
+  const newWorkspace = newWorkspaceButton
+  check('Ada sees her New workspace button', await newWorkspace(ada).count() > 0)
   check('Ada sees no read-only banner', await ada.getByText(/read-only/).count() === 0)
   await ada.screenshot({ path: path.join(SHOTS, 'multi-user-ada.png') })
 
@@ -176,7 +175,7 @@ async function main() {
   await bob.getByRole('menuitem', { name: /Ada Lovelace/ }).click()
   await bob.getByText('Parser fix').first().waitFor()
   check('the sidebar says it is read-only', await bob.getByText(/Ada Lovelace's workspaces, read-only/).count() === 1)
-  check('no New session button', await newSession(bob).count() === 0)
+  check('no New workspace button', await newWorkspace(bob).count() === 0)
   check('no row menu', await bob.getByRole('button', { name: 'Workspace actions' }).count() === 0)
   await bob.locator('aside').getByRole('button', { name: 'Parser fix', exact: true }).first().click()
   await until(bob, () => document.querySelector('main header')?.textContent?.includes('Parser fix'))

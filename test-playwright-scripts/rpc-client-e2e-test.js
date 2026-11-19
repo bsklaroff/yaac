@@ -2,7 +2,7 @@
  * Smoke-tests the frontend's typed Hono API client (packages/frontend/src/
  * lib/api.ts and the lib/*Api modules) against a running server, through
  * the webapp in real Chromium. It drives the initial load (GET /whoami),
- * Settings, New session → Start without a prompt (the NDJSON create stream), a top
+ * Settings, New workspace → Start without a prompt (the NDJSON create stream), a top
  * bar rename and a stop (Alt+D), capturing every same-origin API response, and asserts each
  * exercised endpoint answered 2xx, nothing answered 4xx/5xx and the page
  * threw no errors.
@@ -14,7 +14,7 @@
  *
  * Run: YAAC_DATA_DIR=... PROJECT=<name or id> node test-playwright-scripts/rpc-client-e2e-test.js
  */
-import { api, check, finish, openMenuItem, origin, requirePlaywright, resolveProject, until } from './lib.js'
+import { api, check, finish, openMenuItem, origin, requirePlaywright, resolveProject, until, newWorkspaceButton } from './lib.js'
 
 const project = (await resolveProject(process.env.PROJECT || 'yaac')).id
 const isAsset = (p) => !p.startsWith('/api/') || p === '/api/events'
@@ -42,9 +42,8 @@ const ok2xx = (cs) => cs.length > 0 && cs.every((c) => c.status >= 200 && c.stat
 
 try {
   await page.goto(`${origin}/?project=${project}`)
-  // New session; its name ends with the shortcut.
-  const newSession = page.locator('aside').getByRole('button', { name: /^New session/ })
-  await newSession.waitFor({ timeout: 20_000 })
+  const newWorkspace = newWorkspaceButton(page)
+  await newWorkspace.waitFor({ timeout: 20_000 })
 
   const beforeSettings = calls.length
   await openMenuItem(page, 'Settings')
@@ -53,7 +52,7 @@ try {
   check('Settings loaded its data', ok2xx(settingsCalls), settingsCalls.map((c) => `${c.path} ${c.status}`).join(', '))
   await page.keyboard.press('Escape')
 
-  await newSession.click()
+  await newWorkspace.click()
   const create = page.getByRole('button', { name: 'Start without a prompt', exact: true })
   await until(page, () => [...document.querySelectorAll('button')]
     .some((b) => b.textContent === 'Start without a prompt' && !b.disabled))
