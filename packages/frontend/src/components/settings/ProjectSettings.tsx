@@ -10,6 +10,7 @@ import { CacheVolumes } from '#components/settings/CacheVolumes'
 import { ContainerOptions } from '#components/settings/ContainerOptions'
 import { ProjectIcon } from '#components/settings/ProjectIcon'
 import { ProjectRepos } from '#components/settings/ProjectRepos'
+import { RemoveProject } from '#components/settings/RemoveProject'
 import { WorkspaceAutoDelete } from '#components/settings/WorkspaceAutoDelete'
 import { KeptIgnoredPaths } from '#components/settings/KeptIgnoredPaths'
 import { Volumes } from '#components/settings/Volumes'
@@ -68,6 +69,7 @@ export function ProjectSettings({ page }: { page: ProjectPage }): JSX.Element {
           days={selected.stoppedWorkspaceRetentionDays}
           readOnly={readOnly}
         />
+        {!readOnly && <RemoveProject key={`remove:${projectId}`} project={selected} />}
       </YSettingGroup>}
 
       {page === 'env' && <>

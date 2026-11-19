@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type JSX } from 'react
 import clsx from 'clsx'
 import { LogoMenu } from '#shell/LogoMenu'
 import { api } from '#lib/api'
-import { AddIcon, InboxIcon, LoadingIcon, WarningIcon } from '#lib/icons'
+import { AddIcon, HomeIcon, LoadingIcon, WarningIcon } from '#lib/icons'
 import { projectIconUrl } from '#lib/projectIdentity'
 import { useUiStore, type ProjectOp } from '#lib/store'
 import { usePressDrag } from '#lib/usePressDrag'
@@ -161,7 +161,7 @@ export function ProjectRail({
   return (
     <YProjectRail
       top={<>
-        <YRailItem icon={InboxIcon} label="Home" active={homeActive} dot={anyWaiting} onClick={onHome} />
+        <YRailItem icon={HomeIcon} label="Home" active={homeActive} dot={anyWaiting} onClick={onHome} />
       </>}
       bottom={<LogoMenu />}
     >

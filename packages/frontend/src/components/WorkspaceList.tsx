@@ -3,7 +3,6 @@ import clsx from 'clsx'
 import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
 import { ImageBuildIndicator } from '#components/ImageBuildIndicator'
 import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
-import { ProjectActionsMenu } from '#components/ProjectActionsMenu'
 import { ServerBadge } from '#components/ServerBadge'
 import { UsageBadge } from '#components/UsageBadge'
 import { api } from '#lib/api'
@@ -49,7 +48,7 @@ import {
 } from '#components/sidebar/WorkspaceRows'
 import { GroupSection } from '#components/sidebar/GroupSection'
 import { StoppedSection } from '#components/sidebar/StoppedRows'
-import { YEmptyState } from '#ui'
+import { YButton, YEmptyState } from '#ui'
 
 /** Newest first (UTC timestamps compare as strings), with the id as a
  *  tiebreak. */
@@ -146,12 +145,28 @@ export function ownedGroupIds(
     .map((g) => g.groupId))
 }
 
-/** The list header's title: the project's actions menu, or the app name
- *  with no project. Before the first snapshot frame lists the selected
- *  project, it shows nothing rather than the project's raw id. */
+/** The list header's title: the project's name, which opens its settings
+ *  on the General page, or the app name with no project. Before the first
+ *  snapshot frame lists the selected project, it shows nothing rather than
+ *  the project's raw id. */
 export function ListTitle({ scope }: { scope: ProjectScope }): JSX.Element | null {
-  if (scope.project) return <ProjectActionsMenu project={scope.project} />
-  return scope.projectId ? null : <span className="font-semibold tracking-tight">yaac</span>
+  const { project } = scope
+  if (!project) return scope.projectId ? null : <span className="font-semibold tracking-tight">yaac</span>
+  const openProjectSettings = (): void => {
+    const { openSettings, setSettingsProjectId } = useUiStore.getState()
+    openSettings('project-general')
+    setSettingsProjectId(project.id)
+  }
+  return (
+    <YButton
+      variant="bare"
+      onClick={openProjectSettings}
+      title="Project settings"
+      className="-ml-2 min-w-0 truncate rounded-md px-2 py-1 font-semibold tracking-tight text-text transition hover:bg-hover"
+    >
+      {project.name}
+    </YButton>
+  )
 }
 
 /** The list header's actions: a reconnect notice and new workspace. */

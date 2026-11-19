@@ -1,10 +1,10 @@
-import { isSessionUnread, isUnreadWaiting, unseenDeaths } from '#lib/store'
+import { isUnreadWaiting, unseenDeaths } from '#lib/store'
 import type { ProjectSummary, ProvisioningWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
 import type { YStatusKind } from '#ui'
 
 /*
  * Home's view of every project at once: the sessions that need the viewer,
- * those working, and those done, as the Home sidebar and inbox list them,
+ * those working, and those done, as the Home sidebar lists them,
  * and each project's state for its rail tile and card.
  */
 
@@ -90,11 +90,6 @@ export function homeRows(
     || (a.section === 'need' ? a.order - b.order : Number(b.unread) - Number(a.unread) || b.order - a.order))
 }
 
-/** The sessions of a workspace the viewer has not seen finish. */
-export function unreadSessions(w: WorkspaceListEntry, me: string | undefined): WorkspaceListEntry['sessions'] {
-  return w.sessions.filter((s) => isSessionUnread(s, me))
-}
-
 /** How each project's tile shows what is going on in it: agents working,
  *  and whether something failed there that the viewer has not seen. */
 export function projectActivity(
@@ -114,13 +109,4 @@ export function projectActivity(
     if (t && p.error !== undefined && !p.stopping) t.failed = true
   }
   return out
-}
-
-/** A short age for a list's right edge: "now", "4m", "2h", "3d". */
-export function shortAge(since: number, now: number): string {
-  const m = Math.floor(Math.max(0, now - since) / 60_000)
-  if (m < 1) return 'now'
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`
 }

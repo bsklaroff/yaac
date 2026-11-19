@@ -36,7 +36,7 @@ export {
 export type { YIconGlyph } from './types'
 export { YAgentText, YAsk, YComposer, YUserMessage, type YAskAction } from './YChat'
 export { YBars, YMachineCard, YMeter, YStatCard } from './YData'
-export { YInboxItem, YListRow, YListSection, YPersonRow, YRoutineRow, YStep } from './YList'
+export { YListRow, YListSection, YPersonRow, YRoutineRow, YStep } from './YList'
 export { YCmdK, YProjectRail, YRailItem, YSidebar, YSidebarAll, YSidebarNewSession, YTopBar, type YCmdKGroup, type YCmdKItem } from './YNav'
 export { YDetailCard, YDetailRow, YDetailsPanel, YPanel, YPanelHeader, YPanelTab } from './YPanel'
 export { YProjectCard, YProjectTile, type YProjectTileProps } from './YProject'

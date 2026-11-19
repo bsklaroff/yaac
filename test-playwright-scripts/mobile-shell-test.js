@@ -245,9 +245,9 @@ try {
   await shot('2-workspaces')
 
   if (await tapIfPresent(workspacesLayer.locator('button:has-text("yaac")'))) {
-    await stop('remove-project', page.getByText('Remove project', { exact: true }))
+    await stop('project-settings', page.getByRole('button', { name: 'Remove project' }))
     await escape()
-  } else unreached.push('remove-project')
+  } else unreached.push('project-settings')
   if (await stop('new-workspace', workspacesLayer.getByTitle('New workspace'))) await escape()
 
   // ---- 3. the overlays ----

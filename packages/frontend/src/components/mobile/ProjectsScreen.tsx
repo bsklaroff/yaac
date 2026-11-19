@@ -66,7 +66,7 @@ export function ProjectsScreen({
             <span className="flex h-9 w-9 shrink-0 items-center justify-center text-muted">
               <InboxIcon size={18} />
             </span>
-            <span className="min-w-0 flex-1 truncate text-base font-medium text-text">Home</span>
+            <span className="min-w-0 flex-1 truncate text-base font-medium text-text">Inbox</span>
             {Object.values(attentionByProject).some((n) => n > 0) && <span aria-hidden className="h-1.5 w-1.5 bg-warning" />}
             <ChevronIcon size={16} className="shrink-0 text-subtle" />
           </YButton>

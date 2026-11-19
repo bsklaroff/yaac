@@ -308,7 +308,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   useLayoutEffect(() => {
     const previousProjectId = lastProjectId.current
     lastProjectId.current = activeProjectId
-    // Home's pane is its inbox until the user picks a session.
+    // Home's pane is its project cards until the user picks a session.
     if (homeOpen) return
     const pick = resolveVacantSelection({
       previousProjectId,
@@ -338,7 +338,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const attention = unreadWaitingByProject(workspaces, me, pendingDeleteIds)
   const activity = useMemo(() => projectActivity(projects, workspaces, provisioning, me), [projects, workspaces, provisioning, me])
   const home = homeOpen ? { rows: allHomeRows, projects } : undefined
-  // Home's pane shows its inbox while nothing else is open in it.
+  // Home's pane shows its project cards while nothing else is open in it.
   const homePage = home !== undefined && selectedWorkspaceId === null && newWorkspaceForm === null && selectedObject === null
 
   // What replaces the sidebar and pane when there is no project to show.
@@ -389,11 +389,14 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
           <div className="flex min-h-0 flex-1">{rail}</div>
         </div>
       ) : !sidebarOpen && (
-        // The pane's top bar carries on over the rail, holding the button
-        // that shows the sidebar, or the traffic lights in the macOS
-        // desktop app (PaneBarLeading).
+        // The corner over the rail holds the button that shows the sidebar,
+        // in the rail's colour as when the sidebar shows. In the macOS
+        // desktop app it is the pane's top bar carrying on over the rail,
+        // with the traffic lights there and the button after them
+        // (PaneBarLeading).
         <div className="flex shrink-0 flex-col">
-          <div className="titlebar-drag flex h-bar shrink-0 items-center justify-center border-b border-line bg-surface">
+          <div className={clsx('titlebar-drag flex h-bar shrink-0 items-center justify-center border-b border-line',
+            hidesTitleBar() ? 'bg-surface' : 'border-r bg-shell')}>
             {!hidesTitleBar() && <span className="no-drag"><ShowSidebarButton /></span>}
           </div>
           <div className="flex min-h-0 flex-1">{rail}</div>
