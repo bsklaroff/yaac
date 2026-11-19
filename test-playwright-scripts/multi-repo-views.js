@@ -18,7 +18,7 @@
  * Run: WORKSPACE_ID=<id> node test-playwright-scripts/multi-repo-views.js
  */
 import path from 'node:path'
-import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject, projectPage } from './lib.js'
+import { SHOTS, api, check, finish, openMenuItem, origin, requirePlaywright, resolveProject, projectPage } from './lib.js'
 
 const project = await resolveProject(process.env.PROJECT ?? 'multi')
 const repos = (await api('/project/list')).find((p) => p.id === project.id).repos
@@ -31,17 +31,17 @@ const shot = (name) => page.screenshot({ path: path.join(SHOTS, `multi-repo-${na
 
 try {
   await page.goto(`${origin}/?project=${project.id}`)
-  await page.locator('[aria-label="New workspace"]').first().click()
+  await page.locator('aside').getByRole('button', { name: /^New session/ }).click()
   await page.getByText('Start in').waitFor({ timeout: 15_000 })
   for (const repo of repos) {
-    check(`the create form has a row for ${repo.dir}`, await page.getByLabel(repo.dir, { exact: true }).count() > 0
-      || await page.getByText(repo.dir, { exact: true }).count() > 0)
+    check(`the create form has a row for ${repo.dir}`,
+      await page.getByRole('checkbox', { name: `Include ${repo.dir}`, exact: true }).count() > 0)
   }
   await shot('create')
 
   if (workspaceId) {
     await page.goto(`${origin}/?project=${project.id}&workspace=${workspaceId}`)
-    await page.getByText('Changes').first().click()
+    await page.getByRole('button', { name: 'Show changes' }).click()
     const switcher = page.locator('select[aria-label="Repo"]').first()
     await switcher.waitFor({ timeout: 15_000 })
     const options = await switcher.locator('option').allTextContents()
@@ -50,7 +50,7 @@ try {
   }
 
   await page.goto(`${origin}/?project=${project.id}`)
-  await page.locator('[title="Settings"]').first().click()
+  await openMenuItem(page, 'Settings')
   await page.getByRole('button', { name: 'Repos', exact: true }).first().click()
   await page.getByRole('button', { name: 'Manage' }).first().waitFor({ timeout: 15_000 })
   check('Settings → Repos lists hosted repos', await page.getByText(/hosted by yaac/i).count() >= 1)
@@ -61,7 +61,7 @@ try {
   await page.getByText('Repos', { exact: true }).first().waitFor({ timeout: 15_000 })
   for (const repo of repos) {
     check(`Project → General names the folder ${repo.dir}`,
-      await page.locator(`input[value="${repo.dir}"]`).count() + await page.getByText(repo.dir, { exact: true }).count() > 0)
+      await page.locator(`input[value="${repo.dir}"]`).count() + await page.getByText(`${repo.dir}/`, { exact: true }).count() > 0)
   }
   await shot('project-repos')
 } finally {

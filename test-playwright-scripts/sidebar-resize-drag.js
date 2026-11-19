@@ -1,7 +1,7 @@
 /*
  * Verifies the desktop sidebar's resize handle with a real mouse.
  *
- *  1. The handle sits in the gutter on the sidebar's right edge, full height.
+ *  1. The handle straddles the sidebar's right edge line, full height.
  *  2. Dragging resizes the sidebar live and the pane gives up the same space;
  *     the width clamps at both bounds, survives a reload, and double-click
  *     restores the default.
@@ -60,8 +60,8 @@ const geom = await handle.evaluate((el) => {
   const h = el.getBoundingClientRect(), a = el.closest('aside').getBoundingClientRect()
   return { hx: h.x, hw: h.width, hh: h.height, aRight: a.right, aHeight: a.height }
 })
-check('handle sits in the gutter, full height',
-  geom.hx >= geom.aRight - 1 && geom.hw >= 6 && Math.abs(geom.hh - geom.aHeight) < 2, JSON.stringify(geom))
+check('handle straddles the right edge, full height',
+  Math.abs(geom.hx + geom.hw / 2 - geom.aRight) <= 1.5 && geom.hw >= 6 && Math.abs(geom.hh - geom.aHeight) < 2, JSON.stringify(geom))
 
 // 2. Dragging.
 const paneBefore = await paneLeft()

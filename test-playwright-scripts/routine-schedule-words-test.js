@@ -41,19 +41,23 @@ try {
   const section = page.getByRole('group', { name: 'Routines' })
   await section.waitFor({ state: 'visible', timeout: 30_000 })
   await shot('sidebar')
+  // A row's full-row button is named by the routine; its schedule line sits
+  // beside it in the row.
+  const open = (name) => section.getByRole('button', { name, exact: true })
+  const rowOf = (name) => section.locator('[class*="group/row"]', { has: page.getByRole('button', { name, exact: true }) })
   for (const r of ROUTINES) {
-    const row = section.getByRole('button', { name: new RegExp(r.name) })
+    const row = rowOf(r.name)
     const title = await row.locator('span[title]').first().getAttribute('title')
     console.log(`  ${r.cron.padEnd(14)} ${r.timeZone.padEnd(17)} sidebar: ${title}`)
     check(`${r.name}: sidebar title is its words and zone`, title === `${r.words} (${r.timeZone})`, title ?? '')
   }
-  const triage = section.getByRole('button', { name: /Weekday triage/ })
+  const triage = rowOf('Weekday triage')
   await triage.locator('span[title]').first().hover()
   await page.waitForTimeout(1500)
   await shot('sidebar-hover')
 
   for (const r of ROUTINES) {
-    await section.getByRole('button', { name: new RegExp(r.name) }).click()
+    await open(r.name).click()
     await page.locator('main').getByText(r.cron).first().waitFor({ timeout: 10_000 })
     const schedule = await page.locator('main').getByText(r.timeZone).first().textContent()
     console.log(`  pane: ${schedule}`)
@@ -63,5 +67,6 @@ try {
 } finally {
   await browser.close()
   for (const r of routines) await api('/routine/delete', { method: 'POST', body: { id: r.id } }).catch(() => {})
+  await api(`/project/${projectId}`, { method: 'DELETE' }).catch(() => {})
 }
 finish()

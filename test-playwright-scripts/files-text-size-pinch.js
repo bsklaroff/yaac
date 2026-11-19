@@ -46,7 +46,10 @@ await page.addInitScript(() => {
 })
 const query = new URLSearchParams({ project: wt.projectId, workspace: wt.workspaceId })
 await page.goto(`${origin}/?${query}`)
-await page.locator('[title="Review changes"]').first().click({ timeout: 20000 })
+// A phone's top bar has no git summary: the Changes pane opens from the
+// Details pane's Git card.
+await page.getByRole('button', { name: 'Details', exact: true }).click({ timeout: 20000 })
+await page.getByRole('button', { name: 'Changes', exact: true }).click({ timeout: 20000 })
 await page.locator('[aria-label="Filter changed files"]').waitFor({ timeout: 10000 })
 const list = page.locator('[style*="zoom"]').first()
 await list.waitFor()

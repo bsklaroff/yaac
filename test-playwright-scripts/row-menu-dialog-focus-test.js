@@ -37,7 +37,8 @@ try {
   const aside = page.locator('aside')
   const prompt = page.getByLabel('Prompt')
   const question = page.getByRole('alertdialog')
-  const newButton = aside.getByRole('button', { name: 'New workspace', exact: true })
+  // Its name ends with the shortcut; an untitled row is "New workspace".
+  const newButton = aside.getByRole('button', { name: /^New session/ })
   await newButton.waitFor({ timeout: 15_000 })
 
   // Save a draft to hang the row menu off.
@@ -47,7 +48,7 @@ try {
   await page.locator('main').getByRole('button', { name: 'Save draft' }).click()
   await until(page, () => document.querySelector('textarea[aria-label="Prompt"]')?.value === '')
 
-  const row = aside.getByRole('group', { name: 'Drafts' }).locator('div.group.relative', { hasText: idea })
+  const row = aside.getByRole('group', { name: 'Drafts' }).locator('[class*="group/row"]', { hasText: idea })
   await row.waitFor({ timeout: 10_000 })
   const trigger = row.getByRole('button', { name: 'Draft actions' })
   const pick = async (item) => {
@@ -59,10 +60,13 @@ try {
     await page.mouse.move(1000, 450)
     await page.waitForTimeout(400)
   }
-  const triggerState = () => trigger.evaluate((el) => ({
-    focused: el === document.activeElement,
-    opacity: getComputedStyle(el).opacity,
-  }))
+  // The row fades its actions in as a whole, so the opacity that counts is
+  // the trigger's times its ancestors'.
+  const triggerState = () => trigger.evaluate((el) => {
+    let opacity = 1
+    for (let n = el; n; n = n.parentElement) opacity *= Number(getComputedStyle(n).opacity)
+    return { focused: el === document.activeElement, opacity: String(opacity) }
+  })
   const expectHidden = async (name) => {
     const s = await triggerState()
     check(name, !s.focused && s.opacity === '0', JSON.stringify(s))
@@ -160,13 +164,17 @@ try {
   await escapeRemove('Remove project by mouse returns focus to the project menu')
   await projectMenu.focus()
   await page.keyboard.press('Enter')
-  await page.getByRole('menuitem', { name: 'Remove project' }).waitFor({ state: 'visible' })
+  const removeItem = page.getByRole('menuitem', { name: 'Remove project' })
+  await removeItem.waitFor({ state: 'visible' })
+  for (let i = 0; i < 5 && !(await removeItem.evaluate((el) => el.hasAttribute('data-highlighted'))); i++) {
+    await page.keyboard.press('ArrowDown')
+  }
   await page.keyboard.press('Enter')
   await escapeRemove('Remove project by keyboard returns focus to the project menu')
 
   // Clean up: this run's draft, and any a failed run left behind.
   const leftovers = aside.getByRole('group', { name: 'Drafts' })
-    .locator('div.group.relative', { hasText: 'pw focus ' })
+    .locator('[class*="group/row"]', { hasText: 'pw focus ' })
   while (await leftovers.count() > 0) {
     const left = leftovers.first()
     await left.hover()

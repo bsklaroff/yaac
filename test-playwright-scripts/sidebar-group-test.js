@@ -2,7 +2,8 @@
  * Verifies a sidebar group's stopped members and restarts against a live
  * server.
  *
- *  1. The header counts active members against all of them: (1/2), (0/1).
+ *  1. The header counts live members and says how many stopped:
+ *     "(1) 1 stopped", "(0) 1 stopped".
  *  2. The header's `…` menu (Group actions) offers Rename, Pin/Unpin, Show
  *     stopped workspaces and Delete group; stopped (ghost) rows stay hidden
  *     until "Show stopped workspaces" is picked, and hide again on "Hide…".
@@ -34,7 +35,7 @@ const stop = (workspaceId) => post('/workspace/stop', { workspaceId })
 
 /** Rows of the group's section, and of the whole sidebar list, as text. */
 function sidebarShape(groupName) {
-  const rows = (root) => [...root.querySelectorAll('.group.relative')]
+  const rows = (root) => [...root.querySelectorAll('[class*="group/row"]')]
     .map((el) => el.textContent.replace(/\s+/g, ' ').trim().slice(0, 60))
   const section = document.querySelector(`aside [role="group"][aria-label="${groupName}"]`)
   const list = document.querySelector('aside .overflow-y-auto')
@@ -58,8 +59,9 @@ try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   const section = (name) => page.locator(`aside [role="group"][aria-label="${name}"]`)
-  const ghostButton = 'button[title="Read this workspace\'s conversation"]'
-  const ghosts = (name) => section(name).locator(ghostButton)
+  // A stopped (ghost) row carries this title on its row element.
+  const ghostRow = '[title="Read this workspace\'s conversation"]'
+  const ghosts = (name) => section(name).locator(ghostRow)
   const caret = (name) => section(name).locator('button[aria-expanded]').first()
   /** Open the group menu; the `…` ignores the pointer until the header is hovered. */
   const openMenu = async (name) => {
@@ -107,7 +109,7 @@ try {
     check(`${label}: it stays in the group section`, strayed === 0, `${strayed}/${samples.length} frames outside`)
     const jumped = samples.filter((s) => restarting(s.all[0])).length
     check(`${label}: it never reaches the top of the sidebar`, jumped === 0, `${jumped}/${samples.length} frames`)
-    // The section's first `.group.relative` is its header.
+    // The section's first `group/row` is its header.
     check(`${label}: the group holds the placeholder and its live member`,
       samples.every((s) => s.section.length >= 3), JSON.stringify(samples[0].section))
   }
@@ -117,8 +119,9 @@ try {
   await page.waitForTimeout(1500)
 
   // 1. Counts.
-  check(`${MIXED} header reads (1/2)`, (await caret(MIXED).innerText()).includes('(1/2)'))
-  check(`${STOPPED} header reads (0/1)`, (await caret(STOPPED).innerText()).includes('(0/1)'))
+  const header = async (name) => (await caret(name).innerText()).replace(/\s+/g, ' ')
+  check(`${MIXED} header reads (1) 1 stopped`, (await header(MIXED)).includes('(1) 1 stopped'), await header(MIXED))
+  check(`${STOPPED} header reads (0) 1 stopped`, (await header(STOPPED)).includes('(0) 1 stopped'), await header(STOPPED))
 
   // 2. The mixed group's menu.
   check('stopped rows start hidden', await ghosts(MIXED).count() === 0)
@@ -136,6 +139,8 @@ try {
   // 3. The all-stopped group: caret and menu are one toggle.
   check(`${STOPPED} starts collapsed`, await caret(STOPPED).getAttribute('aria-expanded') === 'false')
   await caret(STOPPED).click()
+  // The ghost rows are fetched once the section opens.
+  await ghosts(STOPPED).first().waitFor({ timeout: 5_000 }).catch(() => {})
   check('the caret shows the stopped rows', await ghosts(STOPPED).count() === 1)
   await pick(STOPPED, 'Hide stopped workspaces')
   check('menu Hide hides them', await ghosts(STOPPED).count() === 0)
@@ -147,7 +152,7 @@ try {
 
   // 4a. Restart A from its ghost row, as a user does.
   await showGhosts(MIXED)
-  const ghost = section(MIXED).locator('div.group.relative', { has: page.locator(ghostButton) }).first()
+  const ghost = section(MIXED).locator(ghostRow).first()
   await ghost.hover()
   await ghost.getByRole('button', { name: 'Restart workspace' }).click()
   await page.getByRole('alertdialog').getByRole('button', { name: 'Restart', exact: true }).click()

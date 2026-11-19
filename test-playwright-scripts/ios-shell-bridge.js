@@ -14,7 +14,7 @@
  * dev`, which serves the current source, run:
  *   APP_URL=http://localhost:1420 node test-playwright-scripts/ios-shell-bridge.js
  */
-import { SHOTS, check, finish, origin, requirePlaywright } from './lib.js'
+import { SHOTS, api, check, finish, origin, requirePlaywright } from './lib.js'
 
 const { chromium } = requirePlaywright()
 const viewport = { width: 390, height: 844 }
@@ -39,7 +39,9 @@ try {
   check('bridge: Servers button calls showServers', (await page.evaluate(() => window.bridgeCalls)).includes('showServers'))
 
   await page.evaluate(() => { window.bridgeCalls = [] })
-  await page.locator('button:has(> span.truncate)').first().click()
+  // The first project's row, below the Home row.
+  const [first] = await api('/project/list')
+  await page.getByRole('button', { name: new RegExp(`${first.name}$`) }).first().click()
   const badge = page.getByRole('button', { name: 'Choose a server' })
   await badge.waitFor({ timeout: 5_000 })
   check('bridge: workspaces screen shows the server badge', await badge.isVisible())

@@ -1,6 +1,7 @@
 /*
  * Verifies the Skills section of settings in the running server's webapp, in
- * Chromium: settings opens full-screen, the section is headed by the viewed
+ * Chromium: settings opens as a sheet over the window (a 16px margin all
+ * round), the section is headed by the viewed
  * project, it lists every agent's skills at once with personal ones filed
  * under their agent and each section naming the agents that read it, clicking a
  * skill shows its full SKILL.md, and the agent filter narrows the list.
@@ -16,7 +17,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { DATA_DIR, SHOTS, check, finish, origin, requirePlaywright, resolveProject, until } from './lib.js'
+import { DATA_DIR, SHOTS, check, finish, openMenuItem, origin, requirePlaywright, resolveProject, until } from './lib.js'
 
 /** Base dir for a project's on-disk config/repo (mirrors @yaac/shared paths). */
 function projectBase(projectId) {
@@ -50,20 +51,21 @@ page.on('pageerror', (err) => console.log(`  [page error] ${err.message}`))
 try {
   await page.goto(`${origin}/?project=${project}`)
 
-  const settingsBtn = page.getByTitle('Settings').first()
-  await settingsBtn.waitFor({ state: 'visible', timeout: 15000 })
-  await settingsBtn.click()
+  await openMenuItem(page, 'Settings')
   const dialog = page.getByRole('dialog')
   await dialog.waitFor({ state: 'visible' })
   await dialog.getByRole('button', { name: 'Skills', exact: true }).click()
   await page.waitForTimeout(400) // open transition
 
-  check('settings fills the window', await dialog.evaluate((e) => {
+  const sheet = await dialog.evaluate((e) => {
     const r = e.getBoundingClientRect()
-    return r.width === innerWidth && r.height === innerHeight
-  }))
+    return { left: r.left, top: r.top, right: innerWidth - r.right, bottom: innerHeight - r.bottom }
+  })
+  check('settings fills the window but a 16px margin',
+    Object.values(sheet).every((m) => m === 16), JSON.stringify(sheet))
+  // The page title's picker, not the nav's.
   check('the section is headed by the viewed project',
-    await dialog.getByRole('combobox', { name: 'Project' }).inputValue() === project)
+    await dialog.locator('header').getByRole('combobox', { name: 'Project' }).inputValue() === project)
 
   const personal = dialog.getByRole('button', { name: /\/hello-personal/ })
   const codex = dialog.getByRole('button', { name: /\/hello-codex/ })
@@ -71,10 +73,10 @@ try {
   check('both agents\' skills are listed together', await codex.count() === 1)
   const headers = await dialog.locator('li > div').allInnerTexts()
   const header = (agent) => headers.find((h) => h.split(/\s+/)[0] === agent) ?? ''
-  check('personal skills are filed under their agent', header('CLAUDE') !== '' && header('CODEX') !== '',
+  check('personal skills are filed under their agent', header('Claude') !== '' && header('Codex') !== '',
     headers.join(' | '))
   check('the Claude section names the agents that read it (Claude and OpenCode)',
-    /Claude\s+OpenCode/.test(header('CLAUDE')), header('CLAUDE'))
+    /Claude\s+OpenCode/.test(header('Claude')), header('Claude'))
 
   await personal.click()
   // The body loads on its own fetch after the click.

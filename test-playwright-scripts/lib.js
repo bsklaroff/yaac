@@ -105,6 +105,23 @@ export async function createWorkspaces(bodies) {
   throw failed.reason
 }
 
+/**
+ * Open one of the yaac menu's items (Settings, Server health, Send
+ * feedback, …): from the menu at the foot of the rail on desktop, or on a
+ * phone from the projects screen's row of the same name.
+ */
+export async function openMenuItem(page, name) {
+  const menu = page.getByRole('button', { name: /^yaac menu/ })
+  const row = page.getByRole('button', { name, exact: true })
+  await menu.or(row).first().waitFor({ timeout: 20_000 })
+  if (await menu.isVisible()) {
+    await menu.click()
+    await page.getByRole('menuitem', { name, exact: true }).click()
+  } else {
+    await row.first().click()
+  }
+}
+
 /** A page of the settings modal's Project group, by its nav label
  *  (General, Environment, Network, Storage, Image). */
 export function projectPage(page, label) {

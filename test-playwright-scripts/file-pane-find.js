@@ -31,7 +31,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { requirePlaywright, origin, api, check, finish, SHOTS, DATA_DIR, projectPage } from './lib.js'
+import { requirePlaywright, origin, api, check, finish, SHOTS, DATA_DIR, openMenuItem, projectPage } from './lib.js'
 
 const { chromium } = requirePlaywright()
 
@@ -73,7 +73,8 @@ await page.keyboard.press('ArrowDown')
 check('ArrowDown highlights the second result', await options.nth(1).getAttribute('aria-selected') === 'true')
 const second = await options.nth(1).getAttribute('title')
 await page.keyboard.press('Enter')
-await page.locator(`span[title="${second}"]`).waitFor({ timeout: 10000 })
+// The file pane's path label; a chat may also link to the file.
+await page.locator(`span[title="${second}"]:not([role="link"])`).waitFor({ timeout: 10000 })
 check('Enter opens the highlighted result', true)
 await filter.fill('pw-long')
 await page.keyboard.press('Enter')
@@ -138,8 +139,9 @@ await page.keyboard.press('Shift+Enter')
 check('Shift+Enter steps back', await eventually(async () => (await status.innerText()) === '1 of 3'), await status.innerText())
 await pane.getByRole('button', { name: 'Show replace' }).click()
 await pane.getByRole('textbox', { name: 'Replace' }).fill('pin')
+// Each input sits in its own field box, with its icon (and the count).
 const box = async (loc) => loc.evaluate((el) => {
-  const r = (el.closest('.rounded.border') ?? el).getBoundingClientRect()
+  const r = el.parentElement.getBoundingClientRect()
   return { left: r.left, right: r.right }
 })
 const findBox = await box(find)
@@ -180,7 +182,7 @@ check('the header search button opens it', await eventually(async () => (await f
 // 7. In the expanded Dockerfile editor the bar sits at the left, and
 //    Escape closes only the bar.
 await page.keyboard.press('Escape')
-await page.locator('[title="Settings"]').first().click()
+await openMenuItem(page, 'Settings')
 await projectPage(page, 'Image').click()
 await page.getByRole('button', { name: 'Expand editor' }).first().click()
 const dialog = page.getByRole('dialog').last()
@@ -189,7 +191,7 @@ await page.keyboard.press('Control+KeyF')
 const dialogFind = dialog.getByRole('textbox', { name: 'Find', exact: true })
 await dialogFind.waitFor()
 const editorLeft = (await dialog.locator('.cm-editor').boundingBox()).x
-const findLeft = await dialogFind.evaluate((el) => el.closest('.rounded.border').getBoundingClientRect().left)
+const findLeft = await dialogFind.evaluate((el) => el.parentElement.getBoundingClientRect().left)
 check('in a wide editor the bar sits at the left', findLeft - editorLeft < 48, `${findLeft - editorLeft}px in`)
 await page.keyboard.press('Escape')
 check('Escape closes the bar in a settings dialog', await eventually(async () => (await dialogFind.count()) === 0))

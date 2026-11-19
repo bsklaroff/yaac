@@ -9,8 +9,8 @@
  *     than its cell, all inside the popover.
  *  3. Enter in the model search picks a model and does not create the
  *     workspace (the pane creates on Enter from anywhere inside it).
- *  4. At phone width the popover stays on screen and the footer fits on
- *     one line.
+ *  4. At phone width the popover stays on screen and no footer control
+ *     wraps its label.
  *
  * Needs a running `yaac server` with a signed-in claude and a project.
  *
@@ -48,9 +48,12 @@ try {
   const page = await (await browser.newContext({ viewport: { width: 1400, height: 900 } })).newPage()
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   await page.goto(`${origin}/?project=${PROJECT}`)
-  const plus = page.locator('aside').getByRole('button', { name: 'New workspace', exact: true })
+  // New session; its name ends with the shortcut.
+  const plus = page.locator('aside').getByRole('button', { name: /^New session/ })
   await plus.waitFor({ timeout: 15_000 })
   await plus.click()
+  // The pane starts on the last workspace's agent; these checks are Claude's.
+  await page.getByRole('combobox', { name: 'Agent' }).selectOption('claude')
   const pill = page.getByRole('button', { name: 'Agent settings' })
   await pill.waitFor({ timeout: 15_000 })
   const before = (await api('/workspace/list')).workspaces.length
@@ -93,10 +96,12 @@ try {
     phone.cells.filter((c) => c.clipped).map((c) => c.text).join(' '))
   await page.keyboard.press('Escape')
   const footer = await page.evaluate(() => {
-    const row = document.querySelector('button[aria-label="Agent settings"]').closest('.justify-between')
+    // The composer's footer row, the one holding its Create button.
+    const row = document.querySelector('button[aria-label="Agent settings"]')
+      .closest('div:has(> button[aria-label="Create"])')
     return [...row.querySelectorAll('button')].map((b) => Math.round(b.getBoundingClientRect().height))
   })
-  check('the footer fits on one line', footer.every((h) => h <= 32), footer.join(' '))
+  check('no footer control wraps its label', footer.every((h) => h <= 32), footer.join(' '))
 } finally {
   await browser.close()
 }

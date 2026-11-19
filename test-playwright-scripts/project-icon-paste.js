@@ -6,11 +6,11 @@
  *  1. pasting a PNG on the preview chip under Settings → Project → General
  *     opens the crop dialog; saving its starting crop uploads the centered
  *     square at 256px, so the red bands are gone;
- *  2. the rail chip then shows that picture in place of the initial;
+ *  2. the rail tile then shows that picture in place of the initial;
  *  3. an SVG of the same image also opens the cropper (Chromium decodes it
  *     through an <img>, since createImageBitmap can't), and dragging it to
  *     its left edge before saving brings the left red band into the crop;
- *  4. Remove returns the rail chip to the initial.
+ *  4. Remove returns the rail tile to the initial.
  *
  * It creates a throwaway hosted project and deletes it at the end, so it
  * leaves the server's other projects alone. Screenshots go to SHOTS.
@@ -18,7 +18,7 @@
  * Run: node test-playwright-scripts/project-icon-paste.js
  */
 import path from 'node:path'
-import { SHOTS, api, check, finish, origin, requirePlaywright, until, projectPage } from './lib.js'
+import { SHOTS, api, check, finish, openMenuItem, origin, requirePlaywright, until, projectPage } from './lib.js'
 
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200">'
   + '<rect width="300" height="200" fill="#f00"/><rect x="50" width="200" height="200" fill="#00f"/></svg>'
@@ -29,7 +29,7 @@ const browser = await chromium.launch()
 try {
   const page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
   await page.goto(`${origin}/?project=${project.id}`)
-  await page.locator('[title="Settings"]').click()
+  await openMenuItem(page, 'Settings')
   await projectPage(page, 'General').click()
   const chip = page.locator('[aria-label="Project icon"]')
   await chip.waitFor()
@@ -83,8 +83,9 @@ try {
   const centered = await saveAndRead()
   check('the upload is a 256px square', centered.width === 256 && centered.height === 256, `${centered.width}x${centered.height}`)
   check('the starting crop is the centered square', centered.corners.every(blue), JSON.stringify(centered.corners))
-  const railImg = page.locator(`button[title="${project.name}"] img`)
-  check('the rail chip shows the picture', await railImg.count() === 1)
+  const railTile = page.locator(`nav[aria-label="Projects"] button[aria-label="${project.name}"]`)
+  const railImg = railTile.locator('img')
+  check('the rail tile shows the picture', await railImg.count() === 1)
 
   await paste('image/svg+xml')
   const area = await page.locator('[aria-label="Crop area"]').boundingBox()
@@ -98,8 +99,8 @@ try {
 
   await page.getByRole('button', { name: 'Remove', exact: true }).click()
   await until(page, () => document.querySelector('[aria-label="Project icon"] img') === null)
-  check('Remove returns the rail chip to the initial',
-    await railImg.count() === 0 && (await page.locator(`button[title="${project.name}"]`).textContent()) === 'I')
+  check('Remove returns the rail tile to the initial',
+    await railImg.count() === 0 && (await railTile.textContent()) === 'I', await railTile.textContent())
 } finally {
   await browser.close()
   await api(`/project/${project.id}`, { method: 'DELETE' })

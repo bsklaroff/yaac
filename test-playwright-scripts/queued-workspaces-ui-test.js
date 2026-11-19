@@ -2,13 +2,13 @@
  * Verifies the queued-workspace UI (docs/queued-workspaces.md) in a real
  * browser, with real pointer and keyboard events, against a live workspace:
  *
- *  1. A sidebar row's hover icons are one `…` menu: Rename, Move to group…,
- *     Queue workspace after this…, Stop….
+ *  1. A sidebar row's hover icons are one `…` menu: New session…, Rename,
+ *     Move to group…, Queue workspace after this…, Stop….
  *  2. "Queue workspace after this…" opens the new-workspace pane with Start
  *     set to that workspace, the prompt focused, a Queue button, and the
  *     branch marked "latest from origin"; typing a prompt + Enter queues it
  *     and clears the form, and the entry shows nested under the workspace
- *     with a "· queued" meta line.
+ *     with "queued" on its meta line.
  *  3. The queued row's own menu queues a second entry after it, which nests
  *     one step deeper (a chain).
  *  3b. The workspace's whole queued set sits behind one "2 queued workspaces"
@@ -18,8 +18,8 @@
  *  4. Clicking a queued row opens the pane on it in edit mode; Save updates it.
  *  5. The row menu's Stop… lists the queued children ("Stop and start 1
  *     queued") and marks the chained one as waiting. Its Edit closes the stop
- *     dialog, so nothing is stopped, and opens the pane on that entry; the +
- *     then leaves the edit, unsaved, for a blank form without asking.
+ *     dialog, so nothing is stopped, and opens the pane on that entry; New
+ *     session then leaves the edit, unsaved, for a blank form without asking.
  *  6. Discard… on the top entry confirms where its child moves; confirming
  *     removes it and splices the child up under the workspace. The child is
  *     then discarded too, leaving nothing queued behind.
@@ -30,12 +30,12 @@
  * from the sidebar.
  *
  * Run: YAAC_DATA_DIR=<data dir> PROJECT=<name or id> node test-playwright-scripts/queued-workspaces-ui-test.js
+ * (PROJECT defaults to yaac)
  */
 import path from 'node:path'
 import { api, check, finish, origin, requirePlaywright, SHOTS, resolveProject, until } from './lib.js'
 
-if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id> to a project with a running workspace')
-const PROJECT = (await resolveProject(process.env.PROJECT)).id
+const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 const { workspaces } = await api(`/workspace/list?project=${PROJECT}`)
 const parent = process.env.WORKSPACE
   ? workspaces.find((w) => w.workspaceId.startsWith(process.env.WORKSPACE))
@@ -54,7 +54,7 @@ try {
   await page.goto(`${origin}/?project=${PROJECT}`)
 
   const aside = page.locator('aside')
-  const rowOf = (text) => aside.locator('div.group.relative', { hasText: text }).last()
+  const rowOf = (text) => aside.locator('[class*="group/row"]', { hasText: text }).last()
   const pick = async (row, menu, item) => {
     await row.hover()
     await row.getByRole('button', { name: menu }).click()
@@ -85,8 +85,8 @@ try {
   // The menu renders a frame after the click; read it once it has.
   await page.getByRole('menuitem').first().waitFor({ state: 'visible' })
   const items = await page.getByRole('menuitem').allTextContents()
-  check('the row menu offers rename, group, queue, stop',
-    JSON.stringify(items) === JSON.stringify(['Rename', 'Move to group…', 'Queue workspace after this…', 'Stop…']),
+  check('the row menu offers new session, rename, group, queue, stop',
+    JSON.stringify(items) === JSON.stringify(['New session…', 'Rename', 'Move to group…', 'Queue workspace after this…', 'Stop…']),
     JSON.stringify(items))
   await page.keyboard.press('Escape')
 
@@ -95,8 +95,8 @@ try {
   const prompt = page.getByLabel('Prompt')
   await startIs(parent.workspaceId).catch(() => {})
   await promptFocused().catch(() => {})
-  check('Start is the workspace', await page.getByLabel('Start').inputValue() === parent.workspaceId,
-    await page.getByLabel('Start').inputValue())
+  check('Start is the workspace', await page.getByLabel('Start', { exact: true }).inputValue() === parent.workspaceId,
+    await page.getByLabel('Start', { exact: true }).inputValue())
   check('the prompt has focus', await prompt.evaluate((el) => el === document.activeElement))
   check('the branch is marked latest from origin', await page.getByText('latest from origin when it starts').isVisible())
   await page.keyboard.type(first)
@@ -107,7 +107,7 @@ try {
   const firstRow = rowOf(first)
   await firstRow.waitFor({ state: 'visible', timeout: 10_000 })
   check('the entry nests under its workspace, marked queued',
-    (await firstRow.textContent())?.includes('· queued') === true, await firstRow.textContent())
+    (await firstRow.textContent())?.includes('queued') === true, await firstRow.textContent())
 
   // (3) Chain a second after the first.
   await pick(firstRow, 'Queued workspace actions', 'Queue workspace after this…')
@@ -145,7 +145,7 @@ try {
   await secondRow.waitFor({ state: 'visible', timeout: 5_000 })
 
   // (4) Edit on click.
-  await firstRow.getByText(first).click()
+  await firstRow.click()
   await promptIs(first)
   await page.getByRole('button', { name: 'Save', exact: true }).waitFor({ state: 'visible' })
   await prompt.fill(`${first} edited`)
@@ -168,9 +168,9 @@ try {
   check('Edit closes the stop dialog and opens the entry in the pane', true)
   await prompt.click()
   await page.keyboard.type(' x')
-  await aside.getByRole('button', { name: 'New workspace', exact: true }).click()
+  await aside.getByRole('button', { name: /^New session/ }).click()
   await promptIs('')
-  check('the + leaves the edit without asking', await page.getByRole('alertdialog').count() === 0)
+  check('New session leaves the edit without asking', await page.getByRole('alertdialog').count() === 0)
   await page.waitForTimeout(500)
   check('…and saves nothing', await aside.getByText(`${first} edited x`).count() === 0)
   const listed = await api(`/workspace/list?project=${PROJECT}`)

@@ -5,14 +5,15 @@
  *
  *  1. Ada, the project's owner, sees her workspace with its controls and no
  *     read-only banner.
- *  2. Bob starts on his own (empty) projects; the user switcher lists Ada
- *     with her one active workspace and Bob as idle, and its menu says
- *     this containerless server does not separate users.
+ *  2. Bob starts on his own (empty) projects; the user switcher (a submenu
+ *     of the yaac menu) lists Ada with her one active workspace and Bob as
+ *     idle, and says this containerless server does not separate users.
  *  3. Switching to Ada shows her project and workspace laid out as hers,
- *     read-only: banner, no new-workspace button, no row menu; the
+ *     read-only: banner, no New session button, no row menu; the
  *     workspace opens in the transcript view, with no terminal.
  *  4. Settings → Project → Network shows Ada's project with no Save button.
- *  5. A fresh page deep-linked to Ada's workspace selects Ada by itself.
+ *  5. A fresh page deep-linked to Ada's workspace selects Ada by itself, and
+ *     the yaac menu's label says whose projects are shown.
  *  6. Bob made no write the server refused (no 403 in any response).
  *
  * A principal is only request headers: `tailscale serve` stamps
@@ -35,7 +36,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { check, finish, requirePlaywright, SHOTS, until, projectPage } from './lib.js'
+import { check, finish, openMenuItem, requirePlaywright, SHOTS, until, projectPage } from './lib.js'
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = path.join(REPO, 'dist', 'cli.js')
@@ -115,7 +116,8 @@ async function main() {
   const paths = stagingPaths(projectId)
   stageFakeClaude(paths.claude)
   stageCheckout(paths)
-  yaac('server', 'start', '--tailnet', 'yaac.test')
+  // A tailnet install needs an admin; Ada, the owner, is it.
+  yaac('server', 'start', '--tailnet', 'yaac.test', '--admin', ADA.login)
 
   // Ada: a project, a credential, an identity and one running workspace.
   await apiAs(ADA, '/project/register', { id: projectId, name: 'ada-demo', remoteUrl: 'https://github.com/ada/demo.git' })
@@ -142,7 +144,9 @@ async function main() {
   const ada = await (await contextFor(ADA)).newPage()
   await ada.goto(`${ORIGIN}/?project=${projectId}`)
   await ada.getByText('Parser fix').first().waitFor()
-  check('Ada sees her new-workspace button', await ada.getByRole('button', { name: 'New workspace' }).count() > 0)
+  // New session's name ends with its shortcut.
+  const newSession = (page) => page.locator('aside').getByRole('button', { name: /^New session/ })
+  check('Ada sees her New session button', await newSession(ada).count() > 0)
   check('Ada sees no read-only banner', await ada.getByText(/read-only/).count() === 0)
   await ada.screenshot({ path: path.join(SHOTS, 'multi-user-ada.png') })
 
@@ -152,24 +156,29 @@ async function main() {
   bobContext.on('response', (r) => { if (r.status() === 403) refused.push(`${r.request().method()} ${r.url()}`) })
   const bob = await bobContext.newPage()
   await bob.goto(`${ORIGIN}/`)
-  const switcher = bob.getByRole('button', { name: /Switch user/ })
-  await switcher.waitFor()
-  check('Bob starts on his own projects', (await switcher.getAttribute('aria-label')) === 'Switch user (Your projects)')
+  const menu = bob.getByRole('button', { name: /^yaac menu/ })
+  await menu.waitFor()
+  check('the yaac menu names no teammate', (await menu.getAttribute('aria-label')) === 'yaac menu')
+  await menu.click()
+  // The submenu's trigger names whose projects are shown.
+  const switcher = bob.getByRole('menuitem', { name: 'Your projects', exact: true })
+  check('Bob starts on his own projects', await switcher.count() === 1)
   await switcher.click()
+  await bob.getByRole('menuitem', { name: /Ada Lovelace/ }).waitFor()
   check('the switcher lists Ada', await bob.getByRole('menuitem', { name: /Ada Lovelace/ }).count() === 1)
   check('it counts Ada\'s active workspace', await bob.getByRole('menuitem', { name: /Ada Lovelace.*1 active/ }).count() === 1)
   check('it shows Bob as idle', await bob.getByRole('menuitem', { name: /Bob Builder.*idle/ }).count() === 1)
   check('it says containerless does not separate users', await bob.getByText(/does not separate users/).count() === 1)
   await bob.waitForTimeout(300) // the menu's fade-in
-  await bob.screenshot({ path: path.join(SHOTS, 'multi-user-switcher.png'), clip: { x: 0, y: 0, width: 400, height: 240 } })
+  await bob.screenshot({ path: path.join(SHOTS, 'multi-user-switcher.png') })
 
   // 3. Ada's projects, read-only.
   await bob.getByRole('menuitem', { name: /Ada Lovelace/ }).click()
   await bob.getByText('Parser fix').first().waitFor()
   check('the sidebar says it is read-only', await bob.getByText(/Ada Lovelace's workspaces, read-only/).count() === 1)
-  check('no new-workspace button', await bob.getByRole('button', { name: 'New workspace' }).count() === 0)
+  check('no New session button', await newSession(bob).count() === 0)
   check('no row menu', await bob.getByRole('button', { name: 'Workspace actions' }).count() === 0)
-  await bob.getByText('Parser fix').first().click()
+  await bob.locator('aside').getByRole('button', { name: 'Parser fix', exact: true }).first().click()
   await until(bob, () => document.querySelector('main header')?.textContent?.includes('Parser fix'))
   check('the workspace opens without a terminal', await bob.locator('.xterm').count() === 0)
   await bob.locator('main').getByText('Ada fixes the parser').first().waitFor()
@@ -177,10 +186,10 @@ async function main() {
   await bob.screenshot({ path: path.join(SHOTS, 'multi-user-readonly.png') })
 
   // 4. Their project settings, read-only.
-  await bob.getByTitle('Settings').click()
+  await openMenuItem(bob, 'Settings')
   await projectPage(bob, 'Network').click()
   await bob.getByText('Forwarded ports').waitFor()
-  check('the project picker offers Ada\'s project', await bob.locator('select option').allTextContents()
+  check('the project picker offers Ada\'s project', await bob.locator('select[aria-label="Project"] option').allTextContents()
     .then((names) => names.join() === 'ada-demo'))
   check('project settings have no Save', await bob.getByRole('button', { name: 'Save' }).count() === 0)
   check('no env var form', await bob.getByPlaceholder('NAME').count() === 0)
@@ -190,8 +199,8 @@ async function main() {
   const linked = await bobContext.newPage()
   await linked.goto(`${ORIGIN}/?project=${projectId}&workspace=${workspaceId}`)
   await linked.getByText(/Ada Lovelace's workspaces, read-only/).waitFor()
-  check('a deep link selects the owner', (await linked.getByRole('button', { name: /Switch user/ })
-    .getAttribute('aria-label')) === "Switch user (Ada Lovelace's projects)")
+  check('a deep link selects the owner', (await linked.getByRole('button', { name: /^yaac menu/ })
+    .getAttribute('aria-label')) === "yaac menu, viewing Ada Lovelace's projects")
   await until(linked, () => document.querySelector('main header')?.textContent?.includes('Parser fix'))
   check('and opens the linked workspace', true)
 

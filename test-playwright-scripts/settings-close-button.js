@@ -14,7 +14,7 @@
  *
  * Run: node test-playwright-scripts/settings-close-button.js
  */
-import { SHOTS, check, finish, origin, requirePlaywright } from './lib.js'
+import { SHOTS, check, finish, openMenuItem, origin, requirePlaywright } from './lib.js'
 
 const { chromium } = requirePlaywright()
 
@@ -23,7 +23,8 @@ const VIEWPORTS = [
   ['narrow', { width: 1000, height: 600 }],
   ['phone', { width: 390, height: 800 }],
 ]
-const SECTIONS = ['General', 'Shortcuts', 'Credentials', 'Environment', 'Skills']
+/* Each as [nav group, label]: Account and Project both have a General. */
+const SECTIONS = [['Account', 'General'], ['Account', 'Shortcuts'], ['Account', 'Credentials'], ['Project', 'Environment'], ['Account', 'Skills']]
 
 /*
  * In-page: the close button's rect, and whether the element at its center
@@ -108,7 +109,7 @@ try {
       const page = await browser.newPage({ viewport, colorScheme: theme })
       await page.goto(`${origin}/`)
       const open = async () => {
-        await page.getByTitle('Settings').first().click()
+        await openMenuItem(page, 'Settings')
         await page.getByLabel('Close settings').waitFor({ timeout: 10_000 })
         await page.waitForTimeout(250)
       }
@@ -129,8 +130,9 @@ try {
       }
       check(`${tag}: X has its accessible name`, await close.count() === 1)
 
-      for (const section of SECTIONS) {
-        await page.getByRole('button', { name: section, exact: true }).click()
+      const nav = (group, label) => page.getByRole('group', { name: group }).getByRole('button', { name: label, exact: true })
+      for (const [group, section] of SECTIONS) {
+        await nav(group, section).click()
         await page.waitForTimeout(400)
         const atRest = await page.evaluate(covered)
         check(`${tag} ${section}: X covers no content at rest`, atRest.length === 0, atRest.join(', '))
@@ -152,7 +154,7 @@ try {
 
       // The layered cases from the bug: a `relative` switch and a disabled,
       // faded button, each parked beneath the X, then clicked through.
-      await page.getByRole('button', { name: 'General', exact: true }).click()
+      await nav('Account', 'General').click()
       await page.waitForTimeout(300)
       check(`${tag}: Sounds switch parked under X`, await page.evaluate(parkUnder, '[role=switch]'))
       check(`${tag}: X on top of Sounds switch`, (await page.evaluate(probe)).onTop)
@@ -175,9 +177,10 @@ try {
       await page.evaluate(scrollTo, max)
       check(`${tag}: X click at bottom closes`, await clickCloses())
 
-      // Tab from the last nav section lands on the X; Escape closes.
+      // Tab from the nav's last button (the Project group's last page) lands
+      // on the X; Escape closes.
       await open()
-      await page.getByRole('button', { name: 'Skills', exact: true }).focus()
+      await page.getByRole('group', { name: 'Project' }).getByRole('button').last().focus()
       await page.keyboard.press('Tab')
       check(`${tag}: Tab after nav reaches X`,
         await page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Close settings'))

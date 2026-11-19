@@ -33,18 +33,21 @@ try {
   page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
   const selectedId = () => new URL(page.url()).searchParams.get('workspace')
   const list = page.getByRole('group', { name: 'Ungrouped workspaces' })
-  const row = (title) => list.locator('div.group.relative', { hasText: title })
+  // A row is a YRowFrame whose full-row button is named by its title.
+  const pick = (title) => list.getByRole('button', { name: title, exact: true }).click()
+  const row = (title) => list.locator('[class*="group/row"]', { has: page.getByRole('button', { name: title, exact: true }) })
 
   await page.goto(`${origin}/?project=${PROJECT}`)
   await row('PW sel 4').waitFor({ timeout: 15_000 })
   await page.waitForTimeout(1000)
 
   // Row order as ids, top to bottom, by selecting each row.
-  const titles = (await list.locator('div.group.relative').allInnerTexts()).map((t) => t.split('\n')[0])
+  const titles = await list.locator('[class*="group/row"] > button[aria-label]')
+    .evaluateAll((bs) => bs.map((b) => b.getAttribute('aria-label')))
   if (titles.length !== 4) throw new Error(`expected 4 ungrouped rows, found: ${titles.join(', ')}`)
   const ids = []
   for (const t of titles) {
-    await row(t).getByText(t, { exact: true }).click()
+    await pick(t)
     await page.waitForTimeout(250)
     ids.push(selectedId())
   }
@@ -57,7 +60,7 @@ try {
   }
   const stopFromMenu = async (id) => {
     const r = row(titleOf[id])
-    await r.getByText(titleOf[id], { exact: true }).click()
+    await pick(titleOf[id])
     await r.hover()
     await r.getByRole('button', { name: 'Workspace actions' }).click()
     await page.getByRole('menuitem', { name: 'Stop…' }).click()
@@ -66,7 +69,7 @@ try {
   }
 
   // 1. Stopped outside the app while open: the top row takes over.
-  await row(titles[1]).getByText(titles[1], { exact: true }).click()
+  await pick(titles[1])
   await page.waitForTimeout(250)
   await stop(ids[1])
   check('vanished workspace -> topmost row', await awaitSelectionChange(ids[1]) === ids[0], selectedId())
