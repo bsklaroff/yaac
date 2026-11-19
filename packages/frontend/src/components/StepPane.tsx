@@ -91,7 +91,9 @@ export function StepPane({ workspace, name, visible, focusKey }: {
  * length and the two scroll together. The log keeps at least three
  * quarters of the height, so with a long graph open some of it stays in
  * view to scroll back up by, since the log takes the wheel for its own
- * scrollback.
+ * scrollback. The log clips what overflows it: xterm's input textarea
+ * keeps its place from before a refit until the cursor moves, and would
+ * otherwise leave blank space below the log to scroll into.
  */
 export function GraphOverLog({ workflow, graph, logClassName, children }: {
   workflow: string
@@ -108,7 +110,7 @@ export function GraphOverLog({ workflow, graph, logClassName, children }: {
           <pre className="overflow-x-auto px-2.5 pb-1.5 font-mono text-muted">{JSON.stringify(graph, null, 2)}</pre>
         </details>
       )}
-      <div className={clsx('min-h-[75%] flex-1 px-2.5 py-1.5', logClassName)}>{children}</div>
+      <div className={clsx('min-h-[75%] flex-1 overflow-hidden px-2.5 py-1.5', logClassName)}>{children}</div>
     </div>
   )
 }

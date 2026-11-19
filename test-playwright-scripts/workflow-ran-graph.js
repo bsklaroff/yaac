@@ -5,7 +5,7 @@
  *      above its log, closed at first, with nothing to scroll; opening it
  *      shows the steps as JSON, in the form a workflow is written in, at
  *      full length, taller than the pane, and the pane scrolls past it to a
- *      log at least three quarters of its height.
+ *      log at least three quarters of its height that ends at its foot.
  *   2. After the named workflow is edited, the fold still shows what the
  *      run started with.
  *   3. Once the run is stopped, its logs view shows the same fold above the
@@ -60,6 +60,9 @@ try {
   check('step pane: scrolled down, the log is in view at three quarters of the pane or more',
     logBox.y >= paneBox.y && logBox.y + logBox.height <= paneBox.y + paneBox.height + 1 && logBox.height >= paneBox.height * 0.7,
     JSON.stringify({ paneBox, logBox }))
+  const logArea = await scroller.evaluate((el) => el.lastElementChild.getBoundingClientRect().bottom)
+  check('step pane: scrolled down, nothing to scroll into below the log', Math.abs(logArea - (paneBox.y + paneBox.height)) <= 1,
+    JSON.stringify({ logArea, paneBottom: paneBox.y + paneBox.height }))
 
   await api('/workflow/edit', { method: 'POST', body: { project: project.id, name: NAME, steps: { other: { run: ['true'] } } } })
   await page.reload()

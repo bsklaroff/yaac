@@ -93,7 +93,7 @@ describe('WorkspaceView steps', () => {
   })
 
   it('offers no shell, session or step action in a non-interactive workspace, and follows a running step\'s log', async () => {
-    show({ steps: STEPS, nonInteractive: true })
+    show({ steps: [...STEPS, step('lint', 'pending', { name: 'qa.lint', workflow: 'qa' })], nonInteractive: true })
     expect(screen.queryByRole('button', { name: /New Shell/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /New Session/ })).toBeNull()
     expect(screen.getByText('This workspace runs its steps untouched')).toBeTruthy()
@@ -101,6 +101,9 @@ describe('WorkspaceView steps', () => {
     fireEvent.click(within(screen.getByLabelText('Steps')).getByRole('button', { name: 'server' }))
     expect((await screen.findByTestId('log')).textContent).toBe('2026-11-03T01-00-00.000Z/ci.server.log following')
     expect(screen.queryByTestId('terminal')).toBeNull()
+    // Its graph is its own workflow's, without another workflow's steps.
+    const graph = screen.getByText('Workflow ci').closest('details')?.querySelector('pre')?.textContent
+    expect(Object.keys(JSON.parse(graph ?? '') as object)).toEqual(['install', 'build', 'docs', 'server'])
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
   })
 

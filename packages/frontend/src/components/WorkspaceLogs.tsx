@@ -26,9 +26,10 @@ export function WorkspaceLogs({ workspaceId }: { workspaceId: string }): JSX.Ele
   const shortName = (name: string, workflow: string): string => name.replace(/\.log$/, '').slice(workflow === '' ? 0 : workflow.length + 1)
   // A shell's window shares the '' group with a step of a life from before
   // steps had workflows, so the graph shows only for a window that is in it.
+  // Own keys only: a window may be named after an Object.prototype member.
   const workflow = groups.find((g) => file !== undefined && g.items.includes(file))?.workflow ?? ''
-  const graph = last?.workflows[workflow]
-  const ran = file !== undefined && graph?.[shortName(file, workflow)] !== undefined ? graph : undefined
+  const graph = last !== undefined && Object.hasOwn(last.workflows, workflow) ? last.workflows[workflow] : undefined
+  const ran = file !== undefined && graph !== undefined && Object.hasOwn(graph, shortName(file, workflow)) ? graph : undefined
   if (isError || (data !== undefined && file === undefined)) {
     return (
       <p className="flex flex-1 items-center justify-center text-md text-subtle">

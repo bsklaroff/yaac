@@ -79,8 +79,9 @@ describe('ReadOnlyWorkspace', () => {
   it('shows a stopped non-interactive workspace\'s outcome and logs, and reruns it, or interactively', async () => {
     const ran = { build: { run: ['make'] }, test: { run: ['make test'], needs: ['build'] } }
     server.route('GET /api/workspace/s1/logs', [{ life: 'L2', files: [
-      { name: 'ci.build.events', size: 9 }, { name: 'ci.build.log', size: 3 }, { name: 'ci.test.log', size: 1 }, { name: 'shell.log', size: 1 },
-    ], workflows: { ci: ran } }, { life: 'L1', files: [{ name: 'ci.old.log', size: 1 }], workflows: {} }])
+      { name: 'ci.build.events', size: 9 }, { name: 'ci.build.log', size: 3 }, { name: 'ci.test.log', size: 1 },
+      { name: 'ci.toString.log', size: 1 }, { name: 'setup.log', size: 1 }, { name: 'shell.log', size: 1 },
+    ], workflows: { ci: ran, '': { setup: { run: ['make setup'] } } } }, { life: 'L1', files: [{ name: 'ci.old.log', size: 1 }], workflows: {} }])
     const entry = stopped({ nonInteractive: true, stepsOutcome: 'failed', prompt: undefined, title: 'CI' })
     renderPane({ kind: 'stopped', entry })
 
@@ -92,8 +93,17 @@ describe('ReadOnlyWorkspace', () => {
     expect(JSON.parse(graph() ?? '')).toEqual(ran)
     fireEvent.click(screen.getByRole('button', { name: 'test' }))
     expect(screen.getByTestId('log').textContent).toBe('L2/ci.test.log')
-    // A shell's window ran no workflow.
+    // A step from before steps had workflows shares the '' group with a
+    // shell's window, which ran none, so only the step has a graph.
+    fireEvent.click(screen.getByRole('button', { name: 'setup' }))
+    expect(JSON.parse(screen.getByText('Steps', { selector: 'summary' }).closest('details')?.querySelector('pre')?.textContent ?? '')).toEqual({ setup: { run: ['make setup'] } })
     fireEvent.click(screen.getByRole('button', { name: 'shell' }))
+    expect(graph()).toBeUndefined()
+    expect(screen.queryByText('Steps', { selector: 'summary' })).toBeNull()
+    // A window that was no step of its workflow, named after an
+    // Object.prototype member, has no graph either.
+    fireEvent.click(screen.getByRole('button', { name: 'toString' }))
+    expect(screen.getByTestId('log').textContent).toBe('L2/ci.toString.log')
     expect(graph()).toBeUndefined()
     expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
 
