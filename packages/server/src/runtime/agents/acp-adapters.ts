@@ -70,10 +70,17 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * pre-approved) is never selected by yaac and reads as `manual`.
    *
    * Its running/idle report must be asked for (`CLAUDE_SDK_MESSAGE`).
+   *
+   * The CLI withholds its Artifact tools from Agent SDK sessions, which is
+   * how the adapter starts it, unless `CLAUDE_CODE_ARTIFACT` is set. The
+   * TUI gets them by default, so the chat pane opts in to match.
    */
   claude: {
     argv: () => [ACP_ADAPTERS.claude.binary],
-    env: (spec) => (spec.model !== undefined ? [`ANTHROPIC_MODEL=${claudeModelArg(spec.model)}`] : []),
+    env: (spec) => [
+      'CLAUDE_CODE_ARTIFACT=1',
+      ...(spec.model !== undefined ? [`ANTHROPIC_MODEL=${claudeModelArg(spec.model)}`] : []),
+    ],
     modeIds: {
       bypass: 'bypassPermissions',
       auto: 'auto',
