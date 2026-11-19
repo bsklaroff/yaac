@@ -58,9 +58,10 @@ fields (the API-key/credential pattern), external links or conditional
 fields are still cancelled on opencode's side.
 
 **omp** (18.18.6). The capability sets omp's `interactivePrompts`. That
-creates its `ask` tool (whose input is an HTML form), and gives tools and
-extensions a UI context over elicitations: `select`, `confirm`, `input`,
-`editor`, forms, and a usage-fallback confirmer.
+creates its `ask` tool (whose input is an HTML form), and lets omp's other
+prompts reach the user as elicitations. Those are listed in "omp's other
+prompts" below. A steer interrupts an open omp question (see "Messages sent
+while a question is open").
 
 **pi** (pi-acp). It has no elicitation code and no question tool. Its
 extensions' questions already arrive as permission asks
@@ -111,10 +112,27 @@ add the `toolCallId` of a tool call they have streamed. codex names a
 - **Turn on codex's question tool** with
   `features.default_mode_request_user_input = true` in the `acp` launch's
   `CODEX_CONFIG` (`acp-adapters.ts`; the TUI's posture flags are
-  untouched). codex lists the flag as under development, so the pin bump
-  checklist in `AGENT_CLIS` gains "check this flag still exists". The
-  alternative, mapping yaac's `plan` posture onto codex's Plan collaboration
-  mode, changes what `plan` means for codex and is a larger change.
+  untouched).
+
+  The stage comes from codex's own feature registry: `codex features list`
+  shows the flag as `under development`, as are 82 of codex 0.166's flags,
+  beside `experimental`, `stable`, `deprecated` and `removed`. With such a
+  flag on, codex writes a warning that under-development features "are
+  incomplete and may behave unpredictably", which
+  `suppress_unstable_features_warning` silences. codex-acp did not pass it
+  on to the client in the verification run.
+
+  The flag only adds the tool to codex's default mode. The tool itself is
+  the one Plan mode offers, where it is no longer behind a flag. It worked
+  when verified, and yaac pins codex, so it cannot change under a running
+  install. The risk is a codex bump renaming, removing or reshaping it, so
+  the pin-bump checklist in `AGENT_CLIS` gains a check: the flag is still
+  listed by `codex features list`, and the scripted question run still
+  elicits.
+
+  The alternative, mapping yaac's `plan` posture onto codex's Plan
+  collaboration mode, changes what `plan` means for codex and is a larger
+  change.
 - **One generic form renderer, with no per-tool code.**
   `parseElicitationRequest` normalizes any request into fields:
   - `choice`: `oneOf`, `enum`, or an `array` of `anyOf` / `enum` items
@@ -134,7 +152,17 @@ add the `toolCallId` of a tool call they have streamed. codex names a
   `AskUserQuestion` under every mode, `bypassPermissions` included
   (verified), and yaac forwards it the same way.
 - **A message sent while a question is open never answers or skips it.**
-  This covers the composer and `yaac-mama send` alike; the dock says so.
+  This covers the composer and `yaac-mama send` alike. The adapters differ
+  here (verified):
+  - claude and codex take a steer at once (`injected`), hold it, and give it
+    to the model after the answer.
+  - omp's steer *interrupts* the question: its `ask` tool fails with "Ask
+    interrupted by message", omp sends no `$/cancel_request`, and it then
+    asks again in a new elicitation.
+  - opencode does not steer, so the message already waits for the turn.
+
+  yaac therefore holds the message itself, the same way for every tool
+  ("Messages sent while a question is open").
 - **The answer goes over the chat socket, not an HTTP route.** It is an
   `AcpClientMessage` on `/api/acp/attach`, like a permission answer, which
   `attachAcp` drops from `/acp/observe` readers. WebSocket routes are
@@ -218,10 +246,29 @@ kind-aware:
   answered and republishes status.
 - **A turn's end retires an elicitation still open.** An adapter that
   stopped waiting without `$/cancel_request` would otherwise leave the
-  conversation `asking` with nothing to release it. omp does this when the
-  user sets its `ask.timeout`. The conversation answers such a question
-  `cancel` when the turn ends (the `session/prompt` reply, or the adapter's
-  idle report).
+  conversation `asking` with nothing to release it. omp does this whenever
+  its own signal aborts a prompt: a steer, its `ask.timeout` (off by
+  default), the computer-control confirm's timeout. The conversation answers
+  such a question `cancel` when the turn ends (the `session/prompt` reply,
+  or the adapter's idle report). Holding messages (below) keeps yaac from
+  being the cause.
+- **Messages sent while a question is open are held, by yaac.** `prompt()`
+  routes a message one at a time through `intake`. While an elicitation is
+  open, routing waits until none is, and the message shows in the pane's
+  queue meanwhile (`publishQueue`, as a queued message does). Then it is
+  routed as usual: steered if the turn still runs, else sent as a prompt,
+  or queued behind a turn on an adapter that cannot steer.
+
+  This holds only for elicitations. A message sent during a permission ask
+  is routed as it is today: claude holds it (docs/agent-modes.md), and omp
+  lets it supersede the ask. omp withdraws the ask with `$/cancel_request`
+  and fails the call with "Permission request superseded by user steering"
+  (verified). That is omp's way of answering an ask with a message, so it
+  stays. The new `$/cancel_request` handling retires the card, which today
+  would stay docked. `unqueue` can drop a held message as it drops a queued
+  one. A held message is not lost if the question ends any other way:
+  answered, skipped, withdrawn, retired at the turn's end, or the agent
+  exiting.
 - The capability goes out in the handshake only. A running agent picks it
   up at its next restart, which needs no compatibility shim.
 
@@ -260,8 +307,32 @@ the tail.
 | Stop | yaac answers `cancel`. claude also sends `$/cancel_request`, fails the tool ("The user doesn't want to proceed with this tool use…") and ends the turn `cancelled` (verified). |
 | Adapter withdraws | `$/cancel_request` → dropped live, and `withdrawn` in the record. |
 | Agent exits / restarts | `_acpd/exit` releases it, and the new life's record starts empty. |
-| Message sent while open | Steered. claude holds a steer until the question settles: the steer is answered `injected` at once and reaches the model after the answer (verified). opencode queues the message behind the turn, as for every mid-turn message. For codex and omp, see open question 2. |
+| Message sent while open | Held by yaac and shown as queued; routed as usual once the question settles. Without the hold, omp would abandon the question (verified). |
 | Workspace stopped while open | The transcript shows it unanswered. |
+
+### omp's other prompts
+
+Besides its `ask` tool, omp has prompts that run through the same UI
+context, which omp hands its tools, slash commands and extensions. The
+capability changes what each does under ACP. Read from omp 18.18.6's
+bundle:
+
+| Prompt | Where it comes from | Today (no capability) | With the capability |
+|---|---|---|---|
+| `ask` tool | The model asks the user (an HTML form → `formDialog`) | The tool is not offered at all (`createIf` needs `canPromptUser`). | Offered; a docked form (verified). |
+| Ratchet approval ("Approve / Revise / Abort", then "What should change?") | omp's ratchet flows, which pause for the user to approve each step | The flow throws "ratchet approvals need an interactive session", so only a flow whose approvals are already current can continue. | A docked choice, then a text field on Revise. |
+| "Allow foreground computer control?" | The computer-use tool asking before it takes the screen, with its own timeout | Never asked, so control is not granted. A workspace has no desktop, so this barely applies. | A docked confirm. omp drops it at its timeout without `$/cancel_request`, and the turn-end rule retires it. |
+| "Coding-plan reserve reached — Switch to <model>?" | The usage-aware fallback, when the account nears its plan's reserve. Only with `retry.usageAwareFallback` on (off by default) and `retry.usageReservePolicy: confirm` (its default). | omp switches to the fallback model without asking (`!t` makes the switch automatic). | A docked confirm. Answering No keeps the current plan for the session. |
+| `/review` ("Review Mode", "Select base branch…", "Select commit…", "Select repository…", "Enter custom review instructions") | omp's `/review` slash command, which yaac's composer lists | Each select returns nothing, so the command stops silently. | A docked select or editor at each step. |
+| `/annotate` ("Select content to annotate", "File path to annotate", "Text prompt to annotate", "Resume an annotation draft") | omp's `/annotate` slash command | The command stops silently. | Docked selects and inputs. |
+| `select` / `confirm` / `input` / `editor` from an extension | A user's own omp extensions (yaac's `yaac-report` never prompts) | Return nothing / false / nothing / nothing at once, without asking. | Docked forms. `input` with `secret` is never sent; omp returns nothing for it. |
+| `cfg://` settings writes | The model changing omp's settings | Refused: omp's ACP sessions never set `settingsApproval`. | Unchanged: still refused. |
+
+Each of these is a question for the user, a choice the user started (a slash
+command), or consent to switch the model the user pays for. So all of them
+render through the generic form rather than yaac answering any of them.
+The usage-fallback confirm changes behaviour (a silent switch becomes a
+question), but only for a user who turned the usage-aware fallback on.
 
 ### TUI mode
 
@@ -397,6 +468,9 @@ adapter during verification:
   reply with `content`.
 - `bypass` still parks.
 - Stop answers `cancel`.
+- A message sent while a question is open goes out on no wire line until
+  the question is answered. It is listed in the queue frame meanwhile, and
+  then steered.
 - `$/cancel_request` retires a question and a permission ask.
 - A turn's end retires a question still open.
 - Non-form modes and an unknown property type get `-32602`.
@@ -484,10 +558,21 @@ the wire. Results:
   asked and folded the answers back: `collaboration_mode: plan` and
   `features.default_mode_request_user_input`. The rollout kept the call and
   output as described above.
+  - While blocked, codex reports `threadStatus.activeFlags:
+    ["waitingOnUserInput"]`.
+  - A steer while the question was open was answered `injected`; the
+    question stayed open, and after the answer the reply used both.
 - **opencode 2.2.6** (via OpenRouter): the question was elicited with
   `toolCallId`, and the result was folded back.
-- **omp 18.18.6**: the `ask` tool's HTML form was elicited without a
-  `toolCallId`, and folded back.
+- **omp 18.18.6** (a custom-endpoint model): the `ask` tool's HTML form was
+  elicited without a `toolCallId`, and folded back.
+  - A steer while the question was open was answered `injected` but
+    interrupted the question: the tool failed with "Ask interrupted by
+    message". No `$/cancel_request` came for that elicitation, and omp
+    asked again in a new one. Each steer did the same.
+  - A steer during a permission ask (`--approval-mode always-ask`)
+    superseded it: omp sent `$/cancel_request` for the ask, and the call
+    failed with "Permission request superseded by user steering".
 - **pi-acp**: no question tool, and no elicitation.
 
 ## Steps
@@ -495,13 +580,15 @@ the wire. Results:
 1. Shared wire types, plus protocol helpers and constants in
    `acp-protocol.ts`.
 2. `acp-client.ts`: kind-aware asks, `elicitation/create`,
-   `$/cancel_request`, retiring at a turn's end, `answerElicitation`, the
-   capability. Cases in `drivers.test.ts`.
+   `$/cancel_request`, retiring at a turn's end, holding messages while a
+   question is open, `answerElicitation`, the capability. Cases in
+   `drivers.test.ts`.
 3. `acp-log.ts`: projection, standing, `$/cancel_request`, `pendingAsks`.
    Cases in `acp-log.test.ts`.
 4. `acp-bridge.ts`: the client message, with its case.
 5. `acp-adapters.ts`: codex's `default_mode_request_user_input` flag, and
-   the bump-checklist notes.
+   the bump-checklist notes (the flag is still listed, the scripted
+   question run still elicits).
 6. Replays: `claude-acp-replay.ts` (with `elicitation` in
    `ADAPTER_INTERNALS`) and `codex-acp-replay.ts`, with their cases.
 7. `ui/`: `YChoiceList`, `YAsk` on top of it, catalog entries, a screenshot
@@ -513,8 +600,8 @@ the wire. Results:
 10. Docs, in the same change:
     - `docs/permission-modes.md`: asks and questions; posture never answers
       a question.
-    - `docs/agent-modes.md`: the record's asks; claude holds a steer for a
-      question as for a permission ask.
+    - `docs/agent-modes.md`: the record's asks; a message sent while a
+      question is open is held by yaac.
     - `docs/acp-history-differences.md`: the opencode, omp, refusal-dialog
       and MCP-form entries.
     - `docs/frontend-components.md`: `YChoiceList`.
@@ -525,15 +612,7 @@ the wire. Results:
 
 ## Open questions
 
-1. **codex's flag.** Is relying on `default_mode_request_user_input` (under
-   development) acceptable, or should yaac's `plan` posture map onto
-   codex's Plan collaboration mode instead, where the tool is stable?
-2. **Steering into a blocked codex or omp turn.** claude holds a steer
-   until the question settles (verified). codex delivers a steer at its
-   turn's next model call and omp at its next tool batch, and both are
-   blocked on the question. That suggests the same outcome, but it was not
-   run.
-3. **omp's extra prompts.** Its `confirm`, `select`, `input` and `editor`
-   calls and its usage-fallback confirmer become docked forms too. They
-   render through the generic form; is that wanted for all of them, or
-   should some (the usage fallback) be answered by yaac?
+1. **codex's flag.** The plan relies on `default_mode_request_user_input`
+   (see Decisions for what "under development" means there and why it
+   should hold). The fallback, if a codex bump breaks it, is mapping yaac's
+   `plan` posture onto codex's Plan collaboration mode.
