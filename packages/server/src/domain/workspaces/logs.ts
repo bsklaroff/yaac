@@ -37,6 +37,22 @@ function windowLogFiles({ life, name }: LoggedWindow): string[] {
   return [`${lifeDirName(life)}/${name}.log.1`, `${lifeDirName(life)}/${name}.log`]
 }
 
+/**
+ * The graph each workflow of each life ran, by life dir and then by the
+ * workflow's name in the workspace, from the step rows. Maps rather than
+ * plain objects, since a workflow may be named after an `Object.prototype`
+ * member (`constructor`), which a plain object already appears to hold.
+ */
+async function ranGraphs(workspaceId: string): Promise<Map<string, Map<string, StepGraph>>> {
+  const graphs = new Map<string, Map<string, StepGraph>>()
+  for (const s of await listWorkspaceSteps(workspaceId)) {
+    const life = lifeDirName(s.life)
+    const flows = graphs.get(life) ?? new Map<string, StepGraph>()
+    graphs.set(life, flows.set(s.workflowName, { ...flows.get(s.workflowName), [s.name]: s.spec }))
+  }
+  return graphs
+}
+
 /** Each life's log files, newest life first, with the step specs its
  *  workflows ran. An agent session's logs are left out (`isAgentWindow`),
  *  though `readWorkspaceLog` still serves them. */
@@ -44,8 +60,7 @@ export async function listWorkspaceLogs(principal: Actor, idOrPrefix: string): P
   const { projectId, workspaceId } = await resolveWorkspaceRecord(idOrPrefix)
   await authorizeWorkspace(principal, workspaceId)
   const logs = await openTerminalLogs(projectId, workspaceId)
-  const graphs: Record<string, Record<string, StepGraph>> = {}
-  for (const s of await listWorkspaceSteps(workspaceId)) ((graphs[lifeDirName(s.life)] ??= {})[s.workflowName] ??= {})[s.name] = s.spec
+  const graphs = await ranGraphs(workspaceId)
   const lives = (await logs.readdir('')).filter((d) => d.isDirectory() && LIFE.test(d.name)).map((d) => d.name).sort().reverse()
   return await Promise.all(lives.map(async (life) => {
     const names = (await logs.readdir(life)).flatMap((f) => {
@@ -53,7 +68,7 @@ export async function listWorkspaceLogs(principal: Actor, idOrPrefix: string): P
       return window !== undefined && !isAgentWindow(window) ? [f.name] : []
     }).sort()
     const files = await Promise.all(names.map(async (name) => ({ name, size: (await logs.stat(`${life}/${name}`))?.size ?? 0 })))
-    return { life, files, workflows: graphs[life] ?? {} }
+    return { life, files, workflows: Object.fromEntries(graphs.get(life) ?? []) }
   }))
 }
 

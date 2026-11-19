@@ -4,9 +4,10 @@ import { promisify } from 'node:util'
 import path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { listWorkspaceLogs, readWorkspaceLog } from '#domain/workspaces/logs'
-import { BUILT_IN_USER_ID, applyWorkspaceEvent } from '#db'
-import { createWorkflow, resolveWorkflow } from '#domain/projects'
+import { BUILT_IN_USER_ID, applyWorkspaceEvent, insertAddedSteps } from '#db'
+import { createWorkflow, editWorkflow, resolveWorkflow } from '#domain/projects'
 import { lifeDirName, parseStepGraph } from '@yaac/shared/steps'
+import type { WorkspaceLogLife } from '@yaac/shared/types'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { closeDb } from '#db/client'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
@@ -17,7 +18,8 @@ import { terminalLogDir } from '@yaac/shared/project-paths'
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const execFileAsync = promisify(execFile)
 const WS = 'w1'
-const OLD = '2026-11-01T10-00-00.000Z'
+const OLD_AT = new Date('2026-11-01T10:00:00.000Z')
+const OLD = lifeDirName(OLD_AT)
 const NEW_AT = new Date('2026-11-02T10:00:00.000Z')
 const NEW = lifeDirName(NEW_AT)
 
@@ -47,21 +49,35 @@ afterEach(async () => {
 describe('listWorkspaceLogs', () => {
   // An agent session's log is the chat pane's to offer once its agent
   // exits, so it is served but not listed. Each life carries the specs its
-  // workflows ran, which an edit to the named workflow since leaves.
-  it('lists every life, newest first, with its log files, their sizes and the graph it ran, leaving out an agent session\'s', async () => {
+  // workflows ran, an added one's included, which an edit to the named
+  // workflow since leaves. The old life is from before steps had
+  // workflows, so its steps are under ''. A workflow named after an
+  // Object.prototype member is listed like any other.
+  it('lists every life, newest first, with its log files, their sizes and the graphs it ran, leaving out an agent session\'s', async () => {
     const steps = { build: { run: 'make' }, test: { run: 'make test', needs: ['build'] } }
     await createWorkflow(local, DEMO_PROJECT_ID, { name: 'ci', steps })
-    await applyWorkspaceEvent({
-      type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at: NEW_AT,
-      startSteps: [{ id: (await resolveWorkflow(DEMO_PROJECT_ID, 'ci')).workflow.id, name: 'ci', steps: parseStepGraph(steps) }],
-    })
-    expect(await listWorkspaceLogs(local, WS)).toEqual([
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'constructor', steps: { keys: { run: 'true' } } })
+    const id = async (name: string): Promise<string> => (await resolveWorkflow(DEMO_PROJECT_ID, name)).workflow.id
+    const start = (at: Date, startSteps: Array<{ id: string; name: string; steps: ReturnType<typeof parseStepGraph> }>): Promise<void> =>
+      applyWorkspaceEvent({ type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at, startSteps })
+    await start(OLD_AT, [{ id: await id('ci'), name: '', steps: parseStepGraph({ setup: { run: 'make setup' } }) }])
+    await start(NEW_AT, [
+      { id: await id('ci'), name: 'ci', steps: parseStepGraph(steps) },
+      { id: await id('constructor'), name: 'constructor', steps: parseStepGraph({ keys: { run: 'true' } }) },
+    ])
+    await insertAddedSteps(DEMO_PROJECT_ID, WS, NEW_AT, { id: await id('ci'), name: 'extra' }, parseStepGraph({ lint: { run: 'make lint' } }))
+    await editWorkflow(local, DEMO_PROJECT_ID, 'ci', { steps: { other: { run: 'true' } } })
+    expect(await listWorkspaceLogs(local, WS)).toEqual<WorkspaceLogLife[]>([
       {
         life: NEW,
         files: [{ name: 'build.events', size: 10 }, { name: 'build.log', size: 8 }, { name: 'build.log.1', size: 5 }],
-        workflows: { ci: { build: { run: ['make'] }, test: { run: ['make test'], needs: ['build'] } } },
+        workflows: {
+          ci: { build: { run: ['make'] }, test: { run: ['make test'], needs: ['build'] } },
+          constructor: { keys: { run: ['true'] } },
+          extra: { lint: { run: ['make lint'] } },
+        },
       },
-      { life: OLD, files: [{ name: 'shell.log', size: 5 }], workflows: {} },
+      { life: OLD, files: [{ name: 'shell.log', size: 5 }], workflows: { '': { setup: { run: ['make setup'] } } } },
     ])
     expect((await readWorkspaceLog(local, WS, NEW, 'claude-c09f7077.log')).data.toString()).toBe('[acpd] listening on\n')
   })
