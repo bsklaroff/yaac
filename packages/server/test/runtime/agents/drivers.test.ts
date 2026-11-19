@@ -393,7 +393,9 @@ describe('agentDriver', () => {
     const acp = agentDriver('acp').launchCmd(spec)
     expect(acp).toContain('exec node /opt/yaac/acpd/main.js')
     // The protocol reports the conversation, so the pane reporters skip.
-    expect(acp).toMatch(/^YAAC_NO_PANE_REPORT=1 exec node /)
+    // Artifact tools are opted in, since the CLI withholds them from SDK
+    // sessions.
+    expect(acp).toMatch(/^CLAUDE_CODE_ARTIFACT=1 YAAC_NO_PANE_REPORT=1 exec node /)
     expect(agentDriver('tui').launchCmd(spec)).not.toContain('YAAC_NO_PANE_REPORT')
     expect(acp).toContain('--sock /tmp/yaac-acp/claude-2.sock')
     expect(acp).toContain('-- claude-agent-acp')
@@ -414,11 +416,11 @@ describe('agentDriver', () => {
       .toContain('--cwd /workspace --wait-for /workspace/api/.git --wait-for /workspace/web/.git --')
     // The adapter takes no flags, so the model goes in an env var.
     const withModel = agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5' })
-    expect(withModel).toMatch(/^ANTHROPIC_MODEL=claude-opus-5-5 YAAC_NO_PANE_REPORT=1 exec node /)
+    expect(withModel).toMatch(/^CLAUDE_CODE_ARTIFACT=1 ANTHROPIC_MODEL=claude-opus-5-5 YAAC_NO_PANE_REPORT=1 exec node /)
     expect(withModel).not.toContain('--model')
     // A 1M-context model is quoted, since a bare `[1m]` is a shell glob.
     expect(agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5[1m]' }))
-      .toMatch(/^ANTHROPIC_MODEL="claude-opus-5-5\[1m\]" YAAC_NO_PANE_REPORT=1 exec node /)
+      .toMatch(/^CLAUDE_CODE_ARTIFACT=1 ANTHROPIC_MODEL="claude-opus-5-5\[1m\]" YAAC_NO_PANE_REPORT=1 exec node /)
     // A model reaches here from a request, a queued child's parent or a
     // restarted conversation's report, which anything in the workspace can
     // set; every launch refuses one it cannot carry.
