@@ -416,13 +416,14 @@ export function NewWorkspacePane({ projectId, bar }: {
     if (!dialogHoldsFocus() && !focusRaisesKeyboard()) promptRef.current?.focus()
   }, [focusNonce])
 
-  // Grow the prompt to fit, up to its CSS max-height.
+  // Grow the prompt to fit, up to its CSS max-height. The textarea remounts
+  // on returning from the workflow or site tab, so that refits too.
   useLayoutEffect(() => {
     const el = promptRef.current
     if (!el) return
     el.style.height = 'auto'
     el.style.height = `${el.scrollHeight}px`
-  }, [prompt])
+  }, [prompt, kind, noAgent])
 
   // An untitled edit or draft is headed by the title generated from its
   // prompt until the prompt changes.
