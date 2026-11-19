@@ -3,7 +3,7 @@ import { SidebarIcon } from '#lib/icons'
 import { HomeSessionList } from '#components/home/HomeSessionList'
 import type { HomeRow } from '#components/home/homeRows'
 import { ListBadges, ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
-import { IS_MAC } from '#lib/platform'
+import { hidesTitleBar, IS_MAC } from '#lib/platform'
 import { formatChord } from '#lib/shortcuts'
 import { useReadOnly } from '#lib/viewer'
 import type { ProjectSummary } from '@yaac/shared/types'
@@ -94,9 +94,10 @@ function ResizeHandle(): JSX.Element {
 }
 
 /**
- * The sidebar, scoped by the rail. Its header spans the rail as well, from
- * the window's left edge (after the traffic lights' room in the macOS
- * desktop app), and the rail sits under it beside the list. On a project:
+ * The sidebar, scoped by the rail. In the macOS desktop app its header
+ * spans the rail as well, so the traffic lights sit in it, and the rail
+ * starts under it. Elsewhere the rail starts under an empty corner of its
+ * own, so its line runs beside the whole sidebar. On a project:
  * its name and actions, New session, then its workspaces, groups,
  * workflows, routines and sites in the order WorkspaceList keeps. On Home
  * (`home`): every project's sessions in status sections, and New session
@@ -132,28 +133,47 @@ export function Sidebar({ scope, connected, home, rail }: {
       ))
     : scope.projectId && <YSidebarNewSession kbd={kbd} onClick={() => openNewWorkspace({ projectId: scope.projectId ?? '' })} />
 
-  return (
-    <div className="flex shrink-0 flex-col">
-      <div className="titlebar-drag flex h-bar shrink-0 items-center gap-2 border-b border-r border-line bg-shell pl-3 pr-1.5">
-        <YTrafficLights />
-        <div className="no-drag flex min-w-0 flex-1 items-center">
-          {home ? <span className="text-base font-semibold tracking-tight text-text">Home</span> : <ListTitle scope={scope} />}
-        </div>
-        <div className="no-drag flex shrink-0 items-center gap-1">
-          {!connected && <span className="text-sm text-warning">reconnecting…</span>}
-          <YButton variant="ghost" size="sm" icon={SidebarIcon} onClick={toggleSidebar} title="Hide sidebar" aria-label="Hide sidebar" />
-        </div>
+  const lights = hidesTitleBar()
+  const header = (
+    <div className="titlebar-drag flex h-bar shrink-0 items-center gap-2 border-b border-r border-line bg-shell pl-3 pr-1.5">
+      <YTrafficLights />
+      <div className="no-drag flex min-w-0 flex-1 items-center">
+        {home ? <span className="text-base font-semibold tracking-tight text-text">Inbox</span> : <ListTitle scope={scope} />}
       </div>
-      <div className="flex min-h-0 flex-1">
-        {rail}
-        <YSidebar width={sidebarWidth} className="isolate" newSession={newSession || undefined}>
-          <ListBadges
-            projectIds={home ? home.projects.map((p) => p.id) : scope.projectId !== null ? [scope.projectId] : []}
-            className="px-1 pt-2"
-          />
-          {home ? <HomeSessionList rows={home.rows} projects={home.projects} /> : <WorkspaceList {...scope} />}
-          <ResizeHandle />
-        </YSidebar>
+      <div className="no-drag flex shrink-0 items-center gap-1">
+        {!connected && <span className="text-sm text-warning">reconnecting…</span>}
+        <YButton variant="ghost" size="sm" icon={SidebarIcon} onClick={toggleSidebar} title="Hide sidebar" aria-label="Hide sidebar" />
+      </div>
+    </div>
+  )
+  const list = (
+    <YSidebar width={sidebarWidth} className="isolate" newSession={newSession || undefined}>
+      <ListBadges
+        projectIds={home ? home.projects.map((p) => p.id) : scope.projectId !== null ? [scope.projectId] : []}
+        className="px-1 pt-2"
+      />
+      {home ? <HomeSessionList rows={home.rows} projects={home.projects} /> : <WorkspaceList {...scope} />}
+      <ResizeHandle />
+    </YSidebar>
+  )
+
+  if (lights) {
+    return (
+      <div className="flex shrink-0 flex-col">
+        {header}
+        <div className="flex min-h-0 flex-1">{rail}{list}</div>
+      </div>
+    )
+  }
+  return (
+    <div className="flex shrink-0">
+      <div className="flex shrink-0 flex-col">
+        <div aria-hidden className="h-bar shrink-0 border-b border-r border-line bg-shell" />
+        <div className="flex min-h-0 flex-1">{rail}</div>
+      </div>
+      <div className="flex min-h-0 flex-col">
+        {header}
+        <div className="flex min-h-0 flex-1">{list}</div>
       </div>
     </div>
   )

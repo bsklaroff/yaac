@@ -108,9 +108,9 @@ connected server, since this screen has no status row for the server badge.
 
 **Workspaces** reuses the desktop sidebar's `WorkspaceList` as is, so list
 order matches the Alt+K/J cycle order. Opening Home (`openHome`) lands here
-too, on every project's sessions by status (`HomeSessionList`), with an
-Inbox button in the header that shows Home's inbox in the pane. It sits under a mobile header with the
-project menu and new-workspace, over the sidebar's status row (usage,
+too, on every project's sessions by status (`HomeSessionList`), titled
+Inbox. It sits under a mobile header with the project's name (a link to
+its settings) and new-workspace, over the sidebar's status row (usage,
 and the server badge inside the iPhone app). Touch has no hover, so below `md` each
 row's rename, group and delete actions are always shown and finger-sized, and
 the title's hover marquee is off. Dragging rows between groups is mouse-only

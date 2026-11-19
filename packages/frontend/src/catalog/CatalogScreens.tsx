@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react'
 import {
-  YAgentText, YAsk, YBars, YButton, YChip, YCmdK, YComposer, YDetailCard, YDetailRow, YDetailsPanel, YInboxItem,
+  YAgentText, YAsk, YBars, YButton, YChip, YCmdK, YComposer, YDetailCard, YDetailRow, YDetailsPanel,
   YListRow, YListSection, YMachineCard, YMeter, YPanel, YPanelHeader, YPanelTab, YPersonRow, YProjectCard, YProjectRail,
   YProjectTile, YRailItem, YRoutineRow, YSessionRow, YSidebar, YSidebarAll, YSidebarNewSession, YStatCard, YStep, YTopBar, YUserMessage,
 } from '#ui'
@@ -45,7 +45,7 @@ export function ProjectsSection(): JSX.Element {
       <Item name="YProjectRail">
         <YProjectRail
           className="h-[420px]"
-          top={<><YRailItem icon={icons.InboxIcon} label="Home" dot active /></>}
+          top={<><YRailItem icon={icons.HomeIcon} label="Home" dot active /></>}
           bottom={<YRailItem label="yaac"><span className="text-subtle">Y</span></YRailItem>}
         >
           <YProjectTile size={44} id="y" name="yaac" current agents={2} />
@@ -172,13 +172,7 @@ export function PanelsSection(): JSX.Element {
 
 export function ListsSection(): JSX.Element {
   return (
-    <Section title="Lists" note="rows for inbox, sessions, routines, people, steps">
-      <Item name="YInboxItem · unread and quiet">
-        <div className="w-[340px]">
-          <YInboxItem label="Rate-limit" unread title="Rate-limit the public API" project="site" time="12m" kind="Question" text="Should the limit be per API key or per IP address?" onSelect={noop} />
-          <YInboxItem label="Bump" title="Bump vitest to 3.x" project="yaac" time="12m" kind="Done" text="vitest is on 3.0.4 and all 412 tests pass." onSelect={noop} />
-        </div>
-      </Item>
+    <Section title="Lists" note="rows for sessions, routines, people, steps">
       <Item name="YListSection · YListRow">
         <div className="w-[480px]">
           <YListSection label="Needs you" count={2} />

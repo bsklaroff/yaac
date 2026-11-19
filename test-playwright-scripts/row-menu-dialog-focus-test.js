@@ -12,8 +12,9 @@
  *  3. By keyboard through the row menu, Open… hands focus to the reopened
  *     draft's prompt, and Discard… returns focus to the `…` trigger on
  *     Escape, visibly.
- *  4. A dialog from an ordinary menu item (the project header's Remove
- *     project) returns focus to that menu's trigger, by mouse and keyboard.
+ *  4. The Remove project dialog, opened from its button on Settings →
+ *     General (reached by clicking the project's name), returns focus to
+ *     that button on Escape, by mouse and visibly by keyboard.
  *
  * Saves one draft and discards it at the end, with any "pw focus …" drafts
  * an earlier failed run left behind.
@@ -148,29 +149,29 @@ try {
   await question.waitFor({ state: 'detached' })
   await expectFocusedVisible('keyboard Discard… + Escape returns focus to the … trigger')
 
-  // (4) An ordinary menu: the project header's Remove project.
-  const projectMenu = aside.getByRole('button', { name: PROJECT.name, exact: true })
+  // (4) The Remove project dialog, opened inside the settings modal.
+  await page.getByTitle('Project settings').click()
+  const removeButton = page.getByRole('button', { name: 'Remove project' })
+  await removeButton.waitFor({ state: 'visible' })
   const removeDialog = page.getByRole('alertdialog', { name: 'Remove project?' })
-  const escapeRemove = async (name) => {
+  const escapeRemove = async (name, visible) => {
     await removeDialog.waitFor({ state: 'visible' })
     await page.waitForTimeout(300)
     await page.keyboard.press('Escape')
     await removeDialog.waitFor({ state: 'detached' })
     await page.waitForTimeout(400)
-    check(name, await projectMenu.evaluate((el) => el === document.activeElement))
+    const s = await removeButton.evaluate((el) => ({
+      focused: el === document.activeElement, visible: el.matches(':focus-visible'),
+    }))
+    check(name, s.focused && (!visible || s.visible), JSON.stringify(s))
   }
-  await projectMenu.click()
-  await page.getByRole('menuitem', { name: 'Remove project' }).click()
-  await escapeRemove('Remove project by mouse returns focus to the project menu')
-  await projectMenu.focus()
+  await removeButton.click()
+  await escapeRemove('Remove project by mouse returns focus to its button', false)
+  await removeButton.focus()
   await page.keyboard.press('Enter')
-  const removeItem = page.getByRole('menuitem', { name: 'Remove project' })
-  await removeItem.waitFor({ state: 'visible' })
-  for (let i = 0; i < 5 && !(await removeItem.evaluate((el) => el.hasAttribute('data-highlighted'))); i++) {
-    await page.keyboard.press('ArrowDown')
-  }
-  await page.keyboard.press('Enter')
-  await escapeRemove('Remove project by keyboard returns focus to the project menu')
+  await escapeRemove('Remove project by keyboard returns focus to its button, visibly', true)
+  await page.keyboard.press('Escape')
+  await removeButton.waitFor({ state: 'detached' })
 
   // Clean up: this run's draft, and any a failed run left behind.
   const leftovers = aside.getByRole('group', { name: 'Drafts' })

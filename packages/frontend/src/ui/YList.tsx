@@ -62,34 +62,6 @@ export function YListRow({ title, sub, person, time, leading, ...frame }: {
   )
 }
 
-/** An inbox entry: what it is about, where and when, and in a second line
- *  the state word ("Question", "Done") and what was said. `unread` marks
- *  it with a dot and a bold title. */
-export function YInboxItem({ title, project, time, kind, text, unread = false, ...frame }: {
-  title: ReactNode
-  project?: string
-  time?: string
-  kind: string
-  text?: ReactNode
-  unread?: boolean
-} & Omit<YRowFrameProps, 'children'>): JSX.Element {
-  return (
-    <YRowFrame {...frame} className={cn('py-2.5 pr-3 pl-3', frame.className)}>
-      <span aria-hidden className={cn('mt-1.5 h-1.5 w-1.5 shrink-0 self-start', unread ? 'bg-text' : 'bg-transparent')} />
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span className="flex min-w-0 items-baseline gap-2">
-          <span className={cn('min-w-0 flex-1 truncate text-md', unread ? 'font-semibold text-text' : 'text-muted')}>{title}</span>
-          {project && <span className="shrink-0 text-sm text-subtle">{project}</span>}
-          {time && <span className="shrink-0 text-sm tabular-nums text-subtle">{time}</span>}
-        </span>
-        <span className="min-w-0 truncate text-md text-muted">
-          <span className="mr-1.5 font-semibold text-text">{kind}</span>{text}
-        </span>
-      </div>
-    </YRowFrame>
-  )
-}
-
 /** A routine: its name and what runs it. */
 export function YRoutineRow({ name, trigger, paused = false, ...frame }: {
   name: ReactNode

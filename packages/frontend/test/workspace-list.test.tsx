@@ -1305,13 +1305,15 @@ describe('WorkspaceList', () => {
 })
 
 describe('ListTitle', () => {
-  it('shows nothing for a project the snapshot does not list yet, then its name', () => {
+  it('shows nothing for a project the snapshot does not list yet, then its name, which opens its settings', () => {
+    useUiStore.setState({ settingsOpen: false, settingsSection: 'shortcuts', settingsProjectId: null })
     const project = { id: 'proj', name: 'widgets', repos: [] as ProjectRepo[] } as ProjectSummary
     const scope = { projectId: 'proj', project: undefined } as ProjectScope
     const { container, unmount } = renderWithClient(<ListTitle scope={scope} />)
     expect(container.textContent).toBe('')
     unmount()
     renderWithClient(<ListTitle scope={{ ...scope, project }} />)
-    expect(screen.getByRole('button', { name: 'widgets' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'widgets' }))
+    expect(useUiStore.getState()).toMatchObject({ settingsOpen: true, settingsSection: 'project-general', settingsProjectId: 'proj' })
   })
 })

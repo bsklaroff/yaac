@@ -500,12 +500,15 @@ describe('ProjectSettings', () => {
     expect(screen.queryByRole('button', { name: 'Rename init.lua' })).toBeNull()
     expect(server.calls.filter((c) => c.method !== 'GET')).toEqual([])
 
-    // Only the viewed user's projects are offered.
+    // Only the viewed user's projects are offered, and General has no
+    // Remove project.
     cleanup()
     useUiStore.setState({ settingsOpen: true, settingsSection: 'project-general' })
     renderWithClient(<><SettingsButton /><SettingsDialog /></>, testQueryClient(undefined, snapshot))
     const picker = within(screen.getByRole('group', { name: 'Project' })).getByRole<HTMLSelectElement>('combobox')
     expect([...picker.options].map((o) => o.value)).toEqual(['id-hers'])
+    await screen.findByText('Stopped workspace auto-delete')
+    expect(screen.queryByRole('button', { name: 'Remove project' })).toBeNull()
   })
 
   it("shows the project's icon, offers it for download, crops a pasted image where it is dragged and zoomed, and removes the icon", async () => {

@@ -115,20 +115,25 @@ only signal.
   they show through), add project, and
   the logo menu (settings, server health, servers, feedback, switching
   user).
-- **The sidebar** (YSidebar) follows the rail. Its header spans the rail
-  too, starting at the window's left edge, after room for the native
-  traffic lights in the macOS desktop app (YTrafficLights). On Home it lists every
+- **The sidebar** (YSidebar) follows the rail. In the macOS desktop app
+  its header spans the rail too, starting at the window's left edge, after
+  room for the native traffic lights (YTrafficLights). Elsewhere the rail
+  starts under an empty corner of its own, which holds the show-sidebar
+  button while the sidebar is hidden, so the rail's line runs to the top. On Home it lists every
   project's sessions in status sections (Needs you, Working, Done). On a
-  project it lists its drafts and scheduled starts, its Workflows,
+  project its header shows the project's name, which opens the project's
+  settings on General (where the project is also removed), and it lists
+  its drafts and scheduled starts, its Workflows,
   Routines and Sites, then its sessions in creation order and the user's
   groups. There status shows only on each row, so rows never jump between
   sections. A workspace with
   several sessions lists them under its row on a tree line. There is no
   search box: the command palette (Alt+O) finds sessions, projects and
   actions.
-- **Home** (`homeOpen` in the store, not a URL route): the inbox across
-  projects above a grid of project cards. A wait's age shows only when the
-  server knows it (`ServerSnapshot.startedAtMs`).
+- **Home** (`homeOpen` in the store, not a URL route): the sidebar, titled
+  Inbox, lists every project's sessions, and the pane, titled Projects, is
+  a grid of project cards. A wait's age shows only when the server knows
+  it (`ServerSnapshot.startedAtMs`).
 - **A workspace**: a top bar over the tile and tab pane layout of
   `lib/layout.ts`, unchanged by the catalog. Each pane is framed by
   YPanelHeader. Details is a pane target too: it holds what needs a look

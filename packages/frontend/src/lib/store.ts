@@ -780,12 +780,12 @@ interface UiState {
    */
   receiveSnapshot: (snapshot: ServerSnapshot) => void
   setActiveProject: (projectId: string | null) => void
-  /** Home: the inbox in the pane and every project's sessions in the
-   *  sidebar. A project tile, or anything that opens a project's own pane
+  /** Home: the project cards in the pane and every project's sessions in
+   *  the sidebar. A project tile, or anything that opens a project's own pane
    *  (an object, the new-workspace form, a jump to a workspace), leaves it;
    *  picking a session from the sidebar keeps it. */
   homeOpen: boolean
-  /** Open Home on its inbox (no session selected). */
+  /** Open Home with no session selected. */
   openHome: () => void
   /** Open a session picked on Home: its project becomes active, Home stays. */
   selectHomeWorkspace: (projectId: string, workspaceId: string) => void
