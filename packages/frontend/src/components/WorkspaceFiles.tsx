@@ -56,8 +56,8 @@ import {
   UploadFilesIcon, UploadFolderIcon, WarningIcon,
 } from '#lib/icons'
 import {
-  FIELD_BOX, POPUP, YButton, YConfirm, YContextMenu, YFileInput, YInput, YMenu, YMenuItem, YMenuPopup, YTip, YTooltip, YTooltipProvider,
-  type YIconGlyph,
+  FIELD_BOX, POPUP, YActions, YButton, YConfirm, YContextMenu, YFileInput, YInput, YMenu, YMenuItem, YMenuPopup,
+  YTooltipProvider,
 } from '#ui'
 
 /** The most matches the filter lists. */
@@ -692,7 +692,7 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
             {data.truncated && !changedOnly && '+'}
           </span>
         </label>
-        <HeaderActions actions={changedOnly ? [
+        <YActions size="sm" actions={changedOnly ? [
           { label: `Find in diffs (${formatChord(findChord(), IS_MAC)})`, icon: SearchIcon, onClick: findQuery.open },
           {
             label: flat ? 'Show as a tree' : 'Show as a flat list',
@@ -939,49 +939,6 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
         }}
       />
     </div>
-  )
-}
-
-interface HeaderAction {
-  label: string
-  icon: YIconGlyph
-  pressed?: boolean
-  onClick: () => void
-}
-
-/**
- * The header's buttons beside the filter field. In a narrow pane (a tile
- * among several) they fold into a ⋯ menu, so they never draw over the field.
- */
-function HeaderActions({ actions }: { actions: HeaderAction[] }): JSX.Element {
-  return (
-    <>
-      <span className="flex shrink-0 items-center gap-1 @max-[22rem]:hidden">
-        {actions.map((a) => <HeaderButton key={a.label} {...a} />)}
-      </span>
-      <YMenu.Root>
-        <YMenu.Trigger render={<YButton variant="ghost" size="sm" icon={MoreIcon} aria-label="More actions" className="@min-[22rem]:hidden" />} />
-        <YMenuPopup side="bottom" align="end" sideOffset={4}>
-          {actions.map((a) => <YMenuItem key={a.label} icon={a.icon} onClick={a.onClick}>{a.label}</YMenuItem>)}
-        </YMenuPopup>
-      </YMenu.Root>
-    </>
-  )
-}
-
-function HeaderButton({ label, icon, pressed, onClick }: HeaderAction): JSX.Element {
-  return (
-    <YTooltip tip={<YTip title={label} />}>
-      <YButton
-        variant="ghost"
-        size="sm"
-        icon={icon}
-        onClick={onClick}
-        aria-label={label}
-        aria-pressed={pressed}
-        className="aria-pressed:text-text"
-      />
-    </YTooltip>
   )
 }
 

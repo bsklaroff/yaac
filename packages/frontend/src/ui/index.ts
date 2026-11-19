@@ -6,6 +6,7 @@
  */
 export { cn } from './cn'
 export { identityFamily, identityInitial, identityStyle, IDENTITY_FAMILIES, type IdentityFamily } from './identity'
+export { YActionButton, YActions, type YAction } from './YActions'
 export { YAvatar } from './YAvatar'
 export { YBadge, type YBadgeTone } from './YBadge'
 export { YButton, yButtonClass, type YButtonSize, type YButtonVariant } from './YButton'

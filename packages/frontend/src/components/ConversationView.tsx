@@ -15,7 +15,7 @@ import { dialogHoldsFocus } from '#lib/dialogFocus'
 import {
   CondenseIcon, JumpBottomIcon, JumpTopIcon, LoadingIcon, NarrowIcon, StopIcon, UncondenseIcon, WidenIcon,
 } from '#lib/icons'
-import { YButton } from '#ui'
+import { YActionButton, YButton, type YAction } from '#ui'
 
 import { TAIL_SLACK_PX, type TranscriptPages } from '#lib/useTranscriptPages'
 import { useUiStore } from '#lib/store'
@@ -427,6 +427,14 @@ export function Launching({ prompt, loading, caption }: Opening & { caption?: st
 export const COMPOSER_INPUT = 'block max-h-60 min-h-10 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 '
   + 'text-base text-text placeholder:text-subtle focus:outline-none'
 
+/** The row of controls under the composer's text box. It wraps rather than
+ *  overlap: the chips (`COMPOSER_CHIPS`) shrink to 7rem, truncating their
+ *  labels, and past that the buttons after them (`COMPOSER_BUTTONS`) drop
+ *  to a line of their own, which wraps again in the narrowest panes. */
+export const COMPOSER_ROW = 'flex flex-wrap items-center gap-y-1 px-2 pb-2'
+export const COMPOSER_CHIPS = 'flex min-w-[min(7rem,100%)] grow basis-0 items-center'
+export const COMPOSER_BUTTONS = 'ml-auto flex flex-wrap items-center justify-end gap-y-1'
+
 /** The stop square filled, as the composer's Stop buttons draw it. */
 export function FilledStopIcon(props: ComponentProps<typeof StopIcon>): JSX.Element {
   return <StopIcon {...props} fill="currentColor" />
@@ -469,33 +477,37 @@ export function ChatBottomBar({ above, onClick, children }: {
 }
 
 
-/**
- * The saved view toggles every chat pane shares, live or read-only, in the
- * bar under the conversation: full width and condensed. The width toggle
- * needs an `@container` ancestor as wide as the pane.
- */
+/** The saved view toggles for a read-only chat's footer and a subagent's
+ *  title bar: full width and condensed. */
 export function ChatViewToggles(): JSX.Element {
-  const fullWidth = useUiStore((s) => s.chatFullWidth)
-  const setFullWidth = useUiStore((s) => s.setChatFullWidth)
-  const condensed = useUiStore((s) => s.chatCondensed)
-  const setCondensed = useUiStore((s) => s.setChatCondensed)
   return (
     <>
-      <YButton
-        variant="ghost"
-        icon={fullWidth ? NarrowIcon : WidenIcon}
-        aria-label={fullWidth ? 'Center chat' : 'Full-width chat'}
-        title={fullWidth ? 'Center chat' : 'Full-width chat'}
-        onClick={() => setFullWidth(!fullWidth)}
-        className="@max-[66rem]:hidden"
-      />
-      <YButton
-        variant="ghost"
-        icon={condensed ? UncondenseIcon : CondenseIcon}
-        aria-label={condensed ? 'Show every step' : 'Show key messages only'}
-        title={condensed ? 'Show every step' : 'Show key messages only'}
-        onClick={() => setCondensed(!condensed)}
-      />
+      <ChatWidthToggle />
+      <YActionButton {...useCondensedAction()} />
     </>
   )
+}
+
+/** The full-width toggle. It needs an `@container` ancestor as wide as the
+ *  pane, and shows only where the two widths differ. */
+export function ChatWidthToggle(): JSX.Element {
+  const fullWidth = useUiStore((s) => s.chatFullWidth)
+  const setFullWidth = useUiStore((s) => s.setChatFullWidth)
+  const label = fullWidth ? 'Center chat' : 'Full-width chat'
+  return (
+    <span className="contents @max-[66rem]:hidden">
+      <YActionButton label={label} icon={fullWidth ? NarrowIcon : WidenIcon} onClick={() => setFullWidth(!fullWidth)} />
+    </span>
+  )
+}
+
+/** The condensed toggle, as an action a toolbar can fold into its menu. */
+export function useCondensedAction(): YAction {
+  const condensed = useUiStore((s) => s.chatCondensed)
+  const setCondensed = useUiStore((s) => s.setChatCondensed)
+  return {
+    label: condensed ? 'Show every step' : 'Show key messages only',
+    icon: condensed ? UncondenseIcon : CondenseIcon,
+    onClick: () => setCondensed(!condensed),
+  }
 }

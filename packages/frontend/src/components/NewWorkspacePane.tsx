@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChatIcon, CloseIcon, RenameIcon, RunIcon, SendIcon, SiteIcon, TerminalIcon, TOOL_LABEL, WorkflowIcon } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
 import { AgentSettings, PermissionModeSelect } from '#components/ComposerSettings'
-import { ChatBottomBar, COMPOSER_INPUT } from '#components/ConversationView'
+import { ChatBottomBar, COMPOSER_CHIPS, COMPOSER_INPUT, COMPOSER_ROW } from '#components/ConversationView'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
 import { PaneBarActions, PaneOverflowMenu } from '#components/PaneBar'
 import { SiteForm } from '#components/SitePane'
@@ -1145,8 +1145,8 @@ export function NewWorkspacePane({ projectId, bar }: {
             : queued || editing !== undefined ? 'What should it do?' : 'Message the agent…'}
           className={COMPOSER_INPUT}
         />
-        <div className="flex items-center justify-between px-2 pb-2">
-          <div className="mr-auto flex min-w-0 items-center">
+        <div className={COMPOSER_ROW}>
+          <div className={COMPOSER_CHIPS}>
             {signedIn && !noAgent && (
               <PermissionModeSelect
                 current={permissionMode}
@@ -1187,6 +1187,7 @@ export function NewWorkspacePane({ projectId, bar }: {
             title={sendTitle}
             onClick={() => submit()}
             disabled={busy || blocked !== null || (text === '' && !noAgent)}
+            className="ml-auto shrink-0"
           />
         </div>
       </ChatBottomBar>}
