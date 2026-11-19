@@ -5,7 +5,7 @@
  * `WorkspacePaths.terminalLogDir`, so no command text nests a script inside
  * shell and tmux quoting.
  */
-import { pipeToLogCommand, tmuxCmd } from '#runtime/agents'
+import { NEW_WINDOW_TARGET, pipeToLogCommand, tmuxCmd } from '#runtime/agents'
 import { shellQuote } from '#lib/shell'
 import type { WorkspacePaths } from '#drivers/contract'
 import { AGENT_TOOLS } from '@yaac/shared/types'
@@ -119,7 +119,7 @@ function killWindowsNamed(tmux: string, name: string): string {
 export function stepWindowExec(name: string, paths: WorkspacePaths, scriptPath: string): string {
   const tmux = tmuxCmd(paths)
   return `${killWindowsNamed(tmux, name)}; `
-    + `${tmux} new-window -d -t yaac -n ${shellQuote(name)} -c '#{session_path}' ${shellQuote(`sh ${shellQuote(scriptPath)}`)}`
+    + `${tmux} new-window -d -t ${NEW_WINDOW_TARGET} -n ${shellQuote(name)} -c '#{session_path}' ${shellQuote(`sh ${shellQuote(scriptPath)}`)}`
 }
 
 /** Kill a step's window, if it has one. */

@@ -22,7 +22,7 @@ describe('buildWindowsExec', () => {
   // A session's window keeps its pane when the agent exits, for a resume.
   it('opens each session in a window of its own, in its own cwd, keeping its pane on exit', () => {
     expect(buildWindowsExec([claude], PATHS)).toBe(
-      `${TMUX} new-window -d -t yaac -n claude-aaaa -c ${PATHS.workspaceDir} 'claude --session-id x'`
+      `${TMUX} new-window -d -t =yaac: -n claude-aaaa -c ${PATHS.workspaceDir} 'claude --session-id x'`
       + ' \\; set-option -t =yaac:=claude-aaaa remain-on-exit on',
     )
     expect(buildWindowsExec([{ ...claude, cwd: `${PATHS.workspaceDir}/web` }], PATHS))
@@ -42,10 +42,10 @@ describe('buildWindowsExec', () => {
       { tool: 'opencode', mode: 'tui', window: 'opencode-cccc', cwd: PATHS.workspaceDir, cmd: 'opencode --standalone --session ses_2', resumes: 'ses_2' },
     ], PATHS)
     expect(cmd).toBe(
-      `${TMUX} new-window -d -t yaac -n codex-bbbb -c ${PATHS.workspaceDir} 'codex resume t-1'`
+      `${TMUX} new-window -d -t =yaac: -n codex-bbbb -c ${PATHS.workspaceDir} 'codex resume t-1'`
       + ' \\; set-option -t =yaac:=codex-bbbb remain-on-exit on'
       + " \\; set-option -p -t =yaac:=codex-bbbb @yaac-session 'codex|t-1|'"
-      + ` \\; new-window -d -t yaac -n opencode-cccc -c ${PATHS.workspaceDir} 'opencode --standalone --session ses_2'`
+      + ` \\; new-window -d -t =yaac: -n opencode-cccc -c ${PATHS.workspaceDir} 'opencode --standalone --session ses_2'`
       + ' \\; set-option -t =yaac:=opencode-cccc remain-on-exit on'
       + " \\; set-option -p -t =yaac:=opencode-cccc @yaac-session 'opencode|ses_2|'",
     )

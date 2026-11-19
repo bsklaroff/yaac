@@ -5,7 +5,8 @@
  * stops a non-interactive workspace once its graph settles.
  */
 import { workspaceDriver } from '#drivers/driver'
-import { KEEPER_WINDOW, type RuntimeSnapshot, type WorkspaceWindow } from '#drivers/contract'
+import { KEEPER_WINDOW, WorkspaceExecError, type RuntimeSnapshot, type WorkspaceWindow } from '#drivers/contract'
+import { constants as C } from 'node:fs'
 import path from 'node:path'
 import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
 import { assertWorkflowRepos, projectRepoIds, resolveWorkflow } from '#domain/projects'
@@ -500,7 +501,13 @@ async function reconcilePass(p: { projectId: string; workspaceId: string; jobNam
         await logs.writeAtomic(`${dir}/${name}.sh`, stepScript(name, s.spec, `${inside}.events`, env, cwd))
         await runtime.exec(live.jobName, stepWindowExec(name, paths, `${inside}.sh`), { maxAttempts: 1 })
       } catch (err) {
-        serverLog(`[server] steps ${live.workspaceId}: opening "${name}" failed: ${String(err)}`)
+        const why = err instanceof WorkspaceExecError ? err.stderr.trim() || err.message : String(err)
+        serverLog(`[server] steps ${live.workspaceId}: opening "${name}" failed: ${why}`)
+        // Appended, so a restarted service's crash stays above it.
+        const note = `yaac could not open this step's window: ${why}\n`
+        const log = await logs.open(`${dir}/${name}.log`, C.O_WRONLY | C.O_APPEND | C.O_CREAT).catch(() => undefined)
+        await (log === undefined ? logs.writeAtomic(`${dir}/${name}.log`, note) : log.writeFile(note).finally(() => log.close()))
+          .catch(() => {})
         states.set(name, 'failed')
         await changeStep(live, s, 'failed')
         continue

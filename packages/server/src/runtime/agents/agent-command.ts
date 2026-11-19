@@ -47,6 +47,15 @@ export function windowTarget(name: string): string {
 }
 
 /**
+ * The `-t` of a `new-window` in the yaac session: the session alone, so the
+ * window takes the next free index. A bare `yaac` is read as a window name
+ * first, prefix matches included, so while the one window starting with
+ * `yaac` is a step's (`yaac-init.install`, kept dead by `remain-on-exit`)
+ * it targets that window's index and tmux refuses with "index N in use".
+ */
+export const NEW_WINDOW_TARGET = '=yaac:'
+
+/**
  * The tmux window option a session's agent reads one of its agent options
  * from, `on` or `off` (docs/sessions.md, "Agent options"). The server sets
  * it as the window launches and again when a running session's option

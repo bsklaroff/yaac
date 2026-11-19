@@ -12,6 +12,7 @@ import { workspaceBinDir } from '#domain/workspaces/workspace-bin'
 const run = promisify(execFile)
 const PATHS = workspacePathsFixture()
 const TMUX = `tmux -S ${PATHS.tmuxSock}`
+const HAS_TMUX = ['/usr/bin/tmux', '/opt/homebrew/bin/tmux', '/usr/local/bin/tmux'].some((p) => existsSync(p))
 
 let dir: string
 beforeEach(async () => {
@@ -95,9 +96,29 @@ const killByName = (name: string): string => `for w in $(${TMUX} list-windows -t
 describe('stepWindowExec', () => {
   it('replaces any window of the step\'s name, found by id, with one running its script', () => {
     expect(stepWindowExec('ci.build', PATHS, '/home/yaac/.yaac-logs/L/ci.build.sh')).toBe(
-      `${killByName('ci.build')}; ${TMUX} new-window -d -t yaac -n 'ci.build' -c '#{session_path}' `
+      `${killByName('ci.build')}; ${TMUX} new-window -d -t =yaac: -n 'ci.build' -c '#{session_path}' `
       + `'sh '\\''/home/yaac/.yaac-logs/L/ci.build.sh'\\'''`,
     )
+  })
+
+  /* Against a real tmux: a bare `-t yaac` would prefix-match the one window
+   * starting with `yaac`, a step's kept dead, and refuse its index as in use. */
+  it.skipIf(!HAS_TMUX)('opens its window beside a dead step window whose name starts with the session\'s', async () => {
+    const sock = path.join(dir, 'tmux.sock')
+    const env: NodeJS.ProcessEnv = { ...process.env }
+    delete env.TMUX
+    const tmux = (...args: string[]): Promise<{ stdout: string }> => run('tmux', ['-S', sock, ...args], { env })
+    await fs.writeFile(path.join(dir, 'web.sh'), 'tmux set-option -w -t "$TMUX_PANE" remain-on-exit on\n')
+    try {
+      await tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'yaac', '-n', 'keeper')
+      await tmux('new-window', '-d', '-t', '=yaac:', '-n', 'yaac-init.install',
+        'tmux set-option -w -t "$TMUX_PANE" remain-on-exit on')
+      await run('sh', ['-c', stepWindowExec('yaac-init.web', { ...PATHS, tmuxSock: sock }, path.join(dir, 'web.sh'))], { env })
+      const { stdout } = await tmux('list-windows', '-t', '=yaac', '-F', '#{window_name}')
+      expect(stdout.trim().split('\n')).toEqual(['keeper', 'yaac-init.install', 'yaac-init.web'])
+    } finally {
+      await tmux('kill-server').catch(() => {})
+    }
   })
 })
 
@@ -126,7 +147,7 @@ describe('lifeHooksConfig', () => {
    * its last chunk until more input arrives fails here. Whether it does can
    * come down to a kernel race, so the test opens many windows.
    */
-  it.skipIf(!['/usr/bin/tmux', '/opt/homebrew/bin/tmux', '/usr/local/bin/tmux'].some((p) => existsSync(p)))(
+  it.skipIf(!HAS_TMUX)(
     'logs all a step printed while its dead pane stays open, and nothing of a session\'s window',
     async () => {
       const sock = path.join(dir, 'tmux.sock')

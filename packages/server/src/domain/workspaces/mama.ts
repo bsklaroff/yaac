@@ -2202,7 +2202,11 @@ async function runLogs(caller: MamaCaller, request: MamaRequestInput): Promise<M
   const lives = [...new Set(every.map((s) => s.life.getTime()))].sort((a, b) => b - a)
   const step = lives.map((life) => findStep(every.filter((s) => s.life.getTime() === life), name)).find((s) => s !== undefined)
   if (step === undefined) return { ok: false, error: `workspace ${short} has no step "${name}" (see: yaac-mama logs ${short})` }
-  if (step.startedAt === undefined) return { ok: false, error: `step "${name}" of ${short} has not run yet (it is ${step.state})` }
+  // A step that failed without starting could not open its window, and its
+  // log says why.
+  if (step.startedAt === undefined && step.state !== 'failed') {
+    return { ok: false, error: `step "${name}" of ${short} has not run yet (it is ${step.state})` }
+  }
   const lines = tail !== undefined ? Number(tail) : undefined
   const log = await readWindowLogEnd(caller.projectId, workspaceId, { life: step.life, name: stepName(step) }, lines)
   if (log === undefined) return { ok: false, error: `step "${name}" of ${short} has logged nothing` }

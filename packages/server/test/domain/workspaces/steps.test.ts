@@ -14,6 +14,7 @@ import {
   insertVolume,
   linkProjectRepo,
   listWorkspaceSteps,
+  resetSteps,
   setWorkspaceVolume,
   storeWorkflow,
   updateSite,
@@ -26,7 +27,7 @@ import { _clearTerminatingForTests } from '#runtime/status/terminating'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
-import { KEEPER_WINDOW, type RuntimeHandle, type RuntimeSnapshot, type WorkspaceWindow } from '#drivers/contract'
+import { KEEPER_WINDOW, WorkspaceExecError, type RuntimeHandle, type RuntimeSnapshot, type WorkspaceWindow } from '#drivers/contract'
 import { terminalLogDir } from '@yaac/shared/project-paths'
 import { lifeDirName, parseStepGraph } from '@yaac/shared/steps'
 
@@ -53,7 +54,7 @@ function listed(...windows: Array<Omit<WorkspaceWindow, 'id'>>): void {
 }
 
 /** The step windows the workspace has been asked to open, in order. */
-const opened = (): string[] => execs.flatMap((c) => [...c.matchAll(/new-window -d -t yaac -n '([^']+)'/g)].map((m) => m[1]))
+const opened = (): string[] => execs.flatMap((c) => [...c.matchAll(/new-window -d -t =yaac: -n '([^']+)'/g)].map((m) => m[1]))
 
 const states = async (): Promise<Record<string, string>> => Object.fromEntries((await listWorkspaceSteps(WS)).map((s) =>
   [s.workflowName === '' ? s.name : `${s.workflowName}.${s.name}`, s.exitCode !== undefined ? `${s.state} ${String(s.exitCode)}` : s.state]))
@@ -185,6 +186,23 @@ describe('reconcileSteps', () => {
     expect(await states()).toMatchObject({ 'ci.db': 'failed 0' })
   })
 
+  it('fails a step whose window cannot be opened, with tmux\'s error in its log', async () => {
+    await startLife({ install: { run: 'pnpm install' }, web: { run: 'pnpm dev', service: true, needs: ['install'] } })
+    listed()
+    await reconcileSteps(view)
+    installFakeWorkspaceDriver({
+      find: (id) => Promise.resolve(id === WS ? unit : undefined),
+      exec: (_job, cmd) => cmd.includes('new-window')
+        ? Promise.reject(new WorkspaceExecError('command exited 1', 1, '', 'create window failed: index 2 in use\n'))
+        : Promise.resolve({ stdout: '', stderr: '' }),
+    })
+    listed({ name: 'ci.install', dead: true, exitStatus: 0 })
+    await reconcileSteps(view)
+    expect(await states()).toMatchObject({ 'ci.install': 'succeeded 0', 'ci.web': 'failed' })
+    const log = path.join(terminalLogDir(DEMO_PROJECT_ID, WS), lifeDirName(life), 'ci.web.log')
+    expect(await fs.readFile(log, 'utf8')).toBe("yaac could not open this step's window: create window failed: index 2 in use\n")
+  })
+
   it('runs two workflows side by side, a step of each under its own window and log, one waiting on the other', async () => {
     await startFlows([
       { name: 'web-init', steps: { install: { run: 'pnpm install' }, serve: { run: 'pnpm dev', needs: ['install', 'api-init.migrate'] } } },
@@ -294,6 +312,24 @@ describe('reconcileSteps', () => {
     await reconcileSteps(view)
     expect(opened()).toEqual(['ci.db'])
     expect(await fs.readFile(path.join(dir, 'ci.db.log'), 'utf8')).toBe('the crash\n')
+
+    // A reopen that fails adds why to the log, under the crash.
+    listed({ name: 'ci.build', dead: true, exitStatus: 0 }, { name: 'ci.db', dead: true, exitStatus: 1 }, { name: 'ci.app', dead: false, ready: true })
+    await reconcileSteps(view)
+    installFakeWorkspaceDriver({
+      find: (id) => Promise.resolve(id === WS ? unit : undefined),
+      exec: (_job, cmd) => cmd.includes('new-window')
+        ? Promise.reject(new WorkspaceExecError('command exited 1', 1, '', 'create window failed: index 2 in use\n'))
+        : Promise.resolve({ stdout: '', stderr: '' }),
+    })
+    vi.setSystemTime(Date.now() + 5000)
+    listed({ name: 'ci.build', dead: true, exitStatus: 0 }, { name: 'ci.app', dead: false, ready: true })
+    await reconcileSteps(view)
+    expect(await states()).toMatchObject({ 'ci.db': 'failed' })
+    expect(await fs.readFile(path.join(dir, 'ci.db.log'), 'utf8'))
+      .toBe("the crash\nyaac could not open this step's window: create window failed: index 2 in use\n")
+    await resetSteps(WS, life, [{ workflowName: 'ci', name: 'db' }])
+    await applyWorkspaceEvent({ type: 'step-changed', projectId: DEMO_PROJECT_ID, workspaceId: WS, life, workflowName: 'ci', name: 'db', state: 'running' })
 
     // Not serving (a deploy's new release): a service that exits fails.
     await updateSite(siteId, { liveWorkspaceId: 'another' })
@@ -442,7 +478,7 @@ describe('rerunStep', () => {
     expect(step).toMatchObject({ name: 'ci.build', workflow: 'ci', state: 'running' })
     // Its dead window is found by name in the listing and killed by id,
     // and a new one opened.
-    expect(execs.at(-1)).toMatch(/list-windows -t =yaac .*awk -v n='ci\.build'.*kill-window -t "\$w".*new-window -d -t yaac -n 'ci\.build'/)
+    expect(execs.at(-1)).toMatch(/list-windows -t =yaac .*awk -v n='ci\.build'.*kill-window -t "\$w".*new-window -d -t =yaac: -n 'ci\.build'/)
     expect(await states()).toEqual({ 'ci.build': 'running', 'ci.test': 'pending' })
     await expect(rerunStep(local, WS, 'nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })

@@ -1781,7 +1781,7 @@ describe('prepareStart', () => {
       expect(at(`{ cat > /tmp/.yaac-opening-${session.window} `)).toBe(0)
       expect(at("git config --global user.name 'Ada L' 2>&1 && git config --global user.email 'ada@example.com' 2>&1")).toBeGreaterThan(0)
       expect(at('hooks.conf')).toBeGreaterThan(at('git config --global'))
-      expect(launch.cmd).toMatch(new RegExp(`source-file '[^']*hooks\\.conf' \\\\; new-window -d -t yaac -n ${session.window} `))
+      expect(launch.cmd).toMatch(new RegExp(`source-file '[^']*hooks\\.conf' \\\\; new-window -d -t =yaac: -n ${session.window} `))
       expect((await checkout(spare.workspaceId))?.startCommit).toBe(head)
       expect(listProvisioning()).toEqual([])
     })

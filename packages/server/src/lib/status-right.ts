@@ -21,5 +21,5 @@ export function buildStatusRight(workspaceId: string, ports: ReadonlyArray<PortM
  * which `#lib` cannot import.
  */
 export function setStatusRightCmd(value: string, tmuxSock: string): string {
-  return `tmux -S ${tmuxSock} set-option -t yaac status-right '${shellEscape(value)}'`
+  return `tmux -S ${tmuxSock} set-option -t =yaac: status-right '${shellEscape(value)}'`
 }

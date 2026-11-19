@@ -42,6 +42,7 @@ export {
 export {
   agentOptionsCmd,
   buildOpeningWrite,
+  NEW_WINDOW_TARGET,
   tmuxCmd,
   verifyAgentWindowAlive,
   windowTarget,

@@ -868,7 +868,7 @@ describe('runMamaCommand', () => {
 
       const opened = (await listWorkspaceSessions('caller-workspace')).at(-1)!
       expect(opened).toMatchObject({ id, tool: 'claude', mode: 'tui', permissionMode: 'auto', firstPrompt: 'review the diff' })
-      expect(exec.mock.calls.some(([, cmd]) => cmd.includes(`new-window -d -t yaac -n ${opened.window} `))).toBe(true)
+      expect(exec.mock.calls.some(([, cmd]) => cmd.includes(`new-window -d -t =yaac: -n ${opened.window} `))).toBe(true)
       expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
       expect(listProvisioning()).toEqual([])
 
@@ -2025,10 +2025,13 @@ describe('runMamaCommand', () => {
           build: { run: ['make'] },
           noisy: { run: ['gen'] },
           serve: { run: ['srv'], service: true, needs: ['build'] },
+          web: { run: ['dev'], service: true },
         } }],
       })
       for (const name of ['build', 'noisy']) await step(name, 'running')
       await step('build', 'failed', 2)
+      // web never started: its window could not be opened, and its log says why.
+      await step('web', 'failed')
       await fs.mkdir(logDir('ci-run'), { recursive: true })
       // The rotated-out half comes first. Escapes, carriage returns, DEL and
       // C1 controls go, since the text lands in the agent's terminal.
@@ -2037,6 +2040,7 @@ describe('runMamaCommand', () => {
       // A window opened by hand under a step's name before the step starts
       // writes that step's log file, so it is not served.
       await fs.writeFile(path.join(logDir('ci-run'), 'ci.serve.log'), 'export TOKEN=secret\n')
+      await fs.writeFile(path.join(logDir('ci-run'), 'ci.web.log'), "yaac could not open this step's window: index 2 in use\n")
       // Over 4 MiB, of which only the end is read.
       const line = (i: number): string => `line ${String(i).padStart(6, '0')} ${'x'.repeat(80)}\n`
       await fs.writeFile(path.join(logDir('ci-run'), 'ci.noisy.log.1'), Array.from({ length: 30_000 }, (_, i) => line(i)).join(''))
@@ -2060,6 +2064,7 @@ describe('runMamaCommand', () => {
       expect(await log({ step: 'ci.build' })).toBe('compiling\nmake: *** [all] Error 2\nlast line\n')
       expect(await log({ step: 'build', tail: '2' })).toBe('make: *** [all] Error 2\nlast line\n')
       expect(await log({ step: 'noisy', tail: '2' })).toBe(line(59_998) + line(59_999))
+      expect(await log({ step: 'web' })).toBe("yaac could not open this step's window: index 2 in use\n")
       // Untailed, it serves the last 4 MiB from a line's start, saying how
       // much it left out.
       const end = (await log({ step: 'noisy' })).split('\n')

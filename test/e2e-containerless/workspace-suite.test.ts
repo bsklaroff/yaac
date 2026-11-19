@@ -928,7 +928,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
   it('serves a webapp terminal from its pane: snapshot, raw output, input, paste and resize', async () => {
     // A pane that floods numbered lines, then echoes its input visibly.
-    const window = (await tmux(workspaceId, 'new-window', '-d', '-P', '-F', '#{window_id}', '-t', 'yaac',
+    const window = (await tmux(workspaceId, 'new-window', '-d', '-P', '-F', '#{window_id}', '-t', '=yaac:',
       '-n', 'mirror', "sh -c 'seq 1 100000; stty raw -echo; exec cat -v'")).trim()
     const ws = new WebSocket(
       `ws://127.0.0.1:${String(server.lock.port)}/api/pty/attach?id=${workspaceId}&target=window:${window}&cols=100&rows=30`)
@@ -1023,7 +1023,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       require('http').createServer((req, res) => res.end('hello from the workspace'))
         .listen(${String(devPort)}, '127.0.0.1')
     `)
-    await tmux(workspaceId, 'new-window', '-d', '-t', 'yaac', '-n', 'dev',
+    await tmux(workspaceId, 'new-window', '-d', '-t', '=yaac:', '-n', 'dev',
       `'${process.execPath}' '${script}'`)
     // Detection is a poll.
     await vi.waitFor(async () => {
@@ -1174,7 +1174,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
     // A new terminal (as the webapp's New Shell) and a transcript in the
     // tool home.
-    const pane = (await tmux(workspaceId, 'new-window', '-d', '-n', 'shell-e2e', '-t', 'yaac', '-P', '-F', '#{pane_id}')).trim()
+    const pane = (await tmux(workspaceId, 'new-window', '-d', '-n', 'shell-e2e', '-t', '=yaac:', '-P', '-F', '#{pane_id}')).trim()
     await fs.mkdir(path.join(project, 'claude', 'projects', '-e2e'), { recursive: true })
     await fs.writeFile(path.join(project, 'claude', 'projects', '-e2e', 'e2e-conv.jsonl'), `${JSON.stringify({
       type: 'user', message: { role: 'user', content: 'asked from a shell' },
@@ -1381,7 +1381,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const out = path.join(testEnv.scratchDir, 'rc-e2e')
     await fs.mkdir(out, { recursive: true })
     const checkout = path.join(project, 'workspaces', workspaceId)
-    const pane = (await tmux(workspaceId, 'new-window', '-d', '-n', 'rc-e2e', '-t', 'yaac', '-c', checkout, '-P', '-F', '#{pane_id}')).trim()
+    const pane = (await tmux(workspaceId, 'new-window', '-d', '-n', 'rc-e2e', '-t', '=yaac:', '-c', checkout, '-P', '-F', '#{pane_id}')).trim()
     try {
       await vi.waitFor(async () => {
         expect(await tmux(workspaceId, 'capture-pane', '-p', '-t', pane)).toMatch(/~workspace ?[%$]/)
@@ -1413,7 +1413,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     // starts through yaac's startup files too.
     const shell = await workspaceEnvVar(workspaceId, 'SHELL')
     expect(shell).toBe(USER_SHELL)
-    await tmux(workspaceId, 'new-window', '-d', '-n', 'init-e2e', '-t', 'yaac', shell, '-c', `printf '%s' "$CLAUDE_CONFIG_DIR" > ${out}/init`)
+    await tmux(workspaceId, 'new-window', '-d', '-n', 'init-e2e', '-t', '=yaac:', shell, '-c', `printf '%s' "$CLAUDE_CONFIG_DIR" > ${out}/init`)
     await vi.waitFor(async () => {
       expect(await fs.readFile(path.join(out, 'init'), 'utf8')).toBe(claude)
     }, { timeout: 30_000, interval: 250 })
@@ -2169,7 +2169,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
       }
     })
     try {
-      await tmux(workspaceId, 'new-window', '-d', '-t', 'yaac',
+      await tmux(workspaceId, 'new-window', '-d', '-t', '=yaac:',
         `setsid nohup sh -c 'echo $$ >> ${pidFile}; exec sleep 100000' >/dev/null 2>&1 & `
         + `tmux -S ${ownSock} -f /dev/null new-session -d 'sleep 100001'; `
         + `tmux -S ${ownSock} display-message -p '#{pid} #{pane_pid}' >> ${pidFile}`)

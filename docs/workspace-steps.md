@@ -138,6 +138,13 @@ passes, the check sets the window option `@yaac-step-ready`. An EXIT trap
 writes the `end` of a command that exits the script itself; a command that
 `exec`s another process writes none, since the script is gone.
 
+The window opens with `new-window -t =yaac:`, the session alone, so it takes
+the next free index: a bare `yaac` is read as a window name first, prefix
+matches included, and would land on a lone dead step window such as
+`yaac-init.install`, whose index tmux refuses as in use. A step whose window
+cannot be opened fails with no exit code, and the server writes tmux's error
+into its `<full name>.log`, where `logs` serves it.
+
 **tmux addresses a step's window by id, never by name.** tmux reads a `.`
 in a target as the pane separator: `-t =yaac:=web-init.install` resolves to
 a window named `web-init` if there is one, with no error. So killing a
@@ -351,11 +358,12 @@ have been edited since; the webapp shows a step's workflow, folded, above
 its log, in a step pane and in a stopped workspace's logs alike. Its project's agents list its current life's steps
 with `yaac-mama logs <workspace>` and read the end of a step's log, from
 the newest life that has the step, at most 4 MiB of it, and only once the
-step has started: the log file is named after the window, and the server clears
-and recreates a step's file as it starts the step, so before then a window
-opened by hand under the step's name would be writing it. A window opened
-by hand under the name of a step that has already run appends to that
-step's log. Every life's logs are kept until the workspace is
+step has started or failed to open its window: the log file is named after
+the window, and the server clears and recreates a step's file as it starts
+the step, so before then a window opened by hand under the step's name
+would be writing it. A step whose window could not be opened is served the
+error the server wrote there. A window opened by hand under the name of a
+step that has run, or failed to open, appends to that step's log. Every life's logs are kept until the workspace is
 deleted, and nothing else bounds the total: rotation caps each window of
 each life, not how many there are, so deleting the workspace, or the
 project's stopped-workspace retention, is the only cleanup. A shell's log

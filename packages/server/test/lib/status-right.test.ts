@@ -22,19 +22,19 @@ describe('buildStatusRight', () => {
 describe('setStatusRightCmd', () => {
   it('sets the option on the workspace tmux server, value quoted', () => {
     expect(setStatusRightCmd(' proj abcdef01 :3000->3000 ', '/tmp/yaac-tmux/server'))
-      .toBe("tmux -S /tmp/yaac-tmux/server set-option -t yaac status-right ' proj abcdef01 :3000->3000 '")
+      .toBe("tmux -S /tmp/yaac-tmux/server set-option -t =yaac: status-right ' proj abcdef01 :3000->3000 '")
   })
 
   it('addresses the socket the caller was handed', () => {
     // Containerless workspaces each have their own socket path.
     expect(setStatusRightCmd(' p ', '/tmp/yaac-cl-ab12cd34/wt-9.sock'))
-      .toBe("tmux -S /tmp/yaac-cl-ab12cd34/wt-9.sock set-option -t yaac status-right ' p '")
+      .toBe("tmux -S /tmp/yaac-cl-ab12cd34/wt-9.sock set-option -t =yaac: status-right ' p '")
   })
 
   it('escapes a value that would otherwise close the quoting', () => {
     // Escaping holds for any value, not just the ones built today.
     const cmd = setStatusRightCmd(" it's ", '/tmp/yaac-tmux/server')
     expect(cmd).toContain("'\\''")
-    expect(cmd.startsWith("tmux -S /tmp/yaac-tmux/server set-option -t yaac status-right '")).toBe(true)
+    expect(cmd.startsWith("tmux -S /tmp/yaac-tmux/server set-option -t =yaac: status-right '")).toBe(true)
   })
 })
