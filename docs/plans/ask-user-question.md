@@ -130,9 +130,9 @@ add the `toolCallId` of a tool call they have streamed. codex names a
   listed by `codex features list`, and the scripted question run still
   elicits.
 
-  The alternative, mapping yaac's `plan` posture onto codex's Plan
-  collaboration mode, changes what `plan` means for codex and is a larger
-  change.
+  Mapping yaac's `plan` posture onto codex's Plan collaboration mode
+  instead would change what `plan` means for codex and is a larger change.
+  It is the fallback if a codex bump ever breaks the flag.
 - **One generic form renderer, with no per-tool code.**
   `parseElicitationRequest` normalizes any request into fields:
   - `choice`: `oneOf`, `enum`, or an `array` of `anyOf` / `enum` items
@@ -609,10 +609,3 @@ the wire. Results:
 11. A pass with each real adapter through the built chat pane: a
     Playwright script in `test-playwright-scripts/` against a containerless
     workspace per tool.
-
-## Open questions
-
-1. **codex's flag.** The plan relies on `default_mode_request_user_input`
-   (see Decisions for what "under development" means there and why it
-   should hold). The fallback, if a codex bump breaks it, is mapping yaac's
-   `plan` posture onto codex's Plan collaboration mode.
