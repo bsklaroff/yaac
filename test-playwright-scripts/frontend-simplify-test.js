@@ -8,7 +8,8 @@
  *     credential list, a project's env and init steps) without errors.
  *  3. A preference (Sounds) is saved under its existing localStorage key and
  *     survives a reload.
- *  4. Settings opens full-screen, its Skills section is headed by the
+ *  4. Settings opens as a sheet over the window (a 16px margin all round),
+ *     its Skills section is headed by the
  *     project, its Close button works, and the add-project dialog opens as
  *     a form.
  *  5. With the server down long enough for the events socket's backoff to
@@ -21,7 +22,7 @@
  */
 import { execSync } from 'node:child_process'
 import path from 'node:path'
-import { requirePlaywright, origin, check, finish, SHOTS, until, projectPage } from './lib.js'
+import { requirePlaywright, origin, check, finish, openMenuItem, SHOTS, until, projectPage } from './lib.js'
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
@@ -43,12 +44,13 @@ const shot = (name) => page.screenshot({ path: path.join(SHOTS, `frontend-simpli
 
 // 1. Boot.
 await page.goto(origin)
-const rail = page.getByRole('button', { name: /yaac/ }).first()
+// The project's rail tile.
+const rail = page.getByRole('navigation', { name: 'Projects' }).getByRole('button', { name: 'yaac', exact: true })
 await rail.waitFor({ timeout: 20_000 })
 check('app boots and lists the project', await rail.isVisible())
 
 // 2. Settings.
-await page.getByTitle('Settings').first().click()
+await openMenuItem(page, 'Settings')
 const dialog = page.getByRole('dialog')
 await dialog.waitFor()
 await until(page, () => [...document.querySelectorAll('input')].some((i) => i.value === 'Yaac Test'))
@@ -60,7 +62,8 @@ await shot('general')
 
 await dialog.getByRole('button', { name: 'Credentials' }).click()
 await dialog.getByRole('button', { name: 'Sign out' }).first().waitFor({ timeout: 10_000 })
-check('the credential list shows the signed-in tool', await dialog.getByText(/claude ·/).first().isVisible())
+check('the credential list shows the signed-in tool',
+  await dialog.locator('[data-tool="claude"]').getByRole('button', { name: 'Sign out' }).isVisible())
 
 await dialog.getByRole('button', { name: 'Shortcuts' }).click()
 check('shortcuts pane renders', await dialog.getByText('Reset all to defaults').isVisible())
@@ -76,36 +79,39 @@ await dialog.waitFor({ state: 'detached' })
 
 // 3. A persisted preference.
 // Settings reopens on its last section.
-await page.getByTitle('Settings').first().click()
-await page.getByRole('dialog').getByRole('button', { name: 'General' }).click()
+await openMenuItem(page, 'Settings')
+const accountGeneral = page.getByRole('dialog').getByRole('group', { name: 'Account' }).getByRole('button', { name: 'General' })
+await accountGeneral.click()
 await page.getByRole('switch', { name: 'Sounds' }).click()
 const saved = await page.evaluate(() => localStorage.getItem('yaac.sound.v1'))
 check('Sounds off is saved under its existing key', saved === '0', String(saved))
 await page.reload()
 await rail.waitFor()
-await page.getByTitle('Settings').first().click()
-await page.getByRole('dialog').getByRole('button', { name: 'General' }).click()
+await openMenuItem(page, 'Settings')
+await accountGeneral.click()
 check('Sounds stays off after a reload', (await page.getByRole('switch', { name: 'Sounds' }).getAttribute('aria-checked')) === 'false')
 await page.getByRole('switch', { name: 'Sounds' }).click()
 await page.keyboard.press('Escape')
 
-// 4. Full-screen and form dialogs.
-await page.getByTitle('Settings').first().click()
+// 4. Sheet and form dialogs.
+await openMenuItem(page, 'Settings')
 const sheet = page.getByRole('dialog')
 await sheet.waitFor()
 await sheet.getByRole('button', { name: 'Skills', exact: true }).click()
 await page.waitForTimeout(500)
-check('settings fills the window', await sheet.evaluate((e) => {
+const margins = await sheet.evaluate((e) => {
   const r = e.getBoundingClientRect()
-  return r.width === innerWidth && r.height === innerHeight
-}))
-check('skills are headed by the project', await sheet.getByRole('combobox', { name: 'Project' }).isVisible())
+  return { left: r.left, top: r.top, right: innerWidth - r.right, bottom: innerHeight - r.bottom }
+})
+check('settings fills the window but a 16px margin', Object.values(margins).every((m) => m === 16), JSON.stringify(margins))
+// The page title's picker, not the nav's.
+check('skills are headed by the project', await sheet.locator('header').getByRole('combobox', { name: 'Project' }).isVisible())
 await shot('skills')
 await sheet.getByRole('button', { name: 'Close settings' }).click()
 await sheet.waitFor({ state: 'detached' })
 check('its Close button closes it', true)
 
-await page.getByTitle('New project').click()
+await page.getByRole('navigation', { name: 'Projects' }).getByRole('button', { name: 'Add a project' }).click()
 const form = page.getByRole('dialog')
 await form.waitFor()
 check('add-project form opens', await form.getByText('Add project').isVisible())

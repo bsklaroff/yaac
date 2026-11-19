@@ -47,9 +47,10 @@ const workspaceName = async () => {
   const w = await find(multi.workspaceId)
   return w.title || w.prompt || 'New workspace'
 }
-/** The sidebar row of session `id`, found by its name: the last match, since
- *  child rows follow the workspace's own row, which may share the title. */
-const sessionRow = async (id) => page.locator('aside button', { hasText: await sessionName(id) }).last()
+/** The sidebar row of session `id`, by its full-row button, which is named
+ *  for it: the last match, since child rows follow the workspace's own row,
+ *  which may share the title. */
+const sessionRow = async (id) => page.locator('aside').getByRole('button', { name: await sessionName(id), exact: true }).last()
 
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
@@ -73,7 +74,7 @@ for (const mode of ['acp', 'tui']) {
   await (await sessionRow(s.sessionId)).click()
   // The workspace tiles every pane, so a chat is told by its composer and a
   // terminal by xterm, each present once that session's pane is open.
-  const pane = mode === 'tui' ? page.locator('.xterm-screen:visible') : page.getByPlaceholder('Message the agent')
+  const pane = mode === 'tui' ? page.locator('.xterm-screen:visible') : page.locator('[placeholder^="Message the agent"]:visible')
   const shown = await pane.first().waitFor({ timeout: 15_000 }).then(() => true, () => false)
   check(`${mode} child row opens a ${mode === 'tui' ? 'terminal' : 'chat'} pane`, shown)
   await page.screenshot({ path: path.join(SHOTS, `multi-session-${mode}-pane.png`) })
@@ -82,7 +83,7 @@ check('each session has a close button in the tab bar',
   await page.locator('[aria-label^="Close session"]').count() >= multi.sessions.filter((s) => s.exited !== true).length)
 
 // 3. The sessionless workspace.
-await page.getByText('No agent').first().click()
+await page.locator('aside [class*="group/row"]', { hasText: 'No agent' }).first().click()
 await page.waitForTimeout(2500)
 await page.screenshot({ path: path.join(SHOTS, 'multi-session-empty-workspace.png') })
 check('sessionless workspace shows no terminal pane', await page.locator('.xterm-screen:visible').count() === 0)

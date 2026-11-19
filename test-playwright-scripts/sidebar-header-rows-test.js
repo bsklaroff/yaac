@@ -1,7 +1,8 @@
 /*
  * Verifies the sidebar header layout: the status chits (plan usage, image
- * builds, git-auth failure) sit on their own row below the project-name
- * strip, so a long project name gets the strip's full width.
+ * builds, git-auth failure) sit on their own row at the top of the list,
+ * below the project-name strip and the New session row, so a long project
+ * name gets the strip's full width.
  *
  *  1. With no chits to show, the chit row collapses (Tailwind `empty:hidden`).
  *  2. With a git-auth failure injected into every `/api/events` snapshot
@@ -40,7 +41,7 @@ await page.routeWebSocket(/\/api\/events$/, (route) => {
 /** The header's strip, chit row, name group and right-hand button cluster. */
 const geometry = () => page.locator('aside').first().evaluate((el) => {
   const strip = el.querySelector('.titlebar-drag')
-  const chitRow = strip.nextElementSibling
+  const chitRow = el.querySelector('.overflow-y-auto').firstElementChild
   const badge = el.querySelector('[aria-label="Git authentication failed"]')
   const r = (n) => n?.getBoundingClientRect().toJSON() ?? null
   return {

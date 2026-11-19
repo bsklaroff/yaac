@@ -9,9 +9,9 @@
  *     Save / Discard / Keep editing, with Save focused; Escape on the
  *     question keeps the form and its prompt, and Discard saves nothing and
  *     goes on to the draft.
- *  4. The reopened draft shows its prompt and permission mode; the + leaves
+ *  4. The reopened draft shows its prompt and permission mode; New session leaves
  *     it unchanged for a blank form without asking.
- *  5. An edited draft asks to save its changes on the +; saving updates the
+ *  5. An edited draft asks to save its changes on New session; saving updates the
  *     row in place (still one draft).
  *  6. The row's Discard… deletes the draft, and the section disappears.
  *
@@ -19,12 +19,12 @@
  * fails midway, discard leftovers from the sidebar.
  *
  * Run: YAAC_DATA_DIR=<data dir> PROJECT=<name or id> node test-playwright-scripts/draft-workspaces-ui-test.js
+ * (PROJECT defaults to yaac)
  */
 import path from 'node:path'
 import { check, finish, origin, requirePlaywright, SHOTS, resolveProject, until } from './lib.js'
 
-if (!process.env.PROJECT) throw new Error('set PROJECT=<name or id>')
-const PROJECT = (await resolveProject(process.env.PROJECT)).id
+const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 const stamp = Date.now()
 const idea = `pw draft ${stamp}`
 
@@ -39,11 +39,16 @@ try {
   const drafts = aside.getByRole('group', { name: 'Drafts' })
   const prompt = page.getByLabel('Prompt')
   const question = page.getByRole('alertdialog')
-  const plus = aside.getByRole('button', { name: 'New workspace', exact: true })
+  // New session; its name ends with the shortcut.
+  const plus = aside.getByRole('button', { name: /^New session/ })
+  // A draft's row carries its prompt as its title.
+  const draftRow = (text) => drafts.locator(`[title="${text}"]`)
   const promptIs = (text) => until(page, (t) => document.querySelector('textarea[aria-label="Prompt"]')?.value === t, text)
   const posture = () => page.getByRole('button', { name: 'Permission mode' }).textContent()
   await plus.waitFor({ timeout: 15_000 })
   await plus.click()
+  // The pane starts on the last workspace's agent; Claude offers Plan mode.
+  await page.getByRole('combobox', { name: 'Agent' }).selectOption('claude')
   // Settings load with the credential list.
   await page.getByRole('button', { name: 'Permission mode' }).waitFor({ timeout: 15_000 })
 
@@ -66,7 +71,7 @@ try {
 
   // (3) A typed prompt asks before leaving; Escape stays, Discard goes on.
   await prompt.fill(`${idea} throwaway`)
-  await drafts.getByText(idea).click()
+  await draftRow(idea).click()
   await question.waitFor({ state: 'visible' })
   check('a typed prompt asks before leaving', (await question.textContent())?.includes('Save as a draft?') === true)
   // Let the scale-in animation finish.
@@ -77,7 +82,7 @@ try {
   await page.keyboard.press('Escape')
   await question.waitFor({ state: 'detached' })
   check('Escape on the question keeps the form and its prompt', await prompt.inputValue() === `${idea} throwaway`)
-  await drafts.getByText(idea).click()
+  await draftRow(idea).click()
   await question.getByRole('button', { name: 'Discard' }).click()
   await promptIs(idea)
   await page.waitForTimeout(500)
@@ -88,10 +93,10 @@ try {
   check('and its permission mode', await posture() === 'Plan mode', String(await posture()))
   await plus.click()
   await promptIs('')
-  check('the + leaves an unchanged draft without asking', await question.count() === 0)
+  check('New session leaves an unchanged draft without asking', await question.count() === 0)
 
-  // (5) Edit and save changes on the +.
-  await drafts.getByText(idea).click()
+  // (5) Edit and save changes on New session.
+  await draftRow(idea).click()
   await promptIs(idea)
   await prompt.fill(`${idea} edited`)
   await plus.click()
@@ -104,7 +109,7 @@ try {
   check('the row updates in place, still one draft', await drafts.getByText(idea).count() === 1)
 
   // (6) Discard the draft from its row.
-  const row = drafts.locator('div.group.relative', { hasText: idea })
+  const row = draftRow(`${idea} edited`)
   await row.hover()
   await row.getByRole('button', { name: 'Draft actions' }).click()
   await page.getByRole('menuitem', { name: 'Discard…' }).click()

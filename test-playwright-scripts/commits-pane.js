@@ -1,13 +1,13 @@
 /*
  * Verifies the Commits pane in real Chromium:
- *   1. The git status strip's "N ahead of, M behind <base>" opens the pane,
+ *   1. The top bar's git summary, "N ahead, M behind <base>", opens the pane,
  *      which lists HEAD's commits and the base branch's beside a graph:
  *      one dot per commit, a merge drawn across two lanes, the HEAD branch
  *      and origin/main as ref pills, and the commit only origin/main has
  *      dimmed.
  *   2. The base picker lists origin's branches, the current base first. A
  *      pick asks for confirmation; Cancel changes nothing, and confirming
- *      records it as the workspace's base and relabels the strip.
+ *      records it as the workspace's base and relabels the summary.
  *   3. A commit's chevron unfolds its message. Clicking a commit opens it in
  *      a Changes pane under its message; ticking two opens their range; the
  *      context menu compares one with the working tree; and the workspace's
@@ -39,7 +39,8 @@ const { chromium } = requirePlaywright()
 const PROJECT = process.env.PROJECT ?? 'yaac'
 const owned = !process.env.WORKSPACE_ID
 const workspaceId = process.env.WORKSPACE_ID ?? await createWorkspace({ project: PROJECT, noSession: true, title: 'PW commits pane' })
-const { projectId, baseBranch } = (await api('/workspace/list')).workspaces.find((w) => w.workspaceId === workspaceId)
+const { projectId, repos } = (await api('/workspace/list')).workspaces.find((w) => w.workspaceId === workspaceId)
+const { baseBranch } = repos[0]
 const TRIGGER = '[title="Choose the branch this workspace is based on"]'
 
 if (owned) {
@@ -78,10 +79,10 @@ try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 } })
   await page.goto(`${origin}/?${new URLSearchParams({ project: projectId, workspace: workspaceId })}`)
 
-  // 1. From the strip into the pane.
+  // 1. From the top bar's summary into the pane.
   const strip = page.locator('button[title="Review commits"]')
   await strip.filter({ hasText: 'behind' }).waitFor({ timeout: 30000 })
-  check('the strip says how far HEAD is from origin/main', /ahead of, 1 commit behind\s+origin\/main/.test(await strip.innerText()),
+  check('the summary says how far HEAD is from origin/main', /\d+ ahead, 1 behind\s+origin\/main/.test(await strip.innerText()),
     await strip.innerText())
   await strip.click()
   const row = (subject) => page.locator(`span[title="${subject}"]`).locator('xpath=ancestor::div[1]')
@@ -89,7 +90,7 @@ try {
   for (const s of ['Merge feature', 'feature: second', 'feature: first', 'ours: first', 'main: landed upstream']) {
     check(`lists "${s}"`, await page.locator(`span[title="${s}"]`).count() === 1)
   }
-  // The list below the strip; the icons elsewhere are SVGs too.
+  // The list below the base picker's row; the icons elsewhere are SVGs too.
   const list = page.locator(TRIGGER).locator('xpath=../../div[2]')
   const dots = await list.locator('svg circle').count()
   const shas = await list.locator('span.font-mono[title]').filter({ hasText: /^[0-9a-f]{7}$/ }).count()
@@ -99,9 +100,9 @@ try {
   check('the HEAD branch is a pill', await page.locator('span[title^="HEAD -> "]').count() === 1)
   check('origin/main is a pill', await page.locator('span[title="origin/main"]').count() === 1)
   check('the commit only origin/main has is dimmed',
-    (await row('main: landed upstream').getAttribute('class')).includes('text-text-faint'))
+    (await row('main: landed upstream').getAttribute('class')).includes('text-subtle'))
   check('our commits are not',
-    !(await row('ours: first').getAttribute('class')).includes('text-text-faint'))
+    !(await row('ours: first').getAttribute('class')).includes('text-subtle'))
   await page.screenshot({ path: path.join(SHOTS, 'commits-pane.png') })
 
   // 2. Base the workspace on another of origin's branches.
@@ -129,12 +130,12 @@ try {
   await dialog.getByRole('button', { name: 'Change base' }).click()
   check('confirming records the base', (await (await posted).json()).baseBranch === other)
   await page.locator(TRIGGER, { hasText: `origin/${other}` }).waitFor({ timeout: 10000 })
-  check('the strip names the new base', true)
+  check('the picker names the new base', true)
   const named = await Promise.all([
     page.locator(`span[title="origin/${other}"]`).first().waitFor({ timeout: 15000 }).then(() => true, () => false),
     strip.filter({ hasText: `origin/${other}` }).waitFor({ timeout: 15000 }).then(() => true, () => false),
   ])
-  check('the list marks the new base and the status bar compares against it', named.every(Boolean),
+  check('the list marks the new base and the summary compares against it', named.every(Boolean),
     `${named} / ${await strip.innerText()}`)
   await page.screenshot({ path: path.join(SHOTS, 'commits-picked.png') })
   if (!owned) await api(`/workspace/${workspaceId}/base`, { method: 'POST', body: { branch: baseBranch } })
@@ -171,7 +172,7 @@ try {
   await page.locator('[title="Compare to"]', { hasText: 'Working tree' }).waitFor({ timeout: 15000 })
   check('the context menu compares with the working tree', true)
 
-  await page.locator('button[title="Review changes"]').click()
+  await page.locator('button[title="Review changes"]').first().click()
   await page.getByRole('button', { name: 'Compare…' }).click()
   await page.locator('[title="Compare from"]', { hasText: other }).waitFor({ timeout: 15000 })
   check('the own Changes pane opens a range from its base', true)
@@ -180,8 +181,7 @@ try {
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
   await phone.goto(`${origin}/?${new URLSearchParams({ project: projectId, workspace: workspaceId })}`)
   // Until the workspace is listed the bar is the new-workspace pane's.
-  await phone.locator('button[title="Review commits"]').waitFor({ timeout: 30000 })
-  await phone.locator('[aria-label="More pane actions"]').click()
+  await phone.locator('[aria-label="More pane actions"]').click({ timeout: 30000 })
   await phone.getByRole('menuitem', { name: 'Commits' }).click()
   await phone.locator('span[title="ours: after the merge"]').waitFor({ timeout: 15000 })
   check('the overflow menu opens the pane on a phone', true)

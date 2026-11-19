@@ -10,7 +10,7 @@
  *     the create's progress, then hands over to the chat pane, where the
  *     prompt stays and the spinner reads "working", with no empty state in
  *     between.
- *  4. Back on the pane (the sidebar's +), a typed prompt and a click on the
+ *  4. Back on the pane (the sidebar's New session), a typed prompt and a click on the
  *     new workspace's row asks to save a draft; Keep editing stays, Save
  *     draft lands it in the sidebar's Drafts and moves on.
  *  5. With UI set to Terminal, "Start without a prompt" creates a terminal
@@ -32,6 +32,10 @@ const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
 const created = []
 const prompt = 'Reply with the single word pong, and do nothing else.'
+// The sidebar's New session; its name ends with the shortcut.
+const newSession = page.locator('aside').getByRole('button', { name: /^New session/ })
+// The pane starts on the last workspace's agent; these steps expect Claude's.
+const claude = () => page.getByRole('combobox', { name: 'Agent' }).selectOption('claude')
 
 try {
   await page.goto(`${origin}/?project=${project.id}`)
@@ -51,6 +55,7 @@ try {
 
   // A chat create, straight from the keyboard.
   await box.fill(prompt)
+  await claude()
   await page.getByLabel('UI').selectOption('acp')
   // Creating waits on the credential list.
   await until(page, () => document.querySelector('button[aria-label="Create"]')?.disabled === false)
@@ -74,11 +79,12 @@ try {
   }
   check('chat: agent answered', await page.getByText('pong', { exact: true }).count() > 0)
   check('chat: no empty state during the hand-over', !sawEmpty)
-  check('chat: prompt shown once', await page.locator('[class*="bg-accent/10"]').filter({ hasText: prompt }).count() === 1)
+  // The user's message bubble (USER_BUBBLE in AcpTranscript.tsx).
+  check('chat: prompt shown once', await page.locator('main .whitespace-pre-wrap.bg-selected').filter({ hasText: prompt }).count() === 1)
   await page.screenshot({ path: `${SHOTS}/new-workspace-chat.png` })
 
   // Leaving with a typed prompt asks first.
-  await page.getByRole('button', { name: 'New workspace', exact: true }).click()
+  await newSession.click()
   await box.waitFor()
   await box.fill('an idea for later')
   const row = page.getByRole('group', { name: 'Ungrouped workspaces' }).getByRole('button').first()
@@ -104,7 +110,8 @@ try {
   }
 
   // A bare terminal.
-  await page.getByRole('button', { name: 'New workspace', exact: true }).click()
+  await newSession.click()
+  await claude()
   await page.getByLabel('UI').selectOption('tui')
   await until(page, () => [...document.querySelectorAll('button')]
     .some((b) => b.textContent === 'Start without a prompt' && !b.disabled))
@@ -117,7 +124,8 @@ try {
   await page.screenshot({ path: `${SHOTS}/new-workspace-terminal.png` })
 
   // An empty chat, started from the bar's Files button.
-  await page.getByRole('button', { name: 'New workspace', exact: true }).click()
+  await newSession.click()
+  await claude()
   await page.getByLabel('UI').selectOption('acp')
   check('bar: matches a workspace\'s', await page.getByRole('button', { name: /Tile view|Tab view/ }).count() === 1
     && await page.getByRole('button', { name: 'Show changes' }).count() === 1)
@@ -136,14 +144,14 @@ try {
 } finally {
   for (const id of created) await api('/workspace/stop', { method: 'POST', body: { workspaceId: id } }).catch(() => {})
   // The draft goes through its row's menu, as the snapshot is the only listing.
-  const draftRow = page.getByRole('group', { name: 'Drafts' }).locator('.group').filter({ hasText: 'an idea for later' })
+  const draftRow = page.getByRole('group', { name: 'Drafts' }).locator('[title="an idea for later"]')
   while (await draftRow.count() > 0) {
     const n = await draftRow.count()
     await draftRow.first().hover()
     await draftRow.first().getByRole('button', { name: 'Draft actions' }).click()
     await page.getByRole('menuitem', { name: 'Discard…' }).click()
     await page.getByRole('alertdialog').getByRole('button', { name: 'Discard' }).click()
-    await until(page, (want) => [...document.querySelectorAll('button[title="an idea for later"]')].length < want, n)
+    await until(page, (want) => [...document.querySelectorAll('[title="an idea for later"]')].length < want, n)
   }
   await browser.close()
 }

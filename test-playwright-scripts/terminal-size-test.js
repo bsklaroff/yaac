@@ -27,14 +27,15 @@ import { requirePlaywright, origin, api, until, check, finish, SHOTS, createWork
 
 const PROJECT = (await resolveProject(process.env.PROJECT ?? 'yaac')).id
 
-/** The agent window's size, read over the socket of the tmux server started in the workspace's checkout. */
+/** The agent window's size (its window is `claude-<session id prefix>`),
+ *  read over the socket of the tmux server started in the workspace's checkout. */
 function tmuxAgentSize(workspaceId) {
   const line = execSync('ps -eo args', { encoding: 'utf8' }).split('\n')
     .find((l) => l.includes('new-session') && l.includes(workspaceId))
   const sock = line?.match(/-S (\S+)/)?.[1]
   if (!sock) throw new Error(`no tmux server found for ${workspaceId}`)
   const sizes = execSync(`tmux -S ${sock} list-windows -a -F '#{window_name} #{window_width}x#{window_height}'`,
-    { encoding: 'utf8' }).split('\n').filter((l) => l.startsWith('claude ')).map((l) => l.split(' ')[1])
+    { encoding: 'utf8' }).split('\n').filter((l) => /^claude-\S+ /.test(l)).map((l) => l.split(' ')[1])
   return [...new Set(sizes)].join(',')
 }
 
@@ -120,7 +121,9 @@ try {
 
   // ---- 1. the settle gate on a fresh create ----
   await page.evaluate(startSampler)
-  await page.locator('aside').getByTitle('New workspace').first().click()
+  await page.locator('aside').getByRole('button', { name: /^New session/ }).click()
+  // The pane starts on the last workspace's agent; the tmux probe reads Claude's window.
+  await page.getByRole('combobox', { name: 'Agent' }).selectOption('claude')
   await page.getByLabel('UI').selectOption('tui')
   await until(page, () => [...document.querySelectorAll('button')]
     .some((b) => b.textContent === 'Start without a prompt' && !b.disabled))
@@ -151,7 +154,7 @@ try {
   check('the agent window follows the split instead of staying wide', p?.grid === tmux, `xterm ${p?.grid} tmux ${tmux}`)
 
   // ---- 3. switching workspaces ----
-  const row = (title) => page.locator('aside').getByText(title, { exact: true }).first()
+  const row = (title) => page.locator('aside').getByRole('button', { name: title, exact: true }).first()
   for (const title of ['size-A', 'size-B', 'size-A', 'size-B']) {
     await row(title).click()
     const dots = await watchDots(page)

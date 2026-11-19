@@ -1,6 +1,7 @@
 /*
  * Verifies the "Default branch" setting of a yaac-hosted repo, reached from
- * a project's Repos section ("Manage repo") in Settings → Repos: it opens
+ * a project's Repos section ("Manage repo") in Settings → Project →
+ * General: it opens
  * on the repository's default, a change reaches the server, and both the
  * hosted remote's HEAD and the repo's branch list then name the new branch.
  *
@@ -11,7 +12,7 @@
  * Run: node test-playwright-scripts/hosted-default-branch.js
  */
 import path from 'node:path'
-import { SHOTS, api, check, finish, origin, requirePlaywright, resolveProject, until, projectPage } from './lib.js'
+import { SHOTS, api, check, finish, openMenuItem, origin, requirePlaywright, resolveProject, until, projectPage } from './lib.js'
 
 const PROJECT = process.env.PROJECT ?? 'default-branch-demo'
 const TO = process.env.TO ?? 'develop'
@@ -25,7 +26,7 @@ const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
 try {
   await page.goto(origin)
-  await page.click('[title="Settings"]')
+  await openMenuItem(page, 'Settings')
   await page.getByRole('combobox', { name: 'Project', exact: true }).selectOption(id)
   await projectPage(page, 'General').click()
   await page.getByRole('button', { name: 'Manage repo' }).first().click()

@@ -1,10 +1,10 @@
 /*
- * Verifies the rail's "Send feedback" button end to end: it sits above
- * Server health, a screenshot pasted into its form and one picked with
- * "Attach image" both show as thumbnails, Send delivers the words, both
- * images and the server's and webapp's build stamps to the feedback
- * endpoint with a signature that verifies against the key it names, and
- * the form clears afterwards.
+ * Verifies the yaac menu's "Send feedback" item end to end: the menu at
+ * the foot of the rail lists it after Server health, a screenshot pasted
+ * into its form and one picked with "Attach image" both show as
+ * thumbnails, Send delivers the words, both images and the server's and
+ * webapp's build stamps to the feedback endpoint with a signature that
+ * verifies against the key it names, and the form clears afterwards.
  *
  * The script is the endpoint: it listens on FEEDBACK_PORT (default 9911),
  * so the server must forward there. Start one on a scratch data dir:
@@ -43,11 +43,13 @@ const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
 const page = await browser.newPage()
 await page.goto(origin)
-const feedback = page.getByRole('button', { name: 'Send feedback' })
-const health = page.getByRole('button', { name: 'Server health' })
-check('the button sits above Server health',
-  (await feedback.boundingBox()).y < (await health.boundingBox()).y)
-await page.screenshot({ path: path.join(SHOTS, 'feedback-rail.png') })
+await page.getByRole('button', { name: 'yaac menu' }).click()
+const feedback = page.getByRole('menuitem', { name: 'Send feedback' })
+await feedback.waitFor()
+const items = await page.getByRole('menuitem').allTextContents()
+check('the menu lists it after Server health',
+  items.includes('Server health') && items.indexOf('Send feedback') > items.indexOf('Server health'), JSON.stringify(items))
+await page.screenshot({ path: path.join(SHOTS, 'feedback-menu.png') })
 await feedback.click()
 const box = page.getByPlaceholder(/what's working/i)
 await box.waitFor()

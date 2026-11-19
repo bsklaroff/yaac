@@ -18,7 +18,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { requirePlaywright, origin, check, finish, SHOTS } from './lib.js'
+import { requirePlaywright, origin, check, finish, openMenuItem, SHOTS } from './lib.js'
 
 const { chromium } = requirePlaywright()
 
@@ -38,7 +38,7 @@ const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
 page.on('pageerror', (err) => console.error(`  [page error] ${err.message}`))
 page.on('dialog', (dialog) => void dialog.accept())
 await page.goto(`${origin}/`)
-await page.locator('[title="Settings"]').first().click()
+await openMenuItem(page, 'Settings')
 await page.getByRole('button', { name: 'User Dockerfile' }).click()
 await page.getByText('Build files').waitFor()
 const row = (rel) => page.getByRole('button', { name: rel, exact: true })
