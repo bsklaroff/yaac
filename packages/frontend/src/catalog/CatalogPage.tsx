@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react'
 import {
-  IDENTITY_FAMILIES, YAvatar, YBadge, YButton, YCheckbox, YChip, YConfirm, YDialog, YEmptyState, YField, YInput,
+  IDENTITY_FAMILIES, YActions, YAvatar, YBadge, YButton, YCheckbox, YChip, YConfirm, YDialog, YEmptyState, YField, YInput,
   YKbd, YLoader, YLogoMark, YMenu, YMenuCheckboxItem, YMenuItem, YMenuLabel, YMenuPopup, YMenuRadioItem,
   YMenuSeparator, YNumberInput, YSectionLabel, YSegmented, YSelect, YStatus, YSwitch, YTabs, YTextArea, YTip,
   YTooltip, type YStatusKind,
@@ -176,6 +176,20 @@ function Overlays(): JSX.Element {
             <YMenuItem danger icon={icons.DeleteIcon}>Delete</YMenuItem>
           </YMenuPopup>
         </YMenu.Root>
+      </Item>
+      <Item name="YActions · 24rem and 12rem wide, pressed and disabled">
+        {['w-[24rem]', 'w-[12rem]'].map((width) => (
+          <div key={width} className={`@container flex justify-end rounded-sm border border-line p-1 ${width}`}>
+            <YActions
+              size="sm"
+              actions={[
+                { label: 'Hide ignored files', icon: icons.ShowIcon, pressed: true, onClick: () => undefined },
+                { label: 'New file', icon: icons.NewFileIcon, onClick: () => undefined },
+                { label: 'New folder', icon: icons.NewFolderIcon, disabled: true, onClick: () => undefined },
+              ]}
+            />
+          </div>
+        ))}
       </Item>
       <Item name="YTooltip">
         <YTooltip tip={<YTip title="New session" keys="⌘N" hint="In the project in scope" />}>

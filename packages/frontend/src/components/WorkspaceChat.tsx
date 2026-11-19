@@ -6,8 +6,9 @@ import { ActivityBar } from '#components/AcpActivity'
 import { sessionModels, useComposerMenu } from '#components/ComposerMenu'
 import { PendingAsks, tokenCount } from '#components/AcpTranscript'
 import {
-  ChatBottomBar, ChatViewToggles, COMPOSER_INPUT, FilledStopIcon, JumpButtons, Launching, PageFailed, PageLoading, useChatColumn,
-  useConversationView, useFollowTail,
+  ChatBottomBar, ChatWidthToggle, COMPOSER_BUTTONS, COMPOSER_CHIPS, COMPOSER_INPUT, COMPOSER_ROW, FilledStopIcon,
+  JumpButtons, Launching, PageFailed, PageLoading, useChatColumn, useCondensedAction, useConversationView,
+  useFollowTail,
 } from '#components/ConversationView'
 import { FileLinksContext, useFileLinks } from '#components/Markdown'
 import { AgentSettings, PermissionModeSelect } from '#components/ComposerSettings'
@@ -17,7 +18,7 @@ import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { focusRaisesKeyboard } from '#lib/viewport'
 import { DISCONNECT_NOTICE_DELAY_MS } from '#lib/reconnect'
 import { AttachImageIcon, CloseIcon, SendIcon } from '#lib/icons'
-import { YButton, YFileInput, YTextArea } from '#ui'
+import { YActions, YButton, YFileInput, YTextArea } from '#ui'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { useTranscriptPages } from '#lib/useTranscriptPages'
 import { useSnapshot } from '#lib/useSnapshot'
@@ -270,6 +271,7 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
   }
 
   const models = sessionModels(events)
+  const condensedAction = useCondensedAction()
   const { menu, inputProps: menuInputProps, onKeyDown: menuKeyDown } = useComposerMenu({
     inputRef,
     draft,
@@ -391,17 +393,21 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
               readOnly={awaitingEcho !== null}
               className={COMPOSER_INPUT}
             />
-            <div className="flex items-center justify-between px-2 pb-2">
-              <YButton
-                variant="ghost"
-                icon={AttachImageIcon}
-                aria-label="Attach image"
-                title="Attach image"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={awaitingEcho !== null}
+            <div className={COMPOSER_ROW}>
+              <YActions
+                side="top"
+                actions={[
+                  {
+                    label: 'Attach image',
+                    icon: AttachImageIcon,
+                    disabled: awaitingEcho !== null,
+                    onClick: () => fileInputRef.current?.click(),
+                  },
+                  condensedAction,
+                ]}
               />
-              <ChatViewToggles />
-              <div className="mr-auto flex min-w-0 items-center">
+              <ChatWidthToggle />
+              <div className={COMPOSER_CHIPS}>
                 {permissionModes.current !== undefined && (
                   <PermissionModeSelect
                     current={permissionModes.current}
@@ -446,8 +452,8 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
                   e.target.value = ''
                 }}
               />
-              {/* One group, so Stop stays beside Send however the row spreads. */}
-              <div className="flex items-center">
+              {/* One group, so Stop stays beside Send however the row wraps. */}
+              <div className={COMPOSER_BUTTONS}>
                 {usage !== undefined && <ContextMeter used={usage.used} size={usage.size} />}
                 {busy && (
                   <YButton

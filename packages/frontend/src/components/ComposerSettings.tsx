@@ -26,8 +26,9 @@ import {
  * the agent may do without asking is always in view. The other holds the
  * model, its effort level (docs/effort-levels.md) and the agent options
  * (docs/sessions.md), since the effort levels on offer follow the model. In
- * a narrow pane the posture shrinks to a bare icon and the model name
- * truncates, so the footer fits a phone on one line.
+ * a narrow pane the posture shrinks to a bare icon, and both pills truncate
+ * their labels rather than run under the buttons beside them
+ * (`COMPOSER_ROW`); the model name gives way faster than the effort.
  */
 
 /** What each posture lets the agent do, for hover text and the menu. */
@@ -80,7 +81,9 @@ export function PermissionModeSelect({ current, available, disabled, onSelect }:
       <ModeIcon size={13} className="shrink-0" />
       {/* Visually hidden rather than removed when narrow, so a screen reader
           still names a posture that has no menu (pi, opencode). */}
-      <span className="sr-only @min-[30rem]:not-sr-only">{PERMISSION_MODE_COPY[current].replace(/ permissions$/, '')}</span>
+      <span className="sr-only @min-[30rem]:not-sr-only @min-[30rem]:truncate">
+        {PERMISSION_MODE_COPY[current].replace(/ permissions$/, '')}
+      </span>
       {unsandboxed && <span className="sr-only"> ({NO_SANDBOX})</span>}
     </>
   )
@@ -92,7 +95,7 @@ export function PermissionModeSelect({ current, available, disabled, onSelect }:
         aria-label="Permission mode"
         title={help}
         disabled={disabled}
-        render={<YChip className={clsx(tint)} />}
+        render={<YChip className={clsx('shrink', tint)} />}
       >
         {label}
         <ChevronIcon size={11} className="hidden -rotate-90 @min-[30rem]:block" />
@@ -166,14 +169,16 @@ export function AgentSettings({ model, effort, options: given, disabled }: {
   ].join('\n')
   return (
     <YPopover.Root open={open} onOpenChange={setOpen}>
-      <YPopover.Trigger aria-label="Agent settings" title={title} disabled={disabled} render={<YChip />}>
-        {modelName !== undefined && (
-          <span className="min-w-0 max-w-[14rem] truncate">{modelName}</span>
-        )}
+      <YPopover.Trigger aria-label="Agent settings" title={title} disabled={disabled} render={<YChip className="shrink" />}>
+        {modelName !== undefined && <span className="min-w-0 max-w-[14rem] truncate">{modelName}</span>}
         {effortName !== undefined && (
-          <span className="shrink-0">{modelName !== undefined ? `· ${effortName}` : `${effortName} effort`}</span>
+          <span className="min-w-0 shrink-[0.2] truncate">
+            {modelName !== undefined ? `· ${effortName}` : `${effortName} effort`}
+          </span>
         )}
-        {modelName === undefined && effortName === undefined && <span>{on === 0 ? 'Options' : `Options (${String(on)})`}</span>}
+        {modelName === undefined && effortName === undefined && (
+          <span className="truncate">{on === 0 ? 'Options' : `Options (${String(on)})`}</span>
+        )}
         <ChevronIcon size={11} className="shrink-0 -rotate-90" />
       </YPopover.Trigger>
       <YPopoverPopup
