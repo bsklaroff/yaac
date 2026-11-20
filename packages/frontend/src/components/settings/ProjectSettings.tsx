@@ -19,7 +19,7 @@ import { SettingsPageTitle } from '#components/settings/SettingsPage'
 import { api } from '#lib/api'
 import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import type { ProjectPage } from '#lib/store'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useHasVolumes } from '#lib/volumes'
 import { useTeammateView } from '#lib/viewer'
 import { YCallout, YSettingGroup, YSettingRow } from '#ui'
@@ -45,7 +45,7 @@ export function ProjectSettings({ page }: { page: ProjectPage }): JSX.Element {
   const { selected } = useSettingsProject()
   const projectId = selected?.id ?? null
   const filesApi = useMemo(() => (projectId ? projectBuildFilesApi(projectId) : null), [projectId])
-  const buildsImages = useSnapshot()?.driver !== 'containerless'
+  const buildsImages = useSnapshotSelect((s) => s?.driver) !== 'containerless'
   // Only with an egress proxy can a secret's value stay out of the
   // workspace, or an allowlist apply.
   const mediatedEgress = buildsImages

@@ -3,7 +3,7 @@ import { createWorkspace, type WorkspaceCreate } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
 import { configuredTools, useAuthList } from '#lib/useAuthList'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { randomUUID } from '#lib/uuid'
 import {
   DEFAULT_AGENT_MODE,
@@ -50,10 +50,9 @@ export interface CreateDefaults {
  * the snapshot and each credential's model list.
  */
 export function useCreateDefaults(projectId: string | null): CreateDefaults {
-  const snapshot = useSnapshot()
   const auth = useAuthList()
-  const project = snapshot?.projects.find((p) => p.id === projectId)
-  const driver = snapshot?.driver
+  const project = useSnapshotSelect((s) => s?.projects.find((p) => p.id === projectId))
+  const driver = useSnapshotSelect((s) => s?.driver)
   return {
     ready: driver !== undefined && driver !== null && auth !== undefined,
     lastTool: project?.lastTool ?? 'claude',

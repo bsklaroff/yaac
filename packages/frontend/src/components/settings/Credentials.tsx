@@ -4,7 +4,7 @@ import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
 import { TOOL_LABEL } from '#lib/icons'
 import { useUiStore } from '#lib/store'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { isElectron, windowApi } from '#lib/platform'
 import { CustomEndpoints } from '#components/settings/CustomEndpoints'
 import { GitCredentials } from '#components/settings/GitCredentials'
@@ -50,7 +50,7 @@ const DEFAULT_PROVIDER: Partial<Record<AgentTool, string>> = {
 export function CredentialsPane(): JSX.Element {
   const auth = useAuthList()
   const focusTool = useUiStore((s) => s.settingsFocusTool)
-  const containerless = useSnapshot()?.driver === 'containerless'
+  const containerless = useSnapshotSelect((s) => s?.driver) === 'containerless'
   const queryClient = useQueryClient()
   const refresh = (): void => {
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })

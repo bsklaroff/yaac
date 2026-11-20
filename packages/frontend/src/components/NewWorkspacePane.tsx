@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChatIcon, CloseIcon, RenameIcon, RunIcon, SendIcon, SiteIcon, TerminalIcon, TOOL_LABEL, WorkflowIcon } from '#lib/icons'
@@ -1391,7 +1391,7 @@ function RepoBranch({ row, lone, onQuery, onPick }: {
  * Save keeps it in the sidebar, Discard drops it, and either then goes on;
  * Escape or "Keep editing" stays. Mounted once in App.
  */
-export function LeaveNewWorkspaceDialog(): JSX.Element {
+export const LeaveNewWorkspaceDialog = memo(function LeaveNewWorkspaceDialog(): JSX.Element {
   const leaving = useUiStore((s) => s.leaving)
   const stay = useUiStore((s) => s.stayOnNewWorkspace)
   const save = useMutation({ mutationFn: keepDraft })
@@ -1416,4 +1416,4 @@ export function LeaveNewWorkspaceDialog(): JSX.Element {
       onConfirm={() => { if (leaving !== null) save.mutate(leaving.draft, { onSuccess: leaving.leave }) }}
     />
   )
-}
+})

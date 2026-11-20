@@ -7,7 +7,7 @@ import { agentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { MoreIcon, RoutineIcon } from '#lib/icons'
 import { describeSchedule } from '#lib/routines'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
 import { timeUntil, useNow, useTimeZone } from '#lib/time'
 import { describeWorkspaceDeathReason } from '@yaac/shared/death-reason'
@@ -31,11 +31,10 @@ export function RoutinePane({ routine, bar }: {
   /** The header element to render the name and controls into. */
   bar: HTMLElement | null
 }): JSX.Element {
-  const snapshot = useSnapshot()
   const actions = useRoutineActions(routine)
   const [promptOpen, setPromptOpen] = useState(false)
-  const group = snapshot?.workspaceGroups.find((g) => g.groupId === routine.groupId)
-  const project = snapshot?.projects.find((p) => p.id === routine.projectId)
+  const group = useSnapshotSelect((s) => s?.workspaceGroups.find((g) => g.groupId === routine.groupId))
+  const project = useSnapshotSelect((s) => s?.projects.find((p) => p.id === routine.projectId))
   const schedule = describeSchedule(routine.cron)
 
   return (
@@ -139,15 +138,14 @@ function Fact({ label, hint, children }: { label: ReactNode; hint?: ReactNode; c
  * there refetches them whenever a run starts, stops or fails.
  */
 function RoutineRuns({ routine }: { routine: RoutineEntry }): JSX.Element {
-  const snapshot = useSnapshot()
   const openWorkspace = useUiStore((s) => s.openWorkspace)
   const zone = useTimeZone()
   const now = useNow()
-  const version = [
+  const version = useSnapshotSelect((s) => [
     routine.lastRunAt, routine.lastError,
-    ...(snapshot?.workspaces ?? []).filter((w) => w.routineId === routine.id).map((w) => `${w.workspaceId}:${w.deadline}`),
-    ...(snapshot?.queuedWorkspaces ?? []).filter((e) => e.routineId === routine.id).map((e) => `${e.id}:${e.launchError}`),
-  ].join(',')
+    ...(s?.workspaces ?? []).filter((w) => w.routineId === routine.id).map((w) => `${w.workspaceId}:${w.deadline}`),
+    ...(s?.queuedWorkspaces ?? []).filter((e) => e.routineId === routine.id).map((e) => `${e.id}:${e.launchError}`),
+  ].join(','))
   const runs = useInfiniteQuery({
     queryKey: ['routine-runs', routine.id, version],
     queryFn: ({ pageParam }) => api.routine.runs.$get({ query: { id: routine.id, ...(pageParam ? { cursor: pageParam } : {}) } }),

@@ -7,7 +7,7 @@ import { api } from '#lib/api'
 import { MoreIcon, RoutineIcon, RunIcon, SiteIcon, WorkflowIcon } from '#lib/icons'
 import { parseSteps } from '#lib/steps'
 import { useCreateWorkspace } from '#lib/useCreateDefaults'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshot, useSnapshotSelect } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
 import { useReadOnly } from '#lib/viewer'
 import type { ProjectSummary, WorkflowSummary } from '@yaac/shared/types'
@@ -35,15 +35,14 @@ export interface WorkflowActions {
 }
 
 export function useWorkflowActions(workflow: WorkflowSummary): WorkflowActions {
-  const snapshot = useSnapshot()
   const createWorkspace = useCreateWorkspace()
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const openObject = useUiStore((s) => s.openObject)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { projectId, name } = workflow
-  const project = snapshot?.projects.find((p) => p.id === projectId)
-  const group = snapshot?.workspaceGroups.find((g) => g.owner?.kind === 'workflow' && g.owner.id === workflow.id)
+  const project = useSnapshotSelect((s) => s?.projects.find((p) => p.id === projectId))
+  const group = useSnapshotSelect((s) => s?.workspaceGroups.find((g) => g.owner?.kind === 'workflow' && g.owner.id === workflow.id))
   return {
     runNow: () => createWorkspace({
       projectId,
@@ -97,8 +96,7 @@ export function WorkflowPane({ projectId, workflow, editing, bar }: {
   editing: boolean
   bar: HTMLElement | null
 }): JSX.Element {
-  const snapshot = useSnapshot()
-  const project = snapshot?.projects.find((p) => p.id === projectId)
+  const project = useSnapshotSelect((s) => s?.projects.find((p) => p.id === projectId))
   const openObject = useUiStore((s) => s.openObject)
   const select = useUiStore((s) => s.selectWorkspace)
   const readOnly = useReadOnly()

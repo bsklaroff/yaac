@@ -7,7 +7,8 @@ import { MoreIcon, SiteIcon } from '#lib/icons'
 import { relativeAge } from '#lib/time'
 import { useVolumes } from '#lib/volumes'
 import { useIsAdmin, useReadOnly } from '#lib/viewer'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
+import { useShallow } from 'zustand/react/shallow'
 import { useStartSelection } from '#lib/useStartSelection'
 import { useUiStore } from '#lib/store'
 import type { RepoPick } from '#lib/newWorkspace'
@@ -302,8 +303,7 @@ function SiteDetail({ site, bar }: { site: SiteSummary; bar: HTMLElement | null 
   const edge = useSiteEdge()
   const openWorkspace = useUiStore((s) => s.openWorkspace)
   const openObject = useUiStore((s) => s.openObject)
-  const workflows = useSnapshot()?.workflows ?? []
-  const workflow = workflows.find((w) => w.projectId === site.projectId && w.name === site.workflow)
+  const workflow = useSnapshotSelect((s) => s?.workflows.find((w) => w.projectId === site.projectId && w.name === site.workflow))
   // Refetched whenever the snapshot's summary of it changes.
   const { data: detail } = useQuery({
     queryKey: ['site', site.projectId, site.name, JSON.stringify(site)],
@@ -526,7 +526,7 @@ function SiteFields({ project, site, onDone, onCancel }: {
 }): JSX.Element {
   const projectId = project.id
   const volumes = useVolumes(projectId)
-  const workflows = (useSnapshot()?.workflows ?? []).filter((w) => w.projectId === projectId)
+  const workflows = useSnapshotSelect(useShallow((s) => (s?.workflows ?? []).filter((w) => w.projectId === projectId)))
   const openObject = useUiStore((s) => s.openObject)
   const admin = useIsAdmin()
   const [name, setName] = useState('')

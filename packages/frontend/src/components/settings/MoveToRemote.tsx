@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { GitCredentialPicker, remoteKind } from '#components/GitCredentialPicker'
 import { moveRepo, previewRepoMove } from '#lib/repoApi'
 import { WarningIcon } from '#lib/icons'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { YButton, YInput, YSectionLabel } from '#ui'
 
 /**
@@ -25,7 +25,7 @@ export function MoveToRemote({ repoId, name, onMoved }: { repoId: string; name: 
     staleTime: 0,
   })
   // Without an egress proxy every host is reachable.
-  const mediatedEgress = useSnapshot()?.driver !== 'containerless'
+  const mediatedEgress = useSnapshotSelect((s) => s?.driver) !== 'containerless'
   const running = preview.data?.runningWorkspaces ?? 0
   const sharedWith = preview.data?.sharedWith ?? []
 

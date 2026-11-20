@@ -6,7 +6,7 @@ import { api } from '#lib/api'
 import { restartWorkspace } from '#lib/createWorkspace'
 import { useProvisionWorkspace } from '#lib/useProvisionWorkspace'
 import { useTeammateView } from '#lib/viewer'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import type { ProjectSummary, ScratchDirSettings, WorkspaceListEntry } from '@yaac/shared/types'
 import { BADGE_TRIGGER } from '#components/ActionsBadge'
 import { YButton, YCheckbox, YPopover, YPopoverPopup } from '#ui'
@@ -29,7 +29,7 @@ export function TrackedScratchDirsBadge({ workspace, project, className }: {
   const [open, setOpen] = useState(false)
   const readOnly = useTeammateView()
   const provision = useProvisionWorkspace()
-  const containerless = useSnapshot()?.driver === 'containerless'
+  const containerless = useSnapshotSelect((s) => s?.driver) === 'containerless'
   const paths = shownScratchDirs(workspace, project)
   const update = useMutation({
     mutationFn: (json: Partial<ScratchDirSettings>) =>

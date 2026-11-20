@@ -21,7 +21,7 @@ import { AttachImageIcon, CloseIcon, SendIcon } from '#lib/icons'
 import { YActions, YButton, YFileInput, YTextArea } from '#ui'
 import { chatDraftKey, useUiStore } from '#lib/store'
 import { useTranscriptPages } from '#lib/useTranscriptPages'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { setSessionAgentOptions } from '#lib/createWorkspace'
 import { agentOptionIsLive, toolAgentOptions } from '@yaac/shared/types'
 import type { AcpContent, AcpEvent, AcpQueuedPrompt } from '@yaac/shared/acp'
@@ -74,8 +74,8 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
   const { events, busy, queued, connected, refused, send, permissionModes, efforts } = stream
   // The session holding this conversation, whose agent options it can
   // change while it runs (docs/sessions.md, "Agent options").
-  const session = useSnapshot()?.workspaces.find((w) => w.workspaceId === workspaceId)
-    ?.sessions.find((s) => s.conversationId === conversationId)
+  const session = useSnapshotSelect((snap) => snap?.workspaces.find((w) => w.workspaceId === workspaceId)
+    ?.sessions.find((s) => s.conversationId === conversationId))
   const [optionError, setOptionError] = useState<string | null>(null)
   /**
    * Whether to say the pane is disconnected: only once an attach it had, or

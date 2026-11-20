@@ -4,7 +4,7 @@ import { QueuedIcon } from '#lib/icons'
 import { agentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { clip, queuedChildren, queuedTitle } from '#lib/queued'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
 import type { QueuedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
 import { YButton, YConfirm } from '#ui'
@@ -30,14 +30,14 @@ export function StopWorkspaceDialog({
   onOpenChange: (open: boolean) => void
   onConfirm: () => void
 }): JSX.Element {
-  const snapshot = useSnapshot()
+  const queued = useSnapshotSelect((s) => s?.queuedWorkspaces)
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   // Kept through the close animation, when `workspace` is already null.
   const last = useRef(workspace)
   if (workspace !== null) last.current = workspace
   const shown = last.current
 
-  const children = queuedChildren(snapshot?.queuedWorkspaces ?? [])
+  const children = queuedChildren(queued ?? [])
   const direct = shown !== null ? children.get(shown.workspaceId) ?? [] : []
   const name = shown ? clip(shown.title || shown.prompt || 'New workspace') : ''
   // The entry leaves the snapshot once discarded.
