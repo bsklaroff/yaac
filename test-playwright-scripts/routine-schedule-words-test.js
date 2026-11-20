@@ -1,6 +1,6 @@
 /*
  * Verifies routine schedules read in words (describeSchedule, via cronstrue)
- * in the sidebar's Routines section and in the routine pane, against
+ * on the sidebar's Workflow tab and in the routine pane, against
  * routines the script creates through the API in a scratch project (and
  * deletes when done):
  *  - each sidebar row shows its cron in words, with the full text and the
@@ -38,8 +38,9 @@ const shot = (name) => page.screenshot({ path: path.join(SHOTS, `routine-words-$
 
 try {
   await page.goto(`${origin}/?project=${projectId}`)
-  const section = page.getByRole('group', { name: 'Routines' })
-  await section.waitFor({ state: 'visible', timeout: 30_000 })
+  await page.getByRole('group', { name: 'Sidebar list' }).getByRole('button', { name: 'Workflow' }).click()
+  const section = page.locator('aside')
+  await section.getByRole('button', { name: ROUTINES[0].name, exact: true }).waitFor({ timeout: 30_000 })
   await shot('sidebar')
   // A row's full-row button is named by the routine; its schedule line sits
   // beside it in the row.

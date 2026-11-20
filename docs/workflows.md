@@ -280,9 +280,10 @@ the value it started with, so stop the releases and runs that have it.
   repos and whether it is an init workflow), and `--workflow` on `create`,
   `create --workspace` (adds its steps), `queue`, `edit-queued` and
   `routine create|edit`.
-- **Webapp**: the sidebar's Workflows section lists each named workflow,
-  with Run now on its row and its unattended runs under it (they go in a
-  group the workflow owns, docs/workspace-groups.md "Owned groups"). Its
+- **Webapp**: the sidebar's Workflow tab lists each named workflow, with
+  Run now on its row and its unattended runs under it (they go in a group
+  the workflow owns, docs/workspace-groups.md "Owned groups"); a live run
+  shows on the Workspace tab too, as a plain row. Its
   pane shows its steps, repos, run secrets, approvals, whether an agent
   wrote it, a "Run at workspace start" switch and the routines and sites
   that run it, and edits it. The new-workspace pane's Workflow tab runs one

@@ -6,7 +6,8 @@
  *  2. Hovering the row swaps the icon for the caret.
  *  3. With its runs shown, the caret stays in place of the icon, hovered or
  *     not.
- *  4. The caret sits right of the Workflows section's own caret.
+ *  4. Its first Run now, which creates the workflow's group, leaves the
+ *     sidebar on the Workflow tab.
  *
  * Creates a workflow named `caret-check`, runs it once (a step that sleeps,
  * so the run stays live), and removes the workflow at the end. Screenshots
@@ -29,11 +30,13 @@ const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
 
 try {
   await page.goto(`${origin}/?project=${project.id}`)
-  const section = page.getByRole('group', { name: 'Workflows' })
-  await section.waitFor()
+  const workflowTab = page.getByRole('group', { name: 'Sidebar list' }).getByRole('button', { name: 'Workflow' })
+  await workflowTab.click()
+  const section = page.locator('aside')
   await section.getByRole('button', { name: `Run now: ${NAME}` }).click({ force: true })
   const toggle = section.getByRole('button', { name: new RegExp(`^(Show|Hide) ${NAME}'s runs$`) })
   await toggle.waitFor({ timeout: 60_000 })
+  check('first run: still on the Workflow tab', await workflowTab.getAttribute('aria-pressed') === 'true')
   if (await toggle.getAttribute('aria-expanded') === 'true') await toggle.click()
   await page.mouse.move(1300, 850)
   await page.waitForTimeout(300)
@@ -55,9 +58,6 @@ try {
   check('expanded: caret stays', !iconOpen && caretOpen && await toggle.getAttribute('aria-expanded') === 'true',
     JSON.stringify({ iconOpen, caretOpen }))
 
-  const sectionCaret = await section.getByRole('button', { name: 'Workflows' }).locator('svg').boundingBox()
-  const rowCaret = await toggle.locator('svg').nth(1).boundingBox()
-  check('row caret right of the section caret', rowCaret.x > sectionCaret.x, `row ${rowCaret.x}, section ${sectionCaret.x}`)
   await page.screenshot({ path: `${SHOTS}/caret-expanded.png` })
 } finally {
   await browser.close()

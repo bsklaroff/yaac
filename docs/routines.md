@@ -222,8 +222,9 @@ routine form says so beside the permission mode.
   schedule (a routine form with schedule presets that compile to cron, a
   zone, and a live preview of the next runs), and a Timeout row; on its
   Workflow tab the schedule makes a routine that runs a named workflow
-  unattended. The sidebar has Scheduled and Routines sections, describing
-  each routine's cron in words (cronstrue), with its runs under its row; a
+  unattended. The sidebar's Workspace tab has a Scheduled section, and its
+  Workflow tab lists each routine after the workflows, describing its cron
+  in words (cronstrue), with its runs under its row; a
   routine opens in its own pane with its cron and its runs; a workspace with
   a deadline shows a chip to extend or clear it, and a routine's run links
   back to its routine.

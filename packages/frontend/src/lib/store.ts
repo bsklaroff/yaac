@@ -65,6 +65,11 @@ export function defaultMobileScreen(): MobileScreen {
  *  time. */
 export type ViewMode = 'tiles' | 'tabs'
 
+/** What a project's sidebar lists: its workspaces, its named workflows and
+ *  routines, or its sites. */
+export const SIDEBAR_TABS = ['workspace', 'workflow', 'site'] as const
+export type SidebarTab = typeof SIDEBAR_TABS[number]
+
 /** The view mode of a first run, by viewport width. */
 export function defaultViewMode(viewportWidth = window.innerWidth): ViewMode {
   return viewportWidth < 1024 ? 'tabs' : 'tiles'
@@ -248,6 +253,7 @@ const PERSISTED: { [K in keyof UiState]?: Persisted<UiState[K]> } = {
   mobileScreen: oneOf('yaac.mobilescreen.v1', ['projects', 'workspaces', 'pane']),
   sidebarWidth: number('yaac.sidebarwidth.v1', clampSidebarWidth),
   stoppedExpanded: flag('yaac.stoppedexpanded.v1'),
+  sidebarTab: oneOf('yaac.sidebartab.v1', SIDEBAR_TABS),
   editorFontSize: number('yaac.editorfontsize.v1', clampFontSize),
   filesFontSize: number('yaac.filesfontsize.v1', clampFontSize),
   fileDiffMode: oneOf('yaac.filediffmode.v1', FILE_DIFF_MODES),
@@ -527,7 +533,8 @@ interface UiState {
    *  while no workspace is selected. Anything that selects a workspace or
    *  opens the new-workspace pane clears it. */
   selectedObject: SelectedObject | null
-  /** Show a routine's, workflow's or site's pane. */
+  /** Show a routine's, workflow's or site's pane, with the sidebar on the
+   *  tab that lists it. */
   openObject: (projectId: string, object: SelectedObject) => void
   /** The workspace last open in each project, which switching back to the
    *  project reopens (`resolveVacantSelection`). */
@@ -707,8 +714,9 @@ interface UiState {
   newWorkspace: NewWorkspaceForm | null
   setNewWorkspace: (form: NewWorkspaceForm | null) => void
   /** Show the new-workspace pane for a project, focused. A blank open keeps
-   *  a plain create form already there for that project, but leaves a queued
-   *  edit or a reopened draft; any other open replaces the form. */
+   *  a plain create form already there for that project, switched to its
+   *  Agent tab, but leaves a queued edit or a reopened draft; any other open
+   *  replaces the form. */
   openNewWorkspace: (opts: NewWorkspaceOpts) => void
   /** A navigation held while the user decides whether to save the pane's
    *  typed prompt as a draft. `leave` drops the form and goes on. */
@@ -753,6 +761,9 @@ interface UiState {
   /** Whether the sidebar's Stopped section is expanded. Saved. */
   stoppedExpanded: boolean
   setStoppedExpanded: (expanded: boolean) => void
+  /** Which list the project sidebar shows. Saved. */
+  sidebarTab: SidebarTab
+  setSidebarTab: (tab: SidebarTab) => void
   /** Groups whose stopped members are shown as ghost rows ("Show stopped
    *  workspaces"). While such a group is on screen and expanded, its
    *  stopped members are left out of the Stopped section. */
@@ -933,6 +944,7 @@ export const useUiStore = create<UiState>((set, get) => ({
     newWorkspace: null,
     focusNonce: s.focusNonce + 1,
     mobileScreen: 'pane',
+    sidebarTab: object.kind === 'site' ? 'site' : 'workflow',
   }))),
   lastWorkspaceOf: {},
   lastProjectOf: {},
@@ -956,6 +968,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   chatDrafts: {},
   newWorkspace: null,
   stoppedExpanded: false,
+  sidebarTab: 'workspace',
   paneView: {},
   // Every saved field's default goes above this line, so a loaded value wins.
   ...loadPersisted(),
@@ -1004,7 +1017,8 @@ export const useUiStore = create<UiState>((set, get) => ({
       && opts.workflow === undefined
     if (blank && kept?.projectId === opts.projectId && kept.editId === undefined && kept.draftId === undefined
       && kept.editRoutineId === undefined) {
-      show(kept)
+      const { kind: _kind, ...agent } = kept
+      show(agent)
     }
     else navigate(() => show(blank ? null : seedNewWorkspace(opts, get().snapshot)))
   },
@@ -1047,6 +1061,7 @@ export const useUiStore = create<UiState>((set, get) => ({
   revealQueued: null,
   setRevealQueued: (reveal) => set({ revealQueued: reveal }),
   setStoppedExpanded: (stoppedExpanded) => set({ stoppedExpanded }),
+  setSidebarTab: (sidebarTab) => set((s) => (s.sidebarTab === sidebarTab ? s : { sidebarTab })),
   stoppedShownGroups: [],
   setGroupShowsStopped: (groupId, shown) => set((s) => ({
     stoppedShownGroups: toggled(s.stoppedShownGroups, groupId, shown),

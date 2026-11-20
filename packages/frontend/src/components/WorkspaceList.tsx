@@ -13,7 +13,7 @@ import { useStoppedEntry, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces
 import { useIsMobile } from '#lib/viewport'
 import { useSnapshot } from '#lib/useSnapshot'
 import { useReadOnly, useViewedUserId, useWhoami } from '#lib/viewer'
-import { unseenDeaths, useUiStore } from '#lib/store'
+import { unseenDeaths, useUiStore, type SidebarTab } from '#lib/store'
 import type {
   DraftWorkspaceEntry,
   HeldWorkspaceEntry,
@@ -29,7 +29,6 @@ import type {
 } from '@yaac/shared/types'
 import {
   DraftsSection,
-  SidebarSection,
   QueueContext,
   QueuedRows,
   QueuedSet,
@@ -39,6 +38,7 @@ import {
   type QueueParent,
 } from '#components/sidebar/QueuedRows'
 import { RoutineItem, SiteItem, WorkflowItem, type OwnedGroupProps } from '#components/sidebar/ObjectRows'
+import { useSidebarTab } from '#components/sidebar/SidebarTabs'
 import {
   isTerminating,
   ProvisioningRow,
@@ -282,18 +282,65 @@ export function sidebarRowIds(
   pendingDeleteIds: string[],
   owned: ReadonlySet<string> = new Set(),
 ): string[] {
-  // Derived from the layout so it always matches what is drawn: the owned
-  // groups' runs head the list, under their owners' rows.
-  const layout = sidebarLayout(workspaces, groups, provisioning)
+  // Derived from the layout so it always matches what the Workspace tab
+  // draws, where an owned group's runs are ungrouped rows.
+  const layout = sidebarLayout(workspaces, groups.filter((g) => !owned.has(g.groupId)), provisioning)
   const selectable = (list: WorkspaceListEntry[]): string[] =>
     list.filter((w) => !isTerminating(w, pendingDeleteIds)).map((w) => w.workspaceId)
-  const rows = (s: SidebarGroupSection): string[] => [...s.provisioning.map((p) => p.workspaceId), ...selectable(s.members)]
   return [
-    ...layout.groups.filter((s) => owned.has(s.group.groupId)).flatMap(rows),
     ...layout.provisioning.map((p) => p.workspaceId),
     ...selectable(layout.defaultList),
-    ...layout.groups.filter((s) => !owned.has(s.group.groupId)).flatMap(rows),
+    ...layout.groups.flatMap((s) => [...s.provisioning.map((p) => p.workspaceId), ...selectable(s.members)]),
   ]
+}
+
+/**
+ * The tabs that list the selected workspace, or undefined while that is
+ * not known yet. A live, held or provisioning workspace is on the Workspace
+ * tab, and a run of a workflow, routine or site also on its owner's tab. A
+ * stopped run is only under its owner; any other stopped workspace is in
+ * the Workspace tab's Stopped section or its group. A provisioning row with
+ * no agent and no group may be an owner's first run, whose group the server
+ * is still creating, so it waits until it is listed.
+ */
+function tabsListing(
+  scope: ProjectScope,
+  id: string,
+  stopped: StoppedWorkspaceEntry | undefined,
+): SidebarTab[] | undefined {
+  const owned = ownedGroupIds(scope.groups, scope)
+  const ownerTab = (groupId: string | undefined): SidebarTab | undefined => {
+    const kind = scope.groups.find((g) => g.groupId === groupId && owned.has(g.groupId))?.owner?.kind
+    return kind === undefined ? undefined : kind === 'site' ? 'site' : 'workflow'
+  }
+  const prov = scope.provisioning.find((p) => p.workspaceId === id)
+  const row = scope.workspaces.find((w) => w.workspaceId === id) ?? scope.held.find((h) => h.workspaceId === id)
+    ?? (prov !== undefined && (prov.groupId !== undefined || prov.tool !== undefined) ? prov : undefined)
+  if (row !== undefined) {
+    const owner = ownerTab(row.groupId)
+    return owner !== undefined ? ['workspace', owner] : ['workspace']
+  }
+  if (prov !== undefined || stopped === undefined) return undefined
+  return [ownerTab(stopped.groupId) ?? 'workspace']
+}
+
+/**
+ * Keep the sidebar on a tab that lists the selected workspace: whenever
+ * the selection changes, or the tabs listing it do (a run stopping leaves
+ * only its owner's tab), switch to one of them unless the open tab is one.
+ * A tab the user picks is never undone while the selection stays put.
+ * App runs this, so it follows selections made while the sidebar is
+ * hidden, on Home, or from a link.
+ */
+export function useSidebarFollow(scope: ProjectScope, stopped: StoppedWorkspaceEntry | undefined): void {
+  const selectedId = useUiStore((s) => s.selectedWorkspaceId)
+  const listing = selectedId === null ? undefined : tabsListing(scope, selectedId, stopped)?.join(',')
+  useEffect(() => {
+    if (listing === undefined) return
+    const tabs = listing.split(',') as SidebarTab[]
+    const { sidebarTab, setSidebarTab } = useUiStore.getState()
+    if (!tabs.includes(sidebarTab)) setSidebarTab(tabs[0])
+  }, [selectedId, listing])
 }
 
 /**
@@ -323,10 +370,14 @@ interface RowDrag {
 
 
 /**
- * The workspace list: a scrolling column of drafts, scheduled workspaces,
- * workflows, routines, sites, provisioning rows, ungrouped workspaces, group
- * sections and the Stopped section. It has no outer chrome, so the desktop
- * `Sidebar` and the mobile workspaces screen can each wrap it.
+ * The workspace list, a scrolling column showing one of the sidebar's tabs
+ * (`SidebarTabs`). The Workspace tab shows drafts, scheduled workspaces,
+ * provisioning rows, ungrouped workspaces, group sections and the Stopped
+ * section, with a workflow's, routine's or site's live runs among the
+ * ungrouped rows. The Workflow tab shows every named workflow and routine,
+ * and the Site tab every site, each with all its runs under its row. It has
+ * no outer chrome, so the desktop `Sidebar` and the mobile workspaces
+ * screen can each wrap it.
  */
 export function WorkspaceList({
   projectId,
@@ -373,13 +424,19 @@ export function WorkspaceList({
   const collapsedGroups = useUiStore((s) => s.collapsedGroups)
   const setGroupCollapsed = useUiStore((s) => s.setGroupCollapsed)
   const selectedId = useUiStore((s) => s.selectedWorkspaceId)
+  const tab = useSidebarTab()
 
   // An owned group is laid out whatever it holds, since its owner's row is
   // always drawn and its stopped runs are its owner's history.
   const ownedIds = ownedGroupIds(groups, { workflows, routines, sites })
   const layout = sidebarLayout(workspaces, groups.map((g) => (ownedIds.has(g.groupId) ? { ...g, pinned: true } : g)),
     provisioning, queued, held)
-  const sections = layout.groups.filter((s) => !ownedIds.has(s.group.groupId))
+  // The Workspace tab draws an owned group's runs as ungrouped rows, so it
+  // is laid out without those groups. What waits for room in one is left to
+  // its owner's tab.
+  const loose = sidebarLayout(workspaces, groups.filter((g) => !ownedIds.has(g.groupId)), provisioning, queued, held)
+  const looseOrphans = loose.orphans.filter((e) => e.parentWorkspaceId !== undefined || e.parentQueuedId !== undefined
+    || !ownedIds.has(e.groupId ?? ''))
   const ownedSection = (kind: 'workflow' | 'routine' | 'site', id: string): SidebarGroupSection | undefined =>
     layout.groups.find((s) => s.group.owner?.kind === kind && s.group.owner.id === id && ownedIds.has(s.group.groupId))
 
@@ -399,7 +456,7 @@ export function WorkspaceList({
   ]
   const hidden = new Set([...workspaces.map((w) => w.workspaceId), ...elsewhere])
   const stopped = useStoppedWorkspaces(projectId, { excludeGroups: [...owning], exclude: elsewhere }, {
-    enabled: stoppedExpanded,
+    enabled: stoppedExpanded && tab === 'workspace',
     version: [project?.stoppedCount ?? 0, ...groups.map((g) => g.stoppedCount)].join(','),
     hidden,
   })
@@ -530,13 +587,15 @@ export function WorkspaceList({
   })
   // Mouse only, so touch can scroll; on touch the group dialog moves
   // workspaces.
+  // The groups on screen: drop targets, and what a row's dialog offers.
+  const onScreen = (tab === 'workspace' ? loose : layout).groups
   const rowDrag: SidebarDrag = {
     start: (e, workspace, onSelect) => {
       if (e.pointerType !== 'mouse' || readOnly) return
       start(e, {
         workspaceId: workspace.workspaceId,
         projectId: workspace.projectId,
-        from: layout.groups.some((s) => s.group.groupId === workspace.groupId) ? workspace.groupId ?? null : null,
+        from: onScreen.some((s) => s.group.groupId === workspace.groupId) ? workspace.groupId ?? null : null,
       }, onSelect)
     },
     activeId: drag?.item.workspaceId ?? null,
@@ -544,9 +603,7 @@ export function WorkspaceList({
   /** Whether a drop here would actually move the dragged workspace. */
   const dropTarget = (groupId: string | null): boolean =>
     drag !== null && drag.over === groupId && drag.over !== drag.item.from
-  // The groups a row's dialog offers: those on screen, the same targets a
-  // drag has.
-  const shownGroups = layout.groups.map((s) => s.group)
+  const shownGroups = onScreen.map((s) => s.group)
   /** The section props of an object's owned group, when it is laid out. */
   const groupProps = (kind: 'workflow' | 'routine' | 'site', id: string): OwnedGroupProps | undefined => {
     const section = ownedSection(kind, id)
@@ -562,10 +619,13 @@ export function WorkspaceList({
       ...(dropNotice?.groupId === section.group.groupId ? { notice: dropNotice.message } : {}),
     }
   }
+  const empty = (title: string, description: string): JSX.Element => (
+    <YEmptyState compact className="py-10" title={title} description={readOnly ? undefined : description} />
+  )
 
   return (
     <QueueContext.Provider value={queueContext}>
-      <div className="min-h-0 flex-1 overflow-y-auto py-1">
+      <div className="min-h-0 flex-1 overflow-y-auto pb-1">
         {readOnly && (
           <p className="mx-3 mb-1 rounded-md bg-selected px-2.5 py-1.5 text-sm text-muted">
             {viewedName}&apos;s workspaces, read-only
@@ -581,88 +641,75 @@ export function WorkspaceList({
               : 'Pick a project from the rail on the left.'}
           />
         )}
-        {projectId && !project?.stoppedCount && [...workspaces, ...provisioning, ...queued, ...held, ...drafts, ...routines,
-          ...workflows, ...sites].length === 0 && (
-          <YEmptyState
-            compact
-            className="py-10"
-            title="No workspaces yet"
-            description={readOnly ? undefined : 'Start one with New workspace above.'}
-          />
-        )}
-        {drafts.length > 0 && <DraftsSection drafts={drafts} />}
-        {layout.scheduled.length > 0 && <ScheduledSection entries={layout.scheduled} />}
-        {workflows.length > 0 && (
-          <SidebarSection label="Workflows" count={workflows.length}>
+        {projectId && tab === 'workflow' && (workflows.length + routines.length === 0
+          ? empty('No workflows yet', 'Make one from the Workflow tab of New workspace.')
+          : <>
             {workflows.map((w) => <WorkflowItem key={w.id} workflow={w} group={groupProps('workflow', w.id)} />)}
-          </SidebarSection>
-        )}
-        {routines.length > 0 && (
-          <SidebarSection label="Routines" count={routines.length}>
             {routines.map((r) => <RoutineItem key={r.id} routine={r} group={groupProps('routine', r.id)} />)}
-          </SidebarSection>
-        )}
-        {sites.length > 0 && (
-          <SidebarSection label="Sites" count={sites.length}>
-            {sites.map((st) => <SiteItem key={st.id} site={st} group={groupProps('site', st.id)} />)}
-          </SidebarSection>
-        )}
-        {layout.orphans.map((e) => (
-          <Fragment key={e.id}>
-            <QueuedWorkspaceRow entry={e} depth={0} />
-            <QueuedRows parentId={e.id} depth={1} />
-          </Fragment>
-        ))}
-        {layout.provisioning.map((p) => (
-          <Fragment key={p.workspaceId}>
-            <ProvisioningRow entry={p} />
-            <QueuedSet parentId={p.workspaceId} />
-          </Fragment>
-        ))}
-
-        {/* The default list is a drop zone that ungroups a workspace. While
-            dragging, an empty list shows a placeholder to drop on. */}
-        <div
-          ref={zoneRef(null)}
-          role="group"
-          aria-label="Ungrouped workspaces"
-          className={clsx('py-1', dropTarget(null) && 'bg-selected/40 ring-1 ring-accent/40')}
-        >
-          {layout.defaultList.map((s) => (
-            <Fragment key={s.workspaceId}>
-              <WorkspaceRow workspace={s} shownGroups={shownGroups} drag={rowDrag} rowIds={rowIds} />
-              <QueuedSet parentId={s.workspaceId} />
+          </>)}
+        {projectId && tab === 'site' && (sites.length === 0
+          ? empty('No sites yet', 'Make one from the Site tab of New workspace.')
+          : sites.map((st) => <SiteItem key={st.id} site={st} group={groupProps('site', st.id)} />))}
+        {projectId && tab === 'workspace' && <>
+          {!project?.stoppedCount && [...workspaces, ...provisioning, ...queued, ...held, ...drafts].length === 0
+            && empty('No workspaces yet', 'Start one with New workspace above.')}
+          {drafts.length > 0 && <DraftsSection drafts={drafts} />}
+          {loose.scheduled.length > 0 && <ScheduledSection entries={loose.scheduled} />}
+          {looseOrphans.map((e) => (
+            <Fragment key={e.id}>
+              <QueuedWorkspaceRow entry={e} depth={0} />
+              <QueuedRows parentId={e.id} depth={1} />
             </Fragment>
           ))}
-          {layout.defaultHeld.map((d) => (
-            <Fragment key={d.workspaceId}>
-              <StoppedWorkspaceRow entry={d} />
-              <QueuedSet parentId={d.workspaceId} />
+          {loose.provisioning.map((p) => (
+            <Fragment key={p.workspaceId}>
+              <ProvisioningRow entry={p} />
+              <QueuedSet parentId={p.workspaceId} />
             </Fragment>
           ))}
-          {drag !== null && layout.defaultList.length === 0 && (
-            <p className="mx-2 rounded-lg border border-dashed border-line-strong px-2.5 py-3 text-center text-md text-subtle">
-              Ungrouped
-            </p>
-          )}
-        </div>
 
-        {sections.map((section) => (
-          <GroupSection
-            key={section.group.groupId}
-            section={section}
-            shownGroups={shownGroups}
-            drag={rowDrag}
-            rowIds={rowIds}
-            dropTarget={dropTarget(section.group.groupId)}
-            zoneRef={zoneRef(section.group.groupId)}
-            elsewhere={elsewhere}
-            hidden={hidden}
-            {...(dropNotice?.groupId === section.group.groupId ? { notice: dropNotice.message } : {})}
-          />
-        ))}
+          {/* The default list is a drop zone that ungroups a workspace. While
+              dragging, an empty list shows a placeholder to drop on. */}
+          <div
+            ref={zoneRef(null)}
+            role="group"
+            aria-label="Ungrouped workspaces"
+            className={clsx('pb-1', dropTarget(null) && 'bg-selected/40 ring-1 ring-accent/40')}
+          >
+            {loose.defaultList.map((s) => (
+              <Fragment key={s.workspaceId}>
+                <WorkspaceRow workspace={s} shownGroups={shownGroups} drag={rowDrag} rowIds={rowIds} />
+                <QueuedSet parentId={s.workspaceId} />
+              </Fragment>
+            ))}
+            {loose.defaultHeld.map((d) => (
+              <Fragment key={d.workspaceId}>
+                <StoppedWorkspaceRow entry={d} />
+                <QueuedSet parentId={d.workspaceId} />
+              </Fragment>
+            ))}
+            {drag !== null && loose.defaultList.length === 0 && (
+              <p className="mx-2 rounded-lg border border-dashed border-line-strong px-2.5 py-3 text-center text-md text-subtle">
+                Ungrouped
+              </p>
+            )}
+          </div>
 
-        {projectId && (
+          {loose.groups.map((section) => (
+            <GroupSection
+              key={section.group.groupId}
+              section={section}
+              shownGroups={shownGroups}
+              drag={rowDrag}
+              rowIds={rowIds}
+              dropTarget={dropTarget(section.group.groupId)}
+              zoneRef={zoneRef(section.group.groupId)}
+              elsewhere={elsewhere}
+              hidden={hidden}
+              {...(dropNotice?.groupId === section.group.groupId ? { notice: dropNotice.message } : {})}
+            />
+          ))}
+
           <StoppedSection
             projectId={projectId}
             count={stoppedCount}
@@ -671,7 +718,7 @@ export function WorkspaceList({
             onExpandedChange={setStoppedExpanded}
             list={stoppedList}
           />
-        )}
+        </>}
       </div>
     </QueueContext.Provider>
   )

@@ -106,12 +106,13 @@ adding a project, feedback, server health, settings) renders as rows. So
 does `ServersButton` inside the iPhone app (ios/README.md), naming the
 connected server, since this screen has no status row for the server badge.
 
-**Workspaces** reuses the desktop sidebar's `WorkspaceList` as is, so list
-order matches the Alt+K/J cycle order. Opening Home (`openHome`) lands here
+**Workspaces** reuses the desktop sidebar's `WorkspaceList` as is, so the
+Workspace tab's order matches the Alt+K/J cycle order. Opening Home (`openHome`) lands here
 too, on every project's sessions by status (`HomeSessionList`), titled
 Inbox. It sits under a mobile header with the project's name (a link to
 its settings) and new-workspace, over the sidebar's status row (usage,
-and the server badge inside the iPhone app). Touch has no hover, so below `md` each
+and the server badge inside the iPhone app) and its Workspace / Workflow /
+Site tabs. Touch has no hover, so below `md` each
 row's rename, group and delete actions are always shown and finger-sized, and
 the title's hover marquee is off. Dragging rows between groups is mouse-only
 (a preventDefault on pointerdown would fight scrolling); the group dialog's

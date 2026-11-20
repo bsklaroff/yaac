@@ -122,10 +122,17 @@ only signal.
   button while the sidebar is hidden, so the rail's line runs to the top. On Home it lists every
   project's sessions in status sections (Needs you, Working, Done). On a
   project its header shows the project's name, which opens the project's
-  settings on General (where the project is also removed), and it lists
-  its drafts and scheduled starts, its Workflows,
-  Routines and Sites, then its sessions in creation order and the user's
-  groups. There status shows only on each row, so rows never jump between
+  settings on General (where the project is also removed). Under its
+  status badges sits New workspace, which always opens the create pane on
+  Agent, and under that tabs (`SidebarTabs`) switch the list. Workspace
+  lists the drafts and scheduled starts, then every running session in
+  creation order (a workflow's, routine's or site's runs among them as
+  plain rows) and the groups; Workflow lists the named workflows and
+  routines and Site the sites, each with all its runs. Opening a workflow or site switches to
+  its tab, and when the selected workspace is not on the open tab (just
+  selected, or a run that stopped and is now listed only under its owner)
+  the sidebar switches to one that lists it. Alt+K/J walks the Workspace
+  tab's order whichever tab is open. Status shows only on each row, so rows never jump between
   sections. A workspace with
   several sessions lists them under its row on a tree line. There is no
   search box: the command palette (Alt+O) finds sessions, projects and

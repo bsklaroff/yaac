@@ -23,7 +23,7 @@ import { clip, fetchFullPrompt, queuedDescendants, queuedInTreeOrder, queuedPare
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useCreateDefaults, useCreateWorkspace } from '#lib/useCreateDefaults'
 import { useInlineEdit } from '#lib/useInlineRename'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSitesSupported, useSnapshot } from '#lib/useSnapshot'
 import { useVolumes } from '#lib/volumes'
 import { guardNewWorkspace, useUiStore, type LaunchPane } from '#lib/store'
 import { focusRaisesKeyboard, useIsMobile } from '#lib/viewport'
@@ -51,7 +51,7 @@ import type {
 } from '@yaac/shared/types'
 import {
   cn, YButton, YCheckbox, YChip, YConfirm, YEmptyState, YInput, YNumberInput, YPageBody, YSection, YSelect, YSettingGroup,
-  YSettingRow, YTabs, YTextArea, YTypeahead,
+  YSegmented, YSettingRow, YTextArea, YTypeahead,
 } from '#ui'
 
 const MODE_COPY: Record<AgentMode, string> = { tui: 'Terminal', acp: 'Chat' }
@@ -208,6 +208,7 @@ export function NewWorkspacePane({ projectId, bar }: {
   const { prompt, title } = form
 
   const snapshot = useSnapshot()
+  const hasSites = useSitesSupported()
   // Where the agent runs: a new workspace, or a running one of the project,
   // which takes only an agent's settings (docs/sessions.md). A workspace
   // with no agent starts now and takes no prompt.
@@ -698,8 +699,6 @@ export function NewWorkspacePane({ projectId, bar }: {
 
   const sendTitle = blocked ?? (text === '' && !noAgent ? 'Type a prompt' : `${submitLabel} (Enter)`)
   const fresh = form.editId === undefined && form.editRoutineId === undefined && form.draftId === undefined
-  // Unknown until the first snapshot, so the Site tab never flashes on containerless.
-  const hasSites = snapshot !== undefined && snapshot.driver !== 'containerless'
   const initWorkflows = workflows.filter((w) => w.init).map((w) => w.name)
   const showVolumes = !storesEntry && volumes !== undefined && volumes.length > 0
   const originNote = queued && selection.included.length > 0 ? 'Latest from origin when it starts' : undefined
@@ -787,14 +786,16 @@ export function NewWorkspacePane({ projectId, bar }: {
       )}
       <YPageBody className="gap-5 py-4">
         {fresh && !inWorkspace && (
-          <YTabs
+          <YSegmented
             ariaLabel="What to start"
             value={kind ?? 'agent'}
             onChange={(v) => update({ kind: v === 'agent' ? undefined : v })}
-            tabs={KINDS.filter((k) => k.value !== 'site' || hasSites).map((k) => ({
+            className="self-start"
+            options={KINDS.filter((k) => k.value !== 'site' || hasSites).map((k) => ({
               value: k.value,
               icon: k.Icon,
-              label: <span title={k.help}>{k.label}</span>,
+              label: k.label,
+              title: k.help,
             }))}
           />
         )}

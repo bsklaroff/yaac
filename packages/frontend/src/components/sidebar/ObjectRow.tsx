@@ -60,7 +60,6 @@ export function ObjectRow({ icon: RowIcon, name, detail, object, projectId, item
         label={name}
         onSelect={readOnly && object.kind === 'routine' ? undefined : () => openObject(projectId, object)}
         selected={selected}
-        className="pl-4"
         mark={runs !== undefined ? (
           <YButton
             variant="bare"

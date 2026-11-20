@@ -3,12 +3,13 @@ import { HomeSessionList } from '#components/home/HomeSessionList'
 import type { HomeRow } from '#components/home/homeRows'
 import { MobileHeader } from '#components/mobile/MobileHeader'
 import { ListActions, ListBadges, ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
+import { SidebarTabs } from '#components/sidebar/SidebarTabs'
 import type { ProjectSummary } from '@yaac/shared/types'
 
 /**
  * The middle mobile screen: the active project's workspaces, or on Home
  * every project's sessions by status (the inbox). Same list and
- * header actions as the desktop sidebar, with a back button to the projects
+ * header actions and tabs as the desktop sidebar, with a back button to the projects
  * screen instead of the hide-sidebar toggle.
  */
 export function WorkspacesScreen({ scope, connected, onBack, home }: {
@@ -40,6 +41,7 @@ export function WorkspacesScreen({ scope, connected, onBack, home }: {
         actions={<ListActions projectId={scope.projectId} connected={connected} />}
       />
       <ListBadges projectIds={scope.projectId !== null ? [scope.projectId] : []} className="shrink-0 px-3 py-2 empty:hidden" />
+      {scope.projectId !== null && <SidebarTabs workspaces={scope.workspaces} className="shrink-0 px-3 pb-1" />}
       <WorkspaceList {...scope} />
     </>
   )

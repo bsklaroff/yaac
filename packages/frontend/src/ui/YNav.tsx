@@ -66,13 +66,15 @@ export function YRailItem({ icon: IconGlyph, label, tip, active = false, dot = f
   )
 }
 
-/** The sidebar: a header, the New workspace row (`newWorkspace`, usually a
- *  YSidebarNewWorkspace), a `status` strip fixed above the scrolling
- *  sections, and at the foot a way to all sessions. */
-export function YSidebar({ header, newWorkspace, status, children, footer, width, className }: {
+/** The sidebar: a header, a `status` strip, the New workspace row
+ *  (`newWorkspace`, usually a YSidebarNewWorkspace), `tabs` switching what
+ *  the scrolling sections below show, and at the foot a way to all
+ *  sessions. */
+export function YSidebar({ header, newWorkspace, status, tabs, children, footer, width, className }: {
   header?: ReactNode
   newWorkspace?: ReactNode
   status?: ReactNode
+  tabs?: ReactNode
   children: ReactNode
   footer?: ReactNode
   width?: number
@@ -81,8 +83,9 @@ export function YSidebar({ header, newWorkspace, status, children, footer, width
   return (
     <aside className={cn('relative flex shrink-0 flex-col border-r border-line bg-shell', className)} style={width ? { width } : undefined}>
       {header}
-      {newWorkspace && <div className="px-1.5 py-1.5">{newWorkspace}</div>}
       {status}
+      {newWorkspace && <div className="px-1.5 pt-1.5">{newWorkspace}</div>}
+      {tabs}
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">{children}</div>
       {footer}
     </aside>

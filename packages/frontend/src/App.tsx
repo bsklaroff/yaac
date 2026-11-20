@@ -13,7 +13,7 @@ import {
   unreadWaitingByProject, useUiStore,
 } from './lib/store'
 import { ProjectRail } from './components/ProjectRail'
-import { ownedGroupIds, Sidebar, sidebarRowIds } from './components/Sidebar'
+import { ownedGroupIds, Sidebar, sidebarRowIds, useSidebarFollow } from './components/Sidebar'
 import type { ProjectScope } from './components/WorkspaceList'
 import { useStoppedEntry } from './lib/useStoppedWorkspaces'
 import { WorkspaceView } from './components/WorkspaceView'
@@ -223,8 +223,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   // PTY, and live here rather than in Sidebar so they work with the sidebar
   // hidden. Terminal-scoped shortcuts belong to WorkspaceView. The ref lets
   // the one listener read the current render's state.
-  const owned = ownedGroupIds(scope.groups, scope)
-  const rowIds = sidebarRowIds(scope.provisioning, scope.workspaces, scope.groups, pendingDeleteIds, owned)
+  const rowIds = sidebarRowIds(scope.provisioning, scope.workspaces, scope.groups, pendingDeleteIds, ownedGroupIds(scope.groups, scope))
   const allHomeRows = homeRows(workspaces, provisioning, me, pendingDeleteIds, snapshot?.startedAtMs)
   // On Home the cycle steps through Home's list, across projects.
   const cycleRows = homeOpen ? homeListOrder(allHomeRows) : null
@@ -297,6 +296,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
     version: String(activeProject?.stoppedCount ?? 0),
   })
   const stoppedEntry = stoppedSelection.entry
+  useSidebarFollow(scope, stoppedEntry)
 
   // Fill the pane when the project changed or the open workspace vanished
   // (see resolveVacantSelection): with the project's last open workspace, or
