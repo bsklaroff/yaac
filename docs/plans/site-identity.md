@@ -11,8 +11,9 @@ edition, MPL-2.0), run unmodified. yaac itself gains no identity code: no
 account tables, no allowlists, no login pages. Its one change is a set of
 headers each edge drops (see "The yaac change").
 
-It depends on docs/plans/preview-pane-loopback-origin.md, which is how the
-issuer's admin console is opened (see "The admin console").
+It depends on the desktop preview pane (docs/port-forward-tunnel.md "The
+desktop preview pane"), which is how the issuer's admin console is opened
+(see "The admin console").
 
 One-click sign-in for tailnet users, and for agents acting as their owner,
 builds on this issuer and is docs/plans/site-identity-tailscale.md.
@@ -95,9 +96,9 @@ administers the issuer and how its first admin is created.
 
 The owner opens the console as the live release's Preview in the desktop
 app, which the site's row in project settings links to. This needs the
-preview pane of docs/plans/preview-pane-loopback-origin.md, which loads a
-workspace's port at `http://localhost:<port>` and sends the pane's
-loopback traffic to that workspace. Logto serves the console only to a
+desktop preview pane (docs/port-forward-tunnel.md "The desktop preview
+pane"), which loads a workspace's port at `http://localhost:<port>` and
+sends the pane's loopback traffic to that workspace. Logto serves the console only to a
 browser at the console's configured origin, `http://localhost:3002` by
 default, and answers any other origin on that port with the sign-in pages.
 The pane is at exactly that origin for every release, so `ADMIN_ENDPOINT`

@@ -207,8 +207,8 @@ describe('WorkspaceView: open-preview', () => {
     />)
     focusTerminal()
     altP()
-    // The page came from a server on loopback, which routes the
-    // workspace hostnames on its own port.
+    // A desktop app that cannot route the pane's session gets the port's
+    // workspace hostname, which the page's server on loopback routes.
     const home = `http://4000.s1.localhost:${window.location.port || '80'}/`
     const wv = document.querySelector('webview')
     expect(wv?.getAttribute('src')).toBe(home)
@@ -226,6 +226,25 @@ describe('WorkspaceView: open-preview', () => {
     expect(document.querySelectorAll('webview')).toHaveLength(1)
     expect(document.querySelector('webview')).toBe(wv)
     expect(wv?.getAttribute('src')).toBe(`${home}settings`)
+  })
+
+  it('loads the port at localhost once a desktop app routes the pane', async () => {
+    // The port as the workspace's app sees it, which the pane's session
+    // proxies into the workspace.
+    const routePreview = vi.fn(() => Promise.resolve(true))
+    ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = { openExternal: vi.fn(), routePreview }
+    try {
+      renderWithClient(<WorkspaceView
+        snapshot={{ workspaces: [{ ...workspace, forwardedPorts: [port(4000)] }] } as unknown as ServerSnapshot}
+        provisioning={[]}
+      />)
+      focusTerminal()
+      altP()
+      await waitFor(() => expect(document.querySelector('webview')?.getAttribute('src')).toBe('http://localhost:4000/'))
+      expect(routePreview).toHaveBeenCalledWith('s1')
+    } finally {
+      delete (window as unknown as { yaacWindow?: unknown }).yaacWindow
+    }
   })
 
   it('with no ports, opens nothing', () => {

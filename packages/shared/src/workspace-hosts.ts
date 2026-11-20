@@ -52,3 +52,12 @@ export function namesWorkspace(host: string, workspaceId: string | undefined): b
     && !host.split(':')[0].endsWith('.')
     && parseWorkspaceHost(host)?.idPrefix === workspaceId.slice(0, ID_PREFIX_LENGTH).toLowerCase()
 }
+
+/**
+ * The Electron session of a workspace's desktop preview pane: the pane
+ * names it, and the desktop app routes its loopback traffic into that
+ * workspace (docs/port-forward-tunnel.md "The desktop preview pane").
+ */
+export function previewPartition(workspaceId: string): string {
+  return `persist:preview-${workspaceId}`
+}

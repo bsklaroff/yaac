@@ -4,6 +4,7 @@ import {
   snapshotForwards,
   type ForwardSet,
 } from '@yaac/shared/port-tunnel-set'
+import { startSocksTunnel, type ForwardHandle, type TunnelRoute } from '@yaac/shared/port-tunnel'
 import { isLoopbackOrigin, type ServerTarget } from '@yaac/shared/server-api'
 import { WORKSPACE_HOSTS_PORT } from '@yaac/shared/workspace-hosts'
 import type { ServerSnapshot } from '@yaac/shared/types'
@@ -22,8 +23,11 @@ import type { ServerSnapshot } from '@yaac/shared/types'
  *
  * For a server on another machine it also routes the workspace hostnames
  * (docs/workspace-hostnames.md) and tells the page where (`hostsPort`,
- * `onHostsPort`), so the preview pane can load them. A server on this
- * machine routes them on its own port.
+ * `onHostsPort`), so a preview can be copied or opened in a browser. A
+ * server on this machine routes them on its own port.
+ *
+ * It also answers where a preview pane's connection to one workspace port
+ * goes (`route`), for the pane proxies of `createPreviewProxies`.
  */
 
 export interface ForwarderDeps {
@@ -41,6 +45,12 @@ export interface DesktopForwarder {
   apply(snapshot: ServerSnapshot): void
   /** Where this app routes workspace hostnames, if it does. */
   hostsPort(): number | null
+  /**
+   * The tunnel to `port` of workspace `workspaceId`, if the latest snapshot
+   * offers it. Waits for the first snapshot, which may still be on its way
+   * when a preview pane first connects.
+   */
+  route(workspaceId: string, port: number): Promise<TunnelRoute | undefined>
   stop(): void
 }
 
@@ -55,6 +65,10 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
   let running: Promise<void> = Promise.resolve()
   let pending: ServerSnapshot | null = null
   let hostsPort: number | null = null
+  // The last snapshot reconciled, and the first reconcile's end (or stop).
+  let latest: ServerSnapshot | null = null
+  let markFirst = (): void => { /* replaced below */ }
+  const first = new Promise<void>((resolve) => { markFirst = resolve })
   const publishHostsPort = (port: number | null): void => {
     if (port === hostsPort) return
     hostsPort = port
@@ -94,9 +108,12 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
       if (stopped) return
       // Nothing against a containerless server on this machine, whose
       // workspace processes already hold the ports themselves.
+      latest = snapshot
       await set?.reconcile(serverNeedsForwarder(snapshot.driver, baseUrl) ? snapshotForwards(snapshot) : [])
     } catch (err) {
       say(`forwarding paused: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      markFirst()
     }
   }
 
@@ -117,8 +134,15 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
       drain()
     },
     hostsPort: () => hostsPort,
+    async route(workspaceId, port) {
+      await first
+      if (stopped || !latest || !targetUrl) return undefined
+      const spec = snapshotForwards(latest, workspaceId).find((s) => s.containerPort === port)
+      return spec && { target: { baseUrl: targetUrl }, spec }
+    },
     stop() {
       stopped = true
+      markFirst()
       pending = null
       set?.close()
       set = null
@@ -126,6 +150,32 @@ export function startForwarder(deps: ForwarderDeps): DesktopForwarder {
       // The page may have the port from us; a successor starting empty
       // would never tell it otherwise.
       publishHostsPort(null)
+    },
+  }
+}
+
+/**
+ * One SOCKS5 listener per previewed workspace, which its preview pane's
+ * session proxies loopback through (docs/port-forward-tunnel.md "The
+ * desktop preview pane"). They last as long as the app and look each
+ * connection's route up through `route`, which consults whichever
+ * forwarder is current, so a server switch never leaves a session's proxy
+ * pointing at a closed port.
+ */
+export function createPreviewProxies(
+  route: (workspaceId: string, port: number) => Promise<TunnelRoute | undefined>,
+): { portFor(workspaceId: string): Promise<number> } {
+  const listeners = new Map<string, Promise<ForwardHandle>>()
+  return {
+    async portFor(workspaceId) {
+      let listener = listeners.get(workspaceId)
+      if (!listener) {
+        listener = startSocksTunnel((port) => route(workspaceId, port))
+        listeners.set(workspaceId, listener)
+        // A failed bind is retried by the next ask.
+        listener.catch(() => listeners.delete(workspaceId))
+      }
+      return (await listener).hostPort
     },
   }
 }

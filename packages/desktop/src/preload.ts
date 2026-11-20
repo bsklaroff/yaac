@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('yaacWindow', {
     void ipcRenderer.invoke('forward:hosts-port').then(cb)
     return () => { ipcRenderer.removeListener('forward:hosts-port', listener) }
   },
+  // Route a workspace's preview session into that workspace; resolves true
+  // once its first request would be.
+  routePreview: (workspaceId: string) => ipcRenderer.invoke('preview:route', workspaceId),
   // A hidden preview pane's lifecycle, for the <webview> guest with this
   // webContents id (preview-lifecycle.ts).
   setPreviewFrozen: (id: number, frozen: boolean) => ipcRenderer.invoke('preview:set-frozen', id, frozen),

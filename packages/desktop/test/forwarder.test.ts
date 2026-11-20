@@ -1,9 +1,10 @@
 /**
- * The desktop forwarder's wiring. The reconciler itself is tested in
- * `@yaac/shared`.
+ * The desktop forwarder's wiring, and the preview panes' proxies. The
+ * reconciler and the SOCKS5 listener themselves are tested in `@yaac/shared`.
  */
+import net from 'node:net'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { startForwarder } from '#forwarder'
+import { createPreviewProxies, startForwarder } from '#forwarder'
 import type { ForwardSpec } from '@yaac/shared/port-tunnel'
 import type { ServerTarget } from '@yaac/shared/server-api'
 import type { ServerSnapshot, WorkspaceListEntry } from '@yaac/shared/types'
@@ -185,6 +186,22 @@ describe('startForwarder', () => {
     expect(published).toEqual([8787, null])
   })
 
+  it('routes a preview connection to a port the latest snapshot offers, once there is one', async () => {
+    // A pane may connect before the app's own first snapshot lands.
+    const forwarder = startForwarder({ resolveTarget, createSet: set.create as never })
+    const early = forwarder.route('a', 3000)
+    forwarder.apply(snapshot([workspace('a', [[3000, 3000]]), workspace('b', [[4000, 4000]])], 'containerless'))
+
+    // Under containerless on this machine too, where nothing is bound.
+    const offered = { target: { baseUrl: LOCAL.baseUrl }, spec: { session: 'a', containerPort: 3000, hostPort: 3000 } }
+    expect(await early).toEqual(offered)
+    expect(await forwarder.route('a', 4000)).toBeUndefined()
+    expect(await forwarder.route('c', 3000)).toBeUndefined()
+
+    forwarder.stop()
+    expect(await forwarder.route('a', 3000)).toBeUndefined()
+  })
+
   it('lets every forward go on stop, and takes no more snapshots', async () => {
     const forwarder = startForwarder({ resolveTarget, createSet: set.create as never })
     forwarder.apply(snapshot([workspace('a', [[3000, 3000]])]))
@@ -196,5 +213,35 @@ describe('startForwarder', () => {
 
     expect(set.closes).toBe(1)
     expect(set.reconciled).toHaveLength(1)
+  })
+})
+
+describe('createPreviewProxies', () => {
+  /** A SOCKS5 CONNECT to `localhost:<port>`; resolves the listener's replies. */
+  const connect = (proxyPort: number, port: number): Promise<Buffer> => new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    const socket = net.connect(proxyPort, '127.0.0.1', () => {
+      socket.write(Buffer.from([5, 1, 0, 5, 1, 0, 3, 9, ...Buffer.from('localhost'), port >> 8, port & 0xff]))
+    })
+    socket.on('data', (chunk: Buffer) => chunks.push(chunk))
+    socket.on('close', () => resolve(Buffer.concat(chunks)))
+    socket.on('error', reject)
+  })
+
+  it('keeps one listener per workspace, which asks for each connection\'s route under its own workspace', async () => {
+    const asked: Array<[string, number]> = []
+    const proxies = createPreviewProxies((workspaceId, port) => {
+      asked.push([workspaceId, port])
+      return Promise.resolve(undefined)
+    })
+    const a = await proxies.portFor('a')
+    expect(await proxies.portFor('a')).toBe(a)
+    const b = await proxies.portFor('b')
+    expect(b).not.toBe(a)
+
+    // No route: refused ("not allowed by ruleset").
+    expect([...await connect(a, 3000)]).toEqual([5, 0, 5, 2, 0, 1, 0, 0, 0, 0, 0, 0])
+    await connect(b, 4000)
+    expect(asked).toEqual([['a', 3000], ['b', 4000]])
   })
 })

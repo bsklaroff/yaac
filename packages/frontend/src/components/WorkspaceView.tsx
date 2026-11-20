@@ -173,11 +173,12 @@ export function WorkspaceView({
   // Project-wide, but shown here since it breaks git in this workspace too.
   const gitAuthFailures = (workspace && snapshot?.gitAuthFailures?.[workspace.projectId]) || []
 
-  // Forwarded ports open in a preview: a pane in the desktop app, at the
-  // port's workspace hostname, or a native view in the iPhone app, which
-  // forwards the port to its own loopback (docs/port-forward-tunnel.md). A
-  // browser gets a preview only where this machine routes the hostnames,
-  // and opens it in a new tab (docs/workspace-hostnames.md).
+  // Forwarded ports open in a preview: a pane in the desktop app, which
+  // proxies the pane's loopback into the workspace, or a native view in the
+  // iPhone app, which forwards the port to its own loopback
+  // (docs/port-forward-tunnel.md). A browser gets a preview only where this
+  // machine routes the hostnames, and opens it in a new tab
+  // (docs/workspace-hostnames.md).
   const embedPreview = isElectron()
   const nativePreview = windowApi()?.openPreview
   const hostsPort = useHostsPort()
@@ -407,18 +408,20 @@ export function WorkspaceView({
     else if (hostsPort !== null) window.open(workspaceHostUrl(id, containerPort, hostsPort), '_blank', 'noopener')
   }
   /**
-   * The URL a preview pane loads: its port's workspace hostname, which keeps
-   * each workspace's cookies apart and reaches the workspace whatever else
-   * holds that port number here (docs/workspace-hostnames.md). Undefined,
-   * so the pane waits, while the port is not forwarded or nothing routes
-   * the names yet (the desktop app's router for a remote server is still
-   * binding). Only the selected workspace's ports are known here; a hidden
-   * pane keeps its page, since only a new URL reloads it.
+   * The URL a preview pane loads: the port at `localhost`, as the app in the
+   * workspace sees it on either driver, since the pane's session proxies
+   * loopback into the workspace (docs/port-forward-tunnel.md "The desktop
+   * preview pane"). A desktop app that cannot route a session gets the
+   * port's workspace hostname instead (docs/legacy-compat-shims.md).
+   * Undefined, so the pane waits, while the port is not forwarded or nothing
+   * routes it yet. Only the selected workspace's ports are known here; a
+   * hidden pane keeps its page, since only a new URL reloads it.
    */
-  const previewPaneUrl = (id: string, containerPort: number): string | undefined =>
-    id === sid && hostsPort !== null && previewPorts.some((p) => p.containerPort === containerPort)
-      ? workspaceHostUrl(id, containerPort, hostsPort)
-      : undefined
+  const previewPaneUrl = (id: string, containerPort: number): string | undefined => {
+    if (id !== sid || !previewPorts.some((p) => p.containerPort === containerPort)) return undefined
+    if (windowApi()?.routePreview) return `http://localhost:${String(containerPort)}/`
+    return hostsPort === null ? undefined : workspaceHostUrl(id, containerPort, hostsPort)
+  }
   const closePane = (target: string): void => {
     if (!sid) return
     if (!isFileTarget(target)) {

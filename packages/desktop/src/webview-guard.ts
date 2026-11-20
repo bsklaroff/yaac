@@ -1,17 +1,16 @@
 /**
  * Lockdown helpers for web content: the main window's navigation, and the
- * workspace-preview `<webview>`. The preview shows a
- * workspace dev server through a port this app forwards on loopback
- * (forwarder.ts). The guest gets no Node access or preload and may only load
- * loopback URLs; anything else (an OAuth hop, a `target=_blank`) opens in the
- * system browser.
+ * workspace-preview `<webview>`. The preview shows a workspace dev server on
+ * loopback, which its session proxies into the workspace (forwarder.ts). The
+ * guest gets no Node access or preload and may only load loopback URLs;
+ * anything else (an OAuth hop, a `target=_blank`) opens in the system
+ * browser.
  */
 
 /**
  * Whether a URL is one a preview webview may load or navigate to: an http(s)
  * URL on loopback, which includes every `*.localhost` name (Chromium never
- * resolves those elsewhere), as the workspace hostnames are
- * (docs/workspace-hostnames.md). Everything else (external hosts, file:,
+ * resolves those elsewhere). Everything else (external hosts, file:,
  * javascript:, about:) is rejected.
  */
 export function isAllowedPreviewUrl(raw: string): boolean {

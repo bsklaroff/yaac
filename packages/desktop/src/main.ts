@@ -16,7 +16,7 @@ import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, screen, shell,
+  app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Notification, powerMonitor, screen, session, shell,
   systemPreferences, Tray,
   utilityProcess, webContents, WebContentsView, type NativeImage, type WebContents,
 } from 'electron'
@@ -25,10 +25,11 @@ import {
   normalizeServerUrl, probeServer, readServerConfig, withServerSelected, writeServerConfig,
 } from '@yaac/shared/server-config'
 import { env } from '@yaac/shared/env'
+import { previewPartition } from '@yaac/shared/workspace-hosts'
 import type { DesktopLocalState, DesktopServerOutcome, ProjectSummary, WorkspaceListEntry } from '@yaac/shared/types'
 import { AttentionMonitor, badgeText, notificationFor } from '#attention'
 import { startEventsMonitor, type EventsMonitor } from '@yaac/shared/events'
-import { startForwarder, type DesktopForwarder } from '#forwarder'
+import { createPreviewProxies, startForwarder, type DesktopForwarder } from '#forwarder'
 import { probeIdentity, runFlow } from '#flow'
 import {
   CLUSTER_SUPPORTED, MANAGES_LOCAL_INSTALLS, createSetupRunner, localView, onPath, setupConfirmation,
@@ -285,13 +286,14 @@ async function openWindow(): Promise<boolean> {
     return false
   }
   const back = serversPage !== null && !serversPage.error && isSameOriginNavigation(w.webContents.getURL(), result.url)
+  // Started only once a server is reachable, so the Servers page doesn't
+  // spin a reconnect loop, and before its page loads, which may route a
+  // preview pane through the forwarder at once.
+  if (!back) startEvents()
   try {
     if (!back) await w.loadURL(result.url)
     serversPage = null
     pageView?.close()
-    // Started only once a server is reachable, so the Servers page doesn't
-    // spin a reconnect loop.
-    if (!back) startEvents()
     // A landing often follows a start from a terminal; read it now, so the
     // Servers page opens on current state.
     void refreshLocalServer()
@@ -704,6 +706,24 @@ ipcMain.on('window:open-external', (_e, url: unknown) => {
 })
 // Where this app routes workspace hostnames for a remote server, or null.
 ipcMain.handle('forward:hosts-port', () => forwarder?.hostsPort() ?? null)
+
+// A preview pane's session sends every request through its workspace's
+// listener, which tunnels loopback into the workspace and refuses anything
+// else on this machine (docs/port-forward-tunnel.md "The desktop preview
+// pane"). `<-loopback>` stops Chromium sending loopback direct. The pane
+// loads nothing until this answers, so its first request is proxied.
+const previewProxies = createPreviewProxies(
+  (workspaceId, port) => forwarder?.route(workspaceId, port) ?? Promise.resolve(undefined),
+)
+ipcMain.handle('preview:route', async (e, workspaceId: unknown) => {
+  if (e.sender !== win?.webContents || typeof workspaceId !== 'string' || !/^[\w-]{1,64}$/.test(workspaceId)) return false
+  const port = await previewProxies.portFor(workspaceId)
+  await session.fromPartition(previewPartition(workspaceId)).setProxy({
+    proxyRules: `socks5://127.0.0.1:${String(port)}`,
+    proxyBypassRules: '<-loopback>',
+  })
+  return true
+})
 
 // A hidden preview pane's lifecycle (preview-lifecycle.ts), for guests the
 // asking window embeds.

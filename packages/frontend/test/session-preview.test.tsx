@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from 'vitest'
 import type { JSX } from 'react'
-import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
 import { WorkspacePreview } from '#components/WorkspacePreview'
 import { IS_MAC } from '#lib/platform'
 afterEach(() => {
@@ -30,14 +30,45 @@ describe('WorkspacePreview', () => {
     expect(screen.queryByText(/Stop forwarding/)).toBeNull()
   })
 
-  it('opens the current address in the system browser', () => {
+  it('loads nothing until the desktop app routes its session, and opens its workspace hostname elsewhere', async () => {
+    // The page's `localhost` reaches the workspace only through the pane's
+    // own proxy; the page here is on loopback, so its server routes the names.
+    let answer: (ok: boolean) => void = () => {}
+    const routePreview = vi.fn(() => new Promise<boolean>((resolve) => { answer = resolve }))
     const openExternal = vi.fn()
-    ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = {
-      openExternal,
-    }
-    render(<WorkspacePreview workspaceId="abc" visible containerPort={5173} url="http://127.0.0.1:15173/" />)
+    ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = { openExternal, routePreview }
+    const id = 'a528bd7a-0000-4000-8000-000000000000'
+    const { container } = render(<WorkspacePreview workspaceId={id} visible containerPort={5173} url="http://localhost:5173/" />)
+    const wv = container.querySelector('webview')
+    expect(routePreview).toHaveBeenCalledWith(id)
+    expect(wv?.getAttribute('partition')).toBe(`persist:preview-${id}`)
+    expect(wv?.getAttribute('src')).toBeNull()
+    expect(screen.getByText('Waiting for the dev server on :5173…')).toBeTruthy()
+
+    await act(() => {
+      answer(true)
+      return Promise.resolve()
+    })
+    expect(wv?.getAttribute('src')).toBe('http://localhost:5173/')
+    expect(screen.queryByText('Waiting for the dev server on :5173…')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }))
-    expect(openExternal).toHaveBeenCalledWith('http://127.0.0.1:15173/')
+    expect(openExternal).toHaveBeenCalledWith(`http://5173.a528bd7a.localhost:${window.location.port}/`)
+  })
+
+  it('shows a failed route as a failed load, whose Retry routes again', async () => {
+    const routePreview = vi.fn()
+      .mockRejectedValueOnce(new Error('no listener'))
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = { openExternal: vi.fn(), routePreview }
+    const { container } = render(<WorkspacePreview workspaceId="abc" visible containerPort={5173} url="http://localhost:5173/" />)
+    const wv = container.querySelector('webview')
+    for (const attempt of [1, 2]) {
+      fireEvent.click(await screen.findByRole('button', { name: 'Retry' }))
+      expect(routePreview).toHaveBeenCalledTimes(attempt + 1)
+    }
+    await waitFor(() => expect(wv?.getAttribute('src')).toBe('http://localhost:5173/'))
+    expect(screen.queryByText('Couldn’t load the preview.')).toBeNull()
   })
 
   it('has an overflow menu whose actions drive the webview', async () => {

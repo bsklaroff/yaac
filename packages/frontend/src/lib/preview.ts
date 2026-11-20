@@ -1,4 +1,5 @@
 import type { PortMapping } from '@yaac/shared/types'
+import { workspaceHostUrl } from '@yaac/shared/workspace-hosts'
 
 /**
  * Preview panes share the layout with terminals. A workspace has one per
@@ -54,4 +55,27 @@ export function normalizePreviewNav(raw: string, home: string | undefined): stri
   if (/^https?:\/\//i.test(trimmed)) return trimmed
   if (home === undefined) return null
   return home + trimmed.replace(/^\//, '')
+}
+
+/**
+ * A preview pane's address as another browser can use it. The pane's
+ * `localhost:<port>` reaches its workspace only through the pane's own
+ * proxy, so a loopback http URL becomes the port's workspace hostname,
+ * routed at `routerPort`, with its path, query and fragment kept
+ * (docs/workspace-hostnames.md). Anything else, or with nothing routing
+ * the names, is returned as it is.
+ */
+export function shareablePreviewUrl(raw: string, workspaceId: string, routerPort: number | null): string {
+  let url: URL
+  try {
+    url = new URL(raw)
+  } catch {
+    return raw
+  }
+  if (routerPort === null || url.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)) {
+    return raw
+  }
+  const host = new URL(workspaceHostUrl(workspaceId, Number(url.port || 80), routerPort))
+  url.host = host.host
+  return url.href
 }
