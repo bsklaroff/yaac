@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
+import { act, render, renderHook, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
 import type {
   DraftWorkspaceEntry,
   HeldWorkspaceEntry,
@@ -29,7 +29,8 @@ vi.mock('#lib/stopWorkspaceFlow', () => ({ stopWorkspaceOptimistic: vi.fn() }))
 const provision = vi.hoisted(() => vi.fn())
 vi.mock('#lib/useProvisionWorkspace', () => ({ useProvisionWorkspace: () => provision }))
 
-import { ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
+import { ListTitle, useSidebarFollow, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
+import { SidebarTabs } from '#components/sidebar/SidebarTabs'
 import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, serverError, serverSnapshot, sessionEntry, testQueryClient, type FetchCall, type FetchMock } from './harness'
@@ -959,10 +960,12 @@ describe('WorkspaceList', () => {
         routine('r3', { name: 'Odd', cron: '0 0 1 1 *', lastError: 'no credential' }),
       ]
       for (const action of ['run', 'resume', 'delete']) server.route(`POST /api/routine/${action}`, undefined)
+      useUiStore.setState({ sidebarTab: 'workflow' })
       renderList([], { routines, snapshot: serverSnapshot({ routines }) })
-      expect(screen.queryByText('No workspaces yet')).toBeNull()
-      const section = screen.getByRole('group', { name: 'Routines' })
-      expect(section.textContent).toMatch(/Triage.*At 09:00, Monday through Friday.*in ~3h.*Weekly.*At 08:30, only on Monday.*Paused.*Odd.*only in January/)
+      expect(screen.queryByText('No workflows yet')).toBeNull()
+      // Listed with no section header over them.
+      expect(screen.queryByText('Routines')).toBeNull()
+      expect(document.body.textContent).toMatch(/Triage.*At 09:00, Monday through Friday.*in ~3h.*Weekly.*At 08:30, only on Monday.*Paused.*Odd.*only in January/)
       expect(screen.getByRole('img', { name: 'Last run failed: no credential' })).toBeTruthy()
 
       fireEvent.click(screen.getByRole('button', { name: 'Triage' }))
@@ -982,7 +985,7 @@ describe('WorkspaceList', () => {
       await waitFor(() => expect(posted('POST /api/routine/delete')).toEqual([{ id: 'r3' }]))
     })
 
-    it('draws a workflow\'s and a site\'s runs under their rows, with their stopped runs kept there', async () => {
+    it('lists workflows and sites on their own tabs with all their runs, and a live run as a plain row on the Workspace tab', async () => {
       const workflows: WorkflowSummary[] = [{
         id: 'wf-deploy', projectId: 'proj', name: 'deploy', steps: {}, secrets: [], repos: [], init: true, createdAt: '',
       }]
@@ -997,27 +1000,41 @@ describe('WorkspaceList', () => {
         group({ groupId: 'g-gone', name: 'Old routine', owner: { kind: 'routine', id: 'r-gone' }, pinned: true }),
       ]
       stoppedRows.push(stoppedEntry('old-run', { title: 'Last night', groupId: 'g-deploy' }))
-      renderList([entry({ workspaceId: 'run', title: 'Deploying now', groupId: 'g-deploy' })], {
+      renderList([entry({ workspaceId: 'run', title: 'Deploying now', groupId: 'g-deploy' }), entry({ workspaceId: 'mine', title: 'Mine' })], {
         workflows, sites, groups, project: { stoppedCount: 1, deaths: 0, deathsSeenBy: {} },
         snapshot: serverSnapshot({ workflows, sites, workspaceGroups: groups }),
       })
-      const section = screen.getByRole('group', { name: 'Workflows' })
-      expect(section.textContent).toMatch(/deploy\(1\).*no repo.*at start.*Deploying now/)
-      expect(screen.getByRole('group', { name: 'Sites' }).textContent).toMatch(/web.*app\.example\.com.*building/)
-      // Neither owned group is a section of its own; the orphaned one is.
-      expect(within(section).getByRole('group', { name: 'deploy' })).toBeTruthy()
-      expect(screen.getByRole('group', { name: 'Old routine' }).closest('[aria-label="Workflows"]')).toBeNull()
+
+      // Workspace: only workspaces, the live run an ungrouped row among them
+      // with no workflow or site rows. The orphaned group is an ordinary one.
+      const loose = screen.getByRole('group', { name: 'Ungrouped workspaces' })
+      expect(loose.textContent).toMatch(/Deploying now.*Mine|Mine.*Deploying now/)
+      expect(screen.getByRole('group', { name: 'Old routine' })).toBeTruthy()
+      for (const name of ['deploy', 'web', 'Workflows', 'Sites']) expect(screen.queryByRole('group', { name })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Workflow actions' })).toBeNull()
       // Its stopped run is its history, not the Stopped section's.
       expect(screen.queryByText(/^Stopped/)).toBeNull()
+
+      // Workflow: every workflow, its runs and stopped runs under its row.
+      act(() => useUiStore.getState().setSidebarTab('workflow'))
+      const section = screen.getByRole('group', { name: 'deploy' })
+      expect(section.textContent).toMatch(/deploy\(1\).*no repo.*at start.*Deploying now/)
+      expect(screen.queryByText('Workflows')).toBeNull()
+      expect(screen.queryByText('Mine')).toBeNull()
+      expect(screen.queryByRole('group', { name: 'Old routine' })).toBeNull()
       fireEvent.click(screen.getByRole('button', { name: 'Workflow actions' }))
       fireEvent.click(await screen.findByRole('menuitem', { name: 'Show stopped runs' }))
       expect(await within(section).findByText('Last night')).toBeTruthy()
-
       // Its row opens its pane, and runs it from one click.
       fireEvent.click(within(section).getByRole('button', { name: 'deploy' }))
       expect(useUiStore.getState().selectedObject).toEqual({ kind: 'workflow', id: 'wf-deploy' })
       fireEvent.click(screen.getByRole('button', { name: 'Run now: deploy' }))
       await waitFor(() => expect(provision).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'proj', groupId: 'g-deploy' }), expect.any(Function)))
+      // Site: every site, whatever runs.
+      act(() => useUiStore.getState().setSidebarTab('site'))
+      expect(screen.getByRole('group', { name: 'web' }).textContent).toMatch(/web.*app\.example\.com.*building/)
+      expect(screen.queryByText('Sites')).toBeNull()
+      expect(screen.queryByText('Deploying now')).toBeNull()
     })
 
     it('marks a running workspace that will be stopped, and a stop that was a timeout', () => {
@@ -1042,6 +1059,13 @@ describe('WorkspaceList', () => {
     renderList([], { project: { stoppedCount: 3, deaths: 0, deathsSeenBy: {} } })
     expect(screen.queryByText('No workspaces yet')).toBeNull()
     expect(screen.getByRole('button', { name: /Stopped\s*3/ })).toBeTruthy()
+
+    cleanup()
+    useUiStore.setState({ sidebarTab: 'workflow' })
+    renderList([entry()], { snapshot: serverSnapshot() })
+    expect(screen.getByText('No workflows yet')).toBeTruthy()
+    act(() => useUiStore.getState().setSidebarTab('site'))
+    expect(screen.getByText('No sites yet')).toBeTruthy()
 
     cleanup()
     renderList([], { projectId: null })
@@ -1301,6 +1325,81 @@ describe('WorkspaceList', () => {
 
       expect(useUiStore.getState().selectedWorkspaceId).toBeNull()
     })
+  })
+})
+
+describe('useSidebarFollow', () => {
+  const workflows: WorkflowSummary[] = [{
+    id: 'wf', projectId: 'proj', name: 'deploy', steps: {}, secrets: [], repos: [], init: false, createdAt: '',
+  }]
+  const owned = group({ groupId: 'g-wf', name: 'deploy', owner: { kind: 'workflow', id: 'wf' } })
+  const scopeOf = (over: Partial<ProjectScope> = {}): ProjectScope => ({
+    projectId: 'proj', project: undefined, workspaces: [], groups: [owned], provisioning: [], queued: [], held: [],
+    drafts: [], routines: [], workflows, sites: [], ...over,
+  })
+  const tab = (): string => useUiStore.getState().sidebarTab
+  const follow = (scope: ProjectScope, stopped?: StoppedWorkspaceEntry) =>
+    renderHook(({ sc, st }) => useSidebarFollow(sc, st), { initialProps: { sc: scope, st: stopped } })
+
+  it('follows each selection to a tab listing it, but never undoes a tab the user picked', () => {
+    const scope = scopeOf({ workspaces: [entry({ workspaceId: 'mine' }), entry({ workspaceId: 'run', groupId: 'g-wf' })] })
+    // A link or reload opens on a workspace the saved tab doesn't list.
+    useUiStore.setState({ sidebarTab: 'workflow', selectedWorkspaceId: 'mine' })
+    const { rerender } = follow(scope)
+    expect(tab()).toBe('workspace')
+
+    // A workflow's run is listed on both tabs, so the open one stays.
+    act(() => useUiStore.getState().setSidebarTab('workflow'))
+    act(() => useUiStore.getState().selectWorkspace('run'))
+    expect(tab()).toBe('workflow')
+
+    // Opening a workflow, then picking the workspace open before it again.
+    act(() => useUiStore.getState().selectWorkspace('mine'))
+    act(() => useUiStore.getState().openObject('proj', { kind: 'workflow', id: 'wf' }))
+    expect(tab()).toBe('workflow')
+    act(() => useUiStore.getState().selectWorkspace('mine'))
+    expect(tab()).toBe('workspace')
+
+    act(() => useUiStore.getState().setSidebarTab('workflow'))
+    rerender({ sc: { ...scope }, st: undefined })
+    expect(tab()).toBe('workflow')
+  })
+
+  it('follows a run that stops to its owner\'s tab, the only one listing it then', () => {
+    useUiStore.setState({ sidebarTab: 'workspace', selectedWorkspaceId: 'run' })
+    const { rerender } = follow(scopeOf({ workspaces: [entry({ workspaceId: 'run', groupId: 'g-wf' })] }))
+    expect(tab()).toBe('workspace')
+    // While its stopped entry loads, nothing is decided.
+    rerender({ sc: scopeOf(), st: undefined })
+    expect(tab()).toBe('workspace')
+    rerender({ sc: scopeOf(), st: stoppedEntry('run', { groupId: 'g-wf' }) })
+    expect(tab()).toBe('workflow')
+  })
+
+  it('waits on a first run, whose group does not exist yet, until it is listed', () => {
+    useUiStore.setState({ sidebarTab: 'workflow', selectedWorkspaceId: 'first' })
+    const first = provisioning({ workspaceId: 'first', kind: 'create', tool: undefined })
+    const { rerender } = follow(scopeOf({ groups: [], provisioning: [first] }))
+    expect(tab()).toBe('workflow')
+    rerender({ sc: scopeOf({ provisioning: [{ ...first, groupId: 'g-wf' }] }), st: undefined })
+    expect(tab()).toBe('workflow')
+  })
+})
+
+describe('SidebarTabs', () => {
+  it('switches the list, marks what waits on the viewer from another tab, and offers Site only where sites run', () => {
+    const asking = [entry({ asking: true })]
+    renderWithClient(<SidebarTabs workspaces={asking} />, testQueryClient(undefined, serverSnapshot()))
+    expect(screen.getByRole('button', { name: 'Workspace' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Site' }))
+    expect(useUiStore.getState().sidebarTab).toBe('site')
+    expect(screen.getByRole('button', { name: 'Workspace, 1 waiting for you' })).toBeTruthy()
+
+    // Containerless runs no sites, so a saved Site tab shows Workspace.
+    cleanup()
+    renderWithClient(<SidebarTabs workspaces={asking} />, testQueryClient(undefined, serverSnapshot({ driver: 'containerless' })))
+    expect(screen.queryByRole('button', { name: 'Site' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Workspace' }).getAttribute('aria-pressed')).toBe('true')
   })
 })
 

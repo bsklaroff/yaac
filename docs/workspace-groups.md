@@ -27,10 +27,12 @@ moves nothing. A routine's run goes in the routine's group even when the
 routine runs a workflow; an interactive workspace that starts with a
 workflow goes where its create puts it.
 
-The sidebar draws an owned group under its owner's row in the Workflows,
-Routines or Sites section, rather than as a section of its own, and keeps
-its stopped runs there rather than in the Stopped section: they are its
-owner's history. Its menu sets the limit (a workflow limited to one run at
+The sidebar draws an owned group under its owner's row rather than as a
+section of its own, and keeps its stopped runs there rather than in the
+Stopped section: they are its owner's history. The owner's row heads its
+runs on the Workflow tab (workflows and routines) or the Site tab. The
+Workspace tab lists only workspaces, so there its live runs are plain
+ungrouped rows. Its menu sets the limit (a workflow limited to one run at
 a time; not a site, whose next release runs beside its live one) and shows
 or hides the stopped runs, but has no rename, pin or delete of its own.
 Deleting the owner releases the group (`releaseOwnedGroups`): it stays,

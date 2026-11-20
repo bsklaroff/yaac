@@ -226,9 +226,9 @@ export function QueuedWorkspaceRow({ entry, depth }: { entry: QueuedWorkspaceEnt
   )
 }
 
-/** A collapsible section at the top of the list (Drafts, Scheduled,
- *  Routines), with its count. */
-export function SidebarSection({ label, count, children }: { label: string; count: number; children: ReactNode }): JSX.Element {
+/** A collapsible section at the top of the list (Drafts, Scheduled), with
+ *  its count. */
+function SidebarSection({ label, count, children }: { label: string; count: number; children: ReactNode }): JSX.Element {
   const [open, setOpen] = useState(true)
   return (
     <div role="group" aria-label={label}>

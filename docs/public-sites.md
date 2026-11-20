@@ -685,7 +685,7 @@ never overlap, so migrations never race. A rollback does not undo a schema.
 - **yaac-mama**: `site list|show|create|edit|deploy|start|stop|delete`,
   as the verbs above allow an agent: everything for an unpublished site,
   and only asking to deploy a published one.
-- **Webapp**: a Sites section in the sidebar, each site's row showing its
+- **Webapp**: the sidebar's Site tab, each site's row showing its
   hostname (or that it is unpublished) and state with its releases under it
   (they go in a group the site owns, docs/workspace-groups.md "Owned
   groups"); the snapshot carries each site's state (`sites`), so the row

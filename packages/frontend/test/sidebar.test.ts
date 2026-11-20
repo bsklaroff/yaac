@@ -178,6 +178,12 @@ describe('sidebarRowIds', () => {
     expect(rows).toEqual(['prov-1', 'loose-new', 'loose-old', 'prov-grouped', 'grouped'])
   })
 
+  it('cycles an owned group\'s runs with the ungrouped rows, newest first, as the Workspace tab draws them', () => {
+    const rows = sidebarRowIds([], [entry('run', 3, { groupId: 'g-wf' }), entry('new', 4), entry('old', 2)],
+      [group('g-wf', 10)], [], new Set(['g-wf']))
+    expect(rows).toEqual(['new', 'run', 'old'])
+  })
+
   it('keeps a group that only holds a provisioning row in the cycle', () => {
     expect(sidebarRowIds([prov('coming-back', 9, { groupId: 'g' })], [], [group('g', 10)], []))
       .toEqual(['coming-back'])

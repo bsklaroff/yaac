@@ -1033,6 +1033,12 @@ describe('NewWorkspacePane', () => {
       typePrompt('a fresh one')
       fireEvent.click(screen.getByRole('button', { name: 'New workspace' }))
       expect(promptInput().value).toBe('a fresh one')
+
+      // It always opens on the Agent tab.
+      fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
+      fireEvent.click(screen.getByRole('button', { name: 'New workspace' }))
+      expect(screen.getByRole('button', { name: 'Agent' }).getAttribute('aria-pressed')).toBe('true')
+      expect(promptInput().value).toBe('a fresh one')
     })
 
     it('says so when the entry has already started, and leaves without asking', async () => {
@@ -1674,7 +1680,7 @@ describe('NewWorkspacePane workflows', () => {
     // The Workflow tab runs one unattended: no agent, no prompt, its repos
     // ticked, and its own group, which the server picks.
     await openReady()
-    fireEvent.click(screen.getByRole('tab', { name: 'Workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
     expect(screen.queryByLabelText('Prompt')).toBeNull()
     expect(runButton(/Run now/).title).toBe('Pick a workflow')
     fireEvent.change(select('Workflow'), { target: { value: 'deploy' } })
@@ -1691,7 +1697,7 @@ describe('NewWorkspacePane workflows', () => {
 
     // Later, it is queued the same way.
     await openReady()
-    fireEvent.click(screen.getByRole('tab', { name: 'Workflow' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow' }))
     fireEvent.change(select('Workflow'), { target: { value: 'deploy' } })
     fireEvent.change(select('Start'), { target: { value: START_IN } })
     fireEvent.change(screen.getByLabelText('Delay'), { target: { value: '2h' } })
@@ -1707,6 +1713,6 @@ describe('NewWorkspacePane workflows', () => {
     mount()
     expect(select('Workflow').value).toBe('deploy')
     expect(select('Start').value).toBe(SCHEDULE)
-    expect(screen.queryByRole('tab', { name: 'Site' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Site' })).toBeNull()
   })
 })

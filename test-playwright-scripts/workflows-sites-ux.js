@@ -8,7 +8,7 @@
  *     run.
  *  3. The Workflow tab picks a named workflow, shows its steps beside the
  *     form, and Run now starts an unattended run with no agent.
- *  4. The sidebar's Workflows section lists the workflow, and its run sits
+ *  4. The sidebar's Workflow tab lists the workflow, and its run sits
  *     under its row, in the group the workflow owns, not as a section of
  *     its own.
  *  5. The workflow's row opens its pane, with its steps and Run now.
@@ -40,21 +40,21 @@ const page = await browser.newPage({ viewport: { width: 1500, height: 950 } })
 
 try {
   await page.goto(`${origin}/?project=${project.id}`)
-  const tabs = page.getByRole('tablist', { name: 'What to start' })
+  const tabs = page.getByRole('group', { name: 'What to start' })
   await tabs.waitFor()
   const main = await page.getByLabel('Prompt').evaluate((el) => el.closest('.\\@container')?.getBoundingClientRect().toJSON())
   const tabBox = await tabs.boundingBox()
   check('pane: tabs near the top, not centred', tabBox.y - main.top < 80, `tabs at ${tabBox.y}, pane top ${main.top}`)
   const formWidth = await tabs.evaluate((el) => el.parentElement.getBoundingClientRect().width)
   check('pane: form wider than the old 448px column', formWidth > 500, `${formWidth}px`)
-  check('pane: Agent and Workflow tabs', await page.getByRole('tab', { name: 'Agent' }).isVisible()
-    && await page.getByRole('tab', { name: 'Workflow' }).isVisible())
-  check('pane: no Site tab on containerless', await page.getByRole('tab', { name: 'Site' }).count() === 0)
+  check('pane: Agent and Workflow tabs', await tabs.getByRole('button', { name: 'Agent' }).isVisible()
+    && await tabs.getByRole('button', { name: 'Workflow' }).isVisible())
+  check('pane: no Site tab on containerless', await tabs.getByRole('button', { name: 'Site' }).count() === 0)
   check('agent tab: Steps row', (await page.getByLabel('Steps').locator('option').first().textContent()).startsWith('Init workflows'))
   await page.screenshot({ path: `${SHOTS}/ux-agent-tab.png` })
 
-  await page.getByRole('tab', { name: 'Workflow' }).click()
-  await page.getByLabel('Workflow', { exact: true }).selectOption(NAME)
+  await tabs.getByRole('button', { name: 'Workflow' }).click()
+  await page.getByRole('combobox', { name: 'Workflow' }).selectOption(NAME)
   const steps = page.getByRole('complementary', { name: 'Its steps' })
   await steps.waitFor()
   check('workflow tab: steps beside the form', await steps.getByText('echo checked').isVisible())
@@ -62,15 +62,13 @@ try {
   await page.screenshot({ path: `${SHOTS}/ux-workflow-tab.png` })
   await page.getByRole('button', { name: 'Run now', exact: true }).click()
 
-  const section = page.getByRole('group', { name: 'Workflows' })
-  await section.waitFor()
-  check('sidebar: Workflows section lists it', await section.getByText(NAME, { exact: true }).isVisible())
-  await until(page, (name) => {
-    const s = document.querySelector('[aria-label="Workflows"]')
-    return s?.querySelector(`[role="group"][aria-label="${name}"]`) !== null
-  }, NAME, 60_000)
+  await page.getByRole('group', { name: 'Sidebar list' }).getByRole('button', { name: 'Workflow' }).click()
+  const section = page.locator('aside')
+  await section.getByText(NAME, { exact: true }).first().waitFor()
+  check('sidebar: Workflow tab lists it', true)
+  await until(page, (name) => document.querySelector(`aside [role="group"][aria-label="${name}"]`) !== null, NAME, 60_000)
   check('sidebar: its run nests under its row', true)
-  check('sidebar: no separate group section', await page.locator(`[aria-label="Workflows"] ~ [role="group"][aria-label="${NAME}"]`).count() === 0)
+  check('sidebar: no separate group section', await section.locator(`[role="group"][aria-label="${NAME}"]`).count() === 1)
   await page.screenshot({ path: `${SHOTS}/ux-sidebar-run.png` })
 
   await section.getByRole('button', { name: NAME, exact: true }).click()

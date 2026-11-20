@@ -3,6 +3,7 @@ import { SidebarIcon } from '#lib/icons'
 import { HomeSessionList } from '#components/home/HomeSessionList'
 import type { HomeRow } from '#components/home/homeRows'
 import { ListBadges, ListTitle, WorkspaceList, type ProjectScope } from '#components/WorkspaceList'
+import { SidebarTabs } from '#components/sidebar/SidebarTabs'
 import { hidesTitleBar, IS_MAC } from '#lib/platform'
 import { formatChord } from '#lib/shortcuts'
 import { useReadOnly } from '#lib/viewer'
@@ -16,11 +17,12 @@ import {
 import { YButton, YMenu, YMenuItem, YMenuLabel, YMenuPopup, YSidebar, YSidebarNewWorkspace, YTrafficLights } from '#ui'
 
 // The list body lives in WorkspaceList, shared with the mobile screen.
-// Re-exported for App's Alt+K/J row cycling and the tests.
+// Re-exported for App's Alt+K/J row cycling and tab follow, and the tests.
 export {
   sidebarLayout,
   ownedGroupIds,
   sidebarRowIds,
+  useSidebarFollow,
   type SidebarGroupSection,
   type SidebarLayout,
 } from '#components/WorkspaceList'
@@ -97,9 +99,9 @@ function ResizeHandle(): JSX.Element {
  * The sidebar, scoped by the rail. In the macOS desktop app its header
  * spans the rail as well, so the traffic lights sit in it, and the rail
  * starts under it. Elsewhere the rail starts under an empty corner of its
- * own, so its line runs beside the whole sidebar. On a project:
- * its name and actions, New workspace, then its workspaces, groups,
- * workflows, routines and sites in the order WorkspaceList keeps. On Home
+ * own, so its line runs beside the whole sidebar. On a project: its name
+ * and actions, its badges, New workspace, the tabs between its workspaces,
+ * workflows and sites, then the open tab's list (WorkspaceList). On Home
  * (`home`): every project's sessions in status sections, and New workspace
  * asks which project. New workspace is highlighted while its pane shows a
  * fresh workspace form, rather than a session in a running one or a saved
@@ -159,9 +161,10 @@ export function Sidebar({ scope, connected, home, rail }: {
       status={(
         <ListBadges
           projectIds={home ? home.projects.map((p) => p.id) : scope.projectId !== null ? [scope.projectId] : []}
-          className="mb-1.5 border-y border-line px-4 py-1 first:border-t-0 empty:border-b-0 empty:p-0"
+          className="border-b border-line px-4 py-1 empty:hidden"
         />
       )}
+      tabs={!home && scope.projectId !== null && <SidebarTabs workspaces={scope.workspaces} className="px-1.5 pt-1.5" />}
     >
       {home ? <HomeSessionList rows={home.rows} projects={home.projects} /> : <WorkspaceList {...scope} />}
       <ResizeHandle />

@@ -28,10 +28,10 @@ try {
   const before = (await box.boundingBox()).height
   check('the prompt grows to fit four lines', before > 60, `${before}px`)
 
-  const tabs = page.getByRole('tablist', { name: 'What to start' })
-  await tabs.getByRole('tab', { name: 'Workflow' }).click()
+  const tabs = page.getByRole('group', { name: 'What to start' })
+  await tabs.getByRole('button', { name: 'Workflow' }).click()
   await page.waitForTimeout(300)
-  await tabs.getByRole('tab', { name: 'Agent' }).click()
+  await tabs.getByRole('button', { name: 'Agent' }).click()
   await box.waitFor()
   await page.waitForTimeout(300)
   const after = (await box.boundingBox()).height
