@@ -1269,6 +1269,8 @@ function LazyRows({ workspaceId, parent, render }: {
     queryKey: ['dir', workspaceId, parent.path],
     queryFn: () => listWorkspaceDir(workspaceId, parent.path),
     refetchInterval: 5000,
+    // A folder collapsed and expanded again is read again, not shown as cached.
+    staleTime: 0,
   })
   if (isError) return <div className="px-3 py-0.5 text-sm text-subtle">Couldn’t list this folder.</div>
   if (!data) return <div className="px-3 py-0.5 text-sm text-subtle">Loading…</div>

@@ -40,7 +40,7 @@ const paint = (color: number): string => PALETTE[color % PALETTE.length]
  * A commit's message unfolds under its row, one at a time or all at once.
  * Clicking a commit shows it in a Changes pane, as `git show` does; ticking
  * two (or Cmd/Ctrl-clicking them) offers their range, older to newer. Polls
- * as often as the strip does while on screen, and is unmounted off it.
+ * every 10 seconds while on screen, and is unmounted off it.
  */
 export function WorkspaceCommits({ workspaceId }: { workspaceId: string }): JSX.Element {
   const [limit, setLimit] = useState(PAGE)
@@ -55,7 +55,12 @@ export function WorkspaceCommits({ workspaceId }: { workspaceId: string }): JSX.
       query: { limit: String(limit), ...repo !== undefined ? { repo } : {} },
     }),
     enabled: !known || repos.length > 0,
+    // Read again on every mount and whenever the tab is shown again, as
+    // well as on the poll: the pane unmounts off-screen and the poll pauses
+    // in a hidden tab, so the cached log is whatever it was when last seen.
     refetchInterval: 10_000,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
     placeholderData: keepPreviousData,
   })
   const data = log.data
