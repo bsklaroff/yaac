@@ -17,6 +17,20 @@ export function hidesTitleBar(): boolean {
   return IS_MAC && windowApi()?.app?.kind === 'desktop'
 }
 
+let covers = 0
+
+/**
+ * Hide the native traffic lights while a dialog covers the window's top
+ * left corner, since web content can never draw over them. Returns the
+ * release; they come back once every cover is released.
+ */
+export function coverTrafficLights(): () => void {
+  const set = windowApi()?.setWindowButtonsVisible
+  if (!set || !hidesTitleBar()) return () => {}
+  if (covers++ === 0) set(false)
+  return () => { if (--covers === 0) set(true) }
+}
+
 /** A native shell's description of its own build. */
 export interface ShellApp {
   kind: string
@@ -39,6 +53,8 @@ interface YaacWindow {
   openExternal: (url: string) => void
   /** Show the shell's Servers page. */
   showServers: () => void
+  /** Show or hide the macOS traffic lights (coverTrafficLights). */
+  setWindowButtonsVisible?: (visible: boolean) => void
   /**
    * Follow the local port the desktop app routes workspace hostnames at for
    * a remote server (null when it routes none): called with the current

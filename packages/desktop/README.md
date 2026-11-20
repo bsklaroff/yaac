@@ -180,7 +180,10 @@ and `brew` is macOS behavior.
 - **Window chrome.** On macOS the title bar is hidden (`titleBarStyle:
   'hidden'`) and the native traffic lights sit at the left of the SPA's top
   bar (`trafficLightPosition`), where the SPA leaves them room; the SPA
-  marks its bars `titlebar-drag` so the window can still be moved. On
+  marks its bars `titlebar-drag` so the window can still be moved. Native
+  controls always draw above web content, so while a full-window dialog
+  (settings, server health) covers that corner the SPA hides them over the
+  bridge (`setWindowButtonsVisible`). On
   Linux and Windows the window keeps its native frame, the SPA draws no
   controls, and the menu bar (a File menu with Quit in place of the macOS
   app menu) is hidden until Alt is pressed. The native background follows

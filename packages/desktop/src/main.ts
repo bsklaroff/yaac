@@ -193,6 +193,10 @@ async function createWindow(): Promise<BrowserWindow> {
     params.src = sanitizeWebviewSrc(params.src)
   })
   w.once('ready-to-show', () => w.show())
+  w.webContents.on('did-navigate', () => {
+    spaCoversLights = false
+    showTrafficLights(w)
+  })
   const onThemeChange = (): void => {
     w.setBackgroundColor(backgroundColorFor(nativeTheme.shouldUseDarkColors))
   }
@@ -213,6 +217,16 @@ async function createWindow(): Promise<BrowserWindow> {
     }
   })
   return w
+}
+
+/*
+ * The SPA hides the macOS traffic lights while one of its dialogs covers
+ * the window's corner. They show again over the Servers page, which keeps
+ * its own room for them, and when a fresh page load drops the dialog.
+ */
+let spaCoversLights = false
+function showTrafficLights(w: BrowserWindow): void {
+  if (process.platform === 'darwin' && !w.isDestroyed()) w.setWindowButtonVisibility(!spaCoversLights || pageView !== null)
 }
 
 function openInBrowser({ url }: { url: string }): { action: 'deny' } {
@@ -247,6 +261,7 @@ function showPageView(w: BrowserWindow): WebContentsView {
     view,
     close: () => {
       pageView = null
+      showTrafficLights(w)
       if (!w.isDestroyed()) {
         w.contentView.removeListener('bounds-changed', fit)
         w.contentView.removeChildView(view)
@@ -255,6 +270,7 @@ function showPageView(w: BrowserWindow): WebContentsView {
       view.webContents.close()
     },
   }
+  showTrafficLights(w)
   return view
 }
 
@@ -700,6 +716,11 @@ handleFromServersPage('server:setup-cancel', (): Promise<DesktopServerOutcome> =
 // a focused window, so a page cannot use it to raise a hidden one.
 ipcMain.on('window:show-servers', (e) => {
   if (e.sender === win?.webContents && win.isFocused()) void openServersPage()
+})
+ipcMain.on('window:set-buttons-visible', (e, visible: unknown) => {
+  if (e.sender !== win?.webContents) return
+  spaCoversLights = visible === false
+  showTrafficLights(win)
 })
 ipcMain.on('window:open-external', (_e, url: unknown) => {
   if (typeof url === 'string' && /^https?:/.test(url)) void shell.openExternal(url)

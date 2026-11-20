@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('yaacWindow', {
   openExternal: (url: string) => ipcRenderer.send('window:open-external', url),
   // Show the shell's Servers page (the SPA's Servers button and server badge).
   showServers: () => ipcRenderer.send('window:show-servers'),
+  // Hide the macOS traffic lights while a dialog covers them.
+  setWindowButtonsVisible: (visible: boolean) => ipcRenderer.send('window:set-buttons-visible', visible),
   // Follow where the app routes workspace hostnames (null when it does
   // not): called with the current port, then on every change. Returns an
   // unsubscribe.

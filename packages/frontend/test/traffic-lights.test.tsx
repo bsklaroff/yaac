@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { JSX } from 'react'
 import { cleanup, render } from '@testing-library/react'
-import { YTrafficLights } from '#ui'
+import { YDialog, YTrafficLights } from '#ui'
 
 /* The platform is read once, when the modules load, so the Mac user agent
  * is in place before any import. */
@@ -28,5 +29,26 @@ describe('YTrafficLights', () => {
     expect(leavesRoom()).toBe(false)
     // The iPhone app's bridge (iPadOS also reports a Mac).
     expect(leavesRoom(bridge('ios'))).toBe(false)
+  })
+})
+
+describe('YDialog', () => {
+  it('hides the traffic lights while a dialog reaching the corner is open', () => {
+    const setWindowButtonsVisible = vi.fn()
+    ;(window as unknown as { yaacWindow?: unknown }).yaacWindow = { ...(bridge('desktop') as object), setWindowButtonsVisible }
+    const dialog = (variant: 'sheet' | 'split' | 'form', open: boolean): JSX.Element => (
+      <YDialog open={open} onOpenChange={() => {}} variant={variant}>body</YDialog>
+    )
+    const { rerender, unmount } = render(<>{dialog('sheet', true)}{dialog('split', true)}</>)
+    expect(setWindowButtonsVisible.mock.calls).toEqual([[false]])
+    // They come back only once the last covering dialog closes.
+    rerender(<>{dialog('sheet', false)}{dialog('split', true)}</>)
+    expect(setWindowButtonsVisible.mock.calls).toEqual([[false]])
+    rerender(<>{dialog('sheet', false)}{dialog('split', false)}</>)
+    expect(setWindowButtonsVisible.mock.calls).toEqual([[false], [true]])
+    // A centred dialog clears them.
+    rerender(<>{dialog('form', true)}</>)
+    expect(setWindowButtonsVisible.mock.calls).toHaveLength(2)
+    unmount()
   })
 })

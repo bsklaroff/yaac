@@ -1,7 +1,8 @@
-import type { JSX, ReactNode, RefObject } from 'react'
+import { useEffect, type JSX, type ReactNode, type RefObject } from 'react'
 import { cn } from './cn'
 import { Dialog } from '@base-ui/react/dialog'
 import { CloseIcon } from '#lib/icons'
+import { coverTrafficLights } from '#lib/platform'
 import { useOpenerFocus } from '#lib/useOpenerFocus'
 import { yButtonClass } from './YButton'
 
@@ -43,7 +44,8 @@ const VARIANT = {
 /**
  * A modal over a dimmed backdrop, in one of four shapes (`VARIANT`).
  * Callers control `open`, usually from the UI store so any surface can open
- * it, and add size and layout in `className`.
+ * it, and add size and layout in `className`. The shapes that reach the
+ * window's corner hide the desktop app's traffic lights while open.
  *
  * With a `title` it gets a header: the title, then `actions`, then a close
  * button (`closeLabel`, `closeIcon`).
@@ -72,6 +74,8 @@ export function YDialog({
   children: ReactNode
 }): JSX.Element {
   const finalFocus = useOpenerFocus(open)
+  const coversCorner = variant === 'sheet' || variant === 'split'
+  useEffect(() => (open && coversCorner ? coverTrafficLights() : undefined), [open, coversCorner])
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
