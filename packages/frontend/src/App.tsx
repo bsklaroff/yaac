@@ -459,10 +459,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       <StopWorkspaceDialog
         workspace={confirmDelete}
         onOpenChange={(next) => { if (!next) setConfirmDelete(null) }}
-        onConfirm={() => {
-          if (confirmDelete) stopWorkspaceOptimistic(confirmDelete, rowIds)
-          setConfirmDelete(null)
-        }}
+        onConfirm={(workspace) => stopWorkspaceOptimistic(workspace, rowIds)}
       />
       <LeaveNewWorkspaceDialog />
       <AddProjectDialog />

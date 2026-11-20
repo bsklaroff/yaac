@@ -12,6 +12,7 @@ import { queuedChildren, queuedParentId, queuedTitle, roomKey } from '#lib/queue
 import { useStoppedEntry, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
 import { useSnapshotSelect } from '#lib/useSnapshot'
+import { stopWorkspaceOptimistic } from '#lib/stopWorkspaceFlow'
 import { useReadOnly, useViewedUserId, useWhoami } from '#lib/viewer'
 import { unseenDeaths, useUiStore, type SidebarTab } from '#lib/store'
 import type {
@@ -42,9 +43,11 @@ import { useSidebarTab } from '#components/sidebar/SidebarTabs'
 import {
   isTerminating,
   ProvisioningRow,
+  RowActionsContext,
+  ShownGroupsContext,
   StoppedWorkspaceRow,
   WorkspaceRow,
-  type SidebarDrag,
+  type RowActions,
 } from '#components/sidebar/WorkspaceRows'
 import { GroupSection } from '#components/sidebar/GroupSection'
 import { StoppedSection } from '#components/sidebar/StoppedRows'
@@ -585,33 +588,36 @@ export function WorkspaceList({
         })
     },
   })
-  // Mouse only, so touch can scroll; on touch the group dialog moves
-  // workspaces.
   // The groups on screen: drop targets, and what a row's dialog offers.
   const onScreen = (tab === 'workspace' ? loose : layout).groups
-  const rowDrag: SidebarDrag = {
-    start: (e, workspace, onSelect) => {
-      if (e.pointerType !== 'mouse' || readOnly) return
-      start(e, {
+  const dragId = drag?.item.workspaceId ?? null
+  // Made once, so memoized rows never see it change; its functions read
+  // this render's values through `latest`.
+  const latest = useRef({ rowIds, onScreen, readOnly, start })
+  latest.current = { rowIds, onScreen, readOnly, start }
+  const [rowActions] = useState((): RowActions => ({
+    startDrag: (e, workspace, onSelect) => {
+      const cur = latest.current
+      // Mouse only, so touch can scroll; on touch the group dialog moves
+      // workspaces.
+      if (e.pointerType !== 'mouse' || cur.readOnly) return
+      cur.start(e, {
         workspaceId: workspace.workspaceId,
         projectId: workspace.projectId,
-        from: onScreen.some((s) => s.group.groupId === workspace.groupId) ? workspace.groupId ?? null : null,
+        from: cur.onScreen.some((s) => s.group.groupId === workspace.groupId) ? workspace.groupId ?? null : null,
       }, onSelect)
     },
-    activeId: drag?.item.workspaceId ?? null,
-  }
+    stop: (workspace) => stopWorkspaceOptimistic(workspace, latest.current.rowIds),
+  }))
   /** Whether a drop here would actually move the dragged workspace. */
   const dropTarget = (groupId: string | null): boolean =>
     drag !== null && drag.over === groupId && drag.over !== drag.item.from
-  const shownGroups = onScreen.map((s) => s.group)
   /** The section props of an object's owned group, when it is laid out. */
   const groupProps = (kind: 'workflow' | 'routine' | 'site', id: string): OwnedGroupProps | undefined => {
     const section = ownedSection(kind, id)
     return section === undefined ? undefined : {
       section,
-      shownGroups,
-      drag: rowDrag,
-      rowIds,
+      dragId,
       dropTarget: dropTarget(section.group.groupId),
       zoneRef: zoneRef(section.group.groupId),
       elsewhere,
@@ -625,101 +631,103 @@ export function WorkspaceList({
 
   return (
     <QueueContext.Provider value={queueContext}>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-1">
-        {readOnly && (
-          <p className="mx-3 mb-1 rounded-md bg-selected px-2.5 py-1.5 text-sm text-muted">
-            {viewedName}&apos;s workspaces, read-only
-          </p>
-        )}
-        {!projectId && (
-          <YEmptyState
-            compact
-            className="py-10"
-            title="No project selected"
-            description={isMobile
-              ? 'Go back and pick a project.'
-              : 'Pick a project from the rail on the left.'}
-          />
-        )}
-        {projectId && tab === 'workflow' && (workflows.length + routines.length === 0
-          ? empty('No workflows yet', 'Make one from the Workflow tab of New workspace.')
-          : <>
-            {workflows.map((w) => <WorkflowItem key={w.id} workflow={w} group={groupProps('workflow', w.id)} />)}
-            {routines.map((r) => <RoutineItem key={r.id} routine={r} group={groupProps('routine', r.id)} />)}
-          </>)}
-        {projectId && tab === 'site' && (sites.length === 0
-          ? empty('No sites yet', 'Make one from the Site tab of New workspace.')
-          : sites.map((st) => <SiteItem key={st.id} site={st} group={groupProps('site', st.id)} />))}
-        {projectId && tab === 'workspace' && <>
-          {!project?.stoppedCount && [...workspaces, ...provisioning, ...queued, ...held, ...drafts].length === 0
-            && empty('No workspaces yet', 'Start one with New workspace above.')}
-          {drafts.length > 0 && <DraftsSection drafts={drafts} />}
-          {loose.scheduled.length > 0 && <ScheduledSection entries={loose.scheduled} />}
-          {looseOrphans.map((e) => (
-            <Fragment key={e.id}>
-              <QueuedWorkspaceRow entry={e} depth={0} />
-              <QueuedRows parentId={e.id} depth={1} />
-            </Fragment>
-          ))}
-          {loose.provisioning.map((p) => (
-            <Fragment key={p.workspaceId}>
-              <ProvisioningRow entry={p} />
-              <QueuedSet parentId={p.workspaceId} />
-            </Fragment>
-          ))}
-
-          {/* The default list is a drop zone that ungroups a workspace. While
-              dragging, an empty list shows a placeholder to drop on. */}
-          <div
-            ref={zoneRef(null)}
-            role="group"
-            aria-label="Ungrouped workspaces"
-            className={clsx('pb-1', dropTarget(null) && 'bg-selected/40 ring-1 ring-accent/40')}
-          >
-            {loose.defaultList.map((s) => (
-              <Fragment key={s.workspaceId}>
-                <WorkspaceRow workspace={s} shownGroups={shownGroups} drag={rowDrag} rowIds={rowIds} />
-                <QueuedSet parentId={s.workspaceId} />
-              </Fragment>
-            ))}
-            {loose.defaultHeld.map((d) => (
-              <Fragment key={d.workspaceId}>
-                <StoppedWorkspaceRow entry={d} />
-                <QueuedSet parentId={d.workspaceId} />
-              </Fragment>
-            ))}
-            {drag !== null && loose.defaultList.length === 0 && (
-              <p className="mx-2 rounded-lg border border-dashed border-line-strong px-2.5 py-3 text-center text-md text-subtle">
-                Ungrouped
+      <RowActionsContext.Provider value={rowActions}>
+        <ShownGroupsContext.Provider value={onScreen.map((s) => s.group)}>
+          <div className="min-h-0 flex-1 overflow-y-auto pb-1">
+            {readOnly && (
+              <p className="mx-3 mb-1 rounded-md bg-selected px-2.5 py-1.5 text-sm text-muted">
+                {viewedName}&apos;s workspaces, read-only
               </p>
             )}
+            {!projectId && (
+              <YEmptyState
+                compact
+                className="py-10"
+                title="No project selected"
+                description={isMobile
+                  ? 'Go back and pick a project.'
+                  : 'Pick a project from the rail on the left.'}
+              />
+            )}
+            {projectId && tab === 'workflow' && (workflows.length + routines.length === 0
+              ? empty('No workflows yet', 'Make one from the Workflow tab of New workspace.')
+              : <>
+                {workflows.map((w) => <WorkflowItem key={w.id} workflow={w} group={groupProps('workflow', w.id)} />)}
+                {routines.map((r) => <RoutineItem key={r.id} routine={r} group={groupProps('routine', r.id)} />)}
+              </>)}
+            {projectId && tab === 'site' && (sites.length === 0
+              ? empty('No sites yet', 'Make one from the Site tab of New workspace.')
+              : sites.map((st) => <SiteItem key={st.id} site={st} group={groupProps('site', st.id)} />))}
+            {projectId && tab === 'workspace' && <>
+              {!project?.stoppedCount && [...workspaces, ...provisioning, ...queued, ...held, ...drafts].length === 0
+                && empty('No workspaces yet', 'Start one with New workspace above.')}
+              {drafts.length > 0 && <DraftsSection drafts={drafts} />}
+              {loose.scheduled.length > 0 && <ScheduledSection entries={loose.scheduled} />}
+              {looseOrphans.map((e) => (
+                <Fragment key={e.id}>
+                  <QueuedWorkspaceRow entry={e} depth={0} />
+                  <QueuedRows parentId={e.id} depth={1} />
+                </Fragment>
+              ))}
+              {loose.provisioning.map((p) => (
+                <Fragment key={p.workspaceId}>
+                  <ProvisioningRow entry={p} />
+                  <QueuedSet parentId={p.workspaceId} />
+                </Fragment>
+              ))}
+
+              {/* The default list is a drop zone that ungroups a workspace. While
+                  dragging, an empty list shows a placeholder to drop on. */}
+              <div
+                ref={zoneRef(null)}
+                role="group"
+                aria-label="Ungrouped workspaces"
+                className={clsx('pb-1', dropTarget(null) && 'bg-selected/40 ring-1 ring-accent/40')}
+              >
+                {loose.defaultList.map((s) => (
+                  <Fragment key={s.workspaceId}>
+                    <WorkspaceRow workspace={s} dragging={dragId === s.workspaceId} />
+                    <QueuedSet parentId={s.workspaceId} />
+                  </Fragment>
+                ))}
+                {loose.defaultHeld.map((d) => (
+                  <Fragment key={d.workspaceId}>
+                    <StoppedWorkspaceRow entry={d} />
+                    <QueuedSet parentId={d.workspaceId} />
+                  </Fragment>
+                ))}
+                {drag !== null && loose.defaultList.length === 0 && (
+                  <p className="mx-2 rounded-lg border border-dashed border-line-strong px-2.5 py-3 text-center text-md text-subtle">
+                    Ungrouped
+                  </p>
+                )}
+              </div>
+
+              {loose.groups.map((section) => (
+                <GroupSection
+                  key={section.group.groupId}
+                  section={section}
+                  dragId={dragId}
+                  dropTarget={dropTarget(section.group.groupId)}
+                  zoneRef={zoneRef(section.group.groupId)}
+                  elsewhere={elsewhere}
+                  hidden={hidden}
+                  {...(dropNotice?.groupId === section.group.groupId ? { notice: dropNotice.message } : {})}
+                />
+              ))}
+
+              <StoppedSection
+                projectId={projectId}
+                count={stoppedCount}
+                unseenDeaths={Math.max(0, (project ? unseenDeaths(project, me) : 0) - ownedDeaths)}
+                expanded={stoppedExpanded}
+                onExpandedChange={setStoppedExpanded}
+                list={stoppedList}
+              />
+            </>}
           </div>
-
-          {loose.groups.map((section) => (
-            <GroupSection
-              key={section.group.groupId}
-              section={section}
-              shownGroups={shownGroups}
-              drag={rowDrag}
-              rowIds={rowIds}
-              dropTarget={dropTarget(section.group.groupId)}
-              zoneRef={zoneRef(section.group.groupId)}
-              elsewhere={elsewhere}
-              hidden={hidden}
-              {...(dropNotice?.groupId === section.group.groupId ? { notice: dropNotice.message } : {})}
-            />
-          ))}
-
-          <StoppedSection
-            projectId={projectId}
-            count={stoppedCount}
-            unseenDeaths={Math.max(0, (project ? unseenDeaths(project, me) : 0) - ownedDeaths)}
-            expanded={stoppedExpanded}
-            onExpandedChange={setStoppedExpanded}
-            list={stoppedList}
-          />
-        </>}
-      </div>
+        </ShownGroupsContext.Provider>
+      </RowActionsContext.Provider>
     </QueueContext.Provider>
   )
 }
