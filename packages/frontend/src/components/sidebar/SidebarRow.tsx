@@ -17,12 +17,10 @@ import { cn, YRowFrame, type YRowFrameProps } from '#ui'
  * A row with no meta keeps them centred at its right.
  *
  * `depth={1}` nests a session under its workspace on a 1px tree line under
- * the workspace's mark. `lead` holds a control in front of the mark (an
- * expand caret), drawn in the row's left padding. The hover actions end
- * with the row's `menu`, and stay shown while it is open and always on
- * touch.
+ * the workspace's mark. The hover actions end with the row's `menu`, and
+ * stay shown while it is open and always on touch.
  */
-export function SidebarRow({ mark, title, meta, strong = false, depth = 0, trailing, lead, actions, menu, className, ...frame }: {
+export function SidebarRow({ mark, title, meta, strong = false, depth = 0, trailing, actions, menu, className, ...frame }: {
   mark?: ReactNode
   title: ReactNode
   meta?: ReactNode
@@ -30,7 +28,6 @@ export function SidebarRow({ mark, title, meta, strong = false, depth = 0, trail
   depth?: 0 | 1
   /** Marks after the title. */
   trailing?: ReactNode
-  lead?: ReactNode
   menu?: { label: string; items: RowMenuItem[] }
 } & Omit<YRowFrameProps, 'children' | 'actionsShown'>): JSX.Element {
   const isMobile = useIsMobile()
@@ -68,7 +65,6 @@ export function SidebarRow({ mark, title, meta, strong = false, depth = 0, trail
       {two ? (
         <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
           <span className="relative flex min-w-0 items-center gap-1.5">
-            {lead}
             {markSlot}
             {titleLine}
             {/* Inside the row's content, so clicks here, from the menu's
@@ -87,7 +83,6 @@ export function SidebarRow({ mark, title, meta, strong = false, depth = 0, trail
         </div>
       ) : (
         <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          {lead}
           {markSlot}
           {titleLine}
         </span>

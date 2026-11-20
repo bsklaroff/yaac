@@ -41,8 +41,12 @@ export interface ObjectRowProps {
 /**
  * A named workflow, routine or site in the sidebar: its name and a line of
  * state, opening its pane on click. With `runs` its owned group's runs
- * nest under it, shown and hidden by the caret, and the header counts them
- * as a group's does (docs/workspace-groups.md "Owned groups").
+ * nest under it, and the header counts them as a group's does
+ * (docs/workspace-groups.md "Owned groups"). Its icon turns into the caret
+ * that shows or hides them while the row is hovered or keyboard-focused, or
+ * the runs are shown; on touch, tapping the icon toggles them. The caret
+ * takes the icon's place rather than a column of its own, so it never sits
+ * left of its section's caret.
  */
 export function ObjectRow({ icon: RowIcon, name, detail, object, projectId, items, action, failure, dialogs, runs }: ObjectRowProps & {
   runs?: ObjectRuns
@@ -57,19 +61,21 @@ export function ObjectRow({ icon: RowIcon, name, detail, object, projectId, item
         onSelect={readOnly && object.kind === 'routine' ? undefined : () => openObject(projectId, object)}
         selected={selected}
         className="pl-4"
-        lead={runs !== undefined && (
+        mark={runs !== undefined ? (
           <YButton
             variant="bare"
             onClick={() => runs.onToggle(!runs.expanded)}
             aria-label={runs.expanded ? `Hide ${name}'s runs` : `Show ${name}'s runs`}
             aria-expanded={runs.expanded}
-            className="pointer-events-auto absolute -left-4 -top-0.5 flex h-5 w-4 items-center justify-center text-subtle
-              transition hover:text-text"
+            className="pointer-events-auto flex size-3.5 items-center justify-center text-subtle transition hover:text-text"
           >
-            <ChevronIcon size={11} className={clsx('transition-transform', runs.expanded && 'rotate-90')} />
+            <RowIcon size={11} className={runs.expanded ? 'hidden' : 'group-hover/row:hidden group-has-focus-visible/row:hidden'} />
+            <ChevronIcon
+              size={11}
+              className={clsx('transition-transform', runs.expanded ? 'rotate-90' : 'hidden group-hover/row:block group-has-focus-visible/row:block')}
+            />
           </YButton>
-        )}
-        mark={<RowIcon size={11} className="text-subtle" />}
+        ) : <RowIcon size={11} className="text-subtle" />}
         title={name}
         trailing={(
           <>
