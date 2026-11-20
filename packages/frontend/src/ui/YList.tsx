@@ -30,7 +30,7 @@ export function YListSection({ label, count, open, onToggle, actions, className 
     </>
   )
   return (
-    <div className={cn('flex min-h-7 items-center gap-1.5 px-2.5 pt-3.5 pb-1 text-sm text-subtle', className)}>
+    <div className={cn('flex min-h-7 items-center gap-1.5 px-2.5 pt-1.5 pb-1 text-sm text-subtle', className)}>
       {onToggle ? (
         <button type="button" onClick={onToggle} aria-expanded={open}
           className="flex min-w-0 items-center gap-1.5 rounded-xs outline-none hover:text-text focus-visible:outline-2 focus-visible:outline-accent">

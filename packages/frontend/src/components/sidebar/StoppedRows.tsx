@@ -82,7 +82,7 @@ export function StoppedSection({
   })
   if (count === 0 && list.entries.length === 0) return null
   return (
-    <div role="group" aria-label="Stopped workspaces" className="py-1">
+    <div role="group" aria-label="Stopped workspaces">
       <YListSection
         className="group/row"
         label={(

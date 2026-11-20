@@ -132,7 +132,7 @@ export function GroupSection({
       ref={zoneRef}
       role="group"
       aria-label={group.name}
-      className={clsx('py-1', dropTarget && 'bg-selected/40 ring-1 ring-accent/40')}
+      className={clsx(dropTarget && 'bg-selected/40 ring-1 ring-accent/40')}
     >
       {object !== undefined ? (
         <ObjectRow

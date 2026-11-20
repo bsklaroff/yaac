@@ -86,7 +86,7 @@ export function YSidebar({ header, newWorkspace, status, tabs, children, footer,
       {status}
       {newWorkspace && <div className="px-1.5 pt-1.5">{newWorkspace}</div>}
       {tabs}
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">{children}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pt-1.5 pb-2">{children}</div>
       {footer}
     </aside>
   )
