@@ -2,8 +2,10 @@ import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import clsx from 'clsx'
 import { useFindChord } from '#components/ConversationFind'
 import { PaneFindBar, useFindQuery } from '#components/FindPanel'
+import { previewPartition } from '@yaac/shared/workspace-hosts'
 import { windowApi } from '#lib/platform'
-import { normalizePreviewNav } from '#lib/preview'
+import { normalizePreviewNav, shareablePreviewUrl } from '#lib/preview'
+import { useHostsPort } from '#lib/useHostsPort'
 import {
   NavBackIcon, NavForwardIcon, ReloadIcon, OpenLinkIcon, PreviewIcon, LoadingIcon,
   MoreIcon, HomeIcon, CopyIcon, DevToolsIcon, MobileIcon, TabletIcon, DesktopIcon,
@@ -118,6 +120,11 @@ const DEVICE_PRESETS: { label: string; width: number | null; Icon: typeof Deskto
  * desktop app, and only when the page has no use for it
  * (packages/desktop/src/menu.ts).
  *
+ * The page runs on `localhost:<port>`, the origin the app was written for:
+ * the desktop app proxies everything the pane's session opens on loopback
+ * into its workspace (docs/port-forward-tunnel.md "The desktop preview
+ * pane"), and the pane loads nothing until that route is set.
+ *
  * The <webview> is managed imperatively through a ref, because letting React
  * reconcile it would reload the page on every parent render. While the pane
  * is hidden the page is frozen and later discarded, and showing the pane
@@ -135,8 +142,8 @@ export function WorkspacePreview({
   workspaceId: string
   /** The workspace port the pane shows. */
   containerPort: number
-  /** Where this machine reaches it (its workspace hostname); undefined
-   *  while it is not reachable yet. */
+  /** The page to open on, `http://localhost:<containerPort>/`; undefined
+   *  while the port is not forwarded. */
   url: string | undefined
   /** Whether the pane is on screen. */
   visible: boolean
@@ -161,6 +168,13 @@ export function WorkspacePreview({
   const [found, setFound] = useState(NOT_FOUND)
   // Bumped by each document load, so an open find bar searches the new page.
   const [pageLoads, setPageLoads] = useState(0)
+  // Whether the session's loopback traffic goes to this workspace yet. A
+  // bridge that cannot route is handed a workspace hostname, which needs no
+  // route. A failed route shows as a failed load, whose Retry routes again.
+  const [routed, setRouted] = useState(() => !windowApi()?.routePreview)
+  const [routeFailed, setRouteFailed] = useState(false)
+  const [routeAttempt, setRouteAttempt] = useState(0)
+  const hostsPort = useHostsPort()
 
   const guestId = (): number | undefined => {
     try {
@@ -176,7 +190,7 @@ export function WorkspacePreview({
     const host = hostRef.current
     if (!host || discarded) return
     const wv = document.createElement('webview') as unknown as PreviewWebview
-    wv.setAttribute('partition', `persist:preview-${workspaceId}`)
+    wv.setAttribute('partition', previewPartition(workspaceId))
     wv.setAttribute('allowpopups', 'true')
     wv.style.width = '100%'
     wv.style.height = '100%'
@@ -226,6 +240,19 @@ export function WorkspacePreview({
     }
   }, [workspaceId, discarded])
 
+  useEffect(() => {
+    const route = windowApi()?.routePreview
+    if (!route) return
+    let live = true
+    const settle = (ok: boolean): void => {
+      if (!live) return
+      setRouted(ok)
+      setRouteFailed(!ok)
+    }
+    route(workspaceId).then(settle, () => settle(false))
+    return () => { live = false }
+  }, [workspaceId, routeAttempt])
+
   // Point the webview at the forwarded port when it changes, or a new
   // webview back at the page it was discarded on. Compared with the last
   // port URL applied rather than `src`, which Electron rewrites on every
@@ -235,14 +262,14 @@ export function WorkspacePreview({
   const resumeUrl = useRef<string | null>(null)
   useEffect(() => {
     const wv = wvRef.current
-    if (!wv || !url) return
+    if (!wv || !url || !routed) return
     const dest = appliedUrl.current === url ? resumeUrl.current : url
     if (dest === null) return
     appliedUrl.current = url
     resumeUrl.current = null
     wv.setAttribute('src', dest)
     setAddress(dest)
-  }, [url, discarded])
+  }, [url, discarded, routed])
 
   // While hidden, freeze the page and later discard it, as Chrome does a
   // background tab. A page revisited often is not discarded on the timer.
@@ -325,13 +352,23 @@ export function WorkspacePreview({
   const pageMatches = { froms: Array<number>(found.matches).fill(0), tos: [], capped: false }
 
   const reload = (): void => wvRef.current?.reload?.()
+  const retry = (): void => {
+    setFailed(false)
+    if (!routeFailed) {
+      reload()
+      return
+    }
+    setRouteFailed(false)
+    setRouteAttempt((n) => n + 1)
+  }
   const hardReload = (): void => wvRef.current?.reloadIgnoringCache?.()
   const goBack = (): void => wvRef.current?.goBack?.()
   const goForward = (): void => wvRef.current?.goForward?.()
   const goHome = (): void => { if (url) void wvRef.current?.loadURL?.(url) }
   const openDevTools = (): void => wvRef.current?.openDevTools?.()
-  const copyUrl = (): void => { void navigator.clipboard?.writeText(address || url || '') }
-  const openExternal = (): void => { if (url) windowApi()?.openExternal(address || url) }
+  const shareable = (): string => shareablePreviewUrl(address || url || '', workspaceId, hostsPort)
+  const copyUrl = (): void => { void navigator.clipboard?.writeText(shareable()) }
+  const openExternal = (): void => { if (url) windowApi()?.openExternal(shareable()) }
   const submitAddress = (): void => {
     const dest = normalizePreviewNav(editing ?? '', url)
     if (dest) void wvRef.current?.loadURL?.(dest)
@@ -423,16 +460,16 @@ export function WorkspacePreview({
             className={clsx('h-full bg-white', deviceWidth !== null && 'border-x border-line-strong')}
           />
         </div>
-        {url === undefined ? (
+        {url === undefined || (!routed && !routeFailed) ? (
           <PreviewOverlay>
             <LoadingIcon size={18} className="animate-spin text-subtle" />
             <span>Waiting for the dev server on :{containerPort}…</span>
           </PreviewOverlay>
-        ) : failed ? (
+        ) : failed || routeFailed ? (
           <PreviewOverlay>
             <PreviewIcon size={20} className="text-subtle" />
             <span>Couldn’t load the preview.</span>
-            <YButton size="sm" onClick={() => { setFailed(false); reload() }}>Retry</YButton>
+            <YButton size="sm" onClick={retry}>Retry</YButton>
           </PreviewOverlay>
         ) : loading ? (
           <div className="pointer-events-none absolute right-2 top-2">

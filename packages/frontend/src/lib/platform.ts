@@ -52,6 +52,11 @@ interface YaacWindow {
    */
   openPreview?: (workspaceId: string, port: PortMapping) => void
   /**
+   * Send everything a workspace's preview pane opens on loopback into that
+   * workspace. Resolves true once the pane's first request would be.
+   */
+  routePreview?: (workspaceId: string) => Promise<boolean>
+  /**
    * Freeze or thaw a hidden preview's page, by its `<webview>`'s
    * webContents id. Resolves whether it took effect.
    */

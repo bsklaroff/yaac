@@ -91,9 +91,11 @@ from the server's `/events` snapshots (`startEventsMonitor` and
   `--bind <address>` listens somewhere other than loopback, for a
   forwarder that is not on the user's machine.
 - **The desktop app**, resident in the tray. The stream that drives its
-  badge drives the forwards too, so its preview pane, and any browser on the
-  same machine, reach `127.0.0.1:<port>` whenever the app runs. It binds
-  loopback only, never exposing dev servers to the local network.
+  badge drives the forwards too, so any browser or tool on the same machine
+  reaches `127.0.0.1:<port>` whenever the app runs. It binds loopback only,
+  never exposing dev servers to the local network. Its preview pane does
+  not use these forwards; it has its own route (see "The desktop preview
+  pane").
 - **The iPhone app** forwards one port at a time, only while its preview
   shows it (ios/README.md "Previews"). iOS suspends a backgrounded app, so
   a standing set of forwards would not survive anyway.
@@ -112,17 +114,82 @@ HSTS preload list.) The iPhone app tells the webapp it can preview by giving
 its bridge an `openPreview` call (`windowApi()` in
 `packages/frontend/src/lib/platform.ts`).
 
-The desktop app's preview pane loads the port's workspace hostname, so
-previews of different workspaces keep their cookies apart and a preview
-reaches the workspace whatever else holds that port number on this machine.
-Until the app knows where the names are routed, the pane waits. It
-previews each forwarded port in its own pane, so a
+## The desktop preview pane
+
+The desktop app previews each forwarded port in its own pane, so a
 workspace can show several side by side. A pane is a `preview:<port>`
 layout target (`#lib/preview`), so the saved layout remembers which port
 each pane shows across reloads and server switches. A pane whose port is
 not forwarded at the moment waits for it rather than showing another,
 including when another client stops the forward. Stopping a forward from
 the pane's own window closes the pane.
+
+The pane loads `http://localhost:<port>/`, where `<port>` is the port the
+app itself sees: the container port, which under `containerless` is also
+its host port (docs/workspace-hostnames.md "Allocation"). That is the
+origin the app was written for, so an app told its URL
+(`NEXTAUTH_URL=http://localhost:3000`, OAuth redirect URIs) redirects
+within the pane, and every dev server's Host check admits the request,
+yaac's own included.
+
+`localhost` reaches the workspace because each workspace's panes share an
+Electron session (`partition` `persist:preview-<workspaceId>`,
+`previewPartition`) whose proxy carries every request the pane makes:
+
+- **One SOCKS5 listener per previewed workspace** (`startSocksTunnel`,
+  `createPreviewProxies` in the desktop forwarder), on a free loopback
+  port. Chromium sends no SOCKS credentials, so the listener a connection
+  reached is what says whose it is. A CONNECT to a loopback name
+  (`localhost`, `*.localhost`, `127.0.0.1`, `::1`) at some port opens the
+  same tunnel connection a forward does, to that workspace port, and is
+  refused if the latest snapshot does not offer that port for the
+  workspace. SOCKS carries raw bytes, so keep-alive, WebSocket upgrades and
+  HMR pass untouched.
+- **Any other host is dialed by the listener itself**, unless any address
+  it resolves to is this machine's: loopback, unspecified (`0.0.0.0` and
+  `::` reach local listeners), or one of its interfaces. Those are refused,
+  so a DNS name pointing at `127.0.0.1` or the machine's LAN address does
+  not reach the user's services or another workspace's forward either.
+  Public hosts, a CDN the page loads from, connect as usual.
+- **Listeners last as long as the app.** Each connection looks its route up
+  through whichever forwarder is current, so a server switch never leaves
+  a session proxying to a closed port.
+- **The proxy is fixed rules**, `socks5://127.0.0.1:<listener>` with bypass
+  rules `<-loopback>`, which stops Chromium's default of sending loopback
+  direct, and no `direct://` fallback. A PAC script cannot do this, since
+  Chromium sends loopback direct under PAC whatever the script answers. `test-playwright-scripts/desktop-preview-proxy.js`
+  checks these Electron details, and `desktop-preview-pane.js` the whole
+  route through the desktop app and a real workspace.
+- **The pane loads nothing until its session is routed.** It asks the main
+  process (`routePreview`), which binds the listener and sets the proxy
+  before answering, so the first request is already proxied.
+- **Every pane goes through the tunnel**, a containerless server on the
+  same machine included, so on every driver a pane reaches only its own
+  workspace's offered ports. A containerless `dialPort` admits a new
+  listener at its next port sweep, so a dev server that has just started
+  can take a moment to answer.
+
+So each workspace has its own cookie jar and storage, apart from every other
+workspace and from the webapp, two panes can show `localhost:3000` from two
+workspaces at once, and no request a page in a pane makes over TCP reaches
+another workspace or a service listening on one of this machine's own
+addresses. Other hosts on its networks are outside that: a container on a
+local bridge network (Docker's, podman's, the kind node) or a local VM has
+an address of its own, and is dialed like any LAN peer.
+
+A desktop app too old to route a session (no `routePreview` on its bridge)
+is handed the port's workspace hostname instead, as before the pane had a
+route (docs/legacy-compat-shims.md).
+
+Copy URL and Open in browser hand out the address as the port's workspace
+hostname (`shareablePreviewUrl`), keeping its path and query, since
+`localhost:<port>` in another browser reaches the plain forward, which may
+sit on a fallback port. That is why the desktop app keeps routing the names
+for a remote server. Inside the pane, the address bar takes any loopback
+URL, and `localhost:<other port>` reaches that port of the same workspace if
+it is offered. Non-loopback URLs open in the system browser
+(`webview-guard.ts`), so an OAuth provider's login lands there rather than
+in the pane.
 
 ## Taken ports
 
@@ -138,9 +205,10 @@ The server never learns of the move; the client reports it:
 
 - **`yaac forward`** prints the port it bound, with `(port N is in use
   here)`. A port named with `--port` is bound as named or not at all.
-- **The desktop app** writes the move to its log. Its preview pane loads
-  the workspace hostname, which names the workspace rather than a port
-  number here, so a move never sends the preview to the wrong process.
+- **The desktop app** writes the move to its log. Its preview pane never
+  uses the forwards: its session's proxy tunnels `localhost:<port>` to the
+  workspace by name, so a move never sends the preview to the wrong
+  process.
 - **The iPhone app** binds a free port when the offered one is taken and
   loads its preview from whichever it bound. Nothing else on the phone can
   use that port (see ios/README.md "Previews"), so the webapp never needs

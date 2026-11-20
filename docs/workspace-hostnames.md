@@ -104,11 +104,12 @@ URL scheme and the same cookie isolation on both drivers.
 
 - **Webapp.** A browser on a loopback origin has a Preview button that opens
   the name in a new tab (`useHostsPort`). The desktop app's preview pane
-  loads the name: through the server when it runs on the same machine, and
-  through the app's own router otherwise. The app sends that router's port
-  to the page over IPC (`onHostsPort`). A browser on a remote origin gets
-  no preview, since nothing the page can know of routes the names on its
-  machine.
+  loads `localhost:<port>` instead (docs/port-forward-tunnel.md "The
+  desktop preview pane"), and hands out the name from Copy URL and Open in
+  browser: routed by the server when it runs on the same machine, and by
+  the app's own router otherwise, whose port the app sends to the page over
+  IPC (`onHostsPort`). A browser on a remote origin gets no preview, since
+  nothing the page can know of routes the names on its machine.
 - **CLI.** `yaac workspace list` prints each port's URL. For a remote
   server the URLs use `WORKSPACE_HOSTS_PORT` and work while `yaac forward`
   or the desktop app runs; a router that found 8786 taken holds the port

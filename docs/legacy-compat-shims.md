@@ -17,6 +17,26 @@ No test can catch a shim going stale. The suite runs on a database and disk it
 just created, where every shim is already a no-op, so a green run says nothing
 about them. That is why this is a list and not a check.
 
+## A desktop app that cannot route its preview pane
+
+The webapp comes from the server, while the desktop app is installed on its
+own, so a desktop app older than the webapp it shows is a normal state. One
+without `routePreview` on its bridge cannot proxy a preview pane's session
+into its workspace (docs/port-forward-tunnel.md "The desktop preview
+pane"). For it, `previewPaneUrl` in `WorkspaceView` hands the pane the
+port's workspace hostname, and `WorkspacePreview` loads it without waiting
+for a route.
+
+- **Reads:** whether `windowApi()` has `routePreview`.
+- **If deleted too early:** such an app's pane loads `localhost:<port>`
+  with no proxy, so it silently shows whatever this machine holds on that
+  port: the user's own dev server, or another workspace's forward when this
+  workspace's port fell back to another one.
+- **Safe to remove:** once no desktop app from before `routePreview` is in
+  use. Feedback reports carry the desktop app's version (docs/feedback.md).
+  The other way to retire it is to make the pane refuse to load, telling the
+  user to update the app, rather than fall back.
+
 ## `server.json`'s `enabled: false`
 
 `server.json` marks nothing selected with an empty `url`. Clients before

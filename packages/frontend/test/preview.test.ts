@@ -5,6 +5,7 @@ import {
   previewTarget,
   previewTargetPort,
   normalizePreviewNav,
+  shareablePreviewUrl,
 } from '#lib/preview'
 
 describe('previewTarget', () => {
@@ -40,5 +41,23 @@ describe('normalizePreviewNav', () => {
   it('returns null when empty or when a path has no preview to go under', () => {
     expect(normalizePreviewNav('   ', HOME)).toBeNull()
     expect(normalizePreviewNav('/x', undefined)).toBeNull()
+  })
+})
+
+describe('shareablePreviewUrl', () => {
+  const ID = 'a528bd7a-0000-4000-8000-000000000000'
+
+  it('turns a loopback address into the port\'s workspace hostname, keeping path, query and fragment', () => {
+    expect(shareablePreviewUrl('http://localhost:3000/a/b?c=1#d', ID, 8786))
+      .toBe('http://3000.a528bd7a.localhost:8786/a/b?c=1#d')
+    expect(shareablePreviewUrl('http://127.0.0.1/', ID, 8787)).toBe('http://80.a528bd7a.localhost:8787/')
+    expect(shareablePreviewUrl('http://[::1]:5173/', ID, 8787)).toBe('http://5173.a528bd7a.localhost:8787/')
+  })
+
+  it('leaves anything else alone, and everything when nothing routes the names', () => {
+    for (const url of ['https://localhost:3000/', 'http://app.localhost:3000/', 'https://example.com/', 'not a url']) {
+      expect(shareablePreviewUrl(url, ID, 8786)).toBe(url)
+    }
+    expect(shareablePreviewUrl('http://localhost:3000/', ID, null)).toBe('http://localhost:3000/')
   })
 })
