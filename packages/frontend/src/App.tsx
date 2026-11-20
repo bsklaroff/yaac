@@ -134,7 +134,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const sidebarOpen = useUiStore((s) => s.sidebarOpen)
   const homeOpen = useUiStore((s) => s.homeOpen)
   const openHome = useUiStore((s) => s.openHome)
-  const newWorkspaceForm = useUiStore((s) => s.newWorkspace)
+  const composing = useUiStore((s) => s.newWorkspace !== null)
   const selectedObject = useUiStore((s) => s.selectedObject)
   const mobileScreen = useUiStore((s) => s.mobileScreen)
   const syncChatDrafts = useUiStore((s) => s.syncChatDrafts)
@@ -339,7 +339,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const activity = useMemo(() => projectActivity(projects, workspaces, provisioning, me), [projects, workspaces, provisioning, me])
   const home = homeOpen ? { rows: allHomeRows, projects } : undefined
   // Home's pane shows its project cards while nothing else is open in it.
-  const homePage = home !== undefined && selectedWorkspaceId === null && newWorkspaceForm === null && selectedObject === null
+  const homePage = home !== undefined && selectedWorkspaceId === null && !composing && selectedObject === null
 
   // What replaces the sidebar and pane when there is no project to show.
   const placeholder = projectOp
