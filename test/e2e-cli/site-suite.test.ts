@@ -460,11 +460,12 @@ describe('yaac site (real CLI + real server)', () => {
     }
     /** A new workspace of `project`, with no agent, and its pod's job. */
     const workspaceOf = async (project: string, projectId: string): Promise<string> => {
-      const before = new Set((await listWorkspacePods(projectId)).map((p) => p.workspaceId))
-      await as('workspace', 'create', project, '--no-session')
+      const out = await as('workspace', 'create', project, '--no-session')
+      const id = /Workspace ([0-9a-f-]{36}) is running/.exec(out)?.[1]
+      if (id === undefined) throw new Error(`create printed no workspace id:\n${out}`)
       return vi.waitFor(async () => {
-        const pod = (await listWorkspacePods(projectId)).find((p) => !before.has(p.workspaceId))
-        if (!pod) throw new Error(`no new workspace pod in ${project}`)
+        const pod = (await listWorkspacePods(projectId)).find((p) => p.workspaceId === id)
+        if (!pod) throw new Error(`no pod for workspace ${id} in ${project}`)
         return pod.jobName
       }, { timeout: 120_000, interval: 1_000 })
     }

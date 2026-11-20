@@ -317,17 +317,18 @@ export async function attachStarted(res: Response, { attach = true } = {}): Prom
 /**
  * Attach the terminal to a session's window. An `acp` session's
  * conversation is in the web app's chat pane (its tmux window only shows the
- * acpd supervisor's log), and e2e runs have no TTY to attach.
+ * acpd supervisor's log). E2e runs have no TTY to attach, so they get the
+ * attach hint, which also gives tests the new workspace's id.
  */
 async function attachSession(workspaceId: string, sessionId: string, { attach }: { attach: boolean }): Promise<void> {
   const session = await findSession(workspaceId, sessionId)
   if (session?.mode === 'acp') {
     console.log(`Workspace ${workspaceId} is running in ACP mode — open it in the web app to chat with the agent `
       + `(session ${sessionId}).`)
-  } else if (!attach || session === undefined) {
+  } else if (!attach || session === undefined || testEnv.e2eNoAttach) {
     console.log(`Workspace ${workspaceId} is running — attach with `
       + `\`yaac workspace attach --session ${sessionId} ${workspaceId}\`.`)
-  } else if (!testEnv.e2eNoAttach) {
+  } else {
     await attachWorkspacePty(workspaceId, `native:${session.window}`)
   }
 }

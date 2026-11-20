@@ -362,10 +362,7 @@ function startForwardCli(...args: string[]): {
   }
 }
 
-/**
- * Create a claude workspace and return its id, read from the server's
- * listing since the CLI prints none for a tui workspace.
- */
+/** Create a claude workspace and return its id. */
 async function createWorkspace(...extra: string[]): Promise<string> {
   return createWorkspaceWith('claude', ...extra)
 }
@@ -377,22 +374,22 @@ async function createWorkspaceWith(tool: string, ...extra: string[]): Promise<st
 
 /** Run `yaac workspace create` with exactly `args`; the new id and stdout. */
 async function createWorkspaceFrom(...args: string[]): Promise<{ workspaceId: string; stdout: string }> {
-  const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
   const { stdout, stderr, exitCode } = await runYaac(cliEnv(), 'workspace', 'create', NAME, ...args)
   if (exitCode !== 0) {
     throw new Error(`create failed (exit ${String(exitCode)})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
   }
-  const after = await listWorkspaces()
-  // This project's only: the scheduling cases' project starts workspaces of
-  // its own on the server's clock.
-  const fresh = after.find((w) => !before.has(w.workspaceId) && w.projectId === projectId)
-  if (!fresh) {
-    throw new Error(
-      `create reported success but listed no new workspace\n${stdout}\n`
-      + `listed: ${JSON.stringify(after)}`,
-    )
-  }
-  return { workspaceId: fresh.workspaceId, stdout }
+  return { workspaceId: startedId(stdout), stdout }
+}
+
+/**
+ * The id of the workspace a `yaac workspace create` started, as the CLI
+ * prints it. Diffing the listing instead would race the queued children,
+ * timeouts and scheduled starts this file sets off on the server's clock.
+ */
+function startedId(stdout: string): string {
+  const id = /^(?:Non-interactive )?Workspace ([0-9a-f-]{36}) is running/m.exec(stdout)?.[1]
+  if (id === undefined) throw new Error(`create printed no workspace id:\n${stdout}`)
+  return id
 }
 
 /** The zone the CLI reports at create, unlike the server's own `TZ`. */
@@ -723,11 +720,10 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     await addTestProject(server, schedRepo, { remoteUrl: `https://github.com/test/${SCHED}.git` })
     await assignTestGitCredential(server, SCHED, GIT_TOKEN)
 
-    const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
     const timed = await runYaac(cliEnv(), 'workspace', 'create', SCHED, '--tool', 'claude', '--mode', 'tui',
       '--timeout', '1m', '--prompt', 'timed')
     expect(timed.exitCode, timed.stderr).toBe(0)
-    timedId = (await listWorkspaces()).find((w) => !before.has(w.workspaceId))?.workspaceId ?? ''
+    timedId = startedId(timed.stdout)
     expect((await listWorkspaces()).find((w) => w.workspaceId === timedId)?.deadline).toBeDefined()
     const child = await fetch(`${origin()}/api/workspace/queue/create`, {
       method: 'POST',
@@ -1113,8 +1109,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     for (let i = 0; i < 2; i++) {
       const made = await runYaac(cliEnv(), 'workspace', 'create', PORTS, '--tool', 'claude', '--mode', 'tui')
       expect(made.exitCode, made.stderr).toBe(0)
-      const fresh = (await listWorkspaces()).find((w) => w.projectId === portsProject && !ids.includes(w.workspaceId))
-      ids.push(fresh!.workspaceId)
+      ids.push(startedId(made.stdout))
     }
     try {
       const ports = await vi.waitFor(async () => {
@@ -2011,10 +2006,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
   // In the scheduling project, since a create remembers its tool's mode
   // and the acp cases rely on nothing here having made pi a terminal agent.
   it('launches a terminal agent with its opening message, on the pane\'s terminal', async () => {
-    const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
     const made = await runYaac(cliEnv(), 'workspace', 'create', SCHED, '--tool', 'pi', '--mode', 'tui', '--prompt', '@notes say hi')
     expect(made.exitCode, made.stderr).toBe(0)
-    const id = (await listWorkspaces()).find((w) => !before.has(w.workspaceId))?.workspaceId ?? ''
+    const id = startedId(made.stdout)
     try {
       // A leading space, so pi does not read the message as a file to attach.
       await vi.waitFor(async () => expect((await sessionArgv(id)).slice(-2)).toEqual(['--', ' @notes say hi']),
@@ -2861,15 +2855,13 @@ describe.skipIf(!CAN_RUN)('yaac forward against a containerless server on this m
  */
 describe.skipIf(!CAN_RUN)('yaac workspace create --group', () => {
   it('creates the named group and files the new workspace into it, listed by any project ref', async () => {
-    const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
     const { stdout, stderr, exitCode } = await runYaac(
       serverEnv, 'workspace', 'create', NAME, '--tool', 'claude', '--group', 'friday batch',
     )
     if (exitCode !== 0) {
       throw new Error(`create failed (exit ${String(exitCode)})\n${stdout}\n${stderr}`)
     }
-    const fresh = (await listWorkspaces()).find((w) => !before.has(w.workspaceId))
-    expect(fresh).toBeDefined()
+    const freshId = startedId(stdout)
 
     // The group is created by name.
     const res = await fetch(`${origin()}/api/workspace/group/list?project=${NAME}`)
@@ -2881,7 +2873,7 @@ describe.skipIf(!CAN_RUN)('yaac workspace create --group', () => {
     // id or id prefix alike.
     for (const ref of [NAME, projectId, projectId.slice(0, 8)]) {
       const listed = await runYaac(serverEnv, 'workspace', 'list', ref)
-      expect(listed.stdout, ref).toMatch(new RegExp(`${fresh!.workspaceId.slice(0, 8)}[^\\n]*friday batch`))
+      expect(listed.stdout, ref).toMatch(new RegExp(`${freshId.slice(0, 8)}[^\\n]*friday batch`))
       expect(listed.stdout, ref).toContain(NAME)
     }
 
@@ -2899,7 +2891,7 @@ describe.skipIf(!CAN_RUN)('yaac workspace create --group', () => {
       expect(removed.status).toBe(204)
     }
 
-    await runYaac(serverEnv, 'workspace', 'stop', fresh!.workspaceId)
+    await runYaac(serverEnv, 'workspace', 'stop', freshId)
   }, 180_000)
 })
 
@@ -3010,13 +3002,11 @@ describe.skipIf(!CAN_RUN)('a project with several repos', () => {
 
   /** `yaac workspace create cl-multi …` with a terminal claude; the new id. */
   async function create(...args: string[]): Promise<string> {
-    const before = new Set((await listWorkspaces()).map((w) => w.workspaceId))
     const res = await runYaac(cliEnv(), 'workspace', 'create', MULTI, '--tool', 'claude', '--mode', 'tui', ...args)
     expect(res.exitCode, `${args.join(' ')}\n${res.stdout}\n${res.stderr}`).toBe(0)
-    const fresh = (await listWorkspaces()).find((w) => !before.has(w.workspaceId) && w.projectId === multiId)
-    if (!fresh) throw new Error(`create listed no new workspace\n${res.stdout}`)
-    made.push(fresh.workspaceId)
-    return fresh.workspaceId
+    const id = startedId(res.stdout)
+    made.push(id)
+    return id
   }
 
   /** The password the workspace's own git would send for a remote, read as
