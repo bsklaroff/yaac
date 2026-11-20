@@ -48,7 +48,7 @@ function rowOf(w: WorkspaceListEntry, me: string | undefined, startedAtMs: numbe
   if (w.asking === true) return { ...base, status: 'need', section: 'need', sub: 'Waiting for your answer', unread: true }
   if (w.status === 'running') return { ...base, status: 'work', section: 'working', unread: false }
   if (w.status === 'background') return { ...base, status: 'bg', section: 'working', unread: false }
-  if (w.status === 'idle') return { ...base, status: 'stop', section: 'done', sub: 'No agent running', unread: false }
+  if (w.status === 'idle') return { ...base, status: 'stop', section: 'done', unread: false }
   return { ...base, status: 'done', section: 'done', sub: unread ? 'Finished since you looked' : undefined, unread }
 }
 
