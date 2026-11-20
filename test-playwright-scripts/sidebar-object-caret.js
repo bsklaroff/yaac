@@ -30,7 +30,7 @@ const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
 
 try {
   await page.goto(`${origin}/?project=${project.id}`)
-  const workflowTab = page.getByRole('group', { name: 'Sidebar list' }).getByRole('button', { name: 'Workflow' })
+  const workflowTab = page.getByRole('group', { name: 'Sidebar list' }).getByRole('button', { name: 'Workflows' })
   await workflowTab.click()
   const section = page.locator('aside')
   await section.getByRole('button', { name: `Run now: ${NAME}` }).click({ force: true })

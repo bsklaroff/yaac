@@ -8,12 +8,12 @@ import type { WorkspaceListEntry } from '@yaac/shared/types'
 import { YSegmented } from '#ui'
 
 const TABS = [
-  { value: 'workspace', label: 'Workspace', Icon: ChatIcon },
-  { value: 'workflow', label: 'Workflow', Icon: WorkflowIcon },
-  { value: 'site', label: 'Site', Icon: SiteIcon },
+  { value: 'workspace', label: 'Workspaces', Icon: ChatIcon },
+  { value: 'workflow', label: 'Workflows', Icon: WorkflowIcon },
+  { value: 'site', label: 'Sites', Icon: SiteIcon },
 ] as const
 
-/** The tab the project sidebar shows: the saved one, or Workspace where the
+/** The tab the project sidebar shows: the saved one, or Workspaces where the
  *  server runs no sites. */
 export function useSidebarTab(): SidebarTab {
   const tab = useUiStore((s) => s.sidebarTab)
@@ -23,7 +23,7 @@ export function useSidebarTab(): SidebarTab {
 
 /**
  * The project sidebar's switch between its workspaces, its workflows and
- * routines, and its sites. Every running workspace is on the Workspace tab,
+ * routines, and its sites. Every running workspace is on the Workspaces tab,
  * so while another tab is open a mark on it says when any of them waits
  * for the viewer. In a narrow sidebar the tabs drop to their icons. It is
  * a YSegmented rather than YTabs for the raised look it shares with the

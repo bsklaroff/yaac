@@ -38,7 +38,7 @@ const shot = (name) => page.screenshot({ path: path.join(SHOTS, `routine-words-$
 
 try {
   await page.goto(`${origin}/?project=${projectId}`)
-  await page.getByRole('group', { name: 'Sidebar list' }).getByRole('button', { name: 'Workflow' }).click()
+  await page.getByRole('group', { name: 'Sidebar list' }).getByRole('button', { name: 'Workflows' }).click()
   const section = page.locator('aside')
   await section.getByRole('button', { name: ROUTINES[0].name, exact: true }).waitFor({ timeout: 30_000 })
   await shot('sidebar')

@@ -1390,16 +1390,16 @@ describe('SidebarTabs', () => {
   it('switches the list, marks what waits on the viewer from another tab, and offers Site only where sites run', () => {
     const asking = [entry({ asking: true })]
     renderWithClient(<SidebarTabs workspaces={asking} />, testQueryClient(undefined, serverSnapshot()))
-    expect(screen.getByRole('button', { name: 'Workspace' }).getAttribute('aria-pressed')).toBe('true')
-    fireEvent.click(screen.getByRole('button', { name: 'Site' }))
+    expect(screen.getByRole('button', { name: 'Workspaces' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'Sites' }))
     expect(useUiStore.getState().sidebarTab).toBe('site')
-    expect(screen.getByRole('button', { name: 'Workspace, 1 waiting for you' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Workspaces, 1 waiting for you' })).toBeTruthy()
 
     // Containerless runs no sites, so a saved Site tab shows Workspace.
     cleanup()
     renderWithClient(<SidebarTabs workspaces={asking} />, testQueryClient(undefined, serverSnapshot({ driver: 'containerless' })))
-    expect(screen.queryByRole('button', { name: 'Site' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'Workspace' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.queryByRole('button', { name: 'Sites' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Workspaces' }).getAttribute('aria-pressed')).toBe('true')
   })
 })
 

@@ -62,7 +62,7 @@ try {
   await page.screenshot({ path: `${SHOTS}/ux-workflow-tab.png` })
   await page.getByRole('button', { name: 'Run now', exact: true }).click()
 
-  await page.getByRole('group', { name: 'Sidebar list' }).getByRole('button', { name: 'Workflow' }).click()
+  await page.getByRole('group', { name: 'Sidebar list' }).getByRole('button', { name: 'Workflows' }).click()
   const section = page.locator('aside')
   await section.getByText(NAME, { exact: true }).first().waitFor()
   check('sidebar: Workflow tab lists it', true)
