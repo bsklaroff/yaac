@@ -21,8 +21,7 @@ import { CYCLE_IDS, matchShortcut } from '#lib/shortcuts'
 import { createWebglController, type WebglController } from '#lib/webgl-renderer'
 import { createOutputBatcher } from '@yaac/shared/batcher'
 import type { WorkspaceFiles } from '@yaac/shared/types'
-import { resolveEffectiveTheme } from '#lib/theme'
-import { terminalTheme } from '#lib/terminalTheme'
+import { terminalTheme, useTerminalTheme } from '#lib/terminalTheme'
 import { usePaneCwd } from '#lib/checkouts'
 import { useUiStore } from '#lib/store'
 import { focusRaisesKeyboard } from '#lib/viewport'
@@ -79,7 +78,6 @@ export function WorkspaceTerminal({
   visibleRef.current = visible
   const linkCwdRef = useRef('')
   linkCwdRef.current = usePaneCwd(workspaceId, cwd)
-  const themePref = useUiStore((s) => s.themePref)
   // Hidden until the first attach settles (see #lib/attach-settle). Uses
   // opacity rather than display so FitAddon can still measure.
   const [settled, setSettled] = useState(false)
@@ -101,7 +99,7 @@ export function WorkspaceTerminal({
       // Alt+click goes to the app (see patchForcedSelection); don't also
       // send arrow keys for it.
       altClickMovesCursor: false,
-      theme: terminalTheme(resolveEffectiveTheme()),
+      theme: terminalTheme(),
     })
 
     // Copy/paste with the platform's bindings (see clipboardKeyAction).
@@ -390,17 +388,7 @@ export function WorkspaceTerminal({
     termRef.current?.focus()
   }, [focusKey])
 
-  // Follow theme changes: themePref for the user's choice, matchMedia for
-  // the OS switching while on 'system'.
-  useEffect(() => {
-    const apply = (): void => {
-      if (termRef.current) termRef.current.options.theme = terminalTheme(resolveEffectiveTheme())
-    }
-    apply()
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    mq.addEventListener('change', apply)
-    return () => mq.removeEventListener('change', apply)
-  }, [themePref])
+  useTerminalTheme(termRef)
 
   return (
     <div className="relative h-full w-full">

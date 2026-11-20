@@ -2,8 +2,7 @@ import { useEffect, useRef, useState, type JSX } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { resolveEffectiveTheme } from '#lib/theme'
-import { terminalTheme } from '#lib/terminalTheme'
+import { terminalTheme, useTerminalTheme } from '#lib/terminalTheme'
 
 /** How often a followed log is asked for what was added. */
 const FOLLOW_MS = 1_000
@@ -23,6 +22,7 @@ export function StepLog({ workspaceId, life, file, follow }: {
   follow: boolean
 }): JSX.Element {
   const containerRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<XTerm | null>(null)
   const readRef = useRef<(() => Promise<void>) | null>(null)
   const [empty, setEmpty] = useState(false)
 
@@ -35,10 +35,11 @@ export function StepLog({ workspaceId, life, file, follow }: {
       disableStdin: true,
       cursorBlink: false,
       scrollback: 50_000,
-      theme: terminalTheme(resolveEffectiveTheme()),
+      theme: terminalTheme(),
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
+    termRef.current = term
     term.open(el)
     fit.fit()
     let raf = 0
@@ -84,11 +85,14 @@ export function StepLog({ workspaceId, life, file, follow }: {
     return () => {
       done = true
       readRef.current = null
+      termRef.current = null
       cancelAnimationFrame(raf)
       ro.disconnect()
       term.dispose()
     }
   }, [workspaceId, life, file])
+
+  useTerminalTheme(termRef)
 
   // One last read when following stops, for what came in since the last.
   useEffect(() => {

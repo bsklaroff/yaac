@@ -1,4 +1,7 @@
-import type { ITheme } from '@xterm/xterm'
+import { useEffect, type RefObject } from 'react'
+import type { ITheme, Terminal } from '@xterm/xterm'
+import { useUiStore } from '#lib/store'
+import { resolveEffectiveTheme } from '#lib/theme'
 
 /**
  * xterm palettes per app theme. Background and foreground match
@@ -37,6 +40,24 @@ const LIGHT: ITheme = {
 }
 
 /** The xterm theme for the effective app theme. */
-export function terminalTheme(effective: 'light' | 'dark'): ITheme {
-  return effective === 'light' ? LIGHT : DARK
+export function terminalTheme(): ITheme {
+  return resolveEffectiveTheme() === 'light' ? LIGHT : DARK
+}
+
+/**
+ * Keep a terminal's palette on the app theme: themePref for the user's
+ * choice, matchMedia for the OS switching while on 'system'. Call it after
+ * the effect that creates the terminal, so the first apply finds it.
+ */
+export function useTerminalTheme(termRef: RefObject<Terminal | null>): void {
+  const themePref = useUiStore((s) => s.themePref)
+  useEffect(() => {
+    const apply = (): void => {
+      if (termRef.current) termRef.current.options.theme = terminalTheme()
+    }
+    apply()
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
+  }, [termRef, themePref])
 }
