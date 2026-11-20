@@ -72,6 +72,20 @@ const HOP_BY_HOP = new Set([
 const RESPONSE_HOP_BY_HOP = new Set([...HOP_BY_HOP, 'transfer-encoding'])
 
 /**
+ * Whether a client's header claims an identity, address or scheme that
+ * nothing in front of tailgate vouches for: every `Tailscale-*` and
+ * `X-Forwarded-*` header, which tailgate sets itself, and every `CF-*`
+ * header, which an app written for the public edge would otherwise believe
+ * from a tailnet caller. For a site request the router drops the rest of
+ * that kind by name, and every header whose name has an underscore
+ * (docs/public-sites.md "Headers an app may trust"). A server-name request
+ * skips the router, and the server reads only the headers stamped here.
+ */
+function unvouched(name: string): boolean {
+  return name.startsWith('tailscale-') || name.startsWith('x-forwarded-') || name.startsWith('cf-')
+}
+
+/**
  * A header value as Tailscale's own proxies send one: plain when it is
  * printable ASCII, else RFC 2047 Q-encoded UTF-8, since header values are
  * Latin-1 on the wire.
@@ -87,8 +101,8 @@ export function encodeHeaderValue(value: string): string {
 
 /**
  * The headers forwarded upstream: the client's, minus hop-by-hop ones
- * (bar `keepHop`, for an upgrade) and every `Tailscale-*` and forwarding
- * header it sent, plus the caller's login and address. tailgate is the
+ * (bar `keepHop`, for an upgrade) and the unvouched ones, plus the caller's
+ * login and address. tailgate is the
  * upstream's one trusted hop, so the `X-Forwarded-For` it sets is the client
  * address.
  */
@@ -101,7 +115,7 @@ function stampedHeaders(
   const out: Array<[string, string]> = []
   for (let i = 0; i < raw.length; i += 2) {
     const name = raw[i].toLowerCase()
-    if (name.startsWith('tailscale-') || name.startsWith('x-forwarded-')) continue
+    if (unvouched(name)) continue
     if (!keepHop && HOP_BY_HOP.has(name)) continue
     out.push([raw[i], raw[i + 1]])
   }

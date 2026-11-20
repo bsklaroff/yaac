@@ -123,8 +123,9 @@ its cache (kind and `infra/hetzner-k3s`; docs/cluster-setup.md "Uncached
 cluster DNS"), the router sees a flip within about a second. An unknown
 `Host` gets a 404 and a site with no live release a 503. WebSocket upgrades
 are on and the route timeout is off.
-Envoy appends to `X-Forwarded-For`, trusting the tunnel in front (cloudflared
-or tailgate) as one hop.
+Envoy trusts the tunnel in front (cloudflared or tailgate) as one hop, and
+hands the app the client address that hop vouches for (see "Headers an app
+may trust").
 
 The kubelet can take up to about a minute to deliver a ConfigMap change,
 so a newly published site routes within a minute. Only publishing,
@@ -199,8 +200,8 @@ tailnet address. Neither container has privilege:
   the new certificate matches its key, and asks tailscaled's local API who
   holds the caller's address. A caller with no user (a tagged device, or an
   address the tailnet does not know) gets a 403. Otherwise it drops every
-  `Tailscale-*` and `X-Forwarded-*` header the client sent (app
-  capabilities included), sets
+  `Tailscale-*`, `X-Forwarded-*` and `CF-*` header the client sent (app
+  capabilities included; see "Headers an app may trust"), sets
   `Tailscale-User-Login`, `Tailscale-User-Name` (Q-encoded when not
   ASCII, as Tailscale's own proxies do), `X-Forwarded-For` and
   `X-Forwarded-Proto: https`, and forwards the request, its body still
@@ -224,12 +225,7 @@ cannot reach. Without it tailgate is not ready, and install, `GET
 
 **The router's tailnet listener** answers 403 to a request without
 `Tailscale-User-Login` (an RBAC filter), so an app sees only requests with
-a login, whatever sent them. The public listener drops the
-`Tailscale-User-Login`, `-Name`, `-Profile-Pic`, `Tailscale-App-Capabilities`
-and `Tailscale-Headers-Info` request headers (Envoy removes headers only by
-name), so an app written for the tailnet edge and published on the public
-one by mistake sees no identity or capability rather than one the internet
-chose.
+a login, whatever sent them.
 
 **Who may reach a site.** Every tailnet site is behind one device, so the
 tailnet's ACLs decide who reaches the tunnel, not which site: a grant to its
@@ -258,6 +254,76 @@ site are refused.
 
 No Tailscale operator is involved, so this works whichever way the server
 itself is fronted.
+
+## Headers an app may trust
+
+An app behind an edge that ends TLS has to trust some request headers, and
+it trusts them whoever wrote them. yaac vouches for these and no others:
+
+| Edge | Headers an app may trust | Set by |
+|---|---|---|
+| Both | `X-Forwarded-For`, `X-Forwarded-Proto` | the edge and the router |
+| Public | `CF-Connecting-IP` | Cloudflare |
+| Tailnet | `Tailscale-User-Login`, `Tailscale-User-Name` | tailgate, or the egress proxy for an agent |
+
+Each edge drops the headers that make the same kind of claim and that
+nothing in front of it sets. Otherwise an app that rebuilds its own URL
+from `X-Forwarded-Host` (an OIDC issuer choosing between its sign-in pages
+and its admin console, say) would take whatever the internet sent.
+
+**`X-Forwarded-For`** holds exactly one address, the client's: the router
+replaces it with the address its one trusted hop vouches for, which is the
+entry Cloudflare appended on the public edge and the caller tailgate
+stamped on the tailnet one. Cloudflare appends to whatever the client sent,
+so without this an app reading the header's leftmost entry (Koa and Express
+with proxy trust on, and most hand-written code) would take a forged one.
+
+**Both router listeners** drop every header whose name has an underscore,
+since servers that map headers into a CGI-style environment (Rack, uWSGI,
+older gunicorn) read `X_Forwarded_Host` as `X-Forwarded-Host`. Envoy
+removes request headers only by name, so both route tables also name the
+ones in use (`UNVOUCHED_HEADERS` in `cluster/site-edge.ts`):
+
+- `X-Real-IP`, `True-Client-IP`, `X-Client-IP`, `Client-IP`,
+  `X-Cluster-Client-IP`, `Fastly-Client-IP`, `X-ProxyUser-Ip`,
+  `X-Forwarded`, `Forwarded-For` and `Forwarded`, which frameworks read
+  for the client's address, some of them before `X-Forwarded-For`;
+- `X-Forwarded-Host`, `-Port`, `-Prefix`, `-Server`, `-Uri`, `-Path` and
+  `-Method`, `X-Original-URL`, `X-Rewrite-URL`, `X-Original-Host` and
+  `X-Host`, which frameworks and forward-auth backends read to rebuild the
+  request a client made;
+- `X-Forwarded-Scheme`, `-Ssl` and `-Protocol`, `X-Url-Scheme` and
+  `Front-End-Https`, which some read for its scheme;
+- `X-Forwarded-User`, `-Email`, `-Groups`, `-Preferred-Username` and
+  `-Access-Token`, which an auth proxy sets and the app behind it trusts.
+
+The public table also drops the identity and capability headers
+Tailscale's own proxies set, so an app written for the tailnet edge and
+published on the public one by mistake sees no identity rather than one
+the internet chose. A Cloudflare zone that turns on `True-Client-IP` loses
+it; `CF-Connecting-IP` carries the same address.
+
+**The tailnet edge.** tailgate and the egress proxy's site route drop every
+`Tailscale-*`, `X-Forwarded-*` and `CF-*` header a caller sent before
+stamping their own, and every site request they forward crosses the
+router's tailnet listener, which drops the rest. (tailgate's requests for
+the install's server name go straight to the yaac server, which reads only
+the headers tailgate stamps.) A `CF-*` header means something only on the
+public edge, so an app written for that edge and published on the tailnet
+would otherwise believe a client address, or a Cloudflare Access user,
+that a tailnet caller chose. An agent's request, which the egress proxy
+forwards, sets neither forwarding header, so it reaches the app with the
+proxy's address in `X-Forwarded-For` and `X-Forwarded-Proto: http`.
+
+`Host` is unchanged on both edges and still names the site.
+
+**What the lists leave out.** Every auth proxy has identity headers of its
+own (`X-Remote-User`, `Remote-User`, `X-Auth-Request-Email` and many more),
+and no list names them all. An app that takes a user from one must have it
+set by a proxy inside its own release, which drops the client's copy. On
+the public edge, Cloudflare does not promise to strip a visitor's other
+`CF-*` headers: `Cf-Access-Authenticated-User-Email` means something only
+to an app that validates the `Cf-Access-Jwt-Assertion` token beside it.
 
 ## Network policy
 

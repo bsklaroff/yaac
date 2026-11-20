@@ -361,7 +361,7 @@ describe('dispatchToUpstream and forwardPlainHttp', () => {
     get.write([
       'GET /board HTTP/1.1', `Host: ${SITE}`, 'Tailscale-User-Login: mallory@example.com',
       'tailscale-user-profile-pic: https://evil', 'Tailscale-App-Capabilities: {"example.com/cap/admin":[{}]}',
-      'X-Forwarded-For: 203.0.113.9', 'Connection: close', '', '',
+      'X-Forwarded-For: 203.0.113.9', 'CF-Connecting-IP: 203.0.113.9', 'Connection: close', '', '',
     ].join('\r\n'))
     const reply = await read(get, () => false)
     expect(reply).toMatch(/^HTTP\/1\.1 200/)
@@ -369,9 +369,9 @@ describe('dispatchToUpstream and forwardPlainHttp', () => {
     expect(routerSaw.at(-1)?.headers).toMatchObject({
       host: SITE, 'tailscale-user-login': 'alice@example.com', 'tailscale-user-name': '=?utf-8?q?Alice_=C3=9Cnal?=',
     })
-    expect(routerSaw.at(-1)?.headers).not.toHaveProperty('tailscale-user-profile-pic')
-    expect(routerSaw.at(-1)?.headers).not.toHaveProperty('tailscale-app-capabilities')
-    expect(routerSaw.at(-1)?.headers).not.toHaveProperty('x-forwarded-for')
+    for (const forged of ['tailscale-user-profile-pic', 'tailscale-app-capabilities', 'x-forwarded-for', 'cf-connecting-ip']) {
+      expect(routerSaw.at(-1)?.headers).not.toHaveProperty(forged)
+    }
 
     // A WebSocket upgrade reaches the router stamped too, and the sockets join.
     const ws = await open()

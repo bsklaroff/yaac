@@ -459,10 +459,12 @@ For a name under the domain the proxy (`k8s/proxy/dispatch.ts`):
    plain HTTP to the router's 8081 with `Host` unchanged. The destination
    is the server's choice, so the non-public guard does not apply, as for
    the mama relay. It never takes a direct dial.
-3. drops every `Tailscale-*` and `X-Forwarded-*` header the workspace
-   sent, then sets `Tailscale-User-Login` and `Tailscale-User-Name` from the
-   registration's `identity`. It does this after every injection, so a
-   project secret's rule naming one of these headers cannot override it.
+3. drops every `Tailscale-*`, `X-Forwarded-*` and `CF-*` header the
+   workspace sent, then sets `Tailscale-User-Login` and
+   `Tailscale-User-Name` from the registration's `identity`. It does this
+   after every injection, so a project secret's rule naming one of these
+   headers cannot override it. The router drops the other headers of that
+   kind (docs/public-sites.md "Headers an app may trust").
 
 A workspace with no identity (a release, or a workspace whose owner has no
 tailnet login) gets a 403 from the proxy, which dials nothing. A plain-HTTP

@@ -185,16 +185,51 @@ function httpFilter(name: string, type: string, config: Record<string, unknown> 
 }
 
 /**
+ * The request headers both route tables drop: ones that claim a client's
+ * address, URL or scheme, or an identity an auth proxy would vouch for,
+ * which neither edge sets, so an app never believes one a caller chose
+ * (docs/public-sites.md "Headers an app may trust"). Envoy 1.34 removes
+ * request headers only by name, so this names the ones frameworks and auth
+ * backends read. tailgate and the egress proxy also drop every
+ * `X-Forwarded-*`, `Tailscale-*` and `CF-*` name by prefix.
+ */
+const UNVOUCHED_HEADERS = [
+  // A client's address.
+  'x-real-ip', 'true-client-ip', 'x-client-ip', 'client-ip', 'x-cluster-client-ip',
+  'fastly-client-ip', 'x-proxyuser-ip', 'x-forwarded', 'forwarded-for', 'forwarded',
+  // The URL it asked for.
+  'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-prefix', 'x-forwarded-server',
+  'x-forwarded-uri', 'x-forwarded-path', 'x-forwarded-method', 'x-original-url',
+  'x-rewrite-url', 'x-original-host', 'x-host',
+  // Its scheme.
+  'x-forwarded-scheme', 'x-forwarded-ssl', 'x-forwarded-protocol', 'x-url-scheme', 'front-end-https',
+  // Who an auth proxy says it is.
+  'x-forwarded-user', 'x-forwarded-email', 'x-forwarded-groups',
+  'x-forwarded-preferred-username', 'x-forwarded-access-token',
+]
+
+/**
  * The headers Tailscale's own proxies set, which the public route table
- * drops from every request, so an app written for the tailnet edge and
- * published on the public one by mistake sees no identity or app
- * capability rather than one the internet chose. Envoy 1.34 removes
- * request headers only by name.
+ * also drops, so an app written for the tailnet edge and published on the
+ * public one by mistake sees no identity or app capability rather than one
+ * the internet chose.
  */
 const TAILNET_IDENTITY_HEADERS = [
   'tailscale-user-login', 'tailscale-user-name', 'tailscale-user-profile-pic',
   'tailscale-app-capabilities', 'tailscale-headers-info',
 ]
+
+/**
+ * Both route tables replace `X-Forwarded-For` with the one address the
+ * trusted hop vouches for. With one trusted hop that is Envoy's downstream
+ * address: the entry Cloudflare appended, or the caller tailgate stamped.
+ * Left alone, the header would still begin with whatever the client sent,
+ * which frameworks that read its leftmost entry take as the client.
+ */
+const CLIENT_ADDRESS = {
+  header: { key: 'x-forwarded-for', value: '%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%' },
+  append_action: 'OVERWRITE_IF_EXISTS_OR_ADD',
+}
 
 /**
  * The tailnet listener answers 403 to a request without a tailnet login,
@@ -231,6 +266,7 @@ function routerListener(
           rds: { route_config_name: table.name, config_source: routesFileSource(table.file) },
           use_remote_address: true,
           xff_num_trusted_hops: 1,
+          common_http_protocol_options: { headers_with_underscores_action: 'DROP_HEADER' },
           stream_idle_timeout: `${String(SITE_IDLE_TIMEOUT_SECONDS)}s`,
           upgrade_configs: [{ upgrade_type: 'websocket' }],
           http_filters: [...filters, httpFilter('envoy.filters.http.router', 'envoy.extensions.filters.http.router.v3.Router')],
@@ -251,11 +287,14 @@ function routerListener(
  * connections with it.
  *
  * Each listener has one trusted hop in front, cloudflared or tailgate:
- * with `use_remote_address` and one trusted hop, Envoy appends that hop's
- * address to the client's `X-Forwarded-For`, takes the client address from
- * the entry the hop added, keeps its `X-Forwarded-Proto: https`, and
- * strips `x-envoy-*` request headers from what is then an external
- * request.
+ * with `use_remote_address` and one trusted hop, Envoy takes the client
+ * address from the `X-Forwarded-For` entry the hop added (which the route
+ * tables then make the header's only entry), keeps the hop's
+ * `X-Forwarded-Proto: https`, and strips `x-envoy-*` request headers from
+ * what is then an external request. A header whose name has an underscore
+ * is dropped: servers that map headers into a CGI-style environment read
+ * `X_Forwarded_Host` as `X-Forwarded-Host`, so it would slip past every
+ * name the tables drop.
  *
  * The route timeout is off, since Envoy's 15 s default would cut long
  * responses and SSE. A stream idle for an hour is closed.
@@ -302,7 +341,8 @@ function buildSiteRoutes(sites: SiteRoute[]): Record<string, string> {
     resources: [{
       '@type': 'type.googleapis.com/envoy.config.route.v3.RouteConfiguration',
       name: ROUTE_TABLES[edge].name,
-      ...(edge === 'public' ? { request_headers_to_remove: TAILNET_IDENTITY_HEADERS } : {}),
+      request_headers_to_remove: edge === 'public' ? [...TAILNET_IDENTITY_HEADERS, ...UNVOUCHED_HEADERS] : UNVOUCHED_HEADERS,
+      request_headers_to_add: [CLIENT_ADDRESS],
       virtual_hosts: [
         ...sorted.filter((site) => site.edge === edge).map((site) => ({
           name: siteServiceName(site.siteId),

@@ -168,15 +168,17 @@ export function encodeHeaderValue(value: string): string {
 }
 
 /**
- * A tailnet site request's identity: every `Tailscale-*` and
- * `X-Forwarded-*` header the workspace sent or a rule injected is dropped,
- * app capabilities included, then the owner's login and name are set, so
- * neither can choose who the site sees or what it may do.
+ * A tailnet site request's identity: every `Tailscale-*`, `X-Forwarded-*`
+ * and `CF-*` header the workspace sent or a rule injected is dropped, app
+ * capabilities included, then the owner's login and name are set, so
+ * neither can choose who the site sees or what it may do. The router drops
+ * the rest of that kind by name (docs/public-sites.md "Headers an app may
+ * trust").
  */
 function stampIdentity(headers: http.OutgoingHttpHeaders, identity: EgressIdentity): void {
   for (const name of Object.keys(headers)) {
     const lower = name.toLowerCase()
-    if (lower.startsWith('tailscale-') || lower.startsWith('x-forwarded-')) delete headers[name]
+    if (lower.startsWith('tailscale-') || lower.startsWith('x-forwarded-') || lower.startsWith('cf-')) delete headers[name]
   }
   headers['tailscale-user-login'] = encodeHeaderValue(identity.login)
   headers['tailscale-user-name'] = encodeHeaderValue(identity.name)
