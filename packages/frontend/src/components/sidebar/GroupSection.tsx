@@ -12,7 +12,7 @@ import { ObjectRow, type ObjectRowProps } from '#components/sidebar/ObjectRow'
 import { QueuedSet } from '#components/sidebar/QueuedRows'
 import { roomKey } from '#lib/queued'
 import { StoppedRows } from '#components/sidebar/StoppedRows'
-import { isTerminating, ProvisioningRow, StoppedWorkspaceRow, WorkspaceRow, type SidebarDrag } from '#components/sidebar/WorkspaceRows'
+import { isTerminating, ProvisioningRow, StoppedWorkspaceRow, WorkspaceRow } from '#components/sidebar/WorkspaceRows'
 import { groupDisplay, type SidebarGroupSection } from '#components/WorkspaceList'
 // The server refuses longer group names, so the name fields stop here.
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
@@ -39,9 +39,7 @@ import { YButton, YConfirm, YDialog, YDialogClose, YDialogDescription, YDialogTi
  */
 export function GroupSection({
   section,
-  shownGroups,
-  drag,
-  rowIds,
+  dragId,
   dropTarget,
   zoneRef,
   elsewhere,
@@ -50,11 +48,8 @@ export function GroupSection({
   object,
 }: {
   section: SidebarGroupSection
-  /** The groups on screen, offered by a member row's group dialog. */
-  shownGroups: WorkspaceGroupSummary[]
-  drag: SidebarDrag
-  /** The whole sidebar's selectable rows, for a member's stop. */
-  rowIds: string[]
+  /** The workspace being dragged right now, if any. */
+  dragId: string | null
   /** A drop here would move the dragged workspace into this group. */
   dropTarget: boolean
   zoneRef: (el: HTMLDivElement | null) => void
@@ -212,7 +207,7 @@ export function GroupSection({
           ))}
           {members.map((s) => (
             <Fragment key={s.workspaceId}>
-              <WorkspaceRow workspace={s} shownGroups={shownGroups} drag={drag} rowIds={rowIds} />
+              <WorkspaceRow workspace={s} dragging={dragId === s.workspaceId} />
               <QueuedSet parentId={s.workspaceId} />
             </Fragment>
           ))}

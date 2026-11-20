@@ -1,4 +1,4 @@
-import { useRef, type JSX } from 'react'
+import { memo, useRef, type JSX } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { QueuedIcon } from '#lib/icons'
 import { agentLabel } from '#lib/agentLabel'
@@ -18,9 +18,11 @@ import { YButton, YConfirm } from '#ui'
  * they start when that parent stops.
  *
  * The confirm button takes initial focus, so Alt+D then Enter stops
- * (YConfirm).
+ * (YConfirm). Confirming closes the dialog and hands `onConfirm` the
+ * workspace, so a sidebar row can pass a callback that never changes and
+ * its closed dialog skips the row's renders.
  */
-export function StopWorkspaceDialog({
+export const StopWorkspaceDialog = memo(function StopWorkspaceDialog({
   workspace,
   onOpenChange,
   onConfirm,
@@ -28,7 +30,7 @@ export function StopWorkspaceDialog({
   /** The workspace to stop; null keeps the dialog closed. */
   workspace: WorkspaceListEntry | null
   onOpenChange: (open: boolean) => void
-  onConfirm: () => void
+  onConfirm: (workspace: WorkspaceListEntry) => void
 }): JSX.Element {
   const queued = useSnapshotSelect((s) => s?.queuedWorkspaces)
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
@@ -84,7 +86,10 @@ export function StopWorkspaceDialog({
         + 'be restarted, but files its .gitignore matches (such as .env files and local databases) are '
         + 'deleted, except the paths kept under Settings → Project → Storage.'}
       confirmLabel={direct.length > 0 ? `Stop and start ${direct.length} queued` : 'Stop'}
-      onConfirm={onConfirm}
+      onConfirm={() => {
+        if (shown) onConfirm(shown)
+        onOpenChange(false)
+      }}
     >
       {direct.length > 0 && (
         <div className="mt-3">
@@ -95,4 +100,4 @@ export function StopWorkspaceDialog({
       {discard.error && <p className="mt-2 text-md text-danger">Discard failed: {discard.error.message}</p>}
     </YConfirm>
   )
-}
+})

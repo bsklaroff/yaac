@@ -52,7 +52,7 @@ export function DetailsPane({ workspace, project, gitAuthFailures, interactive }
           <StopWorkspaceDialog
             workspace={confirmStop ? workspace : null}
             onOpenChange={setConfirmStop}
-            onConfirm={() => { stopWorkspaceOptimistic(workspace, []); setConfirmStop(false) }}
+            onConfirm={(w) => stopWorkspaceOptimistic(w, [])}
           />
         </>
       )}

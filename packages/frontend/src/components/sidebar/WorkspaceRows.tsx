@@ -1,4 +1,7 @@
 import {
+  createContext,
+  memo,
+  useContext,
   useRef,
   useState,
   type JSX,
@@ -16,7 +19,7 @@ import { SidebarRow } from '#components/sidebar/SidebarRow'
 import { agentLabel, workspaceAgentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { dismissProvisioning } from '#lib/createWorkspace'
-import { stopProvisioning, stopWorkspaceOptimistic } from '#lib/stopWorkspaceFlow'
+import { stopProvisioning } from '#lib/stopWorkspaceFlow'
 import { useUiStore, isSessionUnread, isUnreadWaiting, isUnseenDeath } from '#lib/store'
 import { sessionTarget } from '#lib/panes'
 import { isLocked } from '#lib/steps'
@@ -47,14 +50,28 @@ export function isTerminating(
   return Boolean(workspace.stopping) || pendingDeleteIds.includes(workspace.workspaceId)
 }
 
-/** Drag support the list passes down to its rows. */
-export interface SidebarDrag {
+/**
+ * What a workspace row asks of the list it sits in. The list provides one
+ * value that never changes, so a memoized row skips every snapshot frame
+ * its own entry held still in; each call reads the list's latest render.
+ */
+export interface RowActions {
   /** A row's pointerdown; a press that never becomes a drag calls
    *  `onSelect` (see usePressDrag). */
-  start: (e: ReactPointerEvent, workspace: WorkspaceListEntry, onSelect: () => void) => void
-  /** The row being dragged right now, if any. */
-  activeId: string | null
+  startDrag: (e: ReactPointerEvent, workspace: WorkspaceListEntry, onSelect: () => void) => void
+  /** Stop a workspace, selecting the next row if it was open. */
+  stop: (workspace: WorkspaceListEntry) => void
 }
+
+export const RowActionsContext = createContext<RowActions>({
+  startDrag: () => {},
+  stop: () => {},
+})
+
+/** The groups on screen, the same targets a drag has. Only an open group
+ *  dialog's list reads it, so it can change with every render of the list
+ *  without reaching a closed row. */
+export const ShownGroupsContext = createContext<WorkspaceGroupSummary[]>([])
 
 /** Row for a workspace still provisioning. Clicking it shows the progress in
  *  the main pane. Its × stops it, or once failed, dismisses it. */
@@ -134,21 +151,21 @@ function onControl(e: ReactPointerEvent): boolean {
   return hit !== null && hit.parentElement !== e.currentTarget
 }
 
-export function WorkspaceRow({
+/** A live workspace's row. It is memoized and reads only its own slice of
+ *  the store, so a frame or a selection change renders just the rows it
+ *  touches. */
+export const WorkspaceRow = memo(function WorkspaceRow({
   workspace,
-  shownGroups,
-  drag,
-  rowIds,
+  dragging,
 }: {
   workspace: WorkspaceListEntry
-  shownGroups: WorkspaceGroupSummary[]
-  drag: SidebarDrag
-  /** The sidebar's selectable rows, so stopping this one selects the next. */
-  rowIds: string[]
+  /** This row is being dragged right now. */
+  dragging: boolean
 }): JSX.Element {
-  const selectedWorkspaceId = useUiStore((s) => s.selectedWorkspaceId)
+  const { startDrag, stop } = useContext(RowActionsContext)
+  const selected = useUiStore((s) => s.selectedWorkspaceId === workspace.workspaceId)
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
-  const pendingDeleteIds = useUiStore((s) => s.pendingDeleteIds)
+  const stopping = useUiStore((s) => isTerminating(workspace, s.pendingDeleteIds))
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [grouping, setGrouping] = useState(false)
@@ -167,13 +184,7 @@ export function WorkspaceRow({
   const me = useWhoami()?.userId
   const unread = isUnreadWaiting(workspace, me)
   const teammate = useTeammateName()
-  const stopping = isTerminating(workspace, pendingDeleteIds)
   const now = useNow()
-
-  const onConfirmDelete = (): void => {
-    setConfirmDelete(false)
-    stopWorkspaceOptimistic(workspace, rowIds)
-  }
 
   const title = workspace.title || workspace.prompt || 'New workspace'
 
@@ -239,16 +250,16 @@ export function WorkspaceRow({
         <SidebarRow
           label={title}
           onSelect={select}
-          selected={selectedWorkspaceId === workspace.workspaceId}
+          selected={selected}
           rowProps={{
             // A mouse press may become a drag; if not, the list calls the
             // select callback. Touch uses the row's click.
-            onPointerDown: (e) => { if (!onControl(e)) drag.start(e, workspace, select) },
+            onPointerDown: (e) => { if (!onControl(e)) startDrag(e, workspace, select) },
             onMouseEnter: () => setHovered(true),
             onMouseLeave: () => setHovered(false),
           }}
           className={clsx('cursor-grab active:cursor-grabbing max-md:cursor-pointer',
-            drag.activeId === workspace.workspaceId && 'opacity-60')}
+            dragging && 'opacity-60')}
           mark={(
             <StatusMark
               status={workspace.status}
@@ -286,17 +297,18 @@ export function WorkspaceRow({
       <GroupDialog
         open={grouping}
         onOpenChange={setGrouping}
-        workspace={workspace}
-        shownGroups={shownGroups}
+        projectId={workspace.projectId}
+        workspaceId={workspace.workspaceId}
+        groupId={workspace.groupId}
       />
       <StopWorkspaceDialog
         workspace={confirmDelete ? workspace : null}
         onOpenChange={setConfirmDelete}
-        onConfirm={onConfirmDelete}
+        onConfirm={stop}
       />
     </div>
   )
-}
+})
 
 /**
  * One of a workspace's sessions, listed under its row when it has several:
@@ -340,25 +352,27 @@ function SessionRow({ workspace, session }: { workspace: WorkspaceListEntry; ses
 /**
  * Dialog to create a group or move a workspace into an existing one. This
  * is how touch and keyboard users group workspaces; mouse users can drag.
+ * It takes the ids it needs rather than the entry, so a closed dialog skips
+ * its row's renders.
  */
-function GroupDialog({
+const GroupDialog = memo(function GroupDialog({
   open,
   onOpenChange,
-  workspace,
-  shownGroups,
+  projectId,
+  workspaceId,
+  groupId,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
-  workspace: WorkspaceListEntry
-  /** The groups on screen, the same targets a drag has. */
-  shownGroups: WorkspaceGroupSummary[]
+  projectId: string
+  workspaceId: string
+  groupId: string | undefined
 }): JSX.Element {
   const move = useMutation({
     mutationFn: (op: () => Promise<unknown>) => op(),
     onSuccess: () => onOpenChange(false),
   })
   const busy = move.isPending
-  const { projectId, workspaceId } = workspace
 
   const create = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()
@@ -369,8 +383,6 @@ function GroupDialog({
   const moveTo = (groupId: string | null): void => {
     move.mutate(() => api.workspace.group.move.$post({ json: { projectId, workspaceId, group: groupId } }))
   }
-
-  const others = shownGroups.filter((g) => g.groupId !== workspace.groupId)
 
   return (
     <YDialog
@@ -393,36 +405,49 @@ function GroupDialog({
         </div>
       </form>
 
-      {(others.length > 0 || workspace.groupId !== undefined) && (
-        <div className="mt-4 border-t border-line-strong pt-3">
-          <p className="text-sm uppercase tracking-wide text-subtle">Or move it to</p>
-          <div className="mt-2 flex flex-col">
-            {others.map((g) => (
-              <YButton
-                variant="bare"
-                key={g.groupId}
-                disabled={busy}
-                onClick={() => moveTo(g.groupId)}
-                className="flex items-center gap-2 px-2 py-1.5 text-left text-md text-muted transition hover:bg-hover hover:text-text"
-              >
-                <span className="truncate">{g.name}</span>
-              </YButton>
-            ))}
-            {workspace.groupId !== undefined && (
-              <YButton
-                variant="bare"
-                disabled={busy}
-                onClick={() => moveTo(null)}
-                className="flex items-center gap-2 px-2 py-1.5 text-left text-md text-muted transition hover:bg-hover hover:text-text"
-              >
-                <GroupRemoveIcon size={12} className="shrink-0" />
-                <span>Remove from group</span>
-              </YButton>
-            )}
-          </div>
-        </div>
-      )}
+      <MoveTargets groupId={groupId} busy={busy} moveTo={moveTo} />
     </YDialog>
+  )
+})
+
+/** The group dialog's other groups to move to, and leaving the current
+ *  one. It mounts only while the dialog is open, so the on-screen groups
+ *  re-render it alone. */
+function MoveTargets({ groupId, busy, moveTo }: {
+  groupId: string | undefined
+  busy: boolean
+  moveTo: (groupId: string | null) => void
+}): JSX.Element | null {
+  const others = useContext(ShownGroupsContext).filter((g) => g.groupId !== groupId)
+  if (others.length === 0 && groupId === undefined) return null
+  return (
+    <div className="mt-4 border-t border-line-strong pt-3">
+      <p className="text-sm uppercase tracking-wide text-subtle">Or move it to</p>
+      <div className="mt-2 flex flex-col">
+        {others.map((g) => (
+          <YButton
+            variant="bare"
+            key={g.groupId}
+            disabled={busy}
+            onClick={() => moveTo(g.groupId)}
+            className="flex items-center gap-2 px-2 py-1.5 text-left text-md text-muted transition hover:bg-hover hover:text-text"
+          >
+            <span className="truncate">{g.name}</span>
+          </YButton>
+        ))}
+        {groupId !== undefined && (
+          <YButton
+            variant="bare"
+            disabled={busy}
+            onClick={() => moveTo(null)}
+            className="flex items-center gap-2 px-2 py-1.5 text-left text-md text-muted transition hover:bg-hover hover:text-text"
+          >
+            <GroupRemoveIcon size={12} className="shrink-0" />
+            <span>Remove from group</span>
+          </YButton>
+        )}
+      </div>
+    </div>
   )
 }
 
