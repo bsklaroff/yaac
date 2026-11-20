@@ -64,7 +64,8 @@ const stored = (kind: string, name: string): Manifest | undefined =>
 
 interface RouteTable {
   name: string
-  request_headers_to_remove?: string[]
+  request_headers_to_remove: string[]
+  request_headers_to_add: unknown[]
   virtual_hosts: Array<{ domains: string[]; routes: unknown[] }>
 }
 
@@ -139,11 +140,31 @@ describe('syncSiteObjects', () => {
     expect(hosts.map((h) => h.domains)).toEqual([['blog.example.com'], ['shop.example.com'], ['*']])
     expect(routes('rds-tailnet.json').hosts.map((h) => h.domains)).toEqual([['kanban.apps.example.com'], ['*']])
     expect(clusters.map((c) => c.name)).toEqual(['yaac-site-blog', 'yaac-site-kanban', 'yaac-site-shop'])
-    // The public listener drops any identity a client claims.
-    expect(routeTable('rds.json').request_headers_to_remove).toEqual(
-      ['tailscale-user-login', 'tailscale-user-name', 'tailscale-user-profile-pic', 'tailscale-app-capabilities', 'tailscale-headers-info'],
-    )
-    expect(routeTable('rds-tailnet.json').request_headers_to_remove).toBeUndefined()
+    // Both listeners drop any address, URL, scheme or auth-proxy identity a
+    // caller claims, and the public one any tailnet identity too.
+    const unvouched = [
+      'x-real-ip', 'true-client-ip', 'x-client-ip', 'client-ip', 'x-cluster-client-ip',
+      'fastly-client-ip', 'x-proxyuser-ip', 'x-forwarded', 'forwarded-for', 'forwarded',
+      'x-forwarded-host', 'x-forwarded-port', 'x-forwarded-prefix', 'x-forwarded-server',
+      'x-forwarded-uri', 'x-forwarded-path', 'x-forwarded-method', 'x-original-url',
+      'x-rewrite-url', 'x-original-host', 'x-host',
+      'x-forwarded-scheme', 'x-forwarded-ssl', 'x-forwarded-protocol', 'x-url-scheme', 'front-end-https',
+      'x-forwarded-user', 'x-forwarded-email', 'x-forwarded-groups',
+      'x-forwarded-preferred-username', 'x-forwarded-access-token',
+    ]
+    expect(routeTable('rds.json').request_headers_to_remove).toEqual([
+      'tailscale-user-login', 'tailscale-user-name', 'tailscale-user-profile-pic',
+      'tailscale-app-capabilities', 'tailscale-headers-info', ...unvouched,
+    ])
+    expect(routeTable('rds-tailnet.json').request_headers_to_remove).toEqual(unvouched)
+    // X-Forwarded-For carries only the address the trusted hop vouches for,
+    // not whatever the client put ahead of it.
+    for (const table of ['rds.json', 'rds-tailnet.json']) {
+      expect(routeTable(table).request_headers_to_add).toEqual([{
+        header: { key: 'x-forwarded-for', value: '%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%' },
+        append_action: 'OVERWRITE_IF_EXISTS_OR_ADD',
+      }])
+    }
     // No route timeout, which would cut SSE and long responses.
     expect(hosts[0].routes).toEqual([{ match: { prefix: '/' }, route: { cluster: 'yaac-site-blog', timeout: '0s' } }])
     expect(hosts[2].routes).toEqual([{ match: { prefix: '/' }, direct_response: { status: 404 } }])
@@ -238,6 +259,8 @@ describe('ensureSiteEdge', () => {
       rds: { route_config_name: 'sites', config_source: fileSource('rds.json') },
       use_remote_address: true,
       xff_num_trusted_hops: 1,
+      // CGI-style servers would read X_Forwarded_Host as X-Forwarded-Host.
+      common_http_protocol_options: { headers_with_underscores_action: 'DROP_HEADER' },
       upgrade_configs: [{ upgrade_type: 'websocket' }],
     })
     // The tailnet listener answers 403 to a request carrying no login.
@@ -245,6 +268,8 @@ describe('ensureSiteEdge', () => {
       rds: { route_config_name: 'sites-tailnet', config_source: fileSource('rds-tailnet.json') },
       use_remote_address: true,
       xff_num_trusted_hops: 1,
+      // CGI-style servers would read X_Forwarded_Host as X-Forwarded-Host.
+      common_http_protocol_options: { headers_with_underscores_action: 'DROP_HEADER' },
       upgrade_configs: [{ upgrade_type: 'websocket' }],
     })
     expect(JSON.stringify(tailnetHcm.http_filters)).toContain(

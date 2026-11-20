@@ -215,6 +215,7 @@ describe('startTailgate', () => {
       'Tailscale-Headers-Info: https://evil',
       'X-Forwarded-For: 203.0.113.9',
       'X-Forwarded-Host: evil.example',
+      'CF-Connecting-IP: 203.0.113.9',
       'Connection: close',
       '', '',
     ].join('\r\n'))
@@ -227,10 +228,10 @@ describe('startTailgate', () => {
       'x-forwarded-for': ALICE,
       'x-forwarded-proto': 'https',
     })
-    for (const forged of ['tailscale-user-profile-pic', 'tailscale-app-capabilities', 'tailscale-headers-info']) {
+    for (const forged of ['tailscale-user-profile-pic', 'tailscale-app-capabilities', 'tailscale-headers-info',
+      'x-forwarded-host', 'cf-connecting-ip']) {
       expect(seen.headers).not.toHaveProperty(forged)
     }
-    expect(seen.headers).not.toHaveProperty('x-forwarded-host')
     expect(routerHits.at(-1)?.url).toBe('/cart?x=1')
 
     // A tagged device and an address the tailnet does not know reach nothing.

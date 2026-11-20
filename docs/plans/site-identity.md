@@ -7,9 +7,10 @@ and later with Google. The issuer's admin decides, per app, which emails
 and groups may sign in.
 
 The issuer is [Logto](https://github.com/logto-io/logto) (open-source
-edition, MPL-2.0), run unmodified. yaac itself gains no identity code: no
-account tables, no allowlists, no login pages. Its one change is a set of
-headers each edge drops (see "The yaac change").
+edition, MPL-2.0), run unmodified. yaac itself has no identity code: no
+account tables, no allowlists, no login pages. What it relies on from yaac
+is that each edge drops the forwarding and identity headers nothing in
+front of it vouches for (docs/public-sites.md "Headers an app may trust").
 
 It depends on the desktop preview pane (docs/port-forward-tunnel.md "The
 desktop preview pane"), which is how the issuer's admin console is opened
@@ -118,7 +119,9 @@ and the sign-up of that first admin, to any request whose URL has the
 console's origin, on either port. With `TRUST_PROXY_HEADER=1` it builds
 that URL from `X-Forwarded-Host` and `X-Forwarded-Proto`. So the console
 stays off the internet only if no public request can carry a forwarded host
-of its choosing, which the yaac change below ensures.
+of its choosing, which holds because the router's public listener drops
+`X-Forwarded-Host` and `Forwarded` (docs/public-sites.md "Headers an app
+may trust").
 
 ### Mail
 
@@ -204,56 +207,6 @@ The same steps work for an app on a tailnet site. Its users' browsers reach
 the public issuer over the internet, and its backend reaches it through the
 egress proxy.
 
-## The yaac change: each edge drops the headers nothing vouches for
-
-An app behind an edge that ends TLS has to trust some request headers,
-and it trusts them whoever wrote them. yaac vouches for these and no
-others:
-
-| Edge | Headers an app may trust | Set by |
-|---|---|---|
-| Both | `X-Forwarded-For`, `X-Forwarded-Proto` | the edge and the router |
-| Public | `CF-*` (`CF-Connecting-IP` and the rest) | Cloudflare |
-| Tailnet | `Tailscale-User-Login`, `Tailscale-User-Name` | tailgate, or the egress proxy for an agent |
-
-Logto needs `X-Forwarded-Proto` to set its secure cookies, and believes
-`X-Forwarded-Host` too, which selects the admin console (see "The admin
-console"). So each edge drops the headers that carry the same kind of
-claim and that nothing in front of it sets.
-
-**The public listener.** The router's public route table already removes
-the Tailscale identity headers (`TAILNET_IDENTITY_HEADERS` in
-`cluster/site-edge.ts`). Envoy removes request headers only by name, so
-the table gains the names in use:
-
-- `X-Forwarded-Host`, `-Port`, `-Prefix`, `-Server`, `-Scheme` and `-Ssl`,
-  and `Forwarded`, which frameworks read to rebuild the URL a client asked
-  for;
-- `X-Real-IP` and `True-Client-IP`, which frameworks read for the client's
-  address, some of them before `X-Forwarded-For`;
-- `X-Forwarded-User`, `-Email`, `-Groups`, `-Preferred-Username` and
-  `-Access-Token`, which an auth proxy sets and the app behind it trusts.
-
-A Cloudflare zone that turns on `True-Client-IP` loses it; `CF-Connecting-IP`
-carries the same address.
-
-**The tailnet edge.** tailgate and the egress proxy's site route already
-drop every `Tailscale-*` and `X-Forwarded-*` header a caller sent. They
-also drop every `CF-*` header, and `Forwarded`, `X-Real-IP` and
-`True-Client-IP`. A `CF-*` header means something only on the public edge,
-so an app written for that edge and published on the tailnet would
-otherwise believe a client address, or a Cloudflare Access user, that a
-tailnet caller chose.
-
-`Host` is unchanged on both edges and still names the site, so an app
-loses nothing.
-
-**What the lists leave out.** Every auth proxy has identity headers of its
-own (`X-Remote-User`, `Remote-User`, `X-Auth-Request-Email` and many
-more), and no list names them all. An app that takes a user from one must
-have it set by a proxy inside its own release, which drops the client's
-copy. docs/public-sites.md says so beside the table above.
-
 ## Operating the issuer
 
 - **The issuer project is the most sensitive project on the install.**
@@ -288,9 +241,9 @@ Each of these is a short test on a scratch install:
    signing in without leaving the pane, and its calls to the issuer's
    public hostname.
 5. A request to the public hostname with `X-Forwarded-Host: localhost:3002`
-   and `X-Forwarded-Proto: http` gets the sign-in tenant, not the console,
-   once the router drops the header. The same request before the change
-   shows what the change closes.
+   and `X-Forwarded-Proto: http` gets the sign-in tenant, not the console.
+   The same request sent to Logto's 3001 from inside its release, past the
+   router, shows what the router's drop closes.
 6. An HTTP email connector, with its key set in Logto's console, delivers
    through the egress proxy.
 7. fluxer completes a sign-in through the outbound-and-back path with
