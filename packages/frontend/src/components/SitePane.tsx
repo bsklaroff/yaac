@@ -4,7 +4,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { ApprovalDetails } from '#components/ApprovalDetails'
 import { api } from '#lib/api'
 import { MoreIcon, SiteIcon } from '#lib/icons'
-import { relativeAge } from '#lib/time'
+import { durationText, relativeAge } from '#lib/time'
 import { useVolumes } from '#lib/volumes'
 import { useIsAdmin, useReadOnly } from '#lib/viewer'
 import { useSnapshotSelect } from '#lib/useSnapshot'
@@ -14,6 +14,8 @@ import { useUiStore } from '#lib/store'
 import type { RepoPick } from '#lib/newWorkspace'
 import { siteEdgeOf } from '@yaac/shared/site-edge'
 import { formatCommits } from '@yaac/shared/steps'
+import { formatDuration } from '@yaac/shared/schedule'
+import { DEPLOY_TIMEOUT_FORMAT, parseDeployTimeout } from '@yaac/shared/types'
 import type {
   ProjectSummary, SiteCommit, SiteDeployPhase, SiteEdge, SiteEdgeStatus, SiteEntry, SiteSummary, SiteTailnetState,
 } from '@yaac/shared/types'
@@ -469,6 +471,7 @@ function SiteDetail({ site, bar }: { site: SiteSummary; bar: HTMLElement | null 
               </Fact>
               <Fact label="Port"><span className="font-mono">{detail.port}</span></Fact>
               {detail.adminPort !== undefined && <Fact label="Admin port"><span className="font-mono">{detail.adminPort}</span></Fact>}
+              <Fact label="Deploy timeout">{formatDuration(detail.deployTimeoutMinutes)}</Fact>
               <Fact label="Repos">
                 <span className="font-mono">{detail.repos.map((r) => `${r.dir}@${r.branch ?? r.commit?.slice(0, 8) ?? '?'}`).join(' ')}</span>
               </Fact>
@@ -534,6 +537,9 @@ function SiteFields({ project, site, onDone, onCancel }: {
   const [adminPort, setAdminPort] = useState(site?.adminPort !== undefined ? String(site.adminPort) : '')
   const [volume, setVolume] = useState(site?.volume ?? '')
   const [follow, setFollow] = useState(site?.follow ?? false)
+  const [deployTimeout, setDeployTimeout] = useState(site !== undefined ? durationText(site.deployTimeoutMinutes) : '')
+  // Blank means the default when creating; an edit must name one.
+  const deployTimeoutMinutes = deployTimeout.trim() === '' ? undefined : parseDeployTimeout(deployTimeout)
   const [workflow, setWorkflow] = useState(site?.workflow ?? '')
   const [picks, setPicks] = useState<Record<string, RepoPick>>({})
   // What it starts with now, by repo id; a new site of a lone repo ticks it.
@@ -551,13 +557,15 @@ function SiteFields({ project, site, onDone, onCancel }: {
     : selection.included.length === 0 ? 'Tick a repo'
     : selection.included.some((r) => r.branch.trim() === '') ? 'Give each repo a branch or a full commit'
     : workflow === '' ? 'Pick a workflow'
+    : deployTimeoutMinutes === undefined && (site !== undefined || deployTimeout.trim() !== '')
+      ? `Give the deploy timeout as ${DEPLOY_TIMEOUT_FORMAT}`
     : site === undefined && name.trim() === '' ? 'Name the site'
     : null
 
   const save = useMutation({
     mutationFn: async () => {
       const repos = selection.request.repos
-      const body = { project: projectId, port: Number(port), workflow, repos, follow }
+      const body = { project: projectId, port: Number(port), workflow, repos, follow, deployTimeoutMinutes }
       const admin = adminPort.trim() === '' ? null : Number(adminPort)
       if (site !== undefined) {
         await api.site.edit.$post({ json: { ...body, name: site.name, adminPort: admin, volume: volume === '' ? null : volume } })
@@ -593,6 +601,15 @@ function SiteFields({ project, site, onDone, onCancel }: {
             onChange={(e) => setAdminPort(e.target.value)}
             placeholder="none"
             inputMode="numeric"
+            className="w-24"
+          />
+        </YSettingRow>
+        <YSettingRow label="Deploy timeout" hint="A deploy fails if its release is not ready this long after it starts.">
+          <YInput
+            aria-label="Deploy timeout"
+            value={deployTimeout}
+            onChange={(e) => setDeployTimeout(e.target.value)}
+            placeholder="1h"
             className="w-24"
           />
         </YSettingRow>

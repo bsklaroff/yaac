@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { projectRef, zv } from '#routes/validator'
-import { repoStartSchema } from '@yaac/shared/types'
+import { deployTimeoutMinutesSchema, repoStartSchema } from '@yaac/shared/types'
 import {
   createSite,
   deleteSite,
@@ -59,6 +59,7 @@ export const siteApp = new Hono<IdentityEnv>()
       // branch or a full commit.
       repos: z.array(repoStartSchema).min(1),
       follow: z.boolean().optional(),
+      deployTimeoutMinutes: deployTimeoutMinutesSchema.optional(),
     })),
     async (c) => {
       const { project, ...input } = c.req.valid('json')
@@ -76,6 +77,7 @@ export const siteApp = new Hono<IdentityEnv>()
       // The site's whole list of repos.
       repos: z.array(repoStartSchema).min(1).optional(),
       follow: z.boolean().optional(),
+      deployTimeoutMinutes: deployTimeoutMinutesSchema.optional(),
     })),
     async (c) => {
       const { project, name, ...input } = c.req.valid('json')
@@ -122,7 +124,7 @@ export const siteApp = new Hono<IdentityEnv>()
       // repo, by folder or id. A repo not named takes its setting.
       ref: z.string().min(1).optional(),
       refs: z.record(z.string().min(1).max(255), z.string().min(1)).optional(),
-      timeoutMinutes: z.number().int().positive().optional(),
+      timeoutMinutes: deployTimeoutMinutesSchema.optional(),
       // Deploy the site's requested deploy as the person was shown it, its
       // workflow and commits (docs/workflows.md "Approvals").
       approve: z.object({ workflowId: z.string().min(1), commits: shownCommits }).optional(),

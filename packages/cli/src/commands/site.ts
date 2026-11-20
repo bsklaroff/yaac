@@ -1,9 +1,10 @@
 import { api, resolveProjectId } from '#commands/api'
 import { confirmDefault } from '@yaac/shared/confirm'
 import { printTable } from '#commands/table'
-import { durationOption } from '#commands/workspace-create'
 import { FULL_COMMIT_PATTERN, formatCommits } from '@yaac/shared/steps'
 import { siteEdgeOf } from '@yaac/shared/site-edge'
+import { formatDuration } from '@yaac/shared/schedule'
+import { DEPLOY_TIMEOUT_FORMAT, parseDeployTimeout } from '@yaac/shared/types'
 import type { RepoStart, SiteCommit, SiteEntry, SiteTailnetState } from '@yaac/shared/types'
 
 /**
@@ -32,6 +33,8 @@ export interface SiteOptions {
   /** Deploy whenever a branch in its repos moves (`--follow`), or not
    *  (`--no-follow`). */
   follow?: boolean
+  /** How long a deploy may take to be ready, as a duration. */
+  deployTimeout?: string
   /** Each repo its releases start with, as `<dir>@<branch or commit>`. */
   repo: string[]
   /** False when `--no-repos` was given, which a site refuses. */
@@ -51,6 +54,16 @@ function siteRepos(opts: SiteOptions): RepoStart[] {
   })
 }
 
+function deployTimeoutOf(opts: SiteOptions): { deployTimeoutMinutes?: number } {
+  return opts.deployTimeout !== undefined ? { deployTimeoutMinutes: deployTimeoutOption('--deploy-timeout', opts.deployTimeout) } : {}
+}
+
+function deployTimeoutOption(flag: string, text: string): number {
+  const minutes = parseDeployTimeout(text)
+  if (minutes === undefined) throw new Error(`${flag} takes ${DEPLOY_TIMEOUT_FORMAT} (got "${text}").`)
+  return minutes
+}
+
 export async function siteCreate(
   project: string,
   name: string,
@@ -67,6 +80,7 @@ export async function siteCreate(
     ...(typeof opts.volume === 'string' ? { volume: opts.volume } : {}),
     repos,
     ...(opts.follow === true ? { follow: true } : {}),
+    ...deployTimeoutOf(opts),
   } })
   console.log(`Created site "${name}", unpublished: only you reach its releases, with \`yaac forward\` or the webapp's Preview.`)
   console.log(`Deploy it with \`yaac site deploy ${project} ${name}\`, then publish it with \`yaac site publish ${project} ${name} --hostname <host>\`.`)
@@ -132,6 +146,7 @@ export async function siteEdit(project: string, name: string, opts: SiteOptions)
     ...(opts.volume !== undefined ? { volume: opts.volume === false ? null : opts.volume } : {}),
     ...(repos.length > 0 ? { repos } : {}),
     ...(opts.follow !== undefined ? { follow: opts.follow } : {}),
+    ...deployTimeoutOf(opts),
   }
   if (Object.keys(patch).length === 0) throw new Error('Nothing to change: give an option to edit.')
   await api.site.edit.$post({ json: { project: await resolveProjectId(project), name, ...patch } })
@@ -169,6 +184,7 @@ export async function siteShow(project: string, name: string): Promise<void> {
   console.log(`  workflow     ${site.workflow} (${Object.keys(site.steps).join(', ')})`)
   console.log(`  volume       ${site.volume ?? '-'}`)
   console.log(`  repos        ${site.repos.map((r) => `${r.dir}@${r.branch ?? r.commit ?? '?'}`).join(' ')}`)
+  console.log(`  timeout      ${formatDuration(site.deployTimeoutMinutes)} per deploy`)
   console.log(`  follow       ${site.follow ? 'yes' : 'no'}${site.followPaused !== undefined ? ` (paused: ${site.followPaused})` : ''}`)
   if (site.followSkipped !== undefined) {
     console.log(`  not retrying ${short(site.followSkipped)}, whose deploy failed; \`yaac site deploy\` retries it`)
@@ -240,7 +256,7 @@ export async function siteDeploy(
     name,
     ...(bare.length === 1 ? { ref: bare[0] } : {}),
     ...(Object.keys(refs).length > 0 ? { refs } : {}),
-    ...(opts.timeout !== undefined ? { timeoutMinutes: durationOption('--timeout', opts.timeout) } : {}),
+    ...(opts.timeout !== undefined ? { timeoutMinutes: deployTimeoutOption('--timeout', opts.timeout) } : {}),
     ...(approve !== undefined ? { approve } : {}),
   } })
   if (workspaceId === undefined) {

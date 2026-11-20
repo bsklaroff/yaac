@@ -46,8 +46,8 @@
 #   yaac-mama workflow delete <name>
 #   yaac-mama site list
 #   yaac-mama site show|start|stop|delete <name>
-#   yaac-mama site create <name> --port N --workflow W --repo DIR@REF... [--admin-port N] [--volume V] [--follow]
-#   yaac-mama site edit <name> [--port N] [--workflow W] [--repo DIR@REF]... [--admin-port N | --no-admin-port] [--volume V | --no-volume] [--follow | --no-follow]   (unpublished)
+#   yaac-mama site create <name> --port N --workflow W --repo DIR@REF... [--admin-port N] [--volume V] [--deploy-timeout D] [--follow]
+#   yaac-mama site edit <name> [--port N] [--workflow W] [--repo DIR@REF]... [--admin-port N | --no-admin-port] [--volume V | --no-volume] [--deploy-timeout D] [--follow | --no-follow]   (unpublished)
 #   yaac-mama site deploy <name> [--ref [DIR@]REF]...
 #   yaac-mama fetch <workspace>
 #   yaac-mama history <workspace> [<conversation>] [-o <dir>]
@@ -218,7 +218,8 @@ Usage:
   yaac-mama site show <name>                       # one, and its releases
   yaac-mama site create <name> --port <n> --workflow <name>
                     --repo <dir>@<branch or commit>... [--admin-port <n>]
-                    [--volume <name>] [--follow]   # make one, unpublished
+                    [--volume <name>] [--deploy-timeout <duration>]
+                    [--follow]                     # make one, unpublished
   yaac-mama site edit <name> [same options] [--no-admin-port] [--no-volume]
                     [--no-follow]                  # change an unpublished one
   yaac-mama site deploy <name> [--ref [<dir>@]<ref>]...
@@ -957,14 +958,14 @@ case "$1" in
       create|edit|deploy)
         sub=$2; shift 2
         name=""; port=""; workflow=""; repos=""; admin_port=""; no_admin_port=""; volume=""; no_volume=""
-        follow=""; no_follow=""; refs=""
+        follow=""; no_follow=""; refs=""; deploy_timeout=""
         while [ $# -gt 0 ]; do
           case "$1" in
             --no-admin-port) no_admin_port=1; shift; continue ;;
             --no-volume) no_volume=1; shift; continue ;;
             --follow) follow=1; shift; continue ;;
             --no-follow) no_follow=1; shift; continue ;;
-            --port|--workflow|--repo|--admin-port|--volume|--ref)
+            --port|--workflow|--repo|--admin-port|--volume|--deploy-timeout|--ref)
               [ $# -ge 2 ] && [ -n "$2" ] || { echo "yaac-mama: $1 needs a value" >&2; exit 2; } ;;
             -*) echo "yaac-mama: site $sub does not take $1" >&2; exit 2 ;;
             *) [ -z "$name" ] || { echo "yaac-mama: site $sub takes one name" >&2; exit 2; }; name=$1; shift; continue ;;
@@ -974,6 +975,7 @@ case "$1" in
             --workflow) workflow=$2 ;;
             --admin-port) admin_port=$2 ;;
             --volume) volume=$2 ;;
+            --deploy-timeout) deploy_timeout=$2 ;;
             --repo) item=$(repo_start "$2")
               if [ -z "$repos" ]; then repos="[$item]"; else repos="${repos%]},$item]"; fi ;;
             --ref) item=$(printf '%s' "$2" | json_string)
@@ -983,7 +985,8 @@ case "$1" in
         done
         [ -n "$name" ] || { echo "usage: yaac-mama site $sub <name> …" >&2; exit 2; }
         run "site-$sub" '' name "$name" port "$port" workflow "$workflow" repos "$repos" admin-port "$admin_port" \
-          no-admin-port "$no_admin_port" volume "$volume" no-volume "$no_volume" follow "$follow" no-follow "$no_follow" refs "$refs" ;;
+          no-admin-port "$no_admin_port" volume "$volume" no-volume "$no_volume" follow "$follow" no-follow "$no_follow" \
+          deploy-timeout "$deploy_timeout" refs "$refs" ;;
       *) echo 'usage: yaac-mama site list|show|create|edit|deploy|start|stop|delete …' >&2; exit 2 ;;
     esac
     ;;

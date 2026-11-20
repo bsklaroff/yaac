@@ -179,6 +179,11 @@ async function linkDocs(): Promise<void> {
   await linkProjectRepo(DEMO_PROJECT_ID, DOCS, 'docs')
 }
 const lastRoute = (): SiteRoute | undefined => routed.at(-1)?.[0]
+/** How long the deploy under way has to be ready. */
+async function allowed(): Promise<number> {
+  const row = await site()
+  return row.deployDeadline!.getTime() - row.deployStartedAt!.getTime()
+}
 
 describe('deploySite', () => {
   it('starts a release at the commit, builds it, hands it the volume, and points the hostname at it once ready', async () => {
@@ -200,6 +205,8 @@ describe('deploySite', () => {
     // before it are done.
     const first = await deploy()
     expect(first.commits).toEqual([{ dir: '', commit: head }])
+    // A site that sets no deploy timeout gives each deploy an hour.
+    expect(await allowed()).toBe(60 * 60_000)
     await created(first.workspaceId)
     // Its releases go in a group the site owns.
     const shop = (await findSiteByName(DEMO_PROJECT_ID, 'shop'))!
@@ -379,15 +386,19 @@ describe('deploySite', () => {
     expect(launched.at(-1)?.env.some((e) => e.startsWith('GH_TOKEN='))).toBe(false)
   })
 
-  it('fails a deploy that is not ready by its deadline', async () => {
-    await createShop()
-    const deployed = await deploy({ timeoutMinutes: 1 })
-    await created(deployed.workspaceId)
+  it('fails a deploy that is not ready by its deadline: the one it names, else its site\'s', async () => {
+    await createShop({ deployTimeoutMinutes: 5 })
+    const named = await deploy({ timeoutMinutes: 1 })
+    expect(await allowed()).toBe(60_000)
+    await created(named.workspaceId)
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(Date.now() + 2 * 60_000)
     await reconcileSites(snapshot(), false)
-    expect(await site()).toMatchObject({ lastDeployOutcome: 'failed', lastDeployError: expect.stringContaining('1 minutes') as unknown })
+    expect(await site()).toMatchObject({ lastDeployOutcome: 'failed', lastDeployError: 'its release was not ready within 1m' })
     expect((await site()).deployWorkspaceId).toBeUndefined()
+    const fromSite = await deploy()
+    expect(await allowed()).toBe(5 * 60_000)
+    await created(fromSite.workspaceId)
   })
 })
 

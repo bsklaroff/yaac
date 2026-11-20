@@ -271,7 +271,9 @@ const STEP_ARGS = ['run', 'name', 'needs', 'service', 'ready'] as const
 const WORKFLOW_ARGS = ['name', 'steps', 'secrets', 'no-secrets', 'repos', 'no-repos', 'init', 'no-init']
 
 /** The options a site write takes (docs/public-sites.md). */
-const SITE_ARGS = ['port', 'workflow', 'repos', 'admin-port', 'no-admin-port', 'volume', 'no-volume', 'follow', 'no-follow']
+const SITE_ARGS = [
+  'port', 'workflow', 'repos', 'admin-port', 'no-admin-port', 'volume', 'no-volume', 'deploy-timeout', 'follow', 'no-follow',
+]
 
 /** The options a routine write takes. Its runs are titled from its name. */
 const ROUTINE_ARGS = ['name', 'cron', 'tz', ...CREATE_ARGS.filter((a) => a !== 'title' && a !== 'steps' && a !== 'no-steps')]

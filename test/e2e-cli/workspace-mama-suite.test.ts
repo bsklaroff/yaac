@@ -525,12 +525,13 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(edited.output).toContain('; init')
     expect((await runMama('workflow edit serve --no-init')).exitCode).toBe(0)
 
-    const site = await runMama(`site create shop --port 3000 --admin-port 3001 --workflow serve --repo ${NAME}@main`)
+    const site = await runMama(`site create shop --port 3000 --admin-port 3001 --workflow serve --repo ${NAME}@main --deploy-timeout 20m`)
     expect(site.exitCode, site.output).toBe(0)
     expect(site.output).toContain('created site shop, unpublished')
     expect((await runMama('site list')).output).toMatch(/^shop\s+unpublished\s+port 3000/m)
-    expect((await runMama('site edit shop --no-admin-port')).exitCode).toBe(0)
-    expect((await runMama('site show shop')).output).toContain(`workflow serve; repos ${NAME}@main`)
+    expect((await runMama('site show shop')).output).toContain('; deploy timeout 20m')
+    expect((await runMama('site edit shop --no-admin-port --deploy-timeout 2h')).exitCode).toBe(0)
+    expect((await runMama('site show shop')).output).toContain(`workflow serve; repos ${NAME}@main; deploy timeout 2h`)
 
     const published = await runYaac(serverEnv, 'site', 'publish', NAME, 'shop', '--hostname', 'shop.example.test')
     expect(published.exitCode, published.stderr).toBe(0)

@@ -756,6 +756,7 @@ function siteOptions(cmd: Command, required: boolean): Command {
     .option('--repo <dir@ref>', 'A repo each release starts with, by folder, at a branch on origin or a full commit (repeatable: one sits at the release\'s root, several in their folders); on edit, the whole list', collect, [])
     .option('--admin-port <n>', 'A port of each release that only you can reach, by `yaac forward` or a preview, never the internet')
     .option('--volume <name>', 'A project volume each release mounts at $YAAC_VOLUME_DIR (see `yaac volume`)')
+    .option('--deploy-timeout <duration>', 'Fail a deploy whose release is not ready this long after it starts, like 30m or 2h, at most 1d (default 1h); `site deploy --timeout` overrides it for one deploy')
     .addOption(new Option('--no-repos', 'Refused: a site starts with at least one repo').hideHelp())
     .option('--follow', 'Deploy whenever a branch in --repo moves while the site serves, so whoever can push one, the project\'s agents included, publishes unless the remote\'s branch protection stops them; what fails to deploy leaves the last good release serving')
 }
@@ -812,7 +813,7 @@ site
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('<name>', 'Site name')
   .option('--ref <[dir@]ref>', 'A branch or full commit to deploy a repo at, as <dir>@<ref> (a bare <ref> for a site of one repo; repeatable); a repo not named deploys at its --repo setting', collect, [])
-  .option('--timeout <duration>', 'Fail the deploy if its release is not ready this long after it starts, like 30m (default 15m)')
+  .option('--timeout <duration>', 'Fail the deploy if its release is not ready this long after it starts, like 30m (default the site\'s --deploy-timeout)')
   .option('--wait', 'Wait for the deploy to finish, exiting non-zero unless it succeeded')
   .option('--approve <workflow-id>', 'Deploy the site\'s requested deploy, shown again and asked about first, approving that workflow\'s content and exactly its commits; refused if either changed since')
   .option('-y, --yes', 'With --approve, approve without asking')

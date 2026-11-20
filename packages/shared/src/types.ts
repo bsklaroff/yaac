@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { parseDuration } from './schedule'
 import type { StepGraph, StepsOutcome, WorkspaceStep } from './steps'
 import {
   CUSTOM_PROVIDER,
@@ -2139,6 +2140,22 @@ export const CONVERSATION_PROMPT_PREVIEW_LENGTH = 300
 export const timeoutMinutesSchema = z.number().int().min(1).max(525_600)
 
 /**
+ * A site deploy's timeout in whole minutes, up to a day: a deploy holds its
+ * site until it ends (docs/public-sites.md "Deploys").
+ */
+export const deployTimeoutMinutesSchema = z.number().int().min(1).max(1440)
+
+/** What a deploy timeout is typed as, for refusals. */
+export const DEPLOY_TIMEOUT_FORMAT = 'a duration from 1m to 1d, like 30m or 2h'
+
+/** A typed deploy timeout (`30m`, `2h`) in minutes, or undefined when it
+ *  is not one within `deployTimeoutMinutesSchema`. */
+export function parseDeployTimeout(text: string): number | undefined {
+  const minutes = parseDuration(text)
+  return minutes !== undefined && deployTimeoutMinutesSchema.safeParse(minutes).success ? minutes : undefined
+}
+
+/**
  * A queued workspace's settings as a queue write takes them. A present field
  * overrides what would otherwise be resolved at launch; blank `title` leaves
  * the workspace to be auto-titled.
@@ -2256,6 +2273,9 @@ export interface SiteEntry {
   /** The port of its releases that its owner may forward or preview, for
    *  an admin view the internet never reaches. */
   adminPort?: number
+  /** How long a deploy's release has to become ready before the deploy
+   *  fails, unless the deploy names its own. */
+  deployTimeoutMinutes: number
   /** The named workflow each release runs, and its current graph. */
   workflow: string
   steps: StepGraph

@@ -18,6 +18,7 @@ const SITE: SiteDetail = {
   hostname: 'app.example.com',
   edge: 'public',
   port: 3000,
+  deployTimeoutMinutes: 60,
   steps: { server: { run: ['pnpm start'], service: true } },
   repos: [{ dir: 'demo', branch: 'main' }],
   follow: false,
@@ -68,9 +69,12 @@ const finished = (outcome: 'succeeded' | 'failed', error?: string): SiteDetail =
 describe('siteCreate', () => {
   it('makes a site unpublished, saying how to deploy and publish it', async () => {
     api.on('POST /api/site/create', { json: {} })
-    await siteCreate('demo', 'web', { port: '3000', workflow: 'web', repo: ['demo@main'], adminPort: '3001', follow: true })
+    await siteCreate('demo', 'web', {
+      port: '3000', workflow: 'web', repo: ['demo@main'], adminPort: '3001', follow: true, deployTimeout: '1h30m',
+    })
     expect(api.requests.find((r) => r.route === 'POST /api/site/create')?.body).toEqual({
       project: 'id-demo', name: 'web', port: 3000, adminPort: 3001, workflow: 'web', repos: [{ repo: 'demo', branch: 'main' }], follow: true,
+      deployTimeoutMinutes: 90,
     })
     expect(logged).toEqual([
       'Created site "web", unpublished: only you reach its releases, with `yaac forward` or the webapp\'s Preview.',
@@ -124,6 +128,7 @@ describe('siteDeploy', () => {
       'Deployed: https://app.example.com serves abcdef12.',
     ])
     expect(process.exitCode).toBeUndefined()
+    await expect(siteDeploy('demo', 'web', { ref: [], timeout: '1d1m' })).rejects.toThrow('--timeout takes a duration from 1m to 1d')
   })
 
   it('sends a ref per repo as <dir>@<ref>, printing commits per repo', async () => {
@@ -160,6 +165,7 @@ describe('siteDeploy', () => {
       },
     })
     await siteShow('demo', 'web')
+    expect(logged).toContain('  timeout      1h per deploy')
     expect(logged).toContain('  requested    abcdef12, asked by the agent of workspace ws-agent, awaiting your approval')
     expect(logged).toContain('               changes the live release\'s workflow')
     expect(logged).toContain('               workflow wf-1, written by an agent, run secrets KEY:')
@@ -196,9 +202,9 @@ describe('siteDeploy', () => {
 describe('siteEdit', () => {
   it('sends only the options given, --no-admin-port and --no-volume as null, and refuses none or a bad port', async () => {
     api.on('POST /api/site/edit', {})
-    await siteEdit('demo', 'web', { port: '8080', adminPort: false, volume: false, follow: false, repo: [] })
+    await siteEdit('demo', 'web', { port: '8080', adminPort: false, volume: false, follow: false, deployTimeout: '2h', repo: [] })
     expect(api.requests.find((r) => r.route === 'POST /api/site/edit')?.body)
-      .toEqual({ project: 'id-demo', name: 'web', port: 8080, adminPort: null, volume: null, follow: false })
+      .toEqual({ project: 'id-demo', name: 'web', port: 8080, adminPort: null, volume: null, follow: false, deployTimeoutMinutes: 120 })
     api.reset()
     serveProjects(api, [['id-demo', 'demo']])
     api.on('POST /api/site/edit', {})
@@ -210,6 +216,10 @@ describe('siteEdit', () => {
     await expect(siteEdit('demo', 'web', { repo: [] })).rejects.toThrow('Nothing to change')
     await expect(siteEdit('demo', 'web', { port: '80a', repo: [] })).rejects.toThrow('--port takes a port number')
     await expect(siteEdit('demo', 'web', { adminPort: '0', repo: [] })).rejects.toThrow('--admin-port takes a port number')
+    for (const deployTimeout of ['30s', '1d1m']) {
+      await expect(siteEdit('demo', 'web', { deployTimeout, repo: [] }), deployTimeout)
+        .rejects.toThrow(`--deploy-timeout takes a duration from 1m to 1d, like 30m or 2h (got "${deployTimeout}").`)
+    }
     // Every repo names a branch or commit, and a site keeps at least one.
     await expect(siteEdit('demo', 'web', { repo: ['web'] })).rejects.toThrow('--repo takes <dir>@<branch or full commit>')
     await expect(siteEdit('demo', 'web', { repo: [], repos: false })).rejects.toThrow('at least one repo')

@@ -293,6 +293,9 @@ yaac site                       A project's sites, each served by a
     --admin-port <n>            Port of each release only its owner reaches,
                                 by `yaac forward` or a preview
     --volume <name>             Volume each release mounts (see `yaac volume`)
+    --deploy-timeout <duration> Fail a deploy unless its release is ready this
+                                long after it starts (default 1h, at most 1d);
+                                also bounds following, starts and replacements
     --follow                    Deploy whenever a branch in --repo moves while
                                 the site serves, so whoever can push one,
                                 agents included, publishes; what fails is not
@@ -330,7 +333,7 @@ yaac site                       A project's sites, each served by a
                                 repo not named deploys at its --repo setting.
                                 A following site deploys only those
     --timeout <duration>        Fail unless ready this long after it starts
-                                (default 15m)
+                                (default the site's --deploy-timeout)
     --wait                      Wait for it, exiting non-zero unless it succeeded
     --approve <workflow-id>     Deploy the requested deploy, printed again and
                                 asked about first, approving that workflow's

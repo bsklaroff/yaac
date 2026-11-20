@@ -56,11 +56,10 @@ import { testEnv } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir } from '@yaac/shared/project-paths'
 import { FULL_COMMIT_PATTERN, formatCommits, sameCommitList, stepFullName } from '@yaac/shared/steps'
+import { formatDuration } from '@yaac/shared/schedule'
 import type { RepoCommits, RepoStart, SiteCommit } from '@yaac/shared/types'
 import { authorizeSiteEnd, requireSite, siteCommits, syncSiteRoutes } from './sites'
 
-/** How long a deploy may take to be ready, unless it names its own. */
-const DEFAULT_DEPLOY_TIMEOUT_MS = 15 * 60_000
 /** How long the old release keeps serving the connections it holds after
  *  a flip. It covers the router's next DNS refresh too. */
 const DRAIN_MS = 30_000
@@ -250,8 +249,8 @@ export async function deploySite(
   await authorizeProject(principal, projectId)
   const found = await requireSite(projectId, name)
   if (isPerson(principal)) await authorizeExposure(principal, found, 'deploy a published site')
-  const timeoutMs = opts.timeoutMinutes !== undefined ? opts.timeoutMinutes * 60_000 : DEFAULT_DEPLOY_TIMEOUT_MS
-  if (opts.approve !== undefined) return await deployRequested(principal, found, opts.approve, timeoutMs)
+  const { timeoutMinutes } = opts
+  if (opts.approve !== undefined) return await deployRequested(principal, found, opts.approve, timeoutMinutes)
   const project = await getProjectRow(projectId)
   const named = new Map<string, string>()
   if (opts.ref !== undefined) {
@@ -295,7 +294,7 @@ export async function deploySite(
     // A person deploying a following site approves what it follows, as
     // setting it to follow does, where a person wrote its workflow.
     if (site.follow) await approveStart(principal, spec, site.repos)
-    return await startDeploy(principal, site, { ...config, commits, timeoutMs })
+    return await startDeploy(principal, site, { ...config, commits, timeoutMinutes })
   })
 }
 
@@ -309,7 +308,7 @@ async function deployRequested(
   principal: Actor,
   found: SiteRow,
   shown: { workflowId: string; commits: SiteCommit[] },
-  timeoutMs: number,
+  timeoutMinutes: number | undefined,
 ): Promise<{ workspaceId: string; commits: SiteCommit[] }> {
   return await withSiteLock(found.id, async () => {
     const site = await lockedSite(found.id, found.name)
@@ -323,7 +322,7 @@ async function deployRequested(
     }
     await approveContent(principal, site.projectId, workflowId)
     await admitLaunch(isPerson(principal), site.projectId, siteSpec(site.id, config), commits)
-    return await startDeploy(principal, site, { ...config, commits, timeoutMs })
+    return await startDeploy(principal, site, { ...config, commits, timeoutMinutes })
   })
 }
 
@@ -357,7 +356,6 @@ export async function startSite(principal: Actor, projectId: string, name: strin
       ...config,
       commits,
       ...(site.releaseImage !== undefined ? { image: site.releaseImage } : {}),
-      timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS,
     })
   })
 }
@@ -445,9 +443,10 @@ function lastDeploy(row: SiteRow, outcome: 'succeeded' | 'failed', error?: strin
  * Start a deploy's release, refusing while another deploy runs. Its repos
  * start at `commits`, in the layout `start` repeats or else the one their
  * count gives: one at the root, several in their folders. Its volume is
- * mounted as next holder, and on the node of the release holding it. The
- * create runs detached; its outcome is the reconcile step's to read.
- * Called holding the site's lock.
+ * mounted as next holder, and on the node of the release holding it. It
+ * fails unless ready within `timeoutMinutes`, else the site's deploy
+ * timeout. The create runs detached; its outcome is the reconcile step's
+ * to read. Called holding the site's lock.
  */
 async function startDeploy(
   principal: Actor,
@@ -455,7 +454,7 @@ async function startDeploy(
   opts: ReleaseConfig & {
     commits: RepoCommits
     image?: string
-    timeoutMs: number
+    timeoutMinutes?: number
     replacing?: { rerunOf: string }
   },
 ): Promise<{ workspaceId: string; commits: SiteCommit[] }> {
@@ -472,7 +471,7 @@ async function startDeploy(
     deployPort: opts.port,
     deployPhase: 'launching',
     deployStartedAt: new Date(now),
-    deployDeadline: new Date(now + opts.timeoutMs),
+    deployDeadline: new Date(now + (opts.timeoutMinutes ?? site.deployTimeoutMinutes) * 60_000),
     deployReplacing: opts.replacing !== undefined,
     deployHandoffFrom: null,
     ...(opts.replacing === undefined ? { requestedCommits: null, requestedWorkflowId: null, requestedAt: null, requestedBy: null } : {}),
@@ -601,7 +600,7 @@ async function advanceDeploy(row: SiteRow, releaseId: string, alive: (id: string
     const minutes = row.deployStartedAt !== undefined
       ? Math.round((row.deployDeadline.getTime() - row.deployStartedAt.getTime()) / 60_000)
       : undefined
-    return await fail(`its release was not ready within ${minutes !== undefined ? `${String(minutes)} minutes` : 'its deadline'}`)
+    return await fail(`its release was not ready within ${minutes !== undefined ? formatDuration(minutes) : 'its deadline'}`)
   }
   if (listProvisioning().some((p) => p.workspaceId === releaseId)) {
     await setPhase(row, 'launching')
@@ -703,7 +702,6 @@ async function superviseLive(row: SiteRow, alive: (id: string) => boolean): Prom
     ...await lastReleaseConfig(row),
     commits: row.releaseCommits,
     ...(row.releaseImage !== undefined ? { image: row.releaseImage } : {}),
-    timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS,
     replacing: { rerunOf: live },
   }).catch((err: unknown) => serverLog(`[sites] replacing ${row.name}'s release: ${String(err)}`))
   return false
@@ -775,7 +773,7 @@ async function followSite(row: SiteRow): Promise<void> {
     }
   }
   serverLog(`[sites] ${row.name}: following, deploying ${at}`)
-  await startDeploy(systemPrincipal, row, { ...config, commits: target, timeoutMs: DEFAULT_DEPLOY_TIMEOUT_MS })
+  await startDeploy(systemPrincipal, row, { ...config, commits: target })
 }
 
 /**

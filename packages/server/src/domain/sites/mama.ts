@@ -8,7 +8,8 @@
  */
 import { ServerError } from '@yaac/shared/errors'
 import { FULL_COMMIT_PATTERN, formatCommits } from '@yaac/shared/steps'
-import type { RepoStart, SiteCommit, SiteEntry } from '@yaac/shared/types'
+import { formatDuration } from '@yaac/shared/schedule'
+import { DEPLOY_TIMEOUT_FORMAT, parseDeployTimeout, type RepoStart, type SiteCommit, type SiteEntry } from '@yaac/shared/types'
 import type { MamaCaller, MamaOutcome, MamaRequestInput } from '#domain/workspaces'
 import { createSite, deleteSite, editSite, listProjectSiteEntries, showSite } from './sites'
 import { deploySite, startSite, stopSite } from './deploys'
@@ -43,6 +44,14 @@ function port(raw: string | undefined, flag: string): number | undefined {
   const n = Number(raw)
   if (!Number.isInteger(n) || n < 1 || n > 65535) throw new ServerError('VALIDATION', `${flag} takes a port number, 1-65535`)
   return n
+}
+
+/** A `--deploy-timeout` duration in minutes. */
+function deployTimeout(raw: string | undefined): { deployTimeoutMinutes?: number } {
+  if (raw === undefined) return {}
+  const minutes = parseDeployTimeout(raw)
+  if (minutes === undefined) throw new ServerError('VALIDATION', `--deploy-timeout takes ${DEPLOY_TIMEOUT_FORMAT} (got "${raw}")`)
+  return { deployTimeoutMinutes: minutes }
 }
 
 const short = (commits: SiteCommit[]): string => (commits.length > 0 ? formatCommits(commits, 8) : '-')
@@ -81,6 +90,7 @@ export async function runSiteCommand(caller: MamaCaller, request: MamaRequestInp
         line(site),
         `workflow ${site.workflow}; repos ${site.repos.map((r) => `${r.dir}@${r.branch ?? r.commit ?? '?'}`).join(' ')}`
           + `${site.volume !== undefined ? `; volume ${site.volume}` : ''}${site.adminPort !== undefined ? `; admin port ${String(site.adminPort)}` : ''}`
+          + `; deploy timeout ${formatDuration(site.deployTimeoutMinutes)}`
           + `${site.follow ? '; follows its branches' : ''}`,
         ...(site.lastDeploy !== undefined
           ? [`last deploy ${site.lastDeploy.outcome} at ${short(site.lastDeploy.commits)}${site.lastDeploy.error !== undefined ? `: ${site.lastDeploy.error}` : ''}`]
@@ -102,6 +112,7 @@ export async function runSiteCommand(caller: MamaCaller, request: MamaRequestInp
         repos: siteRepos,
         ...(adminPort !== undefined ? { adminPort } : {}),
         ...(args.volume !== undefined ? { volume: args.volume } : {}),
+        ...deployTimeout(args['deploy-timeout']),
         ...(args.follow !== undefined ? { follow: true } : {}),
       })
       return { ok: true, output: `created site ${name}, unpublished: only your user reaches it. Deploy it with \`yaac-mama site deploy ${name}\`; a person publishes it.` }
@@ -116,6 +127,7 @@ export async function runSiteCommand(caller: MamaCaller, request: MamaRequestInp
         ...(args.workflow !== undefined ? { workflow: args.workflow } : {}),
         ...(args['no-volume'] !== undefined ? { volume: null } : args.volume !== undefined ? { volume: args.volume } : {}),
         ...(siteRepos !== undefined ? { repos: siteRepos } : {}),
+        ...deployTimeout(args['deploy-timeout']),
         ...(args.follow !== undefined ? { follow: true } : args['no-follow'] !== undefined ? { follow: false } : {}),
       }
       if (Object.keys(patch).length === 0) return { ok: false, error: 'site edit needs something to change' }
