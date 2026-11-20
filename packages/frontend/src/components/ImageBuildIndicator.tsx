@@ -1,7 +1,7 @@
 import { useState, type JSX } from 'react'
 import { CheckIcon, LoadingIcon, WarningIcon } from '#lib/icons'
 import { ImageBuildsOverlay } from '#components/ImageBuildsOverlay'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { YButton } from '#ui'
 
 /** Shrinks with a short row, never below a square around its icon. */
@@ -14,7 +14,7 @@ const SHRINK = 'min-w-6 shrink'
  * label truncates in a row short of room, leaving the icon.
  */
 export function ImageBuildIndicator({ projectIds }: { projectIds: string[] }): JSX.Element | null {
-  const allBuilds = useSnapshot()?.imageBuilds ?? []
+  const allBuilds = useSnapshotSelect((s) => s?.imageBuilds) ?? []
   const [open, setOpen] = useState(false)
 
   const builds = allBuilds.filter((b) => b.projectIds.some((id) => projectIds.includes(id)))

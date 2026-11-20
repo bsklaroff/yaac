@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type JSX } from 'react'
+import { memo, useState, type FormEvent, type JSX } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   AllowlistAddNotice, GitCredentialPicker, remoteKind, remoteProjectName, TrustedHostKey,
@@ -41,7 +41,7 @@ export function NewProjectButton(
  * the background (#lib/projectOps). Host keys that SSH adds trusted show
  * once no form is open.
  */
-export function AddProjectDialog(): JSX.Element {
+export const AddProjectDialog = memo(function AddProjectDialog(): JSX.Element {
   const form = useUiStore((s) => s.addProjectForm)
   const setAddProjectForm = useUiStore((s) => s.setAddProjectForm)
   const keys = useUiStore((s) => s.trustedHostKeys)
@@ -98,7 +98,7 @@ export function AddProjectDialog(): JSX.Element {
       )}
     </YDialog>
   )
-}
+})
 
 /** The allowlist a project starts with: the defaults and nothing added. */
 const NEW_PROJECT_ALLOWLIST = { hosts: [], defaults: true }

@@ -1,4 +1,4 @@
-import { useState, type JSX } from 'react'
+import { memo, useState, type JSX } from 'react'
 import { FeedbackDialog } from '#components/FeedbackButton'
 import { serverLabel } from '#components/ServerBadge'
 import { ServerHealthOverlay } from '#components/ServerHealthOverlay'
@@ -6,7 +6,7 @@ import { UserItems, useUserSwitch } from '#components/UserSwitcher'
 import { FeedbackIcon, HealthIcon, ServerIcon, SettingsIcon, UsersIcon } from '#lib/icons'
 import { windowApi } from '#lib/platform'
 import { useUiStore } from '#lib/store'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useTeammateName, useWhoami } from '#lib/viewer'
 import { cn, YAvatar, YLogoMark, YMenu, YMenuItem, YMenuPopup } from '#ui'
 
@@ -17,9 +17,9 @@ import { cn, YAvatar, YLogoMark, YMenu, YMenuItem, YMenuPopup } from '#ui'
  * teammate's projects are shown, the logo sits on the accent tint and its
  * label names them, so the read-only view is never unexplained.
  */
-export function LogoMenu(): JSX.Element {
+export const LogoMenu = memo(function LogoMenu(): JSX.Element {
   const whoami = useWhoami()
-  const snapshot = useSnapshot()
+  const hasFeedback = useSnapshotSelect((s) => s?.feedbackHost != null)
   const openSettings = useUiStore((s) => s.openSettings)
   const switcher = useUserSwitch()
   const showServers = windowApi()?.showServers
@@ -52,7 +52,7 @@ export function LogoMenu(): JSX.Element {
           {showServers && (
             <YMenuItem icon={ServerIcon} onClick={() => useUiStore.getState().navigate(showServers)}>Servers</YMenuItem>
           )}
-          {snapshot?.feedbackHost != null && (
+          {hasFeedback && (
             <YMenuItem icon={FeedbackIcon} onClick={() => setFeedback(true)}>Send feedback</YMenuItem>
           )}
           {switcher !== null && (
@@ -74,4 +74,4 @@ export function LogoMenu(): JSX.Element {
       <FeedbackDialog open={feedback} onOpenChange={setFeedback} />
     </>
   )
-}
+})

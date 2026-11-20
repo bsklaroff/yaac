@@ -5,7 +5,9 @@ import type { AuthListResult, CustomEndpointSummary, GitCredentialSummary, ToolL
 import { OPENCODE_PROVIDERS, PI_PROVIDERS } from '@yaac/shared/tool-providers'
 
 const snapshot = vi.hoisted(() => vi.fn())
-vi.mock('#lib/useSnapshot', () => ({ useSnapshot: snapshot }))
+vi.mock('#lib/useSnapshot', () => ({
+  useSnapshotSelect: (select: (s: unknown) => unknown) => select(snapshot()),
+}))
 
 import { SettingsButton, SettingsDialog } from '#components/SettingsButton'
 import { useUiStore } from '#lib/store'

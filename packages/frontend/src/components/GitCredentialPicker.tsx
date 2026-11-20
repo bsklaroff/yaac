@@ -2,7 +2,7 @@ import { useState, type FormEvent, type JSX } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY, useAuthList } from '#lib/useAuthList'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { repoHostToAllow } from '@yaac/shared/allowed-hosts'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { projectNameFor } from '@yaac/shared/project-name'
@@ -275,7 +275,7 @@ export function AllowlistAddNotice({ remoteUrl, allowlist }: {
   remoteUrl: string
   allowlist: EgressAllowlist | undefined
 }): JSX.Element | null {
-  const mediatedEgress = useSnapshot()?.driver !== 'containerless'
+  const mediatedEgress = useSnapshotSelect((s) => s?.driver) !== 'containerless'
   const host = mediatedEgress && allowlist ? repoHostToAllow(allowlist, remoteUrl) : null
   if (host === null) return null
   return (

@@ -11,7 +11,7 @@ import { VolumeBadge } from '#components/VolumeBadge'
 import { DockerIcon, FolderIcon, PortIcon, QueuedIcon } from '#lib/icons'
 import { portLabel } from '#lib/preview'
 import { stopWorkspaceOptimistic } from '#lib/stopWorkspaceFlow'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import type { GitAuthFailure, ProjectSummary, WorkspaceListEntry } from '@yaac/shared/types'
 import { YButton, YDetailCard, YDetailRow, YDetailsPanel } from '#ui'
 
@@ -38,7 +38,7 @@ export function DetailsPane({ workspace, project, gitAuthFailures, interactive }
   /** False for a teammate's or a locked workspace: no stop. */
   interactive: boolean
 }): JSX.Element {
-  const driver = useSnapshot()?.driver
+  const driver = useSnapshotSelect((s) => s?.driver)
   const [confirmStop, setConfirmStop] = useState(false)
   const network = workspace.blockedHosts.length + workspace.unforwardedPorts.length
   const [networkOpen, setNetworkOpen] = useState(network > 0)

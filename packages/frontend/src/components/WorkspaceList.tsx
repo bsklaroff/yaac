@@ -11,7 +11,7 @@ import { shownGroups } from '#lib/groups'
 import { queuedChildren, queuedParentId, queuedTitle, roomKey } from '#lib/queued'
 import { useStoppedEntry, useStoppedWorkspaces } from '#lib/useStoppedWorkspaces'
 import { useIsMobile } from '#lib/viewport'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useReadOnly, useViewedUserId, useWhoami } from '#lib/viewer'
 import { unseenDeaths, useUiStore, type SidebarTab } from '#lib/store'
 import type {
@@ -187,7 +187,7 @@ export function ListActions({ projectId, connected }: { projectId: string | null
  *  renders empty when there are none, so `className` decides how an empty
  *  row looks. */
 export function ListBadges({ projectIds, className }: { projectIds: string[]; className: string }): JSX.Element {
-  const byProject = useSnapshot()?.gitAuthFailures ?? {}
+  const byProject = useSnapshotSelect((s) => s?.gitAuthFailures) ?? {}
   // One entry per host: two projects can share a rejected host.
   const failures = [...new Map(projectIds.flatMap((id) => byProject[id] ?? []).map((f) => [f.host, f])).values()]
   return (

@@ -1,5 +1,5 @@
 import { useUiStore } from '#lib/store'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import type { WorkspaceRepo } from '@yaac/shared/types'
 
 /**
@@ -26,7 +26,7 @@ export interface CheckoutView {
 }
 
 export function useCheckout(workspaceId: string): CheckoutView {
-  const workspace = useSnapshot()?.workspaces.find((w) => w.workspaceId === workspaceId)
+  const workspace = useSnapshotSelect((s) => s?.workspaces.find((w) => w.workspaceId === workspaceId))
   const pick = useUiStore((s) => s.checkoutPicks[workspaceId])
   const repos = workspace?.repos ?? NONE
   const current = repos.find((r) => r.path === pick) ?? repos.find((r) => r.path === workspace?.cwd) ?? repos[0]
@@ -47,7 +47,7 @@ const NONE: WorkspaceRepo[] = []
  * workspace's shells start.
  */
 export function usePaneCwd(workspaceId: string, cwd?: string): string {
-  const workspace = useSnapshot()?.workspaces.find((w) => w.workspaceId === workspaceId)
+  const workspace = useSnapshotSelect((s) => s?.workspaces.find((w) => w.workspaceId === workspaceId))
   return cwd ?? workspace?.cwd ?? ''
 }
 

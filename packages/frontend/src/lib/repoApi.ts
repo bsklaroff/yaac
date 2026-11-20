@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useQuery, useQueryClient, type QueryClient, type UseQueryResult } from '@tanstack/react-query'
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import type { RepoHolder, RepoSummary } from '@yaac/shared/types'
 
 /*
@@ -25,8 +25,8 @@ export const REPOS_KEY = ['repos'] as const
  */
 export function useRepos(): RepoSummary[] | undefined {
   const queryClient = useQueryClient()
-  const linked = (useSnapshot()?.projects ?? [])
-    .flatMap((p) => p.repos.map((r) => `${p.id}/${r.id}/${r.gitCredential?.id ?? ''}/${r.remoteUrl}`)).join(' ')
+  const linked = useSnapshotSelect((s) => (s?.projects ?? [])
+    .flatMap((p) => p.repos.map((r) => `${p.id}/${r.id}/${r.gitCredential?.id ?? ''}/${r.remoteUrl}`)).join(' '))
   useEffect(() => { void queryClient.invalidateQueries({ queryKey: REPOS_KEY }) }, [queryClient, linked])
   return useQuery({ queryKey: REPOS_KEY, queryFn: () => api.repo.list.$get() }).data
 }

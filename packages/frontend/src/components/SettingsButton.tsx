@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type JSX } from 'react'
+import { memo, useEffect, useMemo, useState, type FormEvent, type JSX } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   BranchIcon,
@@ -34,7 +34,7 @@ import { SettingsPageTitle } from '#components/settings/SettingsPage'
 import { userBuildFilesApi } from '#lib/buildFilesApi'
 import { useUiStore, type ProjectPage, type SettingsSection } from '#lib/store'
 import type { ThemePref } from '#lib/theme'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useWhoami } from '#lib/viewer'
 import { IS_MAC } from '#lib/platform'
 import {
@@ -94,7 +94,7 @@ export function SettingsButton(): JSX.Element {
  * Account holds what is the user's or the install's; Project holds one
  * project's pages, for the project its picker names.
  */
-export function SettingsDialog(): JSX.Element {
+export const SettingsDialog = memo(function SettingsDialog(): JSX.Element {
   const open = useUiStore((s) => s.settingsOpen)
   const section = useUiStore((s) => s.settingsSection)
   const openSettings = useUiStore((s) => s.openSettings)
@@ -105,7 +105,7 @@ export function SettingsDialog(): JSX.Element {
   const soundEnabled = useUiStore((s) => s.soundEnabled)
   const setSoundEnabled = useUiStore((s) => s.setSoundEnabled)
   const queryClient = useQueryClient()
-  const buildsImages = useSnapshot()?.driver !== 'containerless'
+  const buildsImages = useSnapshotSelect((s) => s?.driver) !== 'containerless'
   const multiUser = useWhoami()?.kind === 'tailnet'
   const { projects, selected, pick } = useSettingsProject()
 
@@ -226,7 +226,7 @@ export function SettingsDialog(): JSX.Element {
       </div>
     </YDialog>
   )
-}
+})
 
 /**
  * The global user image layer: the Dockerfile.user editor plus the support

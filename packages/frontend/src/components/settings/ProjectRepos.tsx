@@ -12,7 +12,7 @@ import {
 } from '#lib/repoApi'
 import { useUiStore } from '#lib/store'
 import { useInlineEdit } from '#lib/useInlineRename'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { isGitHubHost } from '@yaac/shared/credentials'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { REPO_DIR_RE, type ProjectRepo, type ProjectSummary } from '@yaac/shared/types'
@@ -43,7 +43,7 @@ function isGithubHttps(remoteUrl: string): boolean {
  */
 export function ProjectRepos({ project, readOnly }: { project: ProjectSummary; readOnly: boolean }): JSX.Element {
   const queryClient = useQueryClient()
-  const mediatedEgress = useSnapshot()?.driver !== 'containerless'
+  const mediatedEgress = useSnapshotSelect((s) => s?.driver) !== 'containerless'
   const openSettings = useUiStore((s) => s.openSettings)
   const change = useMutation({
     mutationFn: (action: () => Promise<unknown>) => action(),
@@ -237,7 +237,7 @@ function AddRepoForm({ project, onCancel, onAdded }: {
   // Shares its key with Settings → Egress allowlist, so that list shows a
   // host the add allowed.
   const allowlistKey = ['project-allowlist', project.id]
-  const mediatedEgress = useSnapshot()?.driver !== 'containerless'
+  const mediatedEgress = useSnapshotSelect((s) => s?.driver) !== 'containerless'
   const allowlist = useQuery({
     queryKey: allowlistKey,
     queryFn: async () => await api.project[':projectId'].allowlist.$get({ param: { projectId: project.id } }),

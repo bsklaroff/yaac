@@ -30,7 +30,9 @@ const stream = {
 
 vi.mock('#lib/acp', () => ({ useAcpStream: () => stream }))
 const snapshot = vi.fn((): { driver: string; workspaces: Array<{ workspaceId: string; cwd?: string; sessions: SessionEntry[] }> } | undefined => undefined)
-vi.mock('#lib/useSnapshot', () => ({ useSnapshot: () => snapshot() }))
+vi.mock('#lib/useSnapshot', () => ({
+  useSnapshotSelect: (select: (s: unknown) => unknown) => select(snapshot()),
+}))
 
 import { WorkspaceChat } from '#components/WorkspaceChat'
 import type { Opening } from '#lib/opening'

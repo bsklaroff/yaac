@@ -1,7 +1,7 @@
 import { useState, type JSX } from 'react'
 import { WarningIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import type { GitAuthFailure } from '@yaac/shared/types'
 import { BADGE_TRIGGER } from '#components/ActionsBadge'
@@ -30,7 +30,7 @@ export function GitAuthFailureBadge({
 }): JSX.Element {
   const openSettings = useUiStore((s) => s.openSettings)
   const [open, setOpen] = useState(false)
-  const repos = (useSnapshot()?.projects ?? []).filter((p) => projectIds.includes(p.id)).flatMap((p) => p.repos)
+  const repos = (useSnapshotSelect((s) => s?.projects) ?? []).filter((p) => projectIds.includes(p.id)).flatMap((p) => p.repos)
   const hostOf = (remoteUrl: string): string | undefined => {
     try {
       return parseGitRemote(remoteUrl).host

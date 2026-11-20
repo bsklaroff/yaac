@@ -4,7 +4,7 @@ import { modelItem } from '#components/ComposerMenu'
 import {
   AcceptEditsIcon, AskFirstIcon, AutoReviewIcon, BypassIcon, ChevronIcon, PlanIcon, ReadOnlyIcon, type Icon,
 } from '#lib/icons'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import type { AcpModel } from '@yaac/shared/acp'
 import {
   AGENT_OPTIONS,
@@ -72,7 +72,7 @@ export function PermissionModeSelect({ current, available, disabled, onSelect }:
   disabled: boolean
   onSelect: (mode: PermissionMode) => void
 }): JSX.Element {
-  const containerless = useSnapshot()?.driver === 'containerless'
+  const containerless = useSnapshotSelect((s) => s?.driver) === 'containerless'
   const ModeIcon = PERMISSION_MODE_ICON[current]
   const unsandboxed = current === 'bypass' && containerless
   const help = `${PERMISSION_MODE_HELP[current]}${unsandboxed ? ` ${NO_SANDBOX}` : ''}`

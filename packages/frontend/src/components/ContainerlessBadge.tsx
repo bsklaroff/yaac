@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 import clsx from 'clsx'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { CONTAINERLESS_REACH } from '@yaac/shared/setup-copy'
 import { BADGE_TRIGGER } from '#components/ActionsBadge'
 import { YPopover, YPopoverPopup } from '#ui'
@@ -13,7 +13,7 @@ import { YPopover, YPopoverPopup } from '#ui'
  * what the agent can reach and where isolation comes from.
  */
 export function ContainerlessBadge(): JSX.Element | null {
-  if (useSnapshot()?.driver !== 'containerless') return null
+  if (useSnapshotSelect((s) => s?.driver) !== 'containerless') return null
   return (
     <YPopover.Root>
       <YPopover.Trigger

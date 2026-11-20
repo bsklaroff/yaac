@@ -10,7 +10,7 @@ import {
   assignRepoCredential, deleteRepo, previewRepoDelete, refreshRepos, shareRepo, unshareRepo, useRepos,
 } from '#lib/repoApi'
 import { useUiStore } from '#lib/store'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useTeammateView, useViewedUserId, useWhoami } from '#lib/viewer'
 import type { RepoSummary } from '@yaac/shared/types'
 import { cn, YBadge, YButton, YConfirm, YRowFrame, YSection, YSectionLabel, YSelect } from '#ui'
@@ -91,7 +91,6 @@ export function ReposSettings(): JSX.Element {
 function RepoRow({ repo, readOnly, focused }: { repo: RepoSummary; readOnly: boolean; focused: boolean }): JSX.Element {
   const queryClient = useQueryClient()
   const users = useWhoami()?.users ?? []
-  const snapshot = useSnapshot()
   const refresh = (): void => { void refreshRepos(queryClient) }
   const missing = !repo.hosted && repo.gitCredential === null && repo.deleted === undefined
   const [open, setOpen] = useState(focused)
@@ -103,7 +102,7 @@ function RepoRow({ repo, readOnly, focused }: { repo: RepoSummary; readOnly: boo
   useEffect(() => {
     if (focused) ref.current?.scrollIntoView?.({ block: 'center' })
   }, [focused])
-  const dir = snapshot?.projects.flatMap((p) => p.repos).find((r) => r.id === repo.id)?.dir
+  const dir = useSnapshotSelect((s) => s?.projects.flatMap((p) => p.repos).find((r) => r.id === repo.id)?.dir)
   const name = repoName(repo, dir)
   const owner = users.find((u) => u.id === repo.owner)?.name
   const assign = async (credentialId: string): Promise<void> => {

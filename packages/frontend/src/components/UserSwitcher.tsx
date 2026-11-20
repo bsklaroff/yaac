@@ -2,7 +2,8 @@ import type { JSX } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CheckIcon, UsersIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
+import { useShallow } from 'zustand/react/shallow'
 import { projectsOf, useViewedUserId, whoamiQuery } from '#lib/viewer'
 import type { ServerSnapshot, User } from '@yaac/shared/types'
 import { YAvatar, YMenu, YMenuItem, YMenuPopup } from '#ui'
@@ -41,7 +42,9 @@ export function UserSwitcher(): JSX.Element | null {
  *  null on any other. */
 export function useUserSwitch(): UserSwitch | null {
   const whoami = useQuery(whoamiQuery)
-  const snapshot = useSnapshot()
+  const projects = useSnapshotSelect((s) => s?.projects)
+  const active = useSnapshotSelect(useShallow(activeByUser))
+  const containerless = useSnapshotSelect((s) => s?.driver === 'containerless')
   const viewed = useViewedUserId()
   const viewUser = useUiStore((s) => s.viewUser)
   const lastProjectOf = useUiStore((s) => s.lastProjectOf)
@@ -54,12 +57,12 @@ export function useUserSwitch(): UserSwitch | null {
     me,
     viewed,
     users,
-    active: activeByUser(snapshot),
+    active,
     label: viewed === me ? 'Your projects' : `${current?.name ?? 'Unknown user'}'s projects`,
-    containerless: snapshot?.driver === 'containerless',
+    containerless,
     refresh: () => { void whoami.refetch() },
     pick: (userId) => {
-      const theirs = projectsOf(snapshot?.projects ?? [], userId)
+      const theirs = projectsOf(projects ?? [], userId)
       const last = theirs.find((p) => p.id === lastProjectOf[userId])
       viewUser(userId === me ? null : userId, (last ?? theirs[0])?.id ?? null)
     },

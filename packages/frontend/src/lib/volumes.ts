@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '#lib/api'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import type { VolumeEntry } from '@yaac/shared/types'
 
 /**
@@ -11,7 +11,7 @@ import type { VolumeEntry } from '@yaac/shared/types'
 
 /** Whether this server offers volumes. False until the snapshot says. */
 export function useHasVolumes(): boolean {
-  return useSnapshot()?.driver === 'k8s'
+  return useSnapshotSelect((s) => s?.driver === 'k8s')
 }
 
 /**
@@ -22,14 +22,13 @@ export function useHasVolumes(): boolean {
  * keeping the previous list meanwhile.
  */
 export function useVolumes(projectId: string | null): VolumeEntry[] | undefined {
-  const snapshot = useSnapshot()
   const enabled = useHasVolumes() && projectId !== null
-  const ids = [...snapshot?.workspaces ?? [], ...snapshot?.provisioning ?? []]
+  const ids = useSnapshotSelect((s) => [...s?.workspaces ?? [], ...s?.provisioning ?? []]
     .filter((w) => w.projectId === projectId)
     .map((w) => w.workspaceId)
     .sort()
-    .join(',')
-  const stopped = snapshot?.projects.find((p) => p.id === projectId)?.stoppedCount ?? 0
+    .join(','))
+  const stopped = useSnapshotSelect((s) => s?.projects.find((p) => p.id === projectId)?.stoppedCount ?? 0)
   const { data } = useQuery({
     queryKey: [...volumesKey(projectId ?? ''), ids, stopped],
     queryFn: () => api.volume.list.$get({ query: { project: projectId ?? '' } }),

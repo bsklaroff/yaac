@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 import type { ProjectSummary } from '@yaac/shared/types'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useUiStore } from '#lib/store'
 import { projectsOf, useViewedUserId } from '#lib/viewer'
 import { YSelect } from '#ui'
@@ -16,7 +16,7 @@ export function useSettingsProject(): {
   selected: ProjectSummary | undefined
   pick: (projectId: string) => void
 } {
-  const projects = projectsOf(useSnapshot()?.projects ?? [], useViewedUserId())
+  const projects = projectsOf(useSnapshotSelect((s) => s?.projects) ?? [], useViewedUserId())
   const activeProjectId = useUiStore((s) => s.activeProjectId)
   const picked = useUiStore((s) => s.settingsProjectId)
   const pick = useUiStore((s) => s.setSettingsProjectId)

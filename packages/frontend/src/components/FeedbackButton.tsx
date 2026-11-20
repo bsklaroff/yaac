@@ -4,7 +4,7 @@ import { DraftImage } from '#components/DraftImage'
 import { api } from '#lib/api'
 import { imageFiles, useDraftImages } from '#lib/attachments'
 import { AttachImageIcon, FeedbackIcon } from '#lib/icons'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { windowApi, type ShellApp } from '#lib/platform'
 import { YButton, YDialog, YFileInput, YTextArea } from '#ui'
 
@@ -17,7 +17,7 @@ import { YButton, YDialog, YFileInput, YTextArea } from '#ui'
  */
 export function FeedbackButton(): JSX.Element | null {
   const [open, setOpen] = useState(false)
-  const host = useSnapshot()?.feedbackHost ?? null
+  const host = useSnapshotSelect((s) => s?.feedbackHost ?? null)
   if (host === null) return null
   return (
     <>
@@ -37,7 +37,7 @@ export function FeedbackButton(): JSX.Element | null {
 /** The feedback form in a dialog, opened from the logo menu or the mobile
  *  row. Renders nothing on a server with no endpoint. */
 export function FeedbackDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }): JSX.Element | null {
-  const host = useSnapshot()?.feedbackHost ?? null
+  const host = useSnapshotSelect((s) => s?.feedbackHost ?? null)
   if (host === null) return null
   return (
     <YDialog open={open} onOpenChange={onOpenChange} title="Send feedback" className="flex w-[480px] flex-col gap-3 p-4">

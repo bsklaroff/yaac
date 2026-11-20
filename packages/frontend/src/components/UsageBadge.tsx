@@ -1,7 +1,7 @@
-import type { JSX } from 'react'
+import { memo, type JSX } from 'react'
 import clsx from 'clsx'
 import { PinIcon, UsageIcon, TOOL_LABEL } from '#lib/icons'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useTeammateView, useWhoami } from '#lib/viewer'
 import { api } from '#lib/api'
 import { useUiStore } from '#lib/store'
@@ -142,8 +142,7 @@ function usageSections(
  * while viewing a teammate, since the readout is the caller's own plan and
  * says nothing about the workspaces on screen.
  */
-export function UsageBadge(): JSX.Element | null {
-  const snapshot = useSnapshot()
+export const UsageBadge = memo(function UsageBadge(): JSX.Element | null {
   const pinnedKey = useUiStore((s) => s.pinnedUsageMetric)
   const setPinnedUsageMetric = useUiStore((s) => s.setPinnedUsageMetric)
 
@@ -152,8 +151,8 @@ export function UsageBadge(): JSX.Element | null {
   // The snapshot carries every user's readout; the badge shows the caller's.
   const me = useWhoami()?.userId ?? ''
   const sections = usageSections({
-    claude: snapshot?.planUsage[me],
-    codex: snapshot?.codexPlanUsage[me],
+    claude: useSnapshotSelect((s) => s?.planUsage[me]),
+    codex: useSnapshotSelect((s) => s?.codexPlanUsage[me]),
   })
   if (teammate || sections.length === 0) return null
 
@@ -219,7 +218,7 @@ export function UsageBadge(): JSX.Element | null {
       </YPopoverPopup>
     </YPopover.Root>
   )
-}
+})
 
 function LimitRow({
   limit,

@@ -5,7 +5,7 @@ import { MasterDetail } from '#components/MasterDetail'
 import { api } from '#lib/api'
 import { useIsMobile } from '#lib/viewport'
 import { useProjectName } from '#lib/projectIdentity'
-import { useSnapshot } from '#lib/useSnapshot'
+import { useSnapshotSelect } from '#lib/useSnapshot'
 import { projectsOf, useWhoami } from '#lib/viewer'
 import type { ImageBuildEntry } from '@yaac/shared/types'
 import { relativeAge } from '#lib/time'
@@ -44,7 +44,7 @@ export function ImageBuildsOverlay({
   // A project chain's build is its owner's to retry or dismiss; a shared
   // image's (base, tools) is anyone's.
   const me = useWhoami()?.userId
-  const mine = new Set(projectsOf(useSnapshot()?.projects ?? [], me).map((p) => p.id))
+  const mine = new Set(projectsOf(useSnapshotSelect((s) => s?.projects) ?? [], me).map((p) => p.id))
   const canAct = (b: ImageBuildEntry): boolean =>
     (b.layer !== 'project' && b.layer !== 'user') || b.projectIds.some((id) => mine.has(id))
 
