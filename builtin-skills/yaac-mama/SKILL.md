@@ -59,7 +59,7 @@ yaac-mama workflow create <name> --file F [--secret S]... [--repo DIR]... [--ini
 yaac-mama workflow edit <name> [--file F] [--secret S]... [--no-secrets] [--repo DIR]... [--no-repos] [--init | --no-init]
 yaac-mama workflow delete <name>                  # one nothing runs
 yaac-mama site list | show <name>                 # the project's sites
-yaac-mama site create <name> --port N --workflow W --repo DIR@REF... [--admin-port N] [--volume V] [--follow]
+yaac-mama site create <name> --port N --workflow W --repo DIR@REF... [--admin-port N] [--volume V] [--deploy-timeout D] [--follow]
 yaac-mama site edit <name> [same options] [--no-admin-port] [--no-volume] [--no-follow]
 yaac-mama site deploy <name> [--ref [DIR@]REF]... # a published one's waits for the user's approval
 yaac-mama site start|stop|delete <name>           # an unpublished one

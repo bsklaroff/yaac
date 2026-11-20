@@ -43,6 +43,7 @@ export async function insertSite(values: {
   volumeId?: string
   repos: RepoStart[]
   follow: boolean
+  deployTimeoutMinutes?: number
 }): Promise<SiteRow> {
   const db = await getDb()
   const [row] = await db.insert(sites).values(values).onConflictDoNothing().returning()

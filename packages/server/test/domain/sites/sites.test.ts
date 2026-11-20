@@ -292,8 +292,8 @@ describe('editSite', () => {
     const row = (await findSiteByName(DEMO_PROJECT_ID, 'shop'))!
     await updateSite(row.id, { liveWorkspaceId: 'rel-1', livePort: 3000 })
 
-    await editSite(local, DEMO_PROJECT_ID, 'shop', { port: 4000, adminPort: 4001 })
-    expect(await findSiteByName(DEMO_PROJECT_ID, 'shop')).toMatchObject({ port: 4000, adminPort: 4001 })
+    await editSite(local, DEMO_PROJECT_ID, 'shop', { port: 4000, adminPort: 4001, deployTimeoutMinutes: 90 })
+    expect(await findSiteByName(DEMO_PROJECT_ID, 'shop')).toMatchObject({ port: 4000, adminPort: 4001, deployTimeoutMinutes: 90 })
     // The live release offers the new admin port in place of the old, as a
     // server restart would; a release offers the ports its site serves on
     // too, for its owner's preview.

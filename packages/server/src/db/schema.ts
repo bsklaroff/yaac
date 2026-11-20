@@ -502,6 +502,9 @@ export const sites = snakeCase.table('sites', {
   repos: jsonb().$type<RepoStart[]>().notNull().default([]),
   /** Deploy whenever a branch in `repos` moves, while serving. */
   follow: boolean().notNull().default(false),
+  /** How long a deploy's release has to become ready before the deploy
+   *  fails, unless the deploy names its own. */
+  deployTimeoutMinutes: integer().notNull().default(60),
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /** The release the hostname points at, while one is meant to serve; null
    *  once the site is stopped. A live release whose runtime is gone is

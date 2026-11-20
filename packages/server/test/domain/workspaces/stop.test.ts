@@ -32,7 +32,7 @@ import {
   stopWorkspace,
 } from '#domain/workspaces'
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
-import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
+import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
 import { createWorkspaceGroup, getWorkspaceRow, insertSession, insertSite, updateSite, listWorkspaceRepos, listWorkspaceSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
 import { recordWorkspaceCreated, recordWorkspaceLife } from '#db/workspace-store'
@@ -541,16 +541,26 @@ describe('stopWorkspace', () => {
   })
 
   // A person or an agent cannot take a site down by stopping its release;
-  // only its site (the system) stops one. A release its site no longer
-  // tracks is the owner's to stop, so a leak always has a way out.
-  it('refuses a site\'s tracked release unless the server stops it, and lets an untracked one go', async () => {
+  // only its site (the system) stops one. A deploy's release, which serves
+  // nothing yet, is the owner's to stop (a person's for a published site),
+  // so a stuck deploy has a way out.
+  it('refuses a site\'s live release unless the server stops it, and a published site\'s deploy to an agent', async () => {
     const site = await insertSite({ projectId: PROJ, repos: [{ repo: PROJ, branch: 'main' }], follow: false, name: 'shop', port: 3000, namedWorkflowId: await namedWorkflowFor(PROJ) })
     await updateSite(site.id, { liveWorkspaceId: 'parent' })
     await (await getDb()).update(workspaces).set({ siteId: site.id }).where(eq(workspaces.workspaceId, 'parent'))
     await expect(stopWorkspace(local, 'parent')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('yaac site stop') as unknown })
     expect(teardowns.spawned).toEqual([])
-    await updateSite(site.id, { liveWorkspaceId: null })
-    await stopWorkspace(local, 'parent')
+    await updateSite(site.id, { liveWorkspaceId: 'other', deployWorkspaceId: 'parent', published: true, hostname: 'shop.example.com' })
+    const agent = { kind: 'workspace', workspaceId: 'w-agent', userId: BUILT_IN_USER_ID } as const
+    await expect(stopWorkspace(agent, 'parent')).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect(teardowns.spawned).toEqual([])
+    // A deploy's release still provisioning has no row naming its site yet.
+    registerProvisioning({ workspaceId: 'rel-new', projectId: PROJ, kind: 'create' })
+    await updateSite(site.id, { deployWorkspaceId: 'rel-new' })
+    await expect(stopWorkspace(agent, 'rel-new')).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    expect(listProvisioning().find((p) => p.workspaceId === 'rel-new')?.stopping).toBeFalsy()
+    await updateSite(site.id, { deployWorkspaceId: 'parent', published: false, hostname: null })
+    await stopWorkspace(agent, 'parent')
     await expect.poll(() => teardowns.spawned.length).toBe(1)
   })
 })

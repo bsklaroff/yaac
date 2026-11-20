@@ -57,10 +57,16 @@ describe('runSiteCommand', () => {
       published: false, port: 3000, adminPort: 3001, follow: true, repos: [{ repo: DEMO_PROJECT_ID, branch: 'main' }],
     })
     expect(await output('site-list')).toMatch(/^shop\s+unpublished\s+port 3000\s+live -$/)
-    expect(await output('site-edit', { name: 'shop', port: '4000', 'no-admin-port': '1', 'no-follow': '1' }))
+    expect(await output('site-edit', { name: 'shop', port: '4000', 'no-admin-port': '1', 'no-follow': '1', 'deploy-timeout': '2h' }))
       .toBe('updated site shop; its next deploy uses the change')
-    expect(await findSiteByName(DEMO_PROJECT_ID, 'shop')).toMatchObject({ port: 4000, follow: false })
+    expect(await findSiteByName(DEMO_PROJECT_ID, 'shop')).toMatchObject({ port: 4000, follow: false, deployTimeoutMinutes: 120 })
+    for (const timeout of ['soon', '1d1m']) {
+      await expect(run('site-edit', { name: 'shop', 'deploy-timeout': timeout })).rejects.toMatchObject({
+        code: 'VALIDATION', message: `--deploy-timeout takes a duration from 1m to 1d, like 30m or 2h (got "${timeout}")`,
+      })
+    }
     expect(await output('site-show', { name: 'shop' })).toContain('workflow app; repos demo@main')
+    expect(await output('site-show', { name: 'shop' })).toContain('; deploy timeout 2h')
 
     // Published by a person, its deploy is a person's to make.
     await publishSite(local, DEMO_PROJECT_ID, 'shop', { hostname: 'shop.example.com' })

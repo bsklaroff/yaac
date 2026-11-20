@@ -28,7 +28,7 @@ const WEB: SiteSummary = {
   lastDeploy: { workspaceId: 'w-fail0001', commits: [{ dir: 'web', commit: '9876543210' }], outcome: 'failed', error: 'step "build" failed', finishedAt: ago(2) },
 }
 const DETAIL: SiteDetail = {
-  ...WEB, port: 3000, adminPort: 3001, steps: {}, volume: 'db', createdAt: ago(60),
+  ...WEB, port: 3000, adminPort: 3001, deployTimeoutMinutes: 90, steps: {}, volume: 'db', createdAt: ago(60),
   repos: [{ dir: 'web', branch: 'main' }, { dir: 'api', commit: 'c'.repeat(40) }],
   live: { ...WEB.live!, running: true },
   releases: [{ workspaceId: 'w-live0001', commits: WEB.live!.commits, createdAt: ago(5) }],
@@ -90,6 +90,7 @@ describe('SitePane', () => {
     expect(await screen.findByText('Cloudflare tunnel connected')).toBeTruthy()
     expect(screen.getByText(/failed 2m ago: step "build" failed/)).toBeTruthy()
     expect(await screen.findByText(`web@main api@${'c'.repeat(8)}`)).toBeTruthy()
+    expect(screen.getByText('1h 30m')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'Deploy' }))
     fireEvent.change(await dialog().findByLabelText('Ref to deploy web at'), { target: { value: ' v2 ' } })
@@ -179,16 +180,25 @@ describe('SitePane', () => {
     ]))
   })
 
-  it('edits a site, clearing its admin port and volume, and starts a stopped one', async () => {
+  it('edits a site, clearing its admin port and volume, changing its deploy timeout, and starts a stopped one', async () => {
     mount(WEB, TEST_WHOAMI, true)
     const admin = await screen.findByLabelText<HTMLInputElement>('Admin port')
     expect(admin.value).toBe('3001')
     fireEvent.change(admin, { target: { value: '' } })
     fireEvent.change(screen.getByLabelText('Volume'), { target: { value: '' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const timeout = screen.getByLabelText<HTMLInputElement>('Deploy timeout')
+    expect(timeout.value).toBe('1h30m')
+    const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save' })
+    // An edit names one: blank would read as the default but change nothing.
+    for (const value of ['soon', '1d1m', '']) {
+      fireEvent.change(timeout, { target: { value } })
+      expect(save.title, value).toBe('Give the deploy timeout as a duration from 1m to 1d, like 30m or 2h')
+    }
+    fireEvent.change(timeout, { target: { value: '2h' } })
+    fireEvent.click(save)
     await waitFor(() => expect(sent('POST /api/site/edit')).toHaveLength(1))
     expect(sent('POST /api/site/edit')[0]).toEqual({
-      project: 'proj', name: 'web', port: 3000, workflow: 'release', follow: false,
+      project: 'proj', name: 'web', port: 3000, workflow: 'release', follow: false, deployTimeoutMinutes: 120,
       repos: [{ repo: 'r-web', branch: 'main' }, { repo: 'r-api', commit: 'c'.repeat(40) }], adminPort: null, volume: null,
     })
     expect(useUiStore.getState().selectedObject).toEqual({ kind: 'site', id: 'web' })

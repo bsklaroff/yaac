@@ -247,6 +247,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
   volume?: string
   repos: RepoStart[]
   follow?: boolean
+  deployTimeoutMinutes?: number
 }): Promise<void> {
   await authorizeProject(principal, projectId)
   const project = await getProjectRow(projectId)
@@ -267,6 +268,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
     ...(input.volume !== undefined ? { volumeId: await volumeId(projectId, input.volume) } : {}),
     repos,
     follow,
+    ...(input.deployTimeoutMinutes !== undefined ? { deployTimeoutMinutes: input.deployTimeoutMinutes } : {}),
   })
   if (follow) await approveStart(principal, siteSpec(site.id, await siteConfig(site)), repos)
 }
@@ -274,13 +276,13 @@ export async function createSite(principal: Actor, projectId: string, input: {
 /**
  * Change how a site is built: its owner's, and its agents' while it is
  * unpublished; a published site's, a person's who is an admin. The admin
- * port moves at once; the port, workflow, volume and repos apply from the
- * next deploy, so the live release keeps serving as it was started. A
- * following site deploys its target at the next reconcile if it is not
- * what the site serves. Refused while a deploy runs, which was
- * started with the old settings, except an edit that only stops following:
- * that publishes nothing, so whoever may stop the site may make it,
- * mid-deploy too.
+ * port moves at once; the port, workflow, volume, repos and deploy
+ * timeout apply from the next deploy, so the live release keeps serving
+ * as it was started. A following site deploys its target at the next
+ * reconcile if it is not what the site serves. Refused while a deploy
+ * runs, which was started with the old settings, except an edit that only
+ * stops following: that publishes nothing, so whoever may stop the site
+ * may make it, mid-deploy too.
  */
 export async function editSite(principal: Actor, projectId: string, name: string, input: {
   port?: number
@@ -289,6 +291,7 @@ export async function editSite(principal: Actor, projectId: string, name: string
   volume?: string | null
   repos?: RepoStart[]
   follow?: boolean
+  deployTimeoutMinutes?: number
 }): Promise<void> {
   if (input.follow === false && Object.entries(input).every(([k, v]) => k === 'follow' || v === undefined)) {
     await authorizeSiteEnd(principal, projectId)
@@ -317,6 +320,7 @@ export async function editSite(principal: Actor, projectId: string, name: string
     if (input.volume !== undefined) patch.volumeId = input.volume === null ? null : await volumeId(projectId, input.volume, id)
     if (repos !== undefined) patch.repos = repos
     if (input.follow !== undefined) patch.follow = input.follow
+    if (input.deployTimeoutMinutes !== undefined) patch.deployTimeoutMinutes = input.deployTimeoutMinutes
     const hasVolume = input.volume !== undefined ? input.volume !== null : row.volumeId !== undefined
     // The graph is checked against the volume and repos it will run with,
     // so dropping the volume, or a repo, that the graph needs is refused.
@@ -517,6 +521,7 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
     ...summary,
     port: row.port,
     ...(row.adminPort !== undefined ? { adminPort: row.adminPort } : {}),
+    deployTimeoutMinutes: row.deployTimeoutMinutes,
     steps: workflow?.workflow.steps ?? {},
     ...(volume !== undefined ? { volume: volume.name } : {}),
     repos: row.repos.map((r) => ({

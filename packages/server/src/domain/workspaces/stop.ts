@@ -3,8 +3,8 @@ import { cleanupWorkspaceDetached } from './cleanup'
 import { resolveWorkspaceId } from './resolve'
 import { startQueuedChildren, startWaitingWorkspaces } from './queued-workspaces'
 import { listProvisioning, stopProvisioning } from './provisioning'
-import { authorizeProject, type Actor } from '#domain/access'
-import { findWorkspaceRow, getSiteRow } from '#db'
+import { authorizeProject, requirePerson, type Actor } from '#domain/access'
+import { findWorkspaceRow, getSiteRow, listProjectSites } from '#db'
 import { harvestToolCredentials } from '#domain/auth'
 import { getProjectRow } from '#db'
 import { serverLog } from '#lib/log'
@@ -37,13 +37,8 @@ export async function stopWorkspace(principal: Actor, idOrPrefix: string): Promi
   const row = await findWorkspaceRow(workspaceId)
   const recorded = listProvisioning().find((p) => p.workspaceId === workspaceId) ?? row
   if (recorded) await authorizeProject(principal, recorded.projectId)
-  // A site's release is stopped only by its site (docs/public-sites.md),
-  // so neither a person nor an agent can take a site down by accident. One
-  // its site no longer tracks (a stop that failed, a deleted site) is the
-  // owner's to stop.
-  if (row?.siteId !== undefined && principal.kind !== 'system' && await siteTracks(row.siteId, workspaceId)) {
-    throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is a site's release; `
-      + 'stop the site with `yaac site stop`')
+  if (recorded && principal.kind !== 'system' && (row === undefined || row.siteId !== undefined)) {
+    await checkSiteRelease(principal, recorded.projectId, row?.siteId, workspaceId)
   }
   const provisioning = stopProvisioning(workspaceId)
   if (provisioning !== undefined) {
@@ -59,11 +54,26 @@ export async function stopWorkspace(principal: Actor, idOrPrefix: string): Promi
   return await stopRunning(principal, workspaceId, idOrPrefix)
 }
 
-/** Whether a site still names this release as live, deploying or draining. */
-async function siteTracks(siteId: string, workspaceId: string): Promise<boolean> {
-  const site = await getSiteRow(siteId)
-  return site !== undefined
-    && [site.liveWorkspaceId, site.deployWorkspaceId, site.drainWorkspaceId].includes(workspaceId)
+/**
+ * Refuse a stop of a site's release that is its site's to make
+ * (docs/public-sites.md "Deploys"): the live or draining release, so no
+ * one takes a site down by accident, and a published site's deploy unless
+ * a person cancels it, as only a person may stop a published site. An
+ * unpublished site's deploy, and a release its site no longer tracks (a
+ * stop that failed, a deleted site), are the owner's to stop. A release
+ * still provisioning has no row naming its site yet, so its site is found
+ * by the deploy that started it.
+ */
+async function checkSiteRelease(principal: Actor, projectId: string, siteId: string | undefined, workspaceId: string): Promise<void> {
+  const site = siteId !== undefined
+    ? await getSiteRow(siteId)
+    : (await listProjectSites(projectId)).find((s) => s.deployWorkspaceId === workspaceId)
+  if (site === undefined) return
+  if ([site.liveWorkspaceId, site.drainWorkspaceId].includes(workspaceId)) {
+    throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is a site's release; `
+      + 'stop the site with `yaac site stop`')
+  }
+  if (site.published && site.deployWorkspaceId === workspaceId) requirePerson(principal, 'cancel a published site\'s deploy')
 }
 
 async function stopRunning(principal: Actor, workspaceId: string, idOrPrefix: string): Promise<StoppedWorkspaceInfo> {

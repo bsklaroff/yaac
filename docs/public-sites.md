@@ -470,7 +470,10 @@ these ways:
   the graph, volume, port and repo layout that release ran rather than edits
   made since,
   whose release is `rerunOf` the dead one, in a fresh checkout, as a
-  Deployment replaces a failed pod from its spec. The dead release keeps its logs and
+  Deployment replaces a failed pod from its spec. Its deadline is the
+  site's current deploy timeout, so a replacement that crashes fails at
+  once but one that hangs leaves the site down for up to that timeout. The
+  dead release keeps its logs and
   its volume lease is taken over. Replacements back off the same way while
   each new one dies within 10 minutes of taking the hostname.
 
@@ -577,8 +580,10 @@ forgotten only once its stop succeeds, so a failed stop is retried.
    root, `shop @ web@1a2b3c4d api@5e6f7a8b` otherwise).
 2. **Build.** The release runs the steps that do not need the volume.
 3. **Hand over** (sites with a volume; see below).
-4. **Ready.** Wait for every step, up to the deploy's timeout (15 minutes
-   unless it names one).
+4. **Ready.** Wait for every step, up to the deploy's timeout: the one it
+   names, else the site's deploy timeout (an hour unless set, at most a
+   day). A step that fails or a service that exits fails the deploy at
+   once; only a release that hangs waits the timeout out.
 5. **Flip.** Write the site Service's selector, in one write. The router
    sees the new pod at its next DNS refresh, a second later where cluster
    DNS is uncached.
@@ -588,7 +593,13 @@ forgotten only once its stop succeeds, so a failed stop is retried.
    once.
 
 A deploy that fails or times out stops its release, which keeps its logs,
-and the site keeps the release it had. A second deploy while one runs is a
+and the site keeps the release it had. Stopping a deploy's release by hand
+(`yaac workspace stop <release>`; whoever may stop the project's
+workspaces, and for a published site only a person) cancels the deploy the
+same way, which
+is how a stuck one is ended without taking the site down (unless a volume
+handoff already stopped the old release; see below); the live and draining
+releases are the site's alone to stop. A second deploy while one runs is a
 `CONFLICT`, unless it is of the same commits (equal maps over the same
 repos), when it is that deploy, with that deploy's deadline. Rolling back is
 deploying earlier commits; `yaac site show` lists recent releases with their
@@ -737,7 +748,7 @@ never overlap, so migrations never race. A rollback does not undo a schema.
   as the site's requested deploy, and takes `approve: { workflowId }` to
   deploy that request as reviewed. `/create` and
   `/edit` take `repos` (each a folder or id at a branch or commit; on edit
-  the whole list) and `follow`; `/deploy` takes `refs` (folder or id to
+  the whole list), `follow` and `deployTimeoutMinutes`; `/deploy` takes `refs` (folder or id to
   branch or commit) beside `ref`, the form for a site of one repo. Commits
   are answered per repo, `{ dir, commit }`.
   `/edge` answers both tunnels' state and the site domain, and every site
@@ -761,7 +772,7 @@ never overlap, so migrations never race. A rollback does not undo a schema.
   hostname and the release it goes live with) or Unpublish, a requested
   deploy's Review, Stop or Start, Edit and Delete. The new-workspace pane's
   Site tab is the form: a row per repo (include, branch or commit, starting
-  empty) and a Follow switch. The edge is in view while naming a hostname
+  empty), a Deploy timeout and a Follow switch. The edge is in view while naming a hostname
   (a line under the Publish dialog's field that follows what is typed), in
   the site's pane and when deploying it, which is what stands in for an
   explicit choice: a hostname mistyped out of the site domain reads as

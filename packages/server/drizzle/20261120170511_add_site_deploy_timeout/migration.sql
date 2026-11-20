@@ -1,0 +1,1 @@
+ALTER TABLE "sites" ADD COLUMN "deploy_timeout_minutes" integer DEFAULT 60 NOT NULL;
