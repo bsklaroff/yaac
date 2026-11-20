@@ -60,4 +60,4 @@ To install from source on macOS or Linux, see
 
 ## License
 
-yaac is released under the [MIT License](LICENSE.md).
+Yaac is released under the [MIT License](LICENSE.md).
