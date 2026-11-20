@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type JSX, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApprovalDetails } from '#components/ApprovalDetails'
 import { api } from '#lib/api'
 import { MoreIcon, SiteIcon } from '#lib/icons'
@@ -528,6 +528,7 @@ function SiteFields({ project, site, onDone, onCancel }: {
   onCancel?: () => void
 }): JSX.Element {
   const projectId = project.id
+  const queryClient = useQueryClient()
   const volumes = useVolumes(projectId)
   const workflows = useSnapshotSelect(useShallow((s) => (s?.workflows ?? []).filter((w) => w.projectId === projectId)))
   const openObject = useUiStore((s) => s.openObject)
@@ -576,7 +577,12 @@ function SiteFields({ project, site, onDone, onCancel }: {
       } })
       return name.trim()
     },
-    onSuccess: onDone,
+    // The site's detail is cached by its snapshot summary, which carries
+    // none of its settings, so a saved edit would otherwise read stale.
+    onSuccess: async (saved) => {
+      await queryClient.invalidateQueries({ queryKey: ['site', projectId] })
+      onDone(saved)
+    },
   })
   const submit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault()

@@ -195,8 +195,11 @@ describe('SitePane', () => {
       expect(save.title, value).toBe('Give the deploy timeout as a duration from 1m to 1d, like 30m or 2h')
     }
     fireEvent.change(timeout, { target: { value: '2h' } })
+    const shows = server.called('GET /api/site/show').length
     fireEvent.click(save)
     await waitFor(() => expect(sent('POST /api/site/edit')).toHaveLength(1))
+    // Its settings are read again, rather than kept from before the save.
+    await waitFor(() => expect(server.called('GET /api/site/show').length).toBeGreaterThan(shows))
     expect(sent('POST /api/site/edit')[0]).toEqual({
       project: 'proj', name: 'web', port: 3000, workflow: 'release', follow: false, deployTimeoutMinutes: 120,
       repos: [{ repo: 'r-web', branch: 'main' }, { repo: 'r-api', commit: 'c'.repeat(40) }], adminPort: null, volume: null,
