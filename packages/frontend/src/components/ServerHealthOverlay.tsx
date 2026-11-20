@@ -109,6 +109,8 @@ export function ServerHealthOverlay({ open, onOpenChange }: {
     queryFn: () => api.server.usage.$get(),
     enabled: open,
     refetchInterval: POLL_MS,
+    // Reopening the overlay reads again rather than showing the last report.
+    staleTime: 0,
     // A refetch keeps the last report on screen, dimmed, rather than
     // flashing empty.
     placeholderData: keepPreviousData,
