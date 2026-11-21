@@ -1,9 +1,12 @@
 # Site identity: one-click sign-in for tailnet users
 
-The issuer of docs/plans/site-identity.md signs people in by email code.
-This plan adds a "Continue with Tailscale" button to it: a person on the
-install's tailnet signs in with one click, and an agent in a workspace
-signs in as its owner without the owner's inbox.
+Apps hosted as yaac sites can sign people in through one OIDC issuer: an
+unmodified [Logto](https://github.com/logto-io/logto) run as a public site
+of its own, with its Postgres on the site's volume and a `migrate` step
+that seeds and upgrades it on each deploy. Logto signs people in by email
+code. This plan adds a "Continue with Tailscale" button to it: a person
+on the install's tailnet signs in with one click, and an agent in a
+workspace signs in as its owner without the owner's inbox.
 
 Sign-in comes from [Dex](https://github.com/dexidp/dex) with its
 `authproxy` connector, run unmodified in the issuer's own pod, which Logto
@@ -11,9 +14,8 @@ offers as a sign-in button. yaac changes in two small ways: a public site
 may also answer a tailnet hostname, and an agent's request to a tailnet
 site says it came over HTTPS (see "The yaac changes").
 
-It builds on the issuer as that plan leaves it and redoes none of it: one
-more step in the issuer's workflow, one connector in Logto and one setting
-on the issuer's site.
+On the issuer it costs one more step in its workflow, one connector in
+Logto and one setting on its site.
 
 ## How a sign-in flows
 
@@ -243,6 +245,5 @@ issuer:
   identity, which every app there would have to reason about, and a second
   release, volume and deploy to keep in step with the issuer's.
 - **Trusted-header sign-in in the issuer itself.** Logto has none. An
-  issuer of our own on better-auth would
-  (docs/plans/site-identity.md, "Alternatives considered"), at the cost
-  of yaac owning the authentication code.
+  issuer of our own on better-auth would, at the cost of yaac owning the
+  authentication code.
