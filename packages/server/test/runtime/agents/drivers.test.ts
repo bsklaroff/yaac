@@ -2955,7 +2955,7 @@ describe('agentDriver', () => {
           // A shared background server would run yaac's hooks outside the pane.
           '-c', 'features.daemon_auto_start=false',
           // Its worktrees would go in the project's shared codex home.
-          '-c', 'mcp_servers.codex_worktrees={command="false",enabled=false}',
+          '-c', 'mcp_servers.codex_tui={command="false",enabled=false}',
           // Trust the folder and run yaac's hooks without asking, so no startup
           // screen holds up the opening message.
           '-c', 'projects={"/data/wt"={trust_level="trusted"}}',

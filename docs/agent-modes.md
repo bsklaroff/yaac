@@ -239,12 +239,12 @@ restart's `session/load` replay can regrow it within one pass, and starts
 over: the pane replaces its content.
 
 A restart's `session/load` replays the conversation into the new record,
-but not all of it: claude and pi replay only what followed their latest
-compaction. So the history before the life comes from the tool's own files
-instead, cut at the life's start (see "Pages and compaction"), and the
-replay contributes only session state: commands, models and context usage
-(`RecordOrigin`). Where the tool's history is not found, the replay is
-shown as all there is of it.
+but not always all of it (pi replays only what followed its latest
+compaction), and undated. So the history before the life comes from the
+tool's own files instead, cut at the life's start (see "Pages and
+compaction"), and the replay contributes only session state: commands,
+models and context usage (`RecordOrigin`). Where the tool's history is not
+found, the replay is shown as all there is of it.
 
 Every reader holds one page at a time, so memory stays bounded by the page
 size whatever the record's. Reading still costs time in the record's size,
@@ -463,9 +463,8 @@ typed mid-turn where its adapter allows:
   counts as running until the agent reports itself idle, both live and when
   a reattach reads the record (see "The agent can start turns itself").
 - **opencode queues.** Its TUI steers by default, but its acp refuses a
-  second `session/prompt` while one runs and has no steering method, and the
-  adapter is compiled into opencode's binary rather than shipped as a
-  script yaac could patch.
+  second `session/prompt` while one runs. It advertises `_session/steering`,
+  which yaac does not send it.
 
 **The queue.** A message that is not steered waits in `AcpConversation`'s
 queue and runs as the next turn. The queue is server state, not history, so

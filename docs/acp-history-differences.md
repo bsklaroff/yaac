@@ -39,8 +39,8 @@ that mapping cannot bring back.
   life read back from it continues the page it lands on.
 - **History past the transcript cap.** The history before the life is read
   only up to the life's start, under the 64 MB transcript cap. Past it, the
-  record's `session/load` replay stands in, which claude and pi send only
-  from their latest compaction, so the turns before that are not shown.
+  record's `session/load` replay stands in, which pi sends only from its
+  latest compaction, so pi's turns before that are not shown.
   The replayed messages are also undated, since the replay says only when
   it was sent (docs/agent-modes.md, "Where history lives"), and a subagent
   or task launched in an earlier life shows no "Started" time.

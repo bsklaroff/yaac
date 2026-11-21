@@ -34,8 +34,8 @@
  *    (`AcpRecordWriter.model`) before the turn's prompt.
  *
  * Dropped on purpose:
- *  - DynamicToolCall: only an app-server client registers dynamic tools, and
- *    the TUI registers none.
+ *  - DynamicToolCall: the TUI's thread tools (`codexLaunchConfig`), which
+ *    act on the codex home rather than the checkout.
  *  - EnteredReviewMode, ExitedReviewMode: the review's text is also the
  *    AgentMessage after it, which is shown. HookPrompt, FunctionCallOutput,
  *    Sleep: the adapter shows none of them.

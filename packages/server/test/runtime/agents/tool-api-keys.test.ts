@@ -119,8 +119,10 @@ describe('ensureToolApiKeyConfig', () => {
       pi: { ...piProviderInfo(CUSTOM_PROVIDER), endpoint },
       omp: { ...ompProviderInfo(CUSTOM_PROVIDER), endpoint },
     })).toEqual({ opencodeConfigFile: 'yaac-keys/custom.json' })
-    // omp takes pi's entry in YAML (checked against 18.18.6 with a mock
+    // omp takes pi's entry in YAML (checked against 19.0.1 with a mock
     // server, keyless and with a key), the user's comment and entries kept.
+    // A model without levels says so: omp otherwise guesses it reasons and
+    // sends an effort.
     expect(await fs.readFile(path.join(dir, 'omp', 'agent', 'models.yml'), 'utf8')).toBe([
       '# mine',
       'providers:',
@@ -141,6 +143,7 @@ describe('ensureToolApiKeyConfig', () => {
       '            - high',
       '          defaultLevel: low',
       '      - id: llama',
+      '        reasoning: false',
       '',
     ].join('\n'))
 

@@ -1699,13 +1699,9 @@ export const CLAUDE_SDK_MESSAGE = '_claude/sdkMessage'
  * report, the task messages are how claude reports subagents and background
  * tasks to a client that is not AIR (`AcpProjection.applyClaudeSdk`), and a
  * compaction's boundary is where its trigger and token counts are.
- *
- * `promptSuggestions` is off because the adapter otherwise has claude
- * predict a follow-up prompt after every turn, which yaac does not show.
  */
 export const CLAUDE_SESSION_META = {
   claudeCode: {
-    options: { promptSuggestions: false },
     emitRawSDKMessages: [
       'session_state_changed', 'task_started', 'task_updated', 'task_progress', 'task_notification',
       'background_tasks_changed', 'compact_boundary',

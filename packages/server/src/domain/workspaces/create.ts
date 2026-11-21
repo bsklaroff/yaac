@@ -165,6 +165,13 @@ const OMP_CONTAINER_HOME = '/home/yaac/.omp'
 /** Where codex keeps its sqlite state (CODEX_SQLITE_HOME). Per workspace,
  *  outside the shared home, like pi's sessions. */
 const CODEX_SQLITE_CONTAINER_DIR = '/home/yaac/.codex-sqlite'
+/** omp's background daemon (OMP_DAEMON_DIR): its socket, lock and SQLite
+ *  store. By default it lives in the user's home and serves every omp of
+ *  that user, with the environment of whichever started it, so each
+ *  workspace gets its own. A pod keeps it on its own root filesystem, which
+ *  omp creates it in: an emptyDir would bind its sockets at the node's
+ *  volume path, past the socket path limit. */
+const OMP_DAEMON_CONTAINER_DIR = '/home/yaac/.omp-daemon'
 
 /**
  * Each path plus its realpath where that differs, for places where a tool
@@ -1451,6 +1458,7 @@ async function provisionWorkspace(
   env.push(`CODEX_SQLITE_HOME=${CODEX_SQLITE_CONTAINER_DIR}`)
   env.push('PI_SKIP_VERSION_CHECK=1')
   env.push(`YAAC_OMP_AGENT_DIR=${OMP_CONTAINER_HOME}/agent`)
+  env.push(`OMP_DAEMON_DIR=${OMP_DAEMON_CONTAINER_DIR}`)
   // Containerless: one pnpm store per project, so each workspace's
   // `node_modules` hardlinks into it instead of holding a full copy. Set
   // under both names since pnpm 11+ reads only `pnpm_config_` and 10.x only
@@ -1549,6 +1557,10 @@ async function provisionWorkspace(
       : []),
     // The tmux socket; every client reaches it from inside the pod.
     { source: { kind: 'emptyDir' }, mountPath: CONTAINER_TMUX_DIR },
+    // Containerless only: omp's daemon, in the workspace's own state dir.
+    ...(runtime.kind === 'containerless'
+      ? [{ source: { kind: 'hostPath' as const, path: path.join(workspaceStateDir(projectId, workspaceId), 'omp-daemon') }, mountPath: OMP_DAEMON_CONTAINER_DIR }]
+      : []),
     // Global, so the next workspace gets the warm cache wherever it runs.
     ...cacheVolumeEntries.map(([key, containerPath]): WorkspaceMount => ({
       source: { kind: 'hostPath', path: cacheVolumeDir(projectId, key) },

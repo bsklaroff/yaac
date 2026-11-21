@@ -44,11 +44,13 @@ import {
  * their reasoning levels in the tool's own form: opencode `variants` that
  * each send a `reasoningEffort`, pi's `thinkingLevelMap` (every level the
  * model lacks mapped to null, or pi would send its provider default), and
- * omp's `thinking.efforts`. With no key the workspace sets no variable:
- * opencode then sends no credential, and pi's and omp's key falls back to a
- * dummy, which they need before they will offer the models.
+ * omp's `thinking.efforts` (or `reasoning: false`, since omp guesses that an
+ * undeclared model reasons and sends it an effort). With no key the
+ * workspace sets no variable: opencode then sends no credential, and pi's
+ * and omp's key falls back to a dummy, which they need before they will
+ * offer the models.
  *
- * Verified against pi 1.5.1, omp 18.18.6 and @opencode/cli 2.2.6.
+ * Verified against pi 1.5.2, omp 19.0.1 and @opencode/cli 2.2.7.
  */
 
 /** A provider row, plus the endpoint when it is `custom`. */
@@ -90,7 +92,7 @@ function ompModel(m: EndpointModel): object {
     ...named(m),
     ...(efforts.length > 0
       ? { reasoning: true, thinking: { mode: 'effort', efforts, ...(defaultLevel !== undefined ? { defaultLevel } : {}) } }
-      : {}),
+      : { reasoning: false }),
   }
 }
 
