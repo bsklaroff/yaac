@@ -155,7 +155,7 @@ describe('ensureAgentReporters', () => {
     expect((await fs.lstat(path.join(homes.codexDir, 'hooks.json'))).isFile()).toBe(true)
   })
 
-  // Against the extension API of pi 1.5.1.
+  // Against the extension API of pi 1.5.2.
   it("reports pi's conversation, model and thinking level, ends each conversation as pi does, submits messages sent to it, and warms its cache between runs only when the session says so", async () => {
     await ensureAgentReporters(await roots())
     const messages = path.join(dir, 'pi-agent', 'yaac-messages')
@@ -222,8 +222,7 @@ describe('ensureAgentReporters', () => {
     await expect(fs.access(path.join(messages, 'pi-1.txt'))).rejects.toThrow()
   })
 
-  // Against omp 18.18.6, which loads pi extensions as its own and reports no
-  // thinking level until one is set.
+  // Against omp 19.0.1, which loads pi extensions as its own.
   it("reports omp's conversation, model and mode under omp's own name, takes messages from omp's agent dir, and marks its first message", async () => {
     await ensureAgentReporters(await roots())
     const messages = path.join(homes.ompAgentDir, 'yaac-messages')
@@ -292,7 +291,7 @@ describe('ensureAgentReporters', () => {
     ])
   })
 
-  // Against opencode 2.2.6's events. An agent switch arrives with the next
+  // Against opencode 2.2.7's events. An agent switch arrives with the next
   // prompt as `session.agent.selected`; subagent sessions (`parentID`) are
   // not the pane's.
   it("reports opencode's conversation, model, variant and agent, and ends the conversation on dispose", async () => {

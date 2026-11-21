@@ -149,12 +149,12 @@ export const DEFAULT_AGENT_MODE: AgentMode = 'acp'
 /** claude's `AGENT_CLIS.claude.binarySha256`, typed to be looked up by any
  *  platform name. */
 const CLAUDE_BINARY_SHA256: Partial<Record<string, string>> = {
-  'darwin-arm64': 'abc9feeeca8091d51b623291e044cf0528c2f6b74e0c1d6ef671d52c73f7cd3c',
-  'darwin-x64': 'f4e04d8726ee1343999679ad745eca2f6d263c2941f132b1fdca4283ee6d5f02',
-  'linux-arm64': '6bea0633074627ba79328e00115ed0588c3acf906a8463612b25db696dbfd3f0',
-  'linux-x64': '426c33815ca6645a772f722fbff10dbf2cbdb124a8aeab733c1365dbf8bbf61f',
-  'linux-arm64-musl': 'd223ea603b4fe8521d35a47f1972fbb36f1028a40927f16160e6258e0b92d597',
-  'linux-x64-musl': 'efc4a3d94daf10c550cde589a4add37f67519be54252ba88f27e9627f7ad62b4',
+  'darwin-arm64': 'e85547190ef8cd983033ba61b17194045a6fea00035da349efeabed86badacc9',
+  'darwin-x64': 'bf40a5555c01e6afe6c028fbe0782f93580f4f0835fd5d13022e039ec76507e1',
+  'linux-arm64': '307f8bada27b37db7553fac75e86004e3dbff5a931ffc611b54fe710ce1eb521',
+  'linux-x64': 'a982d38030b97e750848add2cbb2df6d9a70d5544a22ca9b216a349ba25865e8',
+  'linux-arm64-musl': 'b393a5a8d69ec68e78ef54ca908f282f89236a2364b529898b666755677b0dcf',
+  'linux-x64-musl': '641ef19622b485b5379491f10c5c60ebace53775f1cc700dce03b3d742bbb57a',
 }
 
 /**
@@ -183,17 +183,17 @@ const CLAUDE_BINARY_SHA256: Partial<Record<string, string>> = {
 export const AGENT_CLIS = {
   claude: {
     package: '@anthropic-ai/claude-code',
-    version: '2.1.321',
+    version: '2.1.328',
     binarySha256: CLAUDE_BINARY_SHA256,
   },
   codex: {
     package: '@openai/codex',
-    version: '0.166.0',
-    installScriptSha256: '44ac252c1b9a68c02bdf0de8e1c6cbfde36fc1afa8684624962eae7d4c461e70',
+    version: '0.170.0',
+    installScriptSha256: '5a8eea5c3716b555fd8e539db7e5b0e7470bcee5693191b4758a0de373624a70',
   },
-  opencode: { package: '@opencode/cli', version: '2.2.6' },
-  pi: { package: '@earendil-works/pi-coding-agent', version: '1.5.1' },
-  omp: { package: '@oh-my-pi/pi-coding-agent', version: '18.18.6' },
+  opencode: { package: '@opencode/cli', version: '2.2.7' },
+  pi: { package: '@earendil-works/pi-coding-agent', version: '1.5.2' },
+  omp: { package: '@oh-my-pi/pi-coding-agent', version: '19.0.1' },
 } as const satisfies Record<AgentTool, {
   package: string
   version: string
@@ -206,7 +206,7 @@ export const AGENT_CLIS = {
  * Installed from npm beside the agents, by the image and on a host, with its
  * install script, which puts the platform's binary in place.
  */
-export const BUN_RUNTIME = { package: 'bun', version: '1.4.4' } as const
+export const BUN_RUNTIME = { package: 'bun', version: '1.4.5' } as const
 
 /**
  * The ACP adapter each tool uses in `acp` mode. The image install steps, the
@@ -225,13 +225,13 @@ export const ACP_ADAPTERS = {
   claude: {
     binary: 'claude-agent-acp',
     package: '@agentclientprotocol/claude-agent-acp',
-    verified: '0.103.0',
+    verified: '0.109.0',
     needsCli: false,
   },
   codex: {
     binary: 'codex-acp',
     package: '@agentclientprotocol/codex-acp',
-    verified: '2.6.0',
+    verified: '2.8.0',
     needsCli: true,
   },
   opencode: {
@@ -265,8 +265,8 @@ export const ACP_ADAPTERS = {
  * - `bypass`        no prompts. Suits a sandboxed workspace, where the
  *                   sandbox is the containment.
  * - `auto`          no routine prompts; a reviewer model blocks dangerous
- *                   actions. claude gates it by plan and fails in-pane when
- *                   the account is ineligible.
+ *                   actions. claude gates it by plan and starts in manual
+ *                   when the account is ineligible.
  * - `accept-edits`  file edits in the workspace run unprompted; anything else
  *                   (other shells, out-of-tree paths, network) still asks.
  * - `manual`        every tool use asks first.

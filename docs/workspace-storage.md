@@ -275,8 +275,8 @@ hand-started one reports as well:
 Each tool also ends its conversation (claude's and codex's `SessionEnd`, pi's
 `session_shutdown`, the plugin's dispose), which clears the option when the
 agent quits. That matters in a shell pane that outlives the agent. (Verified
-against claude 2.1.321, codex-cli 0.166.0, pi 1.5.1, omp 18.18.6 and
-@opencode/cli 2.2.6.)
+against claude 2.1.328, codex-cli 0.170.0, pi 1.5.2, omp 19.0.1 and
+@opencode/cli 2.2.7.)
 
 A conversation is **active** exactly when a live agent names it. A pane option
 dies with its pane, and a new pod's tmux starts with none, so a previous pod's
@@ -488,7 +488,7 @@ One tool reads another's: omp loads Claude Code's user config whenever
 `CLAUDE_CONFIG_DIR` is set, as every workspace sets it. So the project's
 Claude skills, and the MCP servers in its `.claude.json` with any secrets in
 their config, reach its omp workspaces too. Claude's `settings.json` hooks do
-not (checked against omp 18.18.6).
+not (checked against omp 19.0.1).
 
 | `history/<id>/…` | Holds | k8s | containerless |
 |---|---|---|---|
@@ -518,6 +518,16 @@ omp keeps its logs there (its wrapper drops pi's session dir), and a pod
 mounts the history over it. A host leaves them in the project's omp home,
 one folder per checkout, found by conversation id; deleting a workspace does
 not delete them.
+
+omp also runs a background daemon (shell services, language servers, its
+skill-description lock) that it shares between every omp of the user,
+started with the environment of whichever omp started it, and keeps its
+socket, lock and SQLite store in the user's home. So each workspace names
+its own with `OMP_DAEMON_DIR`: a folder on the pod's own root filesystem
+under k8s (an `emptyDir` would bind its sockets at the node's volume path,
+past the socket path limit), and a folder of the workspace's state dir
+under containerless. It is not history:
+nothing reads it after the daemon exits.
 
 Auto-memory stays shared, per repo. claude keys it on the git root it starts
 in, which is the cwd itself: a checkout's root, or a workspace root with no
@@ -965,10 +975,15 @@ which yaac makes every checkout. Those worktrees go under
 `$CODEX_HOME/worktrees`, the project's shared codex home, so each one would
 outlive the workspace, and under k8s its install would land on the shared
 tier. codex has no setting that turns the tool off: the TUI serves it from
-an MCP server of its own, `codex_worktrees`, and starts none when a
-configured server already has that name. So yaac launches every codex TUI
-with a disabled server of that name (`codexLaunchConfig`), and under k8s
-the image's `/etc/codex/config.toml` declares the same server, so a codex
+an MCP server of its own, `codex_tui`, and starts none when a configured
+server already has that name. So yaac launches every codex TUI with a
+disabled server of that name (`codexLaunchConfig`), and under k8s the
+image's `/etc/codex/config.toml` declares the same server, so a codex
 started by hand in a pod lacks the tool too. Under containerless one started
 by hand still has it. An `acp` codex runs `codex app-server`, which does not
 offer it.
+
+Without its server the TUI registers a few thread tools directly (list,
+read, wait on, rename and archive threads). They act on the threads of the
+shared codex home, which the agent's shell can already read and write, so
+yaac leaves them.

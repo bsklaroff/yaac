@@ -18,7 +18,7 @@ import type { AcpEvent } from '@yaac/shared/acp'
  * `yaac-opencode-checkpoint` wrote from the database that same run left.
  * `tui-rows.jsonl` is a conversation driven through the TUI: a `!command`,
  * a subagent, an answered question, an interrupt and a manual `/compact`.
- * The pinned 2.2.6 streams and stores the same shapes for everything the
+ * The pinned 2.2.7 streams and stores the same shapes for everything the
  * reader uses: its rows differ only in fields the reader ignores (provider
  * data is named `native`, and a compaction keeps `metadata.keepID` in place
  * of `recent`).
@@ -217,7 +217,7 @@ describe('opencodeTranscriptAsAcp', () => {
   it('renders what only the TUI writes, shows a model switch, and places a subagent at the call still running it', async () => {
     installFakeWorkspaceDriver({ kind: 'k8s' })
     const rows = await rowsOf('tui-rows.jsonl')
-    // The session runs on mock-1, which opencode 2.2.6 names only on its
+    // The session runs on mock-1, which opencode 2.2.7 names only on its
     // replies (it writes no switch row for a session's first model), then
     // switches to mock-2 before the last prompt, whose reply mock-2 writes.
     const last = rows.findIndex((r) => (r.data as { text?: string } | undefined)?.text === 'after compact')

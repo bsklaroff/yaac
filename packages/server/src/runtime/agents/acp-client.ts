@@ -109,8 +109,8 @@ export interface AcpSessionProfile {
    * Whether a message sent mid-turn can join the running turn
    * (`_session/steering`), as the tool's TUI lets it. Otherwise it waits for
    * the turn to end: opencode's acp refuses a second `session/prompt`
-   * outright and has no steering method. pi-acp steers only as yaac patches
-   * it (dockerfiles/agent-patches/pi-acp.js).
+   * outright, and yaac does not use the `_session/steering` it advertises.
+   * pi-acp steers only as yaac patches it (dockerfiles/agent-patches/pi-acp.js).
    */
   steers: boolean
   /** `_meta` sent with `session/new` and `session/load`. */

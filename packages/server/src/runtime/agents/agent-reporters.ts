@@ -19,8 +19,8 @@ import { OMP_PLAN_VAR, OMP_FIRST_MESSAGE_OPTION } from './omp'
  * omp's and opencode's run one at a time, in order, since pane options are
  * last-write-wins.
  *
- * Verified against claude 2.1.321, codex-cli 0.166.0, pi 1.5.1, omp 18.18.6
- * and @opencode/cli 2.2.6.
+ * Verified against claude 2.1.328, codex-cli 0.170.0, pi 1.5.2, omp 19.0.1
+ * and @opencode/cli 2.2.7.
  */
 
 /**
@@ -83,7 +83,6 @@ const CODEX_HOOKS: Hooks = [
  * It also takes `yaac-mama send` messages (`buildMessageCmd`): on
  * `PI_MESSAGE_KEY` it submits the file left for its conversation, queued
  * as a follow-up mid-turn, without touching what the user has in the editor.
- * omp reports no thinking level until one is set.
  *
  * omp's copy also keeps plan mode in step with the posture (`OMP_PLAN_VAR`)
  * and reports each mode change, entering or leaving plan mode by any route,
@@ -92,7 +91,7 @@ const CODEX_HOOKS: Hooks = [
  * handlers return, and answers `busy` until then, so the switch is retried
  * outside the handler. It marks the pane `pending` as it loads and `drawn`
  * at omp's first message (`OMP_FIRST_MESSAGE_OPTION`), which omp's status
- * waits on. Verified against omp 18.18.6.
+ * waits on. Verified against omp 19.0.1.
  *
  * It also holds the session's idle cache warming option (docs/sessions.md,
  * "Agent options"): between runs it stops each warm-up the agent would send

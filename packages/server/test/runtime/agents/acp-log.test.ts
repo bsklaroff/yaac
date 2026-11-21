@@ -1189,7 +1189,7 @@ describe('replayAcpLog', () => {
   })
 
   it('projects pi\'s bash output, which it sends as `terminal_output` without being asked', () => {
-    // Shapes as pi-acp 0.0.34 sends them, running pi 1.5.1.
+    // Shapes as pi-acp 0.0.34 sends them, running pi 1.5.2.
     const events = replayAcpLog([
       update({
         sessionUpdate: 'tool_call', toolCallId: 'call_1', title: 'echo hello-from-bash; echo line2', kind: 'execute', status: 'pending',

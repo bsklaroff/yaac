@@ -191,7 +191,7 @@ interface OpencodeConfig {
 
 /**
  * The permission actions opencode knows, read off the pinned binary
- * (`@opencode/cli@2.2.6`): its tools plus the wildcard and
+ * (`@opencode/cli@2.2.7`): its tools plus the wildcard and
  * `external_directory`. Unknown actions are accepted silently and match
  * nothing, so `drivers.test.ts` checks every action used below against
  * this list. Re-read it when the pin in dockerfiles/Dockerfile.tools moves.
@@ -248,10 +248,9 @@ const OPENCODE_POSTURE: Record<PermissionMode, OpencodeConfig> = {
  * `envJsonAssignment`'s.
  *
  * An effort is a model variant, which opencode's config takes only on an
- * agent, beside the model it applies to (a `model#variant` there is dropped
- * as a legacy reference, checked against 2.2.6). It goes on both built-in
- * agents, so a Shift+Tab between them keeps it. `default` (no variant) needs no
- * entry.
+ * agent, beside the model it applies to (`variant`, rather than the legacy
+ * `model#variant` form). It goes on both built-in agents, so a Shift+Tab
+ * between them keeps it. `default` (no variant) needs no entry.
  */
 export function opencodeConfigArg(
   mode: PermissionMode,
@@ -386,9 +385,10 @@ export function buildAgentCmd(spec: AgentCmdSpec): string {
   // claude takes every posture on `--permission-mode`
   // (`bypassPermissions` rather than `--dangerously-skip-permissions`, to
   // keep one flag). `auto` depends on the subscription plan; an ineligible
-  // account fails in the pane. `manual` rather than the undocumented
-  // `default`: if it is ever dropped, launch fails loudly instead of
-  // running lax.
+  // account starts in manual, which the reporter records at the first
+  // prompt or turn end, as it does a Shift+Tab. `manual` rather than the
+  // undocumented `default`: if it is ever dropped, launch fails loudly
+  // instead of running lax.
   const posture = {
     bypass: 'bypassPermissions',
     auto: 'auto',
