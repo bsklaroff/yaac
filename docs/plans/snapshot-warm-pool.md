@@ -10,6 +10,11 @@ and that work would be thrown away once the KEP lands. The prep in
 "Before the KEP" below is allowed, because it pays off with or without
 snapshots.
 
+That block is the `k8s` driver's. Under the `pamir` driver
+(docs/plans/off-kubernetes.md) the driver starts each sandbox itself, so a
+restore needs no KEP, and that plan's checkpoint spike is where this work
+would start.
+
 ## Goal
 
 A prewarmed spare (`domain/workspaces/prewarm.ts`) is a

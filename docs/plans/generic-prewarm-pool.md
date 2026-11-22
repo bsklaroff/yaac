@@ -972,8 +972,8 @@ outlives a restart of the agent's pod.
 - **Docs when it ships.** A reference in `docs/`, and updates to
   docs/workspace-storage.md, docs/node-local-workspaces.md,
   docs/server-in-cluster.md and docs/cluster-setup.md. This plan is then
-  deleted, and docs/plans/snapshot-warm-pool.md and the "Spare pool" section
-  of docs/plans/sandbox-driver.md are brought up to date.
+  deleted, and docs/plans/snapshot-warm-pool.md and the "Spare pool" item
+  of docs/plans/off-kubernetes.md are brought up to date.
 
 ## Not yet verified
 

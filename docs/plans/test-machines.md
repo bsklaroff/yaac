@@ -285,5 +285,5 @@ to docs/workspace-egress.md, and delete this plan.
   firewall from outside instead of trusting the machine's report.
 - **Waiting**: `acquire --wait`, or a queued workspace that starts when a
   machine frees.
-- **The sandbox driver** (docs/plans/sandbox-driver.md) has the same proxy,
+- **The `pamir` driver** (docs/plans/off-kubernetes.md) has the same proxy,
   so it could lease machines once its per-listener identity exists.
