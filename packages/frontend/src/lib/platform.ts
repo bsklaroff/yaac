@@ -17,6 +17,12 @@ export function hidesTitleBar(): boolean {
   return IS_MAC && windowApi()?.app?.kind === 'desktop'
 }
 
+/** Whether the page can save a download. The iPhone app's web view
+ *  saves none, so a download offered there would do nothing. */
+export function canDownload(): boolean {
+  return windowApi()?.app?.kind !== 'ios'
+}
+
 let covers = 0
 
 /**

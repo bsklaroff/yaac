@@ -93,6 +93,7 @@ export {
   FolderPlus as NewFolderIcon,
   FileUp as UploadFilesIcon,
   FolderUp as UploadFolderIcon,
+  Download as DownloadIcon,
   Eye as ShowIcon,
   EyeOff as HideIcon,
   Link2 as SymlinkIcon,

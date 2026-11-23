@@ -23,7 +23,7 @@ import { useCheckout } from '#lib/checkouts'
 import { useDiffFind, type DiffMatch } from '#lib/useDiffFind'
 import { usePinchSize } from '#lib/usePinchSize'
 import { useSavedScroll } from '#lib/useSavedScroll'
-import { IS_MAC } from '#lib/platform'
+import { IS_MAC, canDownload } from '#lib/platform'
 import { paneTargets } from '#lib/layout'
 import { PHONE_TEXT_PX, focusRaisesKeyboard, useIsMobile } from '#lib/viewport'
 import { droppedUploads, pickedUploads, sendUploads, type Upload } from '#lib/upload'
@@ -37,6 +37,7 @@ import {
   createWorkspaceFolder,
   deleteWorkspaceEntry,
   discardFileSavers,
+  downloadWorkspaceEntry,
   fileKey,
   fileTargetPath,
   filterPaths,
@@ -50,7 +51,7 @@ import {
   type TreeNode,
 } from '#lib/files'
 import {
-  ChevronIcon, CollapseAllIcon, ExpandAllIcon, FileCodeIcon, FileConfigIcon, FileIcon,
+  ChevronIcon, CollapseAllIcon, DownloadIcon, ExpandAllIcon, FileCodeIcon, FileConfigIcon, FileIcon,
   FileImageIcon, FileJsonIcon, FileShellIcon, FileTextIcon, FlatListIcon, FolderIcon, FolderOpenIcon, HideIcon,
   LoadingIcon, MoreIcon, NewFileIcon, NewFolderIcon, SearchIcon, ShowIcon, SymlinkIcon, TreeListIcon,
   UploadFilesIcon, UploadFolderIcon, WarningIcon,
@@ -428,6 +429,16 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
     }
   }
 
+  /** Download a file, or a folder as a zip (`''`: the whole workspace). */
+  const download = async (path: string): Promise<void> => {
+    setActionError(null)
+    try {
+      await downloadWorkspaceEntry(workspaceId, path)
+    } catch (e) {
+      setActionError(errMessage(e))
+    }
+  }
+
   /** Upload into `parent`, opening it so the result shows. Uploads may
    *  overlap, so the progress line counts across all of them. Files already
    *  there are offered for replacing once the rest are done. */
@@ -512,12 +523,22 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
                 <YMenuItem icon={UploadFolderIcon} onClick={() => openPicker(folderInput.current, folder)}>
                   Upload folder…
                 </YMenuItem>
+                {row === null && canDownload() && (
+                  <YMenuItem icon={DownloadIcon} onClick={() => { void download('') }}>
+                    Download workspace as zip
+                  </YMenuItem>
+                )}
               </>
             )}
           </>
         )}
         {row !== null && (
           <>
+            {canDownload() && row.change?.status !== 'deleted' && row.symlink?.target !== null && (
+              <YMenuItem icon={DownloadIcon} onClick={() => { void download(row.path) }}>
+                {row.dir ? 'Download as zip' : 'Download'}
+              </YMenuItem>
+            )}
             <YMenuItem onClick={() => startEdit({ kind: 'rename', path: row.path })}>Rename</YMenuItem>
             <YMenuItem onClick={() => setConfirmDelete(row)}>Delete</YMenuItem>
           </>
@@ -716,6 +737,7 @@ export function WorkspaceFiles({ workspaceId, changedOnly = false, range }: {
           { label: 'New folder', icon: NewFolderIcon, onClick: () => startEdit({ kind: 'folder', parent: createParent() }) },
           { label: 'Upload files', icon: UploadFilesIcon, onClick: () => openPicker(filesInput.current, createParent()) },
           { label: 'Upload folder', icon: UploadFolderIcon, onClick: () => openPicker(folderInput.current, createParent()) },
+          ...canDownload() ? [{ label: 'Download workspace', icon: DownloadIcon, onClick: () => { void download('') } }] : [],
           {
             label: anyFolderOpen ? 'Collapse all folders' : 'Expand all folders',
             icon: anyFolderOpen ? CollapseAllIcon : ExpandAllIcon,

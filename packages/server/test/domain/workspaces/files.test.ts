@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { inflateRawSync } from 'node:zlib'
 import { ServerError } from '@yaac/shared/errors'
 import { repoDir, setDataDir, workspaceDir } from '@yaac/shared/project-paths'
 import { testTmpBase } from '@yaac/test-utils/tmp'
@@ -12,9 +14,10 @@ import { closeDb } from '#db/client'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { createCheckout, resolveRemoteRef } from '#domain/git'
 import { execFileAsync } from '#lib/shell'
-import { createWorkspaceFolder, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
+import { createWorkspaceFolder, deleteWorkspaceEntry, downloadWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, uploadWorkspaceFile, writeWorkspaceFile } from '#domain/workspaces'
 import { git } from '@yaac/test-utils/git'
 import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, forgetWorkspaceChanges } from '#domain/workspaces/changes'
+import { MAX_DOWNLOAD_FILES } from '#domain/workspaces/tree-ops'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
 import { applyWorkspaceEvent, BUILT_IN_USER_ID, recordProject } from '#db'
 import type { WorkspaceFiles } from '@yaac/shared/types'
@@ -946,12 +949,184 @@ describe('readWorkspaceMedia', () => {
     expect((await readWorkspaceMedia('media', 'alias.png')).size).toBe(png.length)
   })
 
+  it('asks for a restart when the workspace runs a helper older than the server', async () => {
+    installFakeWorkspaceDriver({
+      find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
+      workspacePaths: hostPaths,
+      exec: () => Promise.resolve({ stdout: JSON.stringify({ fault: 'unknown file operation size' }), stderr: '' }),
+    })
+    expect(await refusal(readWorkspaceMedia('media', 'img/shot.PNG'))).toEqual({
+      code: 'CONFLICT', message: 'Restart the workspace to use this: it runs an older file helper than the server',
+    })
+  })
+
   it('refuses a file that is not media, or not plainly inside the workspace', async () => {
     expect(await refusal(readWorkspaceMedia('media', 'a.txt')))
       .toEqual({ code: 'VALIDATION', message: 'a.txt is not an image, video, audio or PDF file' })
     expect((await refusal(readWorkspaceMedia('media', 'out.png'))).code).toBe('VALIDATION')
     expect((await refusal(readWorkspaceMedia('media', '../x.png'))).code).toBe('VALIDATION')
     expect((await refusal(readWorkspaceMedia('media', 'missing.png'))).code).toBe('NOT_FOUND')
+  })
+})
+
+describe('downloadWorkspaceEntry', () => {
+  let dir: string
+  const big = randomBytes(5 * 1024 * 1024 + 7)
+  beforeAll(async () => {
+    dir = await makeCheckout('download')
+    await write(dir, 'pkg/a.txt', 'alpha\n')
+    await write(dir, 'pkg/big.bin', big)
+    await write(dir, 'pkg/zero')
+    await write(dir, 'pkg/bin/run.sh', '#!/bin/sh\n')
+    await fs.chmod(path.join(dir, 'pkg/bin/run.sh'), 0o755)
+    await fs.mkdir(path.join(dir, 'pkg/empty/inner'), { recursive: true })
+    await write(dir, 'pkg/nested/.git/config', '[core]\n')
+    await write(dir, 'pkg/nested/n.txt', 'nested\n')
+    for (let i = 0; i < 50; i++) await write(dir, `pkg/many/${i}.txt`, `file ${i}\n`)
+    await fs.symlink('a.txt', path.join(dir, 'pkg/alias.txt'))
+    await fs.symlink('..', path.join(dir, 'pkg/up'))
+    await fs.symlink(path.relative(path.join(dir, 'pkg'), path.join(outside, 'secret.txt')), path.join(dir, 'pkg/out'))
+    await write(dir, 'pkg/debug.log', 'ignored\n')
+    await write(dir, 'pkg/build/out.js', 'ignored\n')
+    await write(dir, 'pkg/node_modules/dep/index.js', 'dep\n')
+    // Legal names a zip would read as holding a folder separator.
+    await write(dir, 'pkg/..\\x.txt', 'slash\n')
+    await write(dir, 'pkg/a\\b.txt', 'slash\n')
+    await fs.symlink('pkg', path.join(dir, 'lnk'))
+    await write(dir, 'perm/ok.txt', 'ok\n')
+    await write(dir, 'perm/noread.txt', 'secret\n')
+    await fs.chmod(path.join(dir, 'perm/noread.txt'), 0o000)
+    // Ignored, so the whole workspace's zip leaves it out.
+    await fs.mkdir(path.join(dir, 'build/huge'), { recursive: true })
+    await Promise.all(Array.from({ length: MAX_DOWNLOAD_FILES + 1 }, (_, i) => fs.writeFile(path.join(dir, 'build/huge', String(i)), '')))
+  })
+
+  /** A zip's entries by name, read through its central directory, since
+   *  each local header defers its sizes to a descriptor after the data. */
+  function unzip(zip: Buffer): Map<string, { data: Buffer; mode: number }> {
+    const end = zip.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]))
+    const out = new Map<string, { data: Buffer; mode: number }>()
+    for (let at = zip.readUInt32LE(end + 16), n = zip.readUInt16LE(end + 10); n > 0; n--) {
+      const nameLength = zip.readUInt16LE(at + 28)
+      const name = zip.toString('utf8', at + 46, at + 46 + nameLength)
+      const local = zip.readUInt32LE(at + 42)
+      const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28)
+      const stored = zip.subarray(start, start + zip.readUInt32LE(at + 20))
+      out.set(name, { data: zip.readUInt16LE(at + 10) === 8 ? inflateRawSync(stored) : stored, mode: zip.readUInt32LE(at + 38) >>> 16 })
+      at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32)
+    }
+    return out
+  }
+
+  const bytes = async (body?: ReadableStream<Uint8Array>): Promise<Buffer> => Buffer.from(await new Response(body).arrayBuffer())
+
+  it('sends a file of any kind whole, in pages', async () => {
+    const file = await downloadWorkspaceEntry('download', 'pkg/big.bin')
+    expect(file).toMatchObject({ name: 'big.bin', size: big.length })
+    expect((await bytes(file.body)).equals(big)).toBe(true)
+    const link = await downloadWorkspaceEntry('download', 'pkg/alias.txt')
+    expect({ ...link, body: (await bytes(link.body)).toString() }).toEqual({ name: 'alias.txt', size: 6, body: 'alpha\n' })
+  })
+
+  /** The `bytes` calls the helper was sent. */
+  const byteReads = (): number => execs.filter((e) => (e.opts as { stdin?: string } | undefined)?.stdin?.includes('"op":"bytes"')).length
+
+  it('packs a folder under its own name, keeping modes and empty folders, leaving out what git ignores, names holding a backslash and any link to a folder or out, and batching small files', async () => {
+    const cases = [
+      { kind: 'k8s' as const, reads: 3 },
+      { kind: 'containerless' as const, reads: 0 },
+    ]
+    for (const { kind, reads } of cases) {
+      execs = []
+      installFakeWorkspaceDriver({
+        kind,
+        find: (id) => Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJECT, jobName: id })),
+        workspacePaths: hostPaths,
+        exec: async (jobName, cmd, opts) => {
+          execs.push({ cmd, opts })
+          return hostExec(jobName, cmd, opts?.stdin)
+        },
+      })
+      const zip = await downloadWorkspaceEntry('download', 'pkg')
+      expect(zip).toMatchObject({ name: 'pkg.zip' })
+      expect(zip.size).toBeUndefined()
+      const entries = unzip(await bytes(zip.body))
+      expect([...entries.keys()].sort()).toEqual([
+        'pkg/a.txt', 'pkg/alias.txt', 'pkg/big.bin', 'pkg/bin/run.sh', 'pkg/empty/inner/',
+        ...Array.from({ length: 50 }, (_, i) => `pkg/many/${i}.txt`), 'pkg/nested/n.txt', 'pkg/zero',
+      ].sort())
+      expect(entries.get('pkg/alias.txt')?.data.toString()).toBe('alpha\n')
+      expect(entries.get('pkg/big.bin')?.data.equals(big)).toBe(true)
+      expect(entries.get('pkg/many/49.txt')?.data.toString()).toBe('file 49\n')
+      expect(entries.get('pkg/zero')?.data.length).toBe(0)
+      expect(entries.get('pkg/bin/run.sh')?.mode).toBe(0o100755)
+      // Just over 5 MiB of bytes in three 2 MiB pages, the small files
+      // riding along with the big one's.
+      expect(byteReads()).toBe(reads)
+    }
+  })
+
+  it('packs a folder reached through a link under the link\'s name, leaving out what git ignores at its target', async () => {
+    const names = [...unzip(await bytes((await downloadWorkspaceEntry('download', 'lnk')).body)).keys()]
+    expect(names).toEqual(expect.arrayContaining(['lnk/a.txt', 'lnk/bin/run.sh', 'lnk/many/0.txt']))
+    expect(names.filter((n) => /\/(build|node_modules)\/|\.log$/.test(n))).toEqual([])
+  })
+
+  it('packs a file it may not read as empty rather than failing partway', async () => {
+    const entries = unzip(await bytes((await downloadWorkspaceEntry('download', 'perm')).body))
+    expect(entries.get('perm/ok.txt')?.data.toString()).toBe('ok\n')
+    expect(entries.get('perm/noread.txt')?.data.length).toBe(0)
+  })
+
+  it('checks a download without reading its bytes', async () => {
+    execs = []
+    expect(await downloadWorkspaceEntry('download', 'pkg', { check: true })).toEqual({ name: 'pkg.zip' })
+    expect(await downloadWorkspaceEntry('download', 'pkg/a.txt', { check: true })).toEqual({ name: 'a.txt', size: 6 })
+    expect(byteReads()).toBe(0)
+    expect((await refusal(downloadWorkspaceEntry('download', 'build/huge', { check: true }))).code).toBe('TOO_LARGE')
+  })
+
+  it('packs each checkout of a workspace with several, with its own ignores, and what is outside them', async () => {
+    const root = workspaceDir(PROJECT, 'download-multi')
+    const OTHER = '22222222-3333-4444-8555-666666666666'
+    await fs.symlink(repoDir(PROJECT), repoDir(OTHER))
+    await checkOut('download-multi', path.join(root, 'one'))
+    await checkOut('download-multi', path.join(root, 'two'))
+    await recordWorkspaceCreated({
+      projectId: PROJECT,
+      workspaceId: 'download-multi',
+      treeDir: 'L1',
+      repos: [{ repoId: PROJECT, path: 'one', baseBranch: 'main' }, { repoId: OTHER, path: 'two', baseBranch: 'main' }],
+    })
+    await write(root, 'one/build/out.js', 'ignored\n')
+    await write(root, 'two/debug.log', 'ignored\n')
+    await write(root, 'notes.md', 'n\n')
+    const names = [...unzip(await bytes((await downloadWorkspaceEntry('download-multi', '')).body)).keys()]
+    const top = 'demo-download'
+    expect(names).toEqual(expect.arrayContaining([`${top}/notes.md`, `${top}/one/a.txt`, `${top}/two/src/lib/util.ts`]))
+    expect(names.filter((n) => /\/(build|\.git)\/|\.log$/.test(n))).toEqual([])
+    const two = [...unzip(await bytes((await downloadWorkspaceEntry('download-multi', 'two')).body)).keys()]
+    expect(two).toEqual(expect.arrayContaining(['two/a.txt', 'two/.gitignore']))
+    expect(two.filter((n) => n.endsWith('.log') || n.includes('/.git/'))).toEqual([])
+  })
+
+  it('packs an ignored folder whole, and the whole workspace under its project and id', async () => {
+    const deps = unzip(await bytes((await downloadWorkspaceEntry('download', 'pkg/node_modules')).body))
+    expect([...deps.keys()]).toEqual(['node_modules/dep/index.js'])
+    const whole = await downloadWorkspaceEntry('download', '')
+    expect(whole.name).toBe('demo-download.zip')
+    const names = [...unzip(await bytes(whole.body)).keys()]
+    expect(names).toEqual(expect.arrayContaining(['demo-download/.gitignore', 'demo-download/a.txt', 'demo-download/pkg/big.bin']))
+    expect(names.filter((n) => /\/(build|node_modules|\.git)\/|\.log$/.test(n))).toEqual([])
+  })
+
+  it('refuses a folder of too many files, and a path that is missing or leads out', async () => {
+    expect(await refusal(downloadWorkspaceEntry('download', 'build/huge')))
+      .toEqual({ code: 'TOO_LARGE', message: `build/huge holds over ${MAX_DOWNLOAD_FILES.toLocaleString('en-US')} files` })
+    expect((await refusal(downloadWorkspaceEntry('download', 'missing'))).code).toBe('NOT_FOUND')
+    expect((await refusal(downloadWorkspaceEntry('download', 'pkg/out'))).code).toBe('VALIDATION')
+    expect((await refusal(downloadWorkspaceEntry('download', '../x'))).code).toBe('VALIDATION')
+    expect((await refusal(downloadWorkspaceEntry('download', '.git'))).code).toBe('VALIDATION')
   })
 })
 

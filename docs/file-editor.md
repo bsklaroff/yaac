@@ -5,7 +5,7 @@ kinds of pane, all ordinary layout leaves next to terminals:
 
 - **`files`**: the explorer, one per workspace. A tree, a filter that doubles
   as quick-open, a "show ignored" toggle, git status colors, line counts
-  against the diff base, create / rename / delete, and uploads.
+  against the diff base, create / rename / delete, uploads and downloads.
 - **`changes`**: the Changes pane, one per workspace: the workspace's review
   diff. It is the same component as the explorer (`WorkspaceFiles` with
   `changedOnly`), listing only the changed files, each with its diff.
@@ -65,6 +65,7 @@ macOS virtiofs, the same process user under containerless).
 | `GET /workspace/:id/dir?path=` | the immediate children of one folder (capped at 5,000) |
 | `GET /workspace/:id/file?path=&known=` | `{ path, version, size, binary, content? }` |
 | `GET /workspace/:id/raw?path=` | a media file's bytes (see "Media files"), honoring one `Range` |
+| `GET /workspace/:id/download?path=` | a file's bytes, or a folder as a zip (an empty `path`: the whole workspace), as an attachment (see "Downloads") |
 | `PUT /workspace/:id/file` | `{ path, content, baseVersion }` → `{ path, version, size }`, or 409 |
 | `PUT /workspace/:id/upload?path=&replace=` | streams the raw body into a file, making missing folders; 409 if taken, unless `replace=1` |
 | `POST /workspace/:id/folder` | creates a folder and its missing parents; 409 if taken |
@@ -551,6 +552,51 @@ replaced whole as a save replaces it, and a missing one is linked into
 place from the staging file. A new file's upload skips the mutex, so a
 long one never holds up a save.
 
+### Downloads
+
+`download` serves any file, or a folder packed as a zip, as an attachment
+(`application/octet-stream` or `application/zip`, with `nosniff` and the
+`raw` route's sandbox), so a browser saves the bytes and never renders
+them on the app's origin. A file streams a page at a time, as a media file
+does.
+
+A folder is walked first (`walk` in `tree-ops.ts`): every file under it,
+with its size, mtime and mode, and the folders holding none. An empty
+`path` walks the whole workspace, whose zip is named after its project and
+the first eight characters of its id. A folder asked for through a link is
+walked at the path the link leads to and packed under the name asked for.
+Within the walk, folders are entered only as themselves, never through a
+link, so a link to an ancestor cannot loop; a link to a file inside the
+workspace (not only inside the folder) is packed as that file, and one
+leading out of the workspace is left out. A name holding `\` is left out,
+since a zip reads it as a folder separator. Each `.git` is left out, and so
+is whatever the explorer's listing
+names as ignored (scratch dirs among them), which a workspace holding a
+`node_modules` could not be downloaded without: this repo's checkout is
+under 2,000 files beside some 85,000 ignored ones. The listing is read with
+git inside the workspace, so a folder download needs it running, as the
+explorer does. Ignored entries are matched at the walked path, and a folder
+that is itself ignored has nothing inside it listed, so it is packed whole.
+A listing whose ignored entries reach their cap is refused, since it
+cannot say what else is ignored, and so is a folder of over 10,000 files (`TOO_LARGE`) rather than
+packed in part, which also keeps the walk's answer under an exec's output
+cap. The
+zip (`yazl`) is written as the files are read, under one top folder named
+after the one downloaded, so it costs the server no memory and unpacks as
+that folder. Inside a running k8s workspace the bytes cross in batches: one
+helper call reads up to 2 MiB from as many files as that takes, so a folder
+of small files costs a call per page rather than one per file. The answer
+has begun by then, so a file that shrinks, is deleted, cannot be read or
+has turned into a link leading out after the walk is packed as what is
+left of it, empty at worst, rather than cutting the zip short. `check=1`
+does everything that can refuse (the listing and the walk), reads no
+bytes, and answers 204.
+
+The `yaac-files` helper is staged into a workspace when it starts, so a k8s
+workspace started before a server upgrade can lack an operation the server
+now sends. Its answer for one it does not know is a `CONFLICT` asking for a
+restart, which also covers media previews in such a workspace.
+
 Create, rename, delete and upload do not touch git. Their effect shows in the colors
 and the changes, as `mv` or `rm` in a terminal would.
 
@@ -702,6 +748,14 @@ the error in its place and both panes mark their tree "Not up to date".
   in one "Replace?" confirmation once the rest are done; other failures,
   including dropped entries the browser cannot read (a broken link), show
   above the tree without stopping the rest.
+
+- **Download** a file, or a folder as a zip, from its row's menu, or the
+  whole workspace from the header or the menu of the tree's empty space.
+  The iPhone app's web view saves no downloads, so it offers none. The
+  webapp asks the route's `check` first, so a refusal (a folder of too many
+  files) shows above the tree; the browser then fetches it as a download of
+  its own, which streams to disk with its progress in the browser's
+  downloads. One refused between the two shows only as a failed download.
 
 ### Editor pane (`WorkspaceFile`)
 
