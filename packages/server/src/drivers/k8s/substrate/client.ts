@@ -8,6 +8,7 @@ import {
   VersionApi,
   type KubernetesObject,
 } from '@kubernetes/client-node'
+import { testEnv } from '@yaac/shared/env'
 
 /**
  * Lazy singletons for the API-server client, used for every read, watch
@@ -113,7 +114,7 @@ export class ObjectClient extends KubernetesObjectApi {
       } catch (err) {
         const delay = attempt < MAX_ATTEMPTS ? transientDelayMs(err, attempt) : null
         if (delay === null) throw err
-        await new Promise((r) => setTimeout(r, delay))
+        await new Promise((r) => setTimeout(r, testEnv.noRetryBackoff ? 0 : delay))
       }
     }
   }

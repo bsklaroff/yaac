@@ -268,20 +268,19 @@ describe('bundleCheckout', () => {
     expect(size).toBeGreaterThan(120 * (1 << 20))
   }, 120_000)
 
-  it('reads a packed checkout in time, loading each pack once', async () => {
+  it('reads a packed checkout, loading each pack once', async () => {
     // 5,000 objects in one pack, as gc leaves a busy workspace. Reloading the
-    // pack for every object takes minutes.
+    // pack for every object takes minutes, which the test's timeout catches;
+    // a tighter bound on the clock fails on a loaded machine instead.
     const packed = path.join(tmpDir, 'packed')
     await createCheckout(main, packed, { staging: stagingBeside(packed), branch: 'agent/packed', baseBranch: base, commit: await resolveRemoteRef(main, base), remoteUrl: main })
     await fs.mkdir(path.join(packed, 'many'))
-    for (let i = 0; i < 4997; i++) await fs.writeFile(path.join(packed, 'many', String(i)), `${String(i)}\n`)
+    await Promise.all(Array.from({ length: 4997 }, (_, i) => fs.writeFile(path.join(packed, 'many', String(i)), `${String(i)}\n`)))
     await git(packed, ['add', '.'])
     await git(packed, ['-c', 'user.email=t@t', '-c', 'user.name=T', '-c', 'gc.auto=0', 'commit', '-qm', 'many'])
     await git(packed, ['gc', '-q'])
 
-    const started = Date.now()
     const bundle = await bundleCheckout(packed, main)
-    expect(Date.now() - started).toBeLessThan(30_000)
     expect(bundle.readUInt32BE(bundle.indexOf('\n\nPACK') + 2 + 8)).toBe(5000)
   }, 120_000)
 

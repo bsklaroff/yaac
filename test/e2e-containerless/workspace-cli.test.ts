@@ -4,8 +4,8 @@ import path from 'node:path'
 import WebSocket from 'ws'
 import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
 import type { SpawnedServer } from '@yaac/test-utils/api'
-import { createTestRepo, requireCluster } from '@yaac/test-utils/setup'
-import { addTestProject, requirePodman } from '#support/cluster'
+import { createTestRepo } from '@yaac/test-utils/setup'
+import { addTestProject } from '#support/cluster'
 import {
   recordWorkspaceCreated,
   recordWorkspaceStopped,
@@ -52,9 +52,7 @@ async function firstSnapshot(port: number): Promise<ServerSnapshot> {
  * Nothing here may seed credentials: the create tests expect the
  * missing-credential error.
  *
- * Runs under both drivers (it is in the e2e-containerless project too).
- * A k8s server lists and resolves workspaces through the cluster even when
- * there are none, so there it needs podman and a reachable cluster.
+ * Nothing here starts a workspace, so it runs against a host server only.
  */
 
 let testEnv: YaacTestEnv
@@ -62,10 +60,6 @@ let server: SpawnedServer
 const TAILNET_HOST = 'srv.tailnet.ts.net'
 
 beforeAll(async () => {
-  if (process.env.YAAC_DRIVER !== 'containerless') {
-    await requirePodman()
-    await requireCluster()
-  }
   testEnv = await createYaacTestEnv()
   // Admit a tailnet name, so the identity refusal below is reachable past
   // the Host check.
@@ -722,107 +716,49 @@ describe('with seeded projects', () => {
    * successful path is in workspace-create-suite.test.ts.
    */
   describe('yaac workspace create (real CLI + real server)', () => {
-    it('surfaces the server "no git credential" validation error via stderr + nonzero exit', async () => {
+    it('passes the server\'s refusals on: a tool or model it does not take, then a project with no git credential', async () => {
       const repo = path.join(testEnv.scratchDir, 'repo-demo')
       await createTestRepo(repo)
-      // A parseable remote, so the create reaches the credential lookup.
-      await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo.git' })
+      // A parseable remote, so a create that passes validation reaches the
+      // credential lookup.
+      const id = await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo.git' })
+      const create = async (...args: string[]): Promise<string> => {
+        const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'create', ...args)
+        expect(exitCode, args.join(' ')).not.toBe(0)
+        return stderr
+      }
 
-      const { stderr, exitCode } = await runYaac(
-        testEnv.env,
-        'workspace',
-        'create',
-        'repo-demo',
-        '--tool',
-        'claude',
-      )
-      expect(exitCode).not.toBe(0)
-      expect(stderr).toMatch(/has no git credential/)
+      expect((await create('repo-demo', '--tool', 'mystery')).toLowerCase()).toContain('tool')
+      // Shell-unsafe characters, refused by the schema.
+      expect((await create('repo-demo', '--tool', 'claude', '--model', "opus'; rm -rf /")).toLowerCase()).toContain('model')
+      // Reaching the credential error shows the tool and model passed: by
+      // the project's name, its full id, and an id prefix.
+      expect(await create('repo-demo', '--tool', 'claude')).toMatch(/has no git credential/)
+      expect(await create(id, '--tool', 'opencode')).toMatch(/has no git credential/)
+      expect(await create(id.slice(0, 8), '--tool', 'codex', '--model', 'gpt-5.2-codex')).toMatch(/has no git credential/)
     })
 
     // Refused by the CLI before it asks the server for anything, so they
-    // need no project or workspace. The paths that open sessions are in
-    // workspace-create-suite.test.ts ("sessions").
+    // need no project or workspace. One of each kind of refusal, to show
+    // the flags reach the check; every combination is in
+    // packages/cli/test/workspace-create.test.ts. The paths that open
+    // sessions are in workspace-create-suite.test.ts ("sessions").
     it('refuses session flags that cannot go together', async () => {
-      const refused = async (args: string[], message: string): Promise<void> => {
+      const refusals: Array<[string[], string]> = [
+        [[], 'Name the project to create the workspace in, or --workspace to open a session in a running one.'],
+        [['some-project', '--workspace', 'abc123'], 'Give a project or --workspace, not both'],
+        [['some-project', '--no-session', '--permission-mode', 'plan'], '--no-session does not take --permission-mode: a workspace with no session runs no agent.'],
+        [['--workspace', 'abc123', '--no-nested'], '--no-nested is a workspace\'s setting, which --workspace (a session in a running one) does not take.'],
+        [['some-project', '--no-repos', '--repo', 'lib'], '--no-repos starts with no checkout, so it does not take --repo.'],
+        [['some-project', '--repo', '@main'], 'expected <dir> or <dir>@<branch>'],
+        [['some-project', '--resume', 'conv-1'], '--resume needs --workspace: a conversation resumes in the workspace that holds it.'],
+        [['some-project', '--agent-option', 'idle-compaction'], 'expected <name>=<on|off>, with a name of idle-compaction, idle-cache-warming'],
+      ]
+      for (const [args, message] of refusals) {
         const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'create', ...args)
         expect(exitCode, args.join(' ')).not.toBe(0)
         expect(stderr, args.join(' ')).toContain(message)
       }
-      for (const [flag, ...value] of [['--prompt', 'go'], ['--tool', 'claude'], ['--mode', 'acp'], ['--permission-mode', 'plan'],
-        ['--model', 'opus'], ['--effort', 'high'], ['--agent-option', 'idle-compaction=on'], ['--prompt-file', 'brief.md'],
-        ['--start-at', '10:00'], ['--start-in', '5m']]) {
-        await refused(['some-project', '--no-session', flag, ...value], `--no-session does not take ${flag}: a workspace with no session runs no agent.`)
-      }
-      await refused([], 'Name the project to create the workspace in, or --workspace to open a session in a running one.')
-      await refused(['some-project', '--workspace', 'abc123'], 'Give a project or --workspace, not both')
-      for (const [flag, ...value] of [['--branch', 'main'], ['--group', 'g'], ['--timeout', '1h'], ['--start-at', '10:00'], ['--start-in', '5m'],
-        ['--repo', 'lib'], ['--no-repos'], ['--nested'], ['--no-nested']]) {
-        await refused(['--workspace', 'abc123', flag, ...value], `${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
-      }
-      // What a workspace starts with: no repos takes no repo, start or layout.
-      for (const [flag, ...value] of [['--repo', 'lib'], ['--branch', 'main'], ['--commit', 'abc'], ['--nested']]) {
-        await refused(['some-project', '--no-repos', flag, ...value], `--no-repos starts with no checkout, so it does not take ${flag}.`)
-      }
-      await refused(['some-project', '--repo', '@main'], 'expected <dir> or <dir>@<branch>')
-      await refused(['some-project', '--repo', 'lib@'], 'expected <dir> or <dir>@<branch>')
-      await refused(['--workspace', 'abc123', '--no-session'], '--no-session starts a new workspace; it does not take --workspace.')
-      await refused(['some-project', '--resume', 'conv-1'], '--resume needs --workspace: a conversation resumes in the workspace that holds it.')
-      await refused(['some-project', '--agent-option', 'idle-compaction'], 'expected <name>=<on|off>, with a name of idle-compaction, idle-cache-warming')
-    })
-
-    it('rejects an unknown --tool value via server VALIDATION', async () => {
-      const repo = path.join(testEnv.scratchDir, 'repo-demo-tool')
-      await createTestRepo(repo)
-      await addTestProject(server, repo)
-
-      const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'create', 'repo-demo-tool', '--tool', 'mystery',
-      )
-      expect(exitCode).not.toBe(0)
-      expect(stderr.toLowerCase()).toContain('tool')
-    })
-
-    it('accepts --tool opencode (validation passes through to the git-credential check)', async () => {
-      // Reaching the credential error shows opencode passed tool validation.
-      const repo = path.join(testEnv.scratchDir, 'repo-demo-opencode')
-      await createTestRepo(repo)
-      const id = await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo-opencode.git' })
-
-      // Named by full id.
-      const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'create', id, '--tool', 'opencode',
-      )
-      expect(exitCode).not.toBe(0)
-      expect(stderr).toMatch(/has no git credential/)
-    })
-
-    it('accepts --model for a non-claude tool (passes through to the git-credential check)', async () => {
-      // Reaching the credential error shows --model passed validation.
-      const repo = path.join(testEnv.scratchDir, 'repo-demo-model-tool')
-      await createTestRepo(repo)
-      const id = await addTestProject(server, repo, { remoteUrl: 'https://github.com/test-org/repo-demo-model-tool.git' })
-
-      // Named by id prefix.
-      const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'create', id.slice(0, 8),
-        '--tool', 'codex', '--model', 'gpt-5.2-codex',
-      )
-      expect(exitCode).not.toBe(0)
-      expect(stderr).toMatch(/has no git credential/)
-    })
-
-    it('rejects a --model value with shell-unsafe characters via schema validation', async () => {
-      const repo = path.join(testEnv.scratchDir, 'repo-demo-model-bad')
-      await createTestRepo(repo)
-      await addTestProject(server, repo)
-
-      const { stderr, exitCode } = await runYaac(
-        testEnv.env, 'workspace', 'create', 'repo-demo-model-bad',
-        '--tool', 'claude', '--model', "opus'; rm -rf /",
-      )
-      expect(exitCode).not.toBe(0)
-      expect(stderr.toLowerCase()).toContain('model')
     })
   })
 
@@ -852,11 +788,10 @@ describe('with seeded projects', () => {
       expect((await runYaac(testEnv.env, 'workspace', 'list', NAME)).stdout).not.toContain('far off')
     })
 
-    it('refuses two start times, a start without a prompt, and durations under a minute', async () => {
+    it('refuses two start times, a start without a prompt, and a start time it cannot read', async () => {
       const refusals: Array<[string[], RegExp]> = [
         [['--prompt', 'x', '--start-at', '10:00', '--start-in', '5m'], /not both/],
         [['--start-in', '5m'], /needs a prompt/],
-        [['--prompt', 'x', '--start-in', '30s'], /whole minutes/],
         [['--prompt', 'x', '--start-at', 'soonish'], /not a start time/],
       ]
       for (const [args, error] of refusals) {
@@ -966,12 +901,11 @@ describe('with seeded projects', () => {
       const otherSteps = path.join(testEnv.scratchDir, 'ci-steps-2.json')
       await fs.writeFile(otherSteps, JSON.stringify({ lint: { run: ['echo a', 'echo b'] } }))
 
+      // The combinations the CLI refuses by itself are in
+      // packages/cli/test/workspace-create.test.ts; these show the flags
+      // reach it, and the one refusal that reads a file.
       const refusals: Array<[string[], RegExp]> = [
-        [['--commit', sha, '--branch', 'master', '--prompt', 'x'], /--branch or --commit, not both/],
-        [['--non-interactive'], /--steps <file>/],
         [['--non-interactive', '--no-steps'], /--steps <file>/],
-        [['--wait', '--prompt', 'x'], /--wait goes with --non-interactive/],
-        [['--non-interactive', '--steps', stepsFile, '--prompt', 'x'], /does not take --prompt/],
         [['--non-interactive', '--steps', stepsFile, '--wait', '--start-in', '1h'], /--wait waits for a workspace started now/],
         [['--steps', path.join(testEnv.scratchDir, 'missing.json'), '--prompt', 'x'], /Cannot read the steps/],
       ]

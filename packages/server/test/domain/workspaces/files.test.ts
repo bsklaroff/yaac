@@ -19,8 +19,17 @@ import { git } from '@yaac/test-utils/git'
 import { CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, forgetWorkspaceChanges } from '#domain/workspaces/changes'
 import { MAX_DOWNLOAD_FILES } from '#domain/workspaces/tree-ops'
 import { WorkspaceExecError, type WorkspaceDriver } from '#drivers/contract'
+import { MAX_LISTED_PATHS } from '#domain/workspaces/tree-ops'
+import type * as treeOps from '#domain/workspaces/tree-ops'
 import { applyWorkspaceEvent, BUILT_IN_USER_ID, recordProject } from '#db'
 import type { WorkspaceFiles } from '@yaac/shared/types'
+
+// The listing's cap, lowered from 50,000 so the case that reaches it does
+// not write and stage that many files. Only the bound is replaced.
+vi.mock('#domain/workspaces/tree-ops', async (importOriginal) => ({
+  ...await importOriginal<typeof treeOps>(),
+  MAX_LISTED_PATHS: 200,
+}))
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -388,16 +397,12 @@ describe('getWorkspaceChanges', () => {
 
   it('caps the listing and says so', async () => {
     const wt = await makeCheckout('big')
-    // In folders small enough to stage.
-    const names = Array.from({ length: 50_001 }, (_, i) => `many${i % 26}/f${i}`)
-    for (let i = 0; i < 26; i++) await fs.mkdir(path.join(wt, `many${i}`))
-    for (let i = 0; i < names.length; i += 1000) {
-      await Promise.all(names.slice(i, i + 1000).map((n) => fs.writeFile(path.join(wt, n), '')))
-    }
+    await fs.mkdir(path.join(wt, 'many'))
+    await Promise.all(Array.from({ length: MAX_LISTED_PATHS + 1 }, (_, i) => fs.writeFile(path.join(wt, 'many', `f${i}`), '')))
     const files = await listing('big')
-    expect(files.paths).toHaveLength(50_000)
+    expect(files.paths).toHaveLength(MAX_LISTED_PATHS)
     expect(files.truncated).toBe(true)
-  }, 300_000)
+  })
 
   it('says how far HEAD is from the base branch, the fork branch unless one is picked', async () => {
     // One commit on the checkout's branch, and one on main after the fork,

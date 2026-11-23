@@ -21,10 +21,11 @@ export { TEST_CLI_DIR, TEST_CLI_ENTRY }
 const ENTRY = TEST_CLI_ENTRY
 
 /**
- * Cross-worker mutex so only one test server runs at a time; concurrent
+ * Cross-worker mutex so only one k8s test server runs at a time; concurrent
  * servers starve the shared cluster API server. Scoped to the test scratch
  * base (one per test rig and cluster), not the host, so separate rigs don't
- * wait on each other.
+ * wait on each other. A containerless server shares nothing with another
+ * (its own data dir, port and tmux sockets), so those run side by side.
  *
  * The lock file holds the owner's pid, so a crashed holder's lock can be
  * taken over.
@@ -34,11 +35,11 @@ function serverLockFile(): string {
 }
 
 // Reentrant within a process: a nested acquire bumps a refcount, and the
-// file lock is released when it drops to zero, so a file-level hold can't
-// deadlock against a per-test acquire in the same worker.
+// file lock is released when it drops to zero, so a file that runs two
+// servers at once can't deadlock against itself.
 let localDepth = 0
 
-export async function acquireServerMutex(): Promise<() => Promise<void>> {
+async function acquireServerMutex(): Promise<() => Promise<void>> {
   const lockFile = serverLockFile()
   if (localDepth === 0) {
     while (!await claimPidFile(lockFile)) await new Promise((r) => setTimeout(r, 50))
@@ -148,24 +149,18 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
  * k8s a Deployment in the file's test namespace reached through a local
  * port-forward (`#support/deployed-server`).
  *
- * Holds the cross-worker server mutex until `stop()` has finished.
+ * A k8s server holds the cross-worker server mutex until `stop()` has
+ * finished.
  */
 export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
-  const releaseMutex = await acquireServerMutex()
-  let mutexReleased = false
-  const releaseOnce = async (): Promise<void> => {
-    if (mutexReleased) return
-    mutexReleased = true
-    await releaseMutex()
-  }
+  if (env.YAAC_DRIVER === 'containerless') return await spawnHostServer(env)
 
+  const releaseMutex = await acquireServerMutex()
   let server: SpawnedServer
   try {
-    server = env.YAAC_DRIVER === 'containerless'
-      ? await spawnHostServer(env)
-      : await deployTestServer({ env })
+    server = await deployTestServer({ env })
   } catch (err) {
-    await releaseOnce()
+    await releaseMutex()
     throw err
   }
 
@@ -175,7 +170,7 @@ export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedSe
       try {
         await server.stop()
       } finally {
-        await releaseOnce()
+        await releaseMutex()
       }
     },
   }

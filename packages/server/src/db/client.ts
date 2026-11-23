@@ -40,9 +40,32 @@ let sharedDb: Promise<Db> | null = null
 let sharedDir: string | null = null
 
 async function openSharedDb(): Promise<Db> {
-  const db = drizzle({ connection: { dataDir: 'memory://' } })
+  const db = drizzle({ connection: { dataDir: 'memory://', ...await snapshotToLoad() } })
   await migrate(db, { migrationsFolder: MIGRATIONS_DIR })
   return db
+}
+
+/**
+ * What a new database loads before migrating, tests only: the dump
+ * `testEnv.dbSnapshot` names, or nothing when there is none to read.
+ * `migrate` runs over it either way, so a dump missing the newest
+ * migrations only costs applying them.
+ */
+async function snapshotToLoad(): Promise<{ loadDataDir?: Blob }> {
+  const file = testEnv.dbSnapshot
+  const dump = file === undefined ? undefined : await fs.readFile(file).catch(() => undefined)
+  return dump === undefined ? {} : { loadDataDir: new Blob([dump]) }
+}
+
+/** The dump of a freshly migrated database that `testEnv.dbSnapshot` loads. */
+export async function dumpMigratedDb(): Promise<Blob> {
+  const db = drizzle({ connection: { dataDir: 'memory://' } })
+  try {
+    await migrate(db, { migrationsFolder: MIGRATIONS_DIR })
+    return await db.$client.dumpDataDir('none')
+  } finally {
+    await db.$client.close()
+  }
 }
 
 /**
@@ -91,7 +114,8 @@ async function openHandle(dir: string, prev: Promise<Db> | null): Promise<Db> {
   // existing dir or the umask can't leave it wider.
   await fs.mkdir(dir, { recursive: true })
   await fs.chmod(dir, 0o700)
-  const db = drizzle({ connection: { dataDir: dir } })
+  const isNew = await fs.access(path.join(dir, 'PG_VERSION')).then(() => false, () => true)
+  const db = drizzle({ connection: { dataDir: dir, ...isNew ? await snapshotToLoad() : {} } })
   try {
     await refuseUnknownMigrations(db, dir)
     await migrate(db, { migrationsFolder: MIGRATIONS_DIR })

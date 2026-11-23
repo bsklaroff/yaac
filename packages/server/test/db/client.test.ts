@@ -39,6 +39,9 @@ afterEach(async () => {
 })
 
 describe('openDb', () => {
+  /** The checked-in migrations, one folder each. */
+  const migrations = path.resolve(fileURLToPath(import.meta.url), '../../../drizzle')
+
   it('creates <dataDir>/db at 0700, migrates, and answers queries', async () => {
     await freshDataDir()
     await openDb()
@@ -52,6 +55,40 @@ describe('openDb', () => {
     expect(await db.select({ key: preferences.key, value: preferences.value }).from(preferences)).toEqual([{ key: 'k', value: 'v' }])
   })
 
+  // Every other case opens its database from the suite's dump of every
+  // migration (YAAC_TEST_DB_SNAPSHOT). This one takes the two paths that
+  // dump skips: an install's first start replaying from empty, and a dump
+  // made before the newest migrations, which must still end up with all.
+  it('migrates a new dir from empty, and from a dump short of the newest migrations', async () => {
+    const all = (await fs.readdir(migrations)).filter((d) => /^\d{14}_/.test(d)).sort()
+    const recorded = async (): Promise<string[]> => (await (await getDb()).$client.query<{ name: string }>(
+      'SELECT name FROM drizzle.__drizzle_migrations ORDER BY name',
+    )).rows.map((r) => r.name)
+    const snapshot = process.env.YAAC_TEST_DB_SNAPSHOT
+    try {
+      delete process.env.YAAC_TEST_DB_SNAPSHOT
+      await freshDataDir()
+      await openDb()
+      expect(await recorded()).toEqual(all)
+
+      const before = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-migrations-'))
+      dirs.push(before)
+      for (const d of all.slice(0, -2)) await fs.cp(path.join(migrations, d), path.join(before, d), { recursive: true })
+      const short = drizzle({ connection: { dataDir: 'memory://' } })
+      await migrate(short, { migrationsFolder: before })
+      const dump = path.join(before, 'short.tar')
+      await fs.writeFile(dump, Buffer.from(await (await short.$client.dumpDataDir('none')).arrayBuffer()))
+      await short.$client.close()
+      process.env.YAAC_TEST_DB_SNAPSHOT = dump
+      await freshDataDir()
+      await openDb()
+      expect(await recorded()).toEqual(all)
+    } finally {
+      if (snapshot === undefined) delete process.env.YAAC_TEST_DB_SNAPSHOT
+      else process.env.YAAC_TEST_DB_SNAPSHOT = snapshot
+    }
+  })
+
   it('caches the handle while the data dir is stable', async () => {
     await freshDataDir()
     await openDb()
@@ -62,7 +99,6 @@ describe('openDb', () => {
   // Data-moving migrations, which nothing else catches since every other
   // test starts from an empty migrated database. `seedBefore` migrates up to
   // (not including) `name`, runs `seed`, then migrates the rest.
-  const migrations = path.resolve(fileURLToPath(import.meta.url), '../../../drizzle')
   async function seedBefore(
     name: string,
     seed: string,

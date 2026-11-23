@@ -17,6 +17,9 @@ const UNIT_SETUP = [...SETUP, './packages/test-utils/src/unit-setup.ts']
 // that reaches #drivers/k8s/substrate. Not used for k8s/proxy and k8s/netd,
 // which build real KubeConfigs and informers, or for api/e2e.
 const K8S_STUB_SETUP = './packages/test-utils/src/k8s-stub-setup.ts'
+// Builds the migrated-database dump that new databases load instead of
+// replaying every migration, for the projects whose tests open one.
+const DB_SNAPSHOT_SETUP = './packages/test-utils/src/db-snapshot.ts'
 // api/e2e only: deletes each file's test namespace when the file finishes,
 // so finished files' netd DaemonSets don't pile up on the single node.
 const CLUSTER_SETUP = [...SETUP, './test/support/cluster-setup.ts']
@@ -42,16 +45,6 @@ const CONTAINERLESS_API = [
   'test/api/websocket-compression.test.ts',
 ]
 
-/**
- * k8s e2e-cli files whose commands touch no workspace runtime, so the
- * containerless tier runs them too.
- */
-const DRIVER_NEUTRAL_CLI = [
-  'test/e2e-cli/auth-cli.test.ts',
-  'test/e2e-cli/project-cli.test.ts',
-  'test/e2e-cli/workspace-cli.test.ts',
-]
-
 /** The k8s e2e files, run against the kind rig. */
 const E2E_FILES = ['test/e2e/**/*.test.ts', 'test/e2e-cli/**/*.test.ts']
 
@@ -63,12 +56,12 @@ function unitProject(pkgDir: string, extra: object = {}) {
   const realK8sClient = pkgDir.startsWith('k8s/')
   return {
     extends: true as const,
-    ...extra,
     test: {
       name: `unit:${pkgDir.split('/').pop()!}`,
       include: [`${pkgDir}/test/**/*.test.{ts,tsx}`],
       setupFiles: realK8sClient ? UNIT_SETUP : [...UNIT_SETUP, K8S_STUB_SETUP],
       sequence: { groupOrder: 0 },
+      ...extra,
     },
   }
 }
@@ -104,13 +97,18 @@ export default defineConfig({
           name: 'unit:frontend',
           include: ['packages/frontend/test/**/*.test.{ts,tsx}'],
           environment: 'jsdom',
+          // One jsdom per worker instead of one per file, which costs more
+          // than the tests themselves; each file still gets its own VM
+          // context. Forks rather than threads, where a test's change of
+          // `process.env.TZ` changes no clock.
+          pool: 'vmForks',
           unstubGlobals: true,
           setupFiles: [...UNIT_SETUP, './packages/frontend/test/setup.ts'],
           sequence: { groupOrder: 0 },
         },
       },
       unitProject('packages/desktop'),
-      unitProject('packages/server'),
+      unitProject('packages/server', { globalSetup: [DB_SNAPSHOT_SETUP] }),
       unitProject('packages/shared'),
       unitProject('packages/auth-daemon'),
       unitProject('packages/test-utils'),
@@ -170,24 +168,25 @@ export default defineConfig({
         },
       },
       // The containerless tier: the CLI against a server that runs
-      // workspaces as tmux sessions on this host. No cluster or images, so
-      // the global setup only builds the CLI.
+      // workspaces as tmux sessions on this host, and every command that
+      // touches no workspace runtime, which a second run against a cluster
+      // would only repeat. No cluster or images, so the global setup only
+      // builds the CLI.
       {
         extends: true,
         test: {
           name: 'e2e-containerless',
-          include: ['test/e2e-containerless/**/*.test.ts', ...DRIVER_NEUTRAL_CLI],
+          include: ['test/e2e-containerless/**/*.test.ts'],
           // As in api-containerless: spawn a host server.
           env: { YAAC_DRIVER: 'containerless' },
           // Not cluster-setup: there is no namespace to drop, and it would
           // load the kubernetes client into every worker.
           setupFiles: SETUP,
           globalSetup: ['test/global-setup-containerless.ts'],
-          // Each file holds the cross-worker server mutex
-          // (test/support/cli.ts) for its whole run, so more
-          // workers add no parallelism and only move the mutex wait into a
-          // beforeAll, where it counts against the hook timeout.
-          maxWorkers: 1,
+          // Each file runs its own host server on its own data dir, so
+          // files run side by side. Four leaves cores for the servers and
+          // the agents' tmux sessions the workers start.
+          maxWorkers: 4,
           sequence: { groupOrder: 1 },
         },
       },
