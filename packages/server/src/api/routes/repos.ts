@@ -7,21 +7,37 @@ import {
   getRepoBranches,
   ownRepo,
   listRepoSummaries,
+  probeRepoPushAccess,
   removeKeptHostedRepo,
   serveHostedRepo,
   setDefaultBranch,
   setDefaultBranchGuard,
+  setRepoReadOnly,
+  setRepoUpstream,
+  setUpstreamRebase,
   shareRepo,
 } from '#domain/repos'
-import { deleteRepo, moveRepoToRemote, previewRepoDelete, previewRepoMove, unshareRepo } from '#domain/workspaces'
+import {
+  deleteRepo,
+  moveRepoToRemote,
+  moveRepoToUpstream,
+  moveRepoToYaac,
+  previewRepoDelete,
+  previewRepoHost,
+  previewRepoMove,
+  previewUpstreamMove,
+  unshareRepo,
+} from '#domain/workspaces'
+import { allowRepoHostWhereLinked } from '#domain/projects'
 import { pushCredentialsToRuntime } from '#domain/auth'
 import { systemPrincipal } from '#domain/access'
 import type { IdentityEnv } from '#api/http/web-auth'
 
 /*
  * A user's git repos (docs/project-repos.md): the listing, each repo's
- * credential, sharing, hosted remote and its settings, the move to a git
- * host, and delete. A repo is named by its id, which clients take from the
+ * credential, sharing, hosted remote and its settings, read-only and
+ * upstream settings (docs/repo-forks.md), the moves between yaac and git
+ * hosts, and delete. A repo is named by its id, which clients take from the
  * project summary's `repos` or from the listing; which repos a project
  * links is `#routes/projects`.
  */
@@ -45,6 +61,57 @@ export const repoApp = new Hono<IdentityEnv>()
       const result = await assignRepoCredential(c.get('principal'), c.req.param('repoId'), c.req.valid('json').credentialId)
       await pushCredentialsToRuntime()
       return c.json(result)
+    },
+  )
+  // Probe now whether the repo's credential can push, as "Check again"
+  // does (docs/repo-forks.md "Push access").
+  .post('/:repoId/push-access', async (c) => {
+    const { id } = await ownRepo(c.get('principal'), c.req.param('repoId'))
+    // At most one probe of the network per repo every 10 seconds.
+    return c.json({ pushAccess: (await probeRepoPushAccess([id], { unlessWithinMs: 10_000 })).get(id) ?? null })
+  })
+  // Whether no workspace pushes to the repo, in any project
+  // (docs/repo-forks.md "Read-only repos"); the egress proxy enforces it.
+  .put(
+    '/:repoId/read-only',
+    zv('json', z.object({ enabled: z.boolean() })),
+    async (c) => {
+      await setRepoReadOnly(c.get('principal'), c.req.param('repoId'), c.req.valid('json').enabled)
+      await pushCredentialsToRuntime()
+      return c.body(null, 204)
+    },
+  )
+  // The repo a fork's history comes from (docs/repo-forks.md): one of the
+  // owner's repos, or a remote with an optional credential. Answers its id,
+  // the host key trusted for a fresh ssh credential, and the host added to
+  // the allowlists of the projects linking the fork.
+  .put(
+    '/:repoId/upstream',
+    zv('json', z.union([
+      z.object({ repoId: z.uuid() }),
+      z.object({ remoteUrl: z.string().min(1), credentialId: z.uuid().optional() }),
+    ])),
+    async (c) => {
+      const repoId = c.req.param('repoId')
+      const { upstream, knownHostsEntry } = await setRepoUpstream(c.get('principal'), repoId, c.req.valid('json'))
+      const allowedHost = await allowRepoHostWhereLinked(repoId)
+      await pushCredentialsToRuntime()
+      return c.json({ upstreamRepoId: upstream?.id ?? null, knownHostsEntry, allowedHost })
+    },
+  )
+  .delete('/:repoId/upstream', async (c) => {
+    await setRepoUpstream(c.get('principal'), c.req.param('repoId'), null)
+    await pushCredentialsToRuntime()
+    return c.body(null, 204)
+  })
+  // Whether a hosted fork's guard lets a rebase onto the upstream through
+  // (docs/repo-forks.md "Catching up with the upstream").
+  .put(
+    '/:repoId/upstream-rebase',
+    zv('json', z.object({ enabled: z.boolean() })),
+    async (c) => {
+      await setUpstreamRebase(c.get('principal'), c.req.param('repoId'), c.req.valid('json').enabled)
+      return c.body(null, 204)
     },
   )
   // A hosted repo's default branch and its guard (docs/hosted-projects.md).
@@ -94,7 +161,16 @@ export const repoApp = new Hono<IdentityEnv>()
   // Move a hosted repo to an empty remote elsewhere (docs/hosted-projects.md
   // "Moving to a git host"). The GET says what the move would stop and hand
   // over, which clients warn with before the POST.
-  .get('/:repoId/move-preview', async (c) => c.json(await previewRepoMove(c.get('principal'), c.req.param('repoId'))))
+  // With `?target=upstream`, a fork's move back onto its upstream, which
+  // also answers every branch of either remote (docs/repo-forks.md "Moving
+  // back to the upstream").
+  .get(
+    '/:repoId/move-preview',
+    zv('query', z.object({ target: z.literal('upstream').optional() })),
+    async (c) => c.json(c.req.valid('query').target === 'upstream'
+      ? await previewUpstreamMove(c.get('principal'), c.req.param('repoId'))
+      : await previewRepoMove(c.get('principal'), c.req.param('repoId'))),
+  )
   .post(
     '/:repoId/move',
     zv('json', z.object({ remoteUrl: z.string().min(1), credentialId: z.uuid() })),
@@ -103,6 +179,22 @@ export const repoApp = new Hono<IdentityEnv>()
       return c.json(await moveRepoToRemote(c.get('principal'), c.req.param('repoId'), remoteUrl, credentialId))
     },
   )
+  .post(
+    '/:repoId/move-upstream',
+    zv('json', z.object({
+      push: z.array(z.object({ branch: z.string().min(1), as: z.string().min(1).optional() })),
+      leave: z.array(z.string().min(1)),
+    })),
+    async (c) => c.json(await moveRepoToUpstream(c.get('principal'), c.req.param('repoId'), c.req.valid('json'))),
+  )
+  // Move a repo on a git host onto yaac, which makes the remote it leaves
+  // its upstream (docs/repo-forks.md "Moving a repo to yaac"). The GET says
+  // which workspaces it would stop.
+  .get('/:repoId/host-preview', async (c) => c.json(await previewRepoHost(c.get('principal'), c.req.param('repoId'))))
+  .post('/:repoId/host', async (c) => {
+    await moveRepoToYaac(c.get('principal'), c.req.param('repoId'))
+    return c.body(null, 204)
+  })
   // The repository yaac kept when the repo moved, removed once its owner has
   // checked the new remote.
   .delete('/:repoId/kept-hosted-repo', async (c) => {

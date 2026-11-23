@@ -76,6 +76,13 @@ async function syncRunningWorkspaces(projectId: string, applied: string): Promis
 /** A stopped-workspace retention, in days; a century is plenty. */
 const RETENTION_DAYS = z.number().int().min(1).max(36_500)
 
+/** A repo's upstream as an add names it: one of the owner's repos, or a
+ *  remote with an optional credential (docs/repo-forks.md). */
+const upstreamBody = z.union([
+  z.object({ repoId: z.uuid() }),
+  z.object({ remoteUrl: z.string().min(1), credentialId: z.uuid().optional() }),
+])
+
 async function serveLegacyGit(c: Context<IdentityEnv>, pathInfo: string): Promise<Response> {
   return serveHostedRepo(c.req.param('projectId') ?? '', c.req.raw, pathInfo, { kind: 'user', principal: c.get('principal') })
 }
@@ -91,22 +98,41 @@ export const projectApp = new Hono<IdentityEnv>()
       return c.body(null, 204)
     },
   )
-  // A project around one git repo, cloned with the named credential unless
-  // its owner has it. Answers the project, with the host key trusted for an
-  // ssh clone and the repo's host if it was added to the project's egress
-  // allowlist. `projectId` lets the client name the project it is adding,
-  // to follow the add in the snapshot's `projectAdds`.
+  // A project around one git repo: a remote, cloned with the named
+  // credential unless its owner has it (docs/repo-forks.md: read-only, as a
+  // fork, or with an upstream), or a repo its owner may use, by id.
+  // Answers the project, with the host key trusted for an ssh clone, the
+  // repo's host if it was added to the project's egress allowlist, and the
+  // upstream GitHub suggests. `projectId` lets the client name the project
+  // it is adding, to follow the add in the snapshot's `projectAdds`.
   .post(
     '/add',
-    zv('json', z.object({
-      remoteUrl: z.string().min(1),
-      /** The credential to clone with and assign. */
-      gitCredentialId: z.uuid(),
-      projectId: z.uuid().optional(),
-    })),
+    zv('json', z.intersection(
+      z.union([
+        z.object({
+          remoteUrl: z.string().min(1),
+          /** The credential to clone with and assign. */
+          gitCredentialId: z.uuid().optional(),
+          readOnly: z.boolean().optional(),
+          fork: z.boolean().optional(),
+          upstream: upstreamBody.optional(),
+        }),
+        z.object({ repoId: z.uuid() }),
+      ]),
+      z.object({ projectId: z.uuid().optional() }),
+    )),
     async (c) => {
-      const { remoteUrl, gitCredentialId, projectId } = c.req.valid('json')
-      const result = await addProject(remoteUrl, gitCredentialId, c.get('principal').userId, projectId)
+      const { projectId, ...body } = c.req.valid('json')
+      const source = 'repoId' in body
+        ? { repoId: body.repoId }
+        : {
+          remoteUrl: body.remoteUrl,
+          ...(body.gitCredentialId !== undefined ? { credentialId: body.gitCredentialId } : {}),
+          ...(body.readOnly !== undefined ? { readOnly: body.readOnly } : {}),
+          ...(body.fork !== undefined ? { fork: body.fork } : {}),
+          ...(body.upstream !== undefined ? { upstream: body.upstream } : {}),
+        }
+      const result = await addProject(source, c.get('principal').userId, projectId)
       await pushCredentialsToRuntime()
       return c.json(result)
     },
@@ -139,15 +165,22 @@ export const projectApp = new Hono<IdentityEnv>()
   )
   .get('/:projectId', async (c) => c.json(await getProjectDetail(await resolveProjectId(c.req.param('projectId')))))
   // The repos the project links (docs/project-repos.md): link one by its
-  // remote and a credential, by the id of a repo its owner may use, or as a
-  // new repo yaac hosts, under `dir` (by default the repo's name). Answers
-  // the link, with the host key trusted for a fresh ssh clone and the
-  // repo's host if it was added to the project's egress allowlist.
+  // remote (taken as a project add takes it), by the id of a repo its owner
+  // may use, or as a new repo yaac hosts, under `dir` (by default the repo's
+  // name). Answers the link, with the host key trusted for a fresh ssh
+  // clone, the repo's host if it was added to the project's egress
+  // allowlist, and the upstream GitHub suggests.
   .post(
     '/:projectId/repo',
     zv('json', z.intersection(
       z.union([
-        z.object({ remoteUrl: z.string().min(1), credentialId: z.uuid() }),
+        z.object({
+          remoteUrl: z.string().min(1),
+          credentialId: z.uuid().optional(),
+          readOnly: z.boolean().optional(),
+          fork: z.boolean().optional(),
+          upstream: upstreamBody.optional(),
+        }),
         z.object({ repoId: z.uuid() }),
         z.object({ hosted: z.literal(true) }),
       ]),

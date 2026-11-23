@@ -6,7 +6,7 @@ import { serverLocalPath } from '@yaac/shared/paths'
 import { serverLog } from '#lib/log'
 import { NEVER_PRUNE_GC, NEVER_PRUNE_KEYS } from './repo'
 import { runGit, spawnGit } from './run'
-import { gitEnvForCredential, type ResolvedGitCredential } from './transport'
+import { gitEnvForCredential, isGitAuthError, type ResolvedGitCredential } from './transport'
 
 /**
  * A yaac-hosted remote (docs/hosted-projects.md): a bare repository the
@@ -27,7 +27,13 @@ const SMART_PATHS = new Set(['/info/refs', '/git-upload-pack', '/git-receive-pac
  * `HEAD`, which every clone would then find ambiguous. With
  * `YAAC_GUARD_DEFAULT_BRANCH=1` it also refuses a push that deletes the
  * branch HEAD names, or moves it to a commit that does not contain the old
- * tip. It runs after the pack is received, so the new commits are readable.
+ * tip, except a fork's catch-up (docs/repo-forks.md "Catching up with the
+ * upstream"): a new tip that contains `YAAC_CATCH_UP_COMMIT`, the
+ * upstream's branch as the server last fetched it, where the old tip did
+ * not, and that carries a patch-identical copy of every commit the old tip
+ * added since it forked from the upstream (`git cherry` prints none with
+ * `+`). `YAAC_CATCH_UP=off` names the setting that would allow one. It runs
+ * after the pack is received, so the new commits are readable.
  */
 const PRE_RECEIVE = `#!/bin/sh
 head=$(git symbolic-ref -q HEAD)
@@ -43,11 +49,22 @@ while read -r old new ref; do
   esac
   case $old in
     *[!0]*)
-      if ! git merge-base --is-ancestor "$old" "$new"; then
-        echo "yaac: $ref is the default branch and cannot be force-pushed." >&2
+      git merge-base --is-ancestor "$old" "$new" && continue
+      if [ -n "$YAAC_CATCH_UP_COMMIT" ] && git merge-base --is-ancestor "$YAAC_CATCH_UP_COMMIT" "$new" 2>/dev/null \
+        && ! git merge-base --is-ancestor "$YAAC_CATCH_UP_COMMIT" "$old" 2>/dev/null; then
+        fork=$(git merge-base "$old" "$YAAC_CATCH_UP_COMMIT" 2>/dev/null) \
+          && dropped=$(git cherry "$new" "$old" "$fork" 2>/dev/null) && ! printf '%s\\n' "$dropped" | grep -q '^+' && continue
+        echo "yaac: $ref is the default branch; this rebase onto the upstream drops or changes the fork's own commits." >&2
+        echo "yaac: catch up with a merge instead, which is a fast-forward." >&2
+        status=1; continue
+      fi
+      echo "yaac: $ref is the default branch and cannot be force-pushed." >&2
+      if [ "$YAAC_CATCH_UP" = off ]; then
+        echo "yaac: to rebase it onto the upstream, the owner can turn on \"Allow rebasing onto the upstream\" in Settings." >&2
+      else
         echo "yaac: the project's owner can turn this guard off in Settings." >&2
-        status=1
-      fi ;;
+      fi
+      status=1 ;;
   esac
 done
 exit $status
@@ -125,6 +142,72 @@ export async function initHostedRepo(repoPath: string): Promise<void> {
 }
 
 /**
+ * Fill the new bare repository at `hostedPath` with every `origin/*`
+ * branch and tag of the main clone at `mainPath`, as a repo moves onto yaac
+ * (docs/repo-forks.md "Moving a repo to yaac"), and point its HEAD at the
+ * main clone's default branch. Local, so it takes seconds.
+ */
+export async function fillHostedRepo(hostedPath: string, mainPath: string, defaultBranch: string): Promise<void> {
+  const source = path.join(mainPath, '.git')
+  await runGit({ kind: 'private', gitDir: hostedPath }, [
+    'fetch', '--quiet', source,
+    '+refs/remotes/origin/*:refs/heads/*', '^refs/remotes/origin/HEAD', '+refs/tags/*:refs/tags/*',
+  ], { remoteUrl: source })
+  await setHostedDefaultBranch(hostedPath, defaultBranch)
+}
+
+/** How long a push probe waits for the remote before it answers unknown. */
+const PROBE_TIMEOUT_MS = 15_000
+
+/**
+ * Whether `credential` can push to `remoteUrl` (docs/repo-forks.md "Push
+ * access"): a dry-run push that deletes a branch that does not exist. It
+ * asks the remote's push endpoint, which checks the credential, and sends
+ * nothing. `null` when the answer is unknown, such as a network failure or
+ * a remote silent for `PROBE_TIMEOUT_MS`, whose git is then killed, rather
+ * than a refused credential. It runs in an empty repository of the
+ * server's own.
+ */
+export async function probePushAccess(remoteUrl: string, credential: ResolvedGitCredential): Promise<'yes' | 'no' | null> {
+  const dir = serverLocalPath('run', 'push-probe.git')
+  if (!await fs.access(path.join(dir, 'HEAD')).then(() => true, () => false)) {
+    await runGit({ kind: 'none' }, ['init', '--quiet', '--bare', dir])
+  }
+  try {
+    await dryRunPush(dir, remoteUrl, credential, AbortSignal.timeout(PROBE_TIMEOUT_MS))
+    return 'yes'
+  } catch (err) {
+    return isGitAuthError(err instanceof Error ? err.message : String(err)) ? 'no' : null
+  }
+}
+
+async function dryRunPush(gitDir: string, remoteUrl: string, credential: ResolvedGitCredential, signal?: AbortSignal): Promise<void> {
+  const { args, env } = await moveGit(credential, remoteUrl)
+  await runGit({ kind: 'private', gitDir }, [...args, 'push', '--dry-run', '--quiet', remoteUrl, ':refs/heads/yaac-push-check'], {
+    env, remoteUrl, ...(signal !== undefined ? { signal } : {}),
+  })
+}
+
+/**
+ * Push branches of the main clone at `mainPath` to `remoteUrl`, each
+ * `origin/<from>` as `<to>`, nothing forced and all or none, as a fork
+ * moves back onto its upstream (docs/repo-forks.md "Moving back to the
+ * upstream").
+ */
+export async function pushMainBranches(
+  mainPath: string,
+  remoteUrl: string,
+  credential: ResolvedGitCredential,
+  branches: Array<{ from: string; to: string }>,
+): Promise<void> {
+  if (branches.length === 0) return
+  const { args, env } = await moveGit(credential, remoteUrl)
+  await runGit({ kind: 'repo', repoPath: mainPath }, [
+    ...args, 'push', '--quiet', '--atomic', remoteUrl, ...branches.map((b) => `refs/remotes/origin/${b.from}:refs/heads/${b.to}`),
+  ], { env, remoteUrl })
+}
+
+/**
  * Refuse unless `remoteUrl` can take the bare repository at `repoPath` as a
  * project moves off yaac (docs/hosted-projects.md "Moving to a git host"):
  * `credential` must be able to push there, and the remote must be empty,
@@ -135,10 +218,8 @@ export async function initHostedRepo(repoPath: string): Promise<void> {
  * retry finishes what a failed one started.
  *
  * Reading the remote proves nothing about pushing, and a public remote may
- * not even ask for the credential to be read. So a dry-run push asks the
- * remote's push endpoint, which checks the credential may push, and sends
- * nothing. It dry-runs deleting a branch that does not exist, which needs
- * no commits, so an empty project can ask too.
+ * not even ask for the credential to be read, so it ends with the dry-run
+ * push `probePushAccess` makes.
  */
 export async function checkMoveTarget(
   repoPath: string,
@@ -160,7 +241,7 @@ export async function checkMoveTarget(
       && await runGit(target, ['merge-base', '--is-ancestor', sha, mine]).then(() => true, () => false)
     if (!contained) throw new Error(`its ${ref} has commits this project's does not; ${EMPTY_REPO}`)
   }
-  await runGit(target, [...args, 'push', '--dry-run', '--quiet', remoteUrl, ':refs/heads/yaac-push-check'], { env, remoteUrl })
+  await dryRunPush(repoPath, remoteUrl, credential)
 }
 
 const EMPTY_REPO = 'move to an empty repository (created with no README, license or .gitignore)'
@@ -220,7 +301,14 @@ export async function serveGitHttp(
   repoPath: string,
   request: Request,
   pathInfo: string,
-  opts: { allowPush: boolean; guardDefaultBranch: boolean; onPushed?: () => void },
+  opts: {
+    allowPush: boolean
+    guardDefaultBranch: boolean
+    /** For a fork: the commit a catch-up must land on, or `off` while the
+     *  owner allows none (`PRE_RECEIVE`). */
+    catchUp?: { commit: string } | 'off'
+    onPushed?: () => void
+  },
 ): Promise<Response> {
   if (!SMART_PATHS.has(pathInfo)) return new Response('not found\n', { status: 404 })
   const url = new URL(request.url)
@@ -241,6 +329,8 @@ export async function serveGitHttp(
     'http-backend',
   ], {
     YAAC_GUARD_DEFAULT_BRANCH: opts.guardDefaultBranch ? '1' : '0',
+    YAAC_CATCH_UP: opts.catchUp === 'off' ? 'off' : '',
+    YAAC_CATCH_UP_COMMIT: opts.catchUp !== undefined && opts.catchUp !== 'off' ? opts.catchUp.commit : '',
     GIT_PROJECT_ROOT: path.dirname(repoPath),
     GIT_HTTP_EXPORT_ALL: '1',
     PATH_INFO: `/${path.basename(repoPath)}${pathInfo}`,

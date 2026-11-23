@@ -3,7 +3,7 @@ import { useQuery, useQueryClient, type QueryClient, type UseQueryResult } from 
 import { api } from '#lib/api'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { useSnapshotSelect } from '#lib/useSnapshot'
-import type { RepoHolder, RepoSummary } from '@yaac/shared/types'
+import type { RepoHolder, RepoHostPreview, RepoMovePreview, RepoSummary } from '@yaac/shared/types'
 
 /*
  * Every call the webapp makes about a repo (docs/project-repos.md): the
@@ -44,6 +44,8 @@ export interface RepoBranches {
   /** Remote-tracking branch names, newest-committed first. */
   branches: string[]
   defaultBranch: string
+  /** A fork's upstream branches, newest-committed first. */
+  upstreamBranches?: string[]
 }
 
 export const repoBranchesKey = (repoId: string): unknown[] => ['repo-branches', repoId]
@@ -99,9 +101,43 @@ export const shareRepo = (repoId: string, userId: string): Promise<unknown> =>
 export const unshareRepo = (repoId: string, userId: string): Promise<unknown> =>
   repo.unshare.$post({ param: { repoId }, json: { userId } })
 
-/** What moving a hosted repo to a git host stops and hands over. */
-export const previewRepoMove = (repoId: string): Promise<{ runningWorkspaces: number; sharedWith: string[] }> =>
-  repo['move-preview'].$get({ param: { repoId } })
+/** What moving a hosted repo to a git host stops and hands over, or with
+ *  `upstream` a fork's move back onto its upstream, with every branch. */
+export const previewRepoMove = (repoId: string, upstream = false): Promise<RepoMovePreview> =>
+  repo['move-preview'].$get({ param: { repoId }, query: upstream ? { target: 'upstream' } : {} })
+
+/** Move a fork back onto its upstream, pushing the branches picked. */
+export const moveRepoToUpstream = (
+  repoId: string,
+  choices: { push: Array<{ branch: string; as?: string }>; leave: string[] },
+): Promise<{ leftAt?: string }> => repo['move-upstream'].$post({ param: { repoId }, json: choices })
+
+/** What moving a repo onto yaac would stop. */
+export const previewRepoHost = (repoId: string): Promise<RepoHostPreview> =>
+  repo['host-preview'].$get({ param: { repoId } })
+
+/** Move a repo from its git host onto yaac (docs/repo-forks.md). */
+export const moveRepoToYaac = (repoId: string): Promise<unknown> => repo.host.$post({ param: { repoId } })
+
+/** Make a repo read-only for every workspace, or writable again. */
+export const setRepoReadOnly = (repoId: string, enabled: boolean): Promise<unknown> =>
+  repo['read-only'].$put({ param: { repoId }, json: { enabled } })
+
+/** Probe again whether a repo's credential can push. */
+export const checkRepoPushAccess = (repoId: string): Promise<{ pushAccess: 'yes' | 'no' | null }> =>
+  repo['push-access'].$post({ param: { repoId } })
+
+/** Set a repo's upstream: one of the owner's repos, or a remote. */
+export const setRepoUpstream = (
+  repoId: string,
+  upstream: { repoId: string } | { remoteUrl: string; credentialId?: string },
+): Promise<{ upstreamRepoId: string | null; knownHostsEntry: string | null; allowedHost: string | null }> =>
+  repo.upstream.$put({ param: { repoId }, json: upstream })
+
+export const removeRepoUpstream = (repoId: string): Promise<unknown> => repo.upstream.$delete({ param: { repoId } })
+
+export const setRepoUpstreamRebase = (repoId: string, enabled: boolean): Promise<unknown> =>
+  repo['upstream-rebase'].$put({ param: { repoId }, json: { enabled } })
 
 export const moveRepo = (repoId: string, remoteUrl: string, credentialId: string): Promise<unknown> =>
   repo.move.$post({ param: { repoId }, json: { remoteUrl, credentialId } })
@@ -122,14 +158,17 @@ export const deleteRepo = (repoId: string): Promise<{ heldBy: RepoHolder[] }> =>
   repo.$delete({ param: { repoId } })
 
 /** What a link is made to (`RepoToLink` on the server). */
-export type RepoToLink = { remoteUrl: string; credentialId: string } | { repoId: string } | { hosted: true }
+export type RepoToLink =
+  | { remoteUrl: string; credentialId?: string; readOnly?: boolean; fork?: boolean }
+  | { repoId: string }
+  | { hosted: true }
 
 /** Link a repo into a project, under `dir` if given. */
 export const addProjectRepo = (
   projectId: string,
   what: RepoToLink,
   dir?: string,
-): Promise<{ repoId: string; dir: string; knownHostsEntry: string | null }> =>
+): Promise<{ repoId: string; dir: string; knownHostsEntry: string | null; suggestedUpstream?: string }> =>
   projectRepo.$post({ param: { projectId }, json: { ...what, ...(dir !== undefined ? { dir } : {}) } })
 
 export const removeProjectRepo = (projectId: string, repoId: string): Promise<unknown> =>

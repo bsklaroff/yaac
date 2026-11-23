@@ -117,6 +117,12 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'PUT', path: '/api/repo/:repoId/default-branch', request: `${R}/default-branch`, body: { branch: 'main' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/repo/:repoId/default-branch-guard', request: `${R}/default-branch-guard`, body: { enabled: false }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/repo/:repoId/branches', request: `${R}/branches`, access: 'reader', k8s: MISSING, containerless: MISSING },
+  // Read-only repos, push access and upstreams (docs/repo-forks.md).
+  { method: 'POST', path: '/api/repo/:repoId/push-access', request: `${R}/push-access`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/repo/:repoId/read-only', request: `${R}/read-only`, body: { enabled: true }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/repo/:repoId/upstream', request: `${R}/upstream`, body: { remoteUrl: 'https://github.com/acme/upstream.git' }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'DELETE', path: '/api/repo/:repoId/upstream', request: `${R}/upstream`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/repo/:repoId/upstream-rebase', request: `${R}/upstream-rebase`, body: { enabled: false }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // A hosted repo's remote, for the user's own git; a push is its owner's,
   // or a user's it is shared with.
   { method: 'GET', path: '/api/repo/:repoId/git/info/refs', request: `${R}/git/info/refs`, access: 'reader', k8s: MISSING, containerless: MISSING },
@@ -126,6 +132,9 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/repo/:repoId/unshare', request: `${R}/unshare`, body: { userId: ID.user }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/repo/:repoId/move-preview', request: `${R}/move-preview`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/repo/:repoId/move', request: `${R}/move`, body: { remoteUrl: 'https://github.com/acme/widgets.git', credentialId: ID.credential }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/repo/:repoId/move-upstream', request: `${R}/move-upstream`, body: { push: [], leave: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'GET', path: '/api/repo/:repoId/host-preview', request: `${R}/host-preview`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/repo/:repoId/host', request: `${R}/host`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/repo/:repoId/kept-hosted-repo', request: `${R}/kept-hosted-repo`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/repo/:repoId/delete-preview', request: `${R}/delete-preview`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'DELETE', path: '/api/repo/:repoId', request: R, access: 'owner', k8s: MISSING, containerless: MISSING },

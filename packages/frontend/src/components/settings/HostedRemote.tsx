@@ -1,6 +1,8 @@
 import { useState, type JSX } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { repoBranchesKey, setRepoDefaultBranch, setRepoDefaultBranchGuard, useRepoBranches } from '#lib/repoApi'
+import {
+  repoBranchesKey, setRepoDefaultBranch, setRepoDefaultBranchGuard, setRepoUpstreamRebase, useRepoBranches,
+} from '#lib/repoApi'
 import { YButton, YCheckbox, YSelect } from '#ui'
 import { hostedCloneUrl } from '@yaac/shared/hosted-git'
 
@@ -12,10 +14,13 @@ import { hostedCloneUrl } from '@yaac/shared/hosted-git'
  * the repo's branch list, likewise. `name` is the folder the clone command
  * suggests. Only the owner changes either setting (`readOnly` otherwise).
  */
-export function HostedRemote({ repoId, name, guardDefaultBranch, readOnly, onChanged }: {
+export function HostedRemote({ repoId, name, guardDefaultBranch, guardAllowsCatchUp, readOnly, onChanged }: {
   repoId: string
   name: string
   guardDefaultBranch: boolean
+  /** For a fork: whether the guard lets a rebase onto the upstream
+   *  through (docs/repo-forks.md "Catching up with the upstream"). */
+  guardAllowsCatchUp?: boolean
   readOnly: boolean
   /** The guard changed. */
   onChanged: () => void
@@ -40,6 +45,10 @@ export function HostedRemote({ repoId, name, guardDefaultBranch, readOnly, onCha
   })
   const guard = useMutation({
     mutationFn: (enabled: boolean) => setRepoDefaultBranchGuard(repoId, enabled),
+    onSuccess: onChanged,
+  })
+  const catchUp = useMutation({
+    mutationFn: (enabled: boolean) => setRepoUpstreamRebase(repoId, enabled),
     onSuccess: onChanged,
   })
 
@@ -75,6 +84,17 @@ export function HostedRemote({ repoId, name, guardDefaultBranch, readOnly, onCha
         Protect the default branch: refuse pushes that delete it or rewrite its history
       </YCheckbox>
       {guard.error && <p className="mt-2 text-md text-danger">{guard.error.message}</p>}
+      {guardAllowsCatchUp !== undefined && guardDefaultBranch && (
+        <YCheckbox
+          checked={guardAllowsCatchUp}
+          disabled={readOnly || catchUp.isPending}
+          onCheckedChange={(on) => catchUp.mutate(on)}
+          className="mt-2 ml-6"
+        >
+          Allow rebasing onto the upstream: a rewrite that lands on the upstream&apos;s latest gets through
+        </YCheckbox>
+      )}
+      {catchUp.error && <p className="mt-2 text-md text-danger">{catchUp.error.message}</p>}
     </div>
   )
 }

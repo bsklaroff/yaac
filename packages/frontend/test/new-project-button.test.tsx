@@ -21,7 +21,7 @@ const NEW_KEY = 'POST /api/auth/git/ssh-keys'
 let server: FetchMock
 
 beforeEach(() => {
-  useUiStore.setState({ activeProjectId: null, projectOps: [], addProjectForm: null, trustedHostKeys: [] })
+  useUiStore.setState({ activeProjectId: null, projectOps: [], addProjectForm: null, trustedHostKeys: [], upstreamSuggestions: {} })
   server = mockFetch({ [AUTH_LIST]: list(TOKEN) })
 })
 
@@ -154,6 +154,35 @@ describe('NewProjectButton', () => {
     expect(server.called(ADD).map((c) => c.body)).toEqual([{ ...retried, projectId: failed }, { ...retried, projectId: retry }])
     // No host key to show: the dialog stays closed.
     expect(screen.queryByLabelText('Repository URL')).toBeNull()
+  })
+
+  it('offers a fork or read-only add for a remote the credential cannot push to, and adds one read-only without a credential', async () => {
+    let adds = 0
+    server.route(ADD, () => (adds++ === 0
+      ? serverError('PUSH_REFUSED', 'You can\'t push to github.com/o/tool with "repo-token".\n  --fork  …\n  --read-only  …', 403)
+      : { project: { name: 'tool' }, repoId: 'r-tool', knownHostsEntry: null, suggestedUpstream: 'https://github.com/up/tool.git' }))
+    await openWith('https://github.com/o/tool.git')
+    fireEvent.change(await screen.findByLabelText('Git credential'), { target: { value: 'c-token' } })
+    fireEvent.click(addButton())
+
+    // The refusal's first line, with the two ways forward as buttons, which
+    // send the add again with its credential.
+    expect(await screen.findByText('You can\'t push to github.com/o/tool with "repo-token".')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Add as a fork' }))
+    await waitFor(() => expect(server.called(ADD)).toHaveLength(2))
+    expect(server.called(ADD)[1].body).toMatchObject({ remoteUrl: 'https://github.com/o/tool.git', gitCredentialId: 'c-token', fork: true })
+    // GitHub's parent is kept to offer on the repo's rows.
+    await waitFor(() => expect(useUiStore.getState().upstreamSuggestions).toEqual({ 'r-tool': 'https://github.com/up/tool.git' }))
+
+    // Read-only, a public https remote needs no credential.
+    fireEvent.click(screen.getByRole('button', { name: 'Add project' }))
+    fireEvent.change(screen.getByLabelText('Repository URL'), { target: { value: 'https://github.com/o/docs.git' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Only read it' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add without a credential' }))
+    await waitFor(() => expect(server.called(ADD)).toHaveLength(3))
+    expect(server.called(ADD)[2].body).toMatchObject({ remoteUrl: 'https://github.com/o/docs.git', readOnly: true })
+    expect(server.called(ADD)[2].body).not.toHaveProperty('gitCredentialId')
   })
 
   it('creates an empty project yaac hosts from a name, and a failed create retries into the name form', async () => {

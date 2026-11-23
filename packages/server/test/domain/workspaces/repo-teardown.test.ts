@@ -42,7 +42,10 @@ import { globalTrashDir, hostedRepoDir, repoDir } from '@yaac/shared/project-pat
 import { emptyTrash } from '#lib/trash'
 import { git } from '@yaac/test-utils/git'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
-import { BUILT_IN_USER_ID, deleteNamedWorkflow, deleteSiteRow, findNamedWorkflow, insertNamedWorkflow, insertSite, seeTailnetUser, storeWorkflow } from '#db'
+import {
+  BUILT_IN_USER_ID, deleteNamedWorkflow, deleteSiteRow, findNamedWorkflow, insertNamedWorkflow, insertRepo, insertSite, seeTailnetUser,
+  storeWorkflow, updateRepoSettings,
+} from '#db'
 
 /** The caller of every user-caused write here: the repos' owner. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -427,6 +430,10 @@ describe('deleteRepo', () => {
 
   it('removes the main clone and the row at once when no workspace holds a checkout', async () => {
     const { repo } = await sharedRepo()
+    // Not while another repo names it as its upstream.
+    const fork = await insertRepo({ id: '6cc61f49-c2ae-433a-8d09-1f22d7868753', owner: BUILT_IN_USER_ID, remoteUrl: 'https://github.com/me/w.git', upstreamRepoId: repo.id })
+    await expect(deleteRepo(local, repo.id)).rejects.toThrow(/upstream of https:\/\/github.com\/me\/w.git/)
+    await updateRepoSettings(fork.id, { upstreamRepoId: null })
     expect(await deleteRepo(local, repo.id)).toEqual({ heldBy: [] })
     expect(await getRepo(repo.id)).toBeUndefined()
     await expect(fs.access(repoDir(repo.id))).rejects.toThrow()

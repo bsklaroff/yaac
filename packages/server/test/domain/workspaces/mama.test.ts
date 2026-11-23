@@ -1414,7 +1414,7 @@ describe('runMamaCommand', () => {
       expect(await run('as-repo', '', { repo: 'demo' })).toEqual({ ok: false, error: "this project does not allow demo's token as GH_TOKEN" })
       await link({ ghToken: true, readOnly: true })
       expect(await run('as-repo', '', { repo: 'demo' })).toEqual({
-        ok: false, error: 'demo is read-only in this project, so its token is never GH_TOKEN',
+        ok: false, error: 'demo is read-only, so its token is never GH_TOKEN',
       })
       expect(await run('as-repo', '', { repo: 'nope' })).toEqual({ ok: false, error: 'this project has no repo "nope"' })
       expect(await run('as-repo', '', {})).toEqual({ ok: false, error: 'as-repo needs a repo' })

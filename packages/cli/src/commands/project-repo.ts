@@ -1,4 +1,5 @@
-import { api, projectRepoOf, resolveGitCredentialId, resolveProject, resolveRepo } from '#commands/api'
+import { api, projectRepoOf, resolveProject, resolveRepo } from '#commands/api'
+import { printAddNotes, repoAddFields, type RepoAddFlags } from '#commands/project-add'
 import { repoRemote } from '#commands/project-list'
 import { printTable } from '#commands/table'
 import { onOff } from '#commands/config-launch-settings'
@@ -10,7 +11,7 @@ import { onOff } from '#commands/config-launch-settings'
  * of it.
  */
 
-export interface ProjectRepoAddOptions {
+export interface ProjectRepoAddOptions extends RepoAddFlags {
   /** Link a repo the project's owner already has, or was shared. */
   repoId?: string
   /** Link a new, empty repo yaac hosts. */
@@ -19,8 +20,8 @@ export interface ProjectRepoAddOptions {
   dir?: string
 }
 
-/** Link a repo into a project: a remote cloned with a credential, a repo
- *  its owner may already use, or a new one yaac hosts. */
+/** Link a repo into a project: a remote, taken as `yaac project add` takes
+ *  it, a repo its owner may already use, or a new one yaac hosts. */
 export async function projectRepoAdd(
   project: string,
   remoteUrl: string | undefined,
@@ -28,12 +29,10 @@ export async function projectRepoAdd(
   opts: ProjectRepoAddOptions,
 ): Promise<void> {
   const ways = [remoteUrl !== undefined, opts.repoId !== undefined, opts.hosted === true].filter(Boolean).length
-  if (ways !== 1 || (remoteUrl !== undefined && credential === undefined)) {
-    throw new Error('Give one of: <remote-url> <credential>, --repo-id <id>, or --hosted.')
-  }
+  if (ways !== 1) throw new Error('Give one of: <remote-url> [credential], --repo-id <id>, or --hosted.')
   const summary = await resolveProject(project)
   const what = remoteUrl !== undefined
-    ? { remoteUrl, credentialId: await resolveGitCredentialId(credential ?? '') }
+    ? { remoteUrl, ...await repoAddFields(credential, opts) }
     : opts.repoId !== undefined ? { repoId: (await resolveRepo(opts.repoId)).id } : { hosted: true as const }
   const added = await api.project[':projectId'].repo.$post({
     param: { projectId: summary.id },
@@ -41,10 +40,7 @@ export async function projectRepoAdd(
   })
   console.log(`Project "${summary.name}" now links repo ${added.repoId} in the folder ${added.dir}. `
     + 'Workspaces created from now on can start with it.')
-  if (added.knownHostsEntry !== null) console.log(`Host key trusted: ${added.knownHostsEntry}`)
-  if (added.allowedHost !== null) {
-    console.log(`Added ${added.allowedHost} to the project's egress allowlist, so its workspaces can reach the repo.`)
-  }
+  printAddNotes(added, added.repoId)
 }
 
 /** Unlink a repo from a project. */
@@ -69,15 +65,20 @@ export async function projectRepoList(project: string): Promise<void> {
     [
       { header: 'DIR' }, { header: 'REPO' }, { header: 'CREDENTIAL' },
       { header: 'READ-ONLY', optional: true }, { header: 'GH_TOKEN', optional: true }, { header: 'REMOTE' },
+      { header: 'NOTE', optional: true },
     ],
     summary.repos.map((r) => [
       r.dir,
       r.id.slice(0, 8),
       r.hosted ? '(none needed)' : r.gitCredential?.name ?? '(none)',
-      // Neither setting exists without a sandbox.
-      k8s ? onOff(r.readOnly) : '',
-      k8s ? onOff(r.ghToken && !r.readOnly) : '',
+      // A link's setting exists only with a sandbox; the repo's everywhere.
+      r.repoReadOnly ? 'repo' : k8s ? onOff(r.readOnly) : '',
+      k8s ? onOff(r.ghToken && !r.readOnly && !r.repoReadOnly) : '',
       repoRemote(r),
+      [
+        ...(r.upstream !== undefined ? [`fork of ${r.upstream.remoteUrl}`] : []),
+        ...(r.pushRefused === true ? ['pushes refused (see `yaac repo list`)'] : []),
+      ].join('; '),
     ]),
   )
 }

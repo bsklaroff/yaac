@@ -530,6 +530,16 @@ describe('git status changes', () => {
     expect(useUiStore.getState().findPending).toBe(CHANGES_TARGET)
   })
 
+  // A fork that caught up with its upstream rewrote the base under the
+  // workspace, which says so and what to run (docs/repo-forks.md).
+  it('says when its base branch was rewritten under it, and how to rebase onto the new one', async () => {
+    server.route(CHANGES, reply({ ...PAYLOAD, comparison: { ref: 'origin/main', ahead: 3, behind: 2, rewritten: true } }))
+    renderWithClient(<GitStatusBar workspaceId="s1" />)
+    const badge = await screen.findByText('base rewritten')
+    expect(badge.getAttribute('title')).toContain('was rewritten since this workspace started')
+    expect(badge.getAttribute('title')).toContain('Run `git rebase origin/main`')
+  })
+
   // A reload (a server switch in the desktop shell) starts with an empty
   // query cache; the bar shows the last answer, muted, until a read lands.
   it('shows the last answer saved across a reload until a read lands', async () => {

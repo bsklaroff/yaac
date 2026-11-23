@@ -178,7 +178,9 @@ never does.
 
 ### Read-only repos
 
-A grant with `readOnly` passes only the requests known to read under its
+A grant is `readOnly` when the project's link or the repo itself is
+read-only, and always for a fork's upstream (docs/repo-forks.md). A grant
+with `readOnly` passes only the requests known to read under its
 repo's path, and refuses every other with a 403, whichever credential the
 request carries. It lists what reads rather than what writes, so a spelling
 of a push the proxy does not recognize is refused, not passed. What passes:

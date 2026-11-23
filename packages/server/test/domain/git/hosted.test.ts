@@ -6,7 +6,10 @@ import type { AddressInfo } from 'node:net'
 import { createAdaptorServer, type ServerType } from '@hono/node-server'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { git } from '@yaac/test-utils/git'
-import { checkMoveTarget, hostedDefaultBranch, initHostedRepo, pushHostedRepo, serveGitHttp, setHostedDefaultBranch } from '#domain/git'
+import {
+  checkMoveTarget, cloneRepo, fetchOrigin, fillHostedRepo, hostedDefaultBranch, initHostedRepo, probePushAccess, pushHostedRepo,
+  pushMainBranches, serveGitHttp, setHostedDefaultBranch,
+} from '#domain/git'
 
 const ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' }
 const run = (dir: string, args: string[]): Promise<string> => git(dir, args, { env: ENV })
@@ -103,6 +106,90 @@ describe('checkMoveTarget against a remote that refuses pushes', () => {
     } finally {
       await new Promise((resolve) => server.close(resolve))
     }
+  })
+})
+
+describe('probePushAccess', () => {
+  it('answers yes where a push would be taken, no where the remote refuses the credential, and null when it cannot tell', async () => {
+    const writable = path.join(tmp, 'probe-writable.git')
+    await run(tmp, ['init', '-q', '--bare', writable])
+    expect(await probePushAccess(writable, { kind: 'hosted' })).toBe('yes')
+    expect(await run(writable, ['for-each-ref'])).toBe('')
+
+    const readOnly = path.join(tmp, 'probe-read-only.git')
+    await run(tmp, ['init', '-q', '--bare', readOnly])
+    const server = createAdaptorServer({
+      fetch: (request) => serveGitHttp(readOnly, request, new URL(request.url).pathname.replace(/^\/repo/, ''), {
+        allowPush: false, guardDefaultBranch: false,
+      }),
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    try {
+      const url = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}/repo`
+      expect(await probePushAccess(url, { kind: 'hosted' })).toBe('no')
+    } finally {
+      await new Promise((resolve) => server.close(resolve))
+    }
+    // No repository there: not a refused credential, so unknown.
+    expect(await probePushAccess(path.join(tmp, 'nowhere.git'), { kind: 'hosted' })).toBeNull()
+
+    // A remote that never answers is unknown too, after a bounded wait.
+    const silent = net.createServer(() => { /* accept, then say nothing */ })
+    await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', resolve))
+    try {
+      const started = Date.now()
+      expect(await probePushAccess(`http://127.0.0.1:${String((silent.address() as AddressInfo).port)}/repo`, { kind: 'hosted' })).toBeNull()
+      expect(Date.now() - started).toBeLessThan(20_000)
+    } finally {
+      silent.close()
+    }
+  }, 30_000)
+})
+
+describe('fillHostedRepo', () => {
+  it("fills a new bare repository with a main clone's origin branches and tags, defaulting to its default branch", async () => {
+    const source = path.join(tmp, 'fill-source')
+    await run(tmp, ['init', '-q', '-b', 'trunk', source])
+    await run(source, ['commit', '-q', '--allow-empty', '-m', 'one'])
+    await run(source, ['branch', 'feature'])
+    await run(source, ['tag', 'v1'])
+    const main = path.join(tmp, 'fill-main')
+    await cloneRepo(source, main, null)
+    const hosted = path.join(tmp, 'fill-hosted.git')
+    await initHostedRepo(hosted)
+
+    await fillHostedRepo(hosted, main, 'trunk')
+    expect(await run(hosted, ['for-each-ref', '--format=%(refname)'])).toBe('refs/heads/feature\nrefs/heads/trunk\nrefs/tags/v1\n')
+    expect(await hostedDefaultBranch(hosted)).toBe('trunk')
+    expect((await run(hosted, ['rev-parse', 'feature'])).trim()).toBe((await run(source, ['rev-parse', 'feature'])).trim())
+  })
+})
+
+describe('pushMainBranches', () => {
+  it("pushes a main clone's origin branches under the names asked, all or none, never forced", async () => {
+    const source = path.join(tmp, 'pushmain-source')
+    await run(tmp, ['init', '-q', '-b', 'main', source])
+    await run(source, ['commit', '-q', '--allow-empty', '-m', 'one'])
+    await run(source, ['branch', 'work'])
+    const main = path.join(tmp, 'pushmain-main')
+    await cloneRepo(source, main, null)
+    const target = path.join(tmp, 'pushmain-target.git')
+    await run(tmp, ['init', '-q', '--bare', target])
+
+    await pushMainBranches(main, target, { kind: 'hosted' }, [{ from: 'main', to: 'main' }, { from: 'work', to: 'from-fork' }])
+    expect(await run(target, ['for-each-ref', '--format=%(refname)'])).toBe('refs/heads/from-fork\nrefs/heads/main\n')
+
+    // The target's main moved on, so its push is refused, and so is the
+    // other one with it.
+    const other = path.join(tmp, 'pushmain-other')
+    await run(tmp, ['clone', '-q', '-b', 'main', target, other])
+    await run(other, ['commit', '-q', '--allow-empty', '-m', 'elsewhere'])
+    await run(other, ['push', '-q', 'origin', 'HEAD:main'])
+    await run(source, ['commit', '-q', '--allow-empty', '-m', 'two'])
+    await fetchOrigin(main, source, null)
+    await expect(pushMainBranches(main, target, { kind: 'hosted' }, [{ from: 'work', to: 'new' }, { from: 'main', to: 'main' }]))
+      .rejects.toThrow()
+    expect(await run(target, ['for-each-ref', '--format=%(refname)'])).toBe('refs/heads/from-fork\nrefs/heads/main\n')
   })
 })
 

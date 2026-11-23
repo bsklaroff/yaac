@@ -25,6 +25,7 @@ import {
   submitToolLoginCode,
   updateEndpoint,
 } from '#domain/auth'
+import { listRepoSummaries, probeRepoPushAccess } from '#domain/repos'
 import {
   AGENT_TOOLS,
   FAKE_AUTH_KINDS,
@@ -113,7 +114,7 @@ export const authApp = new Hono<IdentityEnv>()
     },
   )
   // New secret, same name and projects: a pasted token, or a newly generated
-  // key whose public half is returned.
+  // key whose public half is returned. Each repo it serves is probed again.
   .post(
     '/git/credentials/:id/replace',
     zv('param', z.object({ id: z.uuid() })),
@@ -121,6 +122,9 @@ export const authApp = new Hono<IdentityEnv>()
     async (c) => {
       const replaced = await replaceCredential(c.get('principal').userId, c.req.valid('param').id, c.req.valid('json'))
       await requireRuntimeTold('The credential is replaced')
+      // Whether the new secret can push to each repo it serves
+      // (docs/repo-forks.md "Push access").
+      await probeRepoPushAccess((await listRepoSummaries()).filter((r) => r.gitCredential?.id === replaced.id).map((r) => r.id))
       return c.json(replaced)
     },
   )

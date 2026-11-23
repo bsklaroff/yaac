@@ -45,9 +45,11 @@ import {
   CONTAINER_TMUX_DIR,
 } from '@yaac/shared/paths'
 import { buildCloneLinkExec, buildStatusWarmupExec } from '@yaac/shared/git'
-import { parseGitRemote } from '@yaac/shared/git-remote'
+import { needsGitCredential, parseGitRemote } from '@yaac/shared/git-remote'
 import { resolveProjectEnv } from '#domain/projects'
-import { assertCanUseRepo, fetchRepoOrigin, missingCredentialError, resolveRepoCredential, sshKeyMaterial } from '#domain/repos'
+import {
+  assertCanUseRepo, fetchRepoOrigin, missingCredentialError, resolveRepoCredential, sshKeyMaterial, usableUpstream,
+} from '#domain/repos'
 import { isGitHubHost } from '@yaac/shared/credentials'
 import { readLock } from '@yaac/shared/lock'
 import {
@@ -75,6 +77,7 @@ import {
   markSessionsLaunched,
   setWorkspaceMamaTokenHash,
   unstageVolume,
+  type RepoRow,
   type SessionLaunchSettings,
   type SessionRow,
   type VolumeLease,
@@ -462,8 +465,10 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   // relinked so the agent starts current. A pod's file cache is warmed,
   // which a host's needs no help with.
   const setup = [
-    ...checkouts.filter((c) => c.reuse)
-      .map((c) => buildCloneLinkExec(path.join(repoDir(c.repo.id), '.git'), seenAt(c), c.repo.remoteUrl)),
+    // A deleted repo has no remote to push to.
+    ...checkouts.filter((c) => c.reuse).map((c) => buildCloneLinkExec(
+      path.join(repoDir(c.repo.id), '.git'), seenAt(c), c.remotes ?? { url: c.repo.remoteUrl, readOnly: true },
+    )),
     ...caught.cmds,
     ...(runtime.kind === 'containerless' ? [] : checkouts.map((c) => buildStatusWarmupExec(seenAt(c)))),
     ...(opensEarly || windows === '' ? [] : [windows]),
@@ -843,7 +848,8 @@ async function provisionWorkspace(
     }))
 
   // Each repo must be its owner's to use, have a git credential (without
-  // one the agent could neither fetch nor push) and, behind a proxy, a host
+  // one the agent could neither fetch nor push; a read-only https repo is
+  // read anonymously) and, behind a proxy, a host
   // the egress allowlist admits, so the agent never hits a confusing proxy
   // 403 on fetch. A hosted remote is the server itself, so it has no host to
   // check, and the proxy relays it before it reads the allowlist. A site's
@@ -856,12 +862,23 @@ async function provisionWorkspace(
   const remoteOf = (c: PlannedCheckout): { host: string; path: string } | null =>
     c.repo.hosted ? null : parseGitRemote(c.repo.remoteUrl)
   const live = checkouts.filter((c) => c.repo.deletedAt === undefined)
+  // A fork's upstream reaches its checkouts as a remote that can only be
+  // fetched, with its own credential (docs/repo-forks.md).
+  const upstreams = new Map<string, { repo: RepoRow; credential: ResolvedGitCredential | null }>()
   for (const c of live) {
     await assertCanUseRepo(owner, c.repo)
+    const link = projectRow.repos.find((l) => l.repo.id === c.repo.id)
+    const upstream = await usableUpstream(c.repo, owner)
+    c.remotes = {
+      url: c.repo.remoteUrl,
+      readOnly: c.repo.readOnly || link?.readOnly === true,
+      ...(upstream !== undefined ? { upstream: upstream.remoteUrl } : {}),
+    }
     if (options.siteId !== undefined) continue
+    if (upstream !== undefined) upstreams.set(c.repo.id, { repo: upstream, credential: await resolveRepoCredential(upstream) })
     const credential = await resolveRepoCredential(c.repo)
-    if (!credential) throw missingCredentialError(c.repo)
-    credentials.set(c.repo.id, credential)
+    if (credential) credentials.set(c.repo.id, credential)
+    else if (needsGitCredential(c.repo)) throw missingCredentialError(c.repo)
     const host = remoteOf(c)?.host
     if (runtime.kind !== 'containerless' && host !== undefined && !allowlistAllows(allowlist, host)) {
       throw new ServerError(
@@ -1131,11 +1148,11 @@ async function provisionWorkspace(
   // Where an agent can run, each with the repo whose memory claude keeps
   // there.
   const cwds = workspaceCwds(checkouts)
-  // The trusted host key of each checkout whose remote is ssh.
-  const sshHostKeys = [...new Set(checkouts.flatMap((c) => {
-    const credential = credentials.get(c.repo.id)
-    return credential?.kind === 'ssh' ? [credential.knownHostsEntry] : []
-  }))]
+  // The trusted host key of each checkout whose remote is ssh, and of a
+  // fork's upstream that is.
+  const sshHostKeys = [...new Set(checkouts.flatMap((c) =>
+    [credentials.get(c.repo.id), upstreams.get(c.repo.id)?.credential]
+      .flatMap((credential) => (credential?.kind === 'ssh' ? [credential.knownHostsEntry] : []))))]
 
   const prepTask = (async () => {
     const claude = claudeDir(projectId)
@@ -1424,7 +1441,7 @@ async function provisionWorkspace(
     const host = remoteOf(c)?.host
     const link = projectRow.repos.find((l) => l.repo.id === c.repo.id)
     if (credential?.kind !== 'https' || host === undefined || !isGitHubHost(host)) return []
-    if (sandboxed && (link === undefined || !link.ghToken || link.readOnly)) return []
+    if (sandboxed && (link === undefined || !link.ghToken || link.readOnly || c.repo.readOnly)) return []
     return [{ path: c.path, repoId: c.repo.id, value: sandboxed ? ghTokenPlaceholder(c.repo.id) : credential.token }]
   })
   for (const { repoId, value } of ghRepos) {
@@ -1584,12 +1601,19 @@ async function provisionWorkspace(
     : allMounts.filter((m) => releaseMountPaths.has(m.mountPath) || binMounts.includes(m))
 
   // Without a proxy to inject auth, the workspace's git needs each repo's
-  // real credential: a checkout's `origin` URL carries no token.
+  // real credential, and a fork's upstream's: a remote's URL carries no
+  // token.
   const gitCredentials: WorkspaceGitCredential[] = []
   if (!sandboxed) {
-    for (const c of checkouts) {
-      const credential = credentials.get(c.repo.id)
-      const remote = remoteOf(c)
+    const reached = checkouts.flatMap((c) => {
+      const upstream = upstreams.get(c.repo.id)
+      return [
+        { repo: c.repo, credential: credentials.get(c.repo.id) },
+        ...(upstream !== undefined ? [{ repo: upstream.repo, credential: upstream.credential ?? undefined }] : []),
+      ]
+    })
+    for (const { repo, credential } of reached) {
+      const remote = repo.hosted ? null : parseGitRemote(repo.remoteUrl)
       if (credential?.kind === 'https' && remote !== null) {
         gitCredentials.push({ kind: 'https', host: remote.host, path: remote.path, token: credential.token })
       } else if (credential?.kind === 'ssh' && remote !== null) {

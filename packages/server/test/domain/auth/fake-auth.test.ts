@@ -17,6 +17,14 @@ import {
 import { projectClaudeCredentialsFile } from '@yaac/shared/project-paths'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
+import type * as gitModule from '#domain/git'
+
+// A push probe reaches the remote, so it answers nothing here.
+vi.mock('#domain/git', async (importOriginal) => ({
+  ...(await importOriginal<typeof gitModule>()),
+  probePushAccess: vi.fn(() => Promise.resolve(null)),
+}))
+
 // Workspaces sandboxed, as under k8s; a test wanting containerless
 // installs its own.
 beforeEach(() => { installFakeWorkspaceDriver() })

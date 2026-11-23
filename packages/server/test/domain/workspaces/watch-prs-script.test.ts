@@ -31,7 +31,8 @@ const HAS_JQ = spawnSync('sh', ['-c', 'command -v jq'], { stdio: 'ignore' }).sta
  * fixture's contents, so fixtures containing `$`, backticks or quotes stay
  * literal. `$FIXTURES` is the fixture dir; `$FAIL_KEYS` is a `:`-delimited
  * list of keys whose calls fail like an outage. It records its cwd in
- * `$FIXTURES/gh-cwd`, since that decides which repo gh infers.
+ * `$FIXTURES/gh-cwd`, since that decides which repo gh infers, and the
+ * repo named in `GH_REPO` in `$FIXTURES/gh-repo`.
  *
  * A `.txt` fixture is returned verbatim (the US-joined output of gh's
  * `--jq`). A `.json` fixture is run through the script's real `--jq` filter
@@ -39,6 +40,7 @@ const HAS_JQ = spawnSync('sh', ['-c', 'command -v jq'], { stdio: 'ignore' }).sta
  */
 const GH_STUB = `#!/bin/sh
 pwd > "$FIXTURES/gh-cwd"
+printf '%s' "\${GH_REPO:-}" > "$FIXTURES/gh-repo"
 key=unknown
 case "$1" in
   api)
@@ -172,6 +174,21 @@ describe('yaac-watch-prs script', () => {
     )
     expect(stdout).toBe('[comment] PR #43 by alice: looks good\n')
     expect((await fs.readFile(path.join(fixtures, 'gh-cwd'), 'utf8')).trim()).toBe(repo)
+  })
+
+  // gh would act on a fork's `upstream` remote, so origin's repo is named.
+  it("names origin's repo for gh, in a fork with an upstream remote", async () => {
+    await seedBaseline()
+    const repo = await fs.mkdtemp(path.join(tmpDir, 'fork-'))
+    expect(spawnSync('git', ['init', repo], { stdio: 'ignore' }).status).toBe(0)
+    expect(spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@github.com:me/tool.git']).status).toBe(0)
+    expect(spawnSync('git', ['-C', repo, 'remote', 'add', 'upstream', 'https://github.com/acme/tool.git']).status).toBe(0)
+
+    await run(['--pr', '43', '--events', 'comment', '--once'], { YAAC_WATCH_PRS_WORKDIR: repo, GH_REPO: '' })
+    expect(await fs.readFile(path.join(fixtures, 'gh-repo'), 'utf8')).toBe('github.com/me/tool')
+    // One the caller named stays.
+    await run(['--pr', '43', '--events', 'comment', '--once'], { YAAC_WATCH_PRS_WORKDIR: repo, GH_REPO: 'acme/other' })
+    expect(await fs.readFile(path.join(fixtures, 'gh-repo'), 'utf8')).toBe('acme/other')
   })
 
   // A remote yaac hosts has no PRs, so it says so instead of polling.

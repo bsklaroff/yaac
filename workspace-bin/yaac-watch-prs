@@ -39,8 +39,8 @@
 # Needs `gh` and nothing else: every filter below runs through gh's own `--jq`
 # (gh embeds a jq engine), never a `| jq` pipe, so this works on a containerless
 # workspace whose host has no jq installed. gh authenticates via the session's
-# GH_TOKEN and infers the repo from the git remote of the checkout the caller is
-# standing in (override with YAAC_WATCH_PRS_WORKDIR). To watch another repo of
+# GH_TOKEN and takes the repo from the `origin` remote of the checkout the caller
+# is standing in (override with YAAC_WATCH_PRS_WORKDIR, or GH_REPO). To watch another repo of
 # the workspace than the one the session started in, run it from that repo's
 # folder under `yaac-mama as-repo <folder> --`, which gives gh that repo's
 # token.
@@ -88,6 +88,13 @@ case $(git config --get remote.origin.url 2>/dev/null) in
     echo "yaac-watch-prs: this project's remote is hosted by yaac, which has no pull requests" >&2
     exit 1 ;;
 esac
+# gh would act on a fork's `upstream` remote rather than `origin`
+# (docs/repo-forks.md "Remote forks"), so name origin's repo, as
+# [HOST/]OWNER/REPO, unless the caller already did.
+if [ -z "${GH_REPO:-}" ] && origin_url=$(git remote get-url origin 2>/dev/null); then
+  GH_REPO=$(printf '%s\n' "$origin_url" | sed -E 's#^[a-z+]+://([^@/]*@)?##; s#^[^@/]*@([^:]+):#\1/#; s#\.git$##')
+  export GH_REPO
+fi
 
 # Default event set depends on scope: a single PR can't be "opened", so watch
 # its comments and commits; across all PRs the useful default is new PRs.

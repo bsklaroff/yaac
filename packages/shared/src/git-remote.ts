@@ -92,3 +92,18 @@ export function usableAssignment<C extends { owner: string; kind: 'https' | 'ssh
   }
   return cred.kind === scheme && (scheme === 'https' || project.knownHostsEntry !== null)
 }
+
+/**
+ * Whether a workspace needs a git credential to start with a repo: every
+ * repo but a hosted one, and a read-only https one, which is fetched
+ * anonymously (docs/repo-forks.md "Read-only repos").
+ */
+export function needsGitCredential(repo: { hosted: boolean; readOnly: boolean; remoteUrl: string }): boolean {
+  if (repo.hosted) return false
+  if (!repo.readOnly) return true
+  try {
+    return parseGitRemote(repo.remoteUrl).scheme !== 'https'
+  } catch {
+    return true
+  }
+}

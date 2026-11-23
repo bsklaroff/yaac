@@ -504,6 +504,11 @@ export interface ProjectOp {
   /** Set once a remove's request has succeeded. */
   done?: true
   error?: string
+  /** The failure's code, such as `PUSH_REFUSED`, which offers a fork or
+   *  read-only add. */
+  errorCode?: string
+  /** The credential an add cloned with, to send it again. */
+  gitCredentialId?: string
 }
 
 /** The host key an SSH add trusted, kept for the user to compare against
@@ -742,6 +747,11 @@ interface UiState {
   trustedHostKeys: TrustedHostKey[]
   pushTrustedHostKey: (key: TrustedHostKey) => void
   clearTrustedHostKeys: () => void
+  /** Per repo id, the upstream GitHub said an add's remote is a fork of,
+   *  offered on the repo's rows until set or dismissed (docs/repo-forks.md
+   *  "Remote forks"). */
+  upstreamSuggestions: Record<string, string>
+  suggestUpstream: (repoId: string, url: string | null) => void
   projectOps: ProjectOp[]
   /** Add an op, or replace the one with its id. */
   putProjectOp: (op: ProjectOp) => void
@@ -1042,6 +1052,11 @@ export const useUiStore = create<UiState>((set, get) => ({
   trustedHostKeys: [],
   pushTrustedHostKey: (key) => set((s) => ({ trustedHostKeys: [...s.trustedHostKeys, key] })),
   clearTrustedHostKeys: () => set({ trustedHostKeys: [] }),
+  upstreamSuggestions: {},
+  suggestUpstream: (repoId, url) => set((s) => {
+    const { [repoId]: _, ...rest } = s.upstreamSuggestions
+    return { upstreamSuggestions: url === null ? rest : { ...rest, [repoId]: url } }
+  }),
   projectOps: [],
   putProjectOp: (op) => set((s) => ({ projectOps: [...s.projectOps.filter((o) => o.id !== op.id), op] })),
   patchProjectOp: (id, patch) => set((s) => ({

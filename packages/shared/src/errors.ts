@@ -14,6 +14,7 @@ export type ErrorCode =
   | 'NOT_SUPPORTED'
   | 'MISSING_TOOL'
   | 'VOLUME_HELD'
+  | 'PUSH_REFUSED'
   | 'TOO_LARGE'
   | 'INTERNAL'
 
@@ -56,6 +57,9 @@ export function defaultStatus(code: ErrorCode): number {
     // A launch's volume is attached to another running workspace; the
     // webapp offers to start without it.
     case 'VOLUME_HELD': return 409
+    // An add of a remote its credential cannot push to; the webapp offers
+    // to add it as a fork or read-only (docs/repo-forks.md "Push access").
+    case 'PUSH_REFUSED': return 403
     // Refused rather than silently truncated.
     case 'TOO_LARGE': return 413
     case 'INTERNAL': return 500

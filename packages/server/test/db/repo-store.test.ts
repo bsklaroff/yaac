@@ -3,10 +3,12 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { closeDb } from '#db/client'
 import {
   addRepoShare,
+  adoptUpstreamRemote,
   clearRepoKeepsHostedRepo,
   deleteRepoRow,
   findOwnerRepo,
   getRepo,
+  hostRepoWithUpstream,
   insertRepo,
   linkProjectRepo,
   listAllProjectRepos,
@@ -26,6 +28,7 @@ import {
   setRepoRemote,
   unlinkProjectRepo,
   updateProjectRepo,
+  updateRepoSettings,
 } from '#db/repo-store'
 import { getProjectRow, recordProject, recordProjectCreate } from '#db/project-store'
 import { insertGitCredential } from '#db/git-credential-store'
@@ -81,6 +84,10 @@ describe('insertRepo', () => {
       hosted: false,
       guardDefaultBranch: true,
       keepsHostedRepo: false,
+      readOnly: false,
+      upstreamRepoId: null,
+      pushAccess: null,
+      guardAllowsCatchUp: true,
     })
     expect(await insertRepo({ id: WEB, owner: BUILT_IN_USER_ID, remoteUrl: 'http://yaac.internal/w.git', hosted: true }))
       .toMatchObject({ hosted: true, gitCredentialId: null, knownHostsEntry: null })
@@ -166,6 +173,60 @@ describe('setRepoDefaultBranchGuard', () => {
     expect(await setRepoDefaultBranchGuard(API, false)).toBe(true)
     expect(await getRepo(API)).toMatchObject({ guardDefaultBranch: false })
     expect(await setRepoDefaultBranchGuard(NO_REPO, true)).toBe(false)
+  })
+})
+
+describe('updateRepoSettings', () => {
+  it("changes a repo's fork and push settings, and reports an unknown repo", async () => {
+    await repo(API)
+    await repo(WEB)
+    expect(await updateRepoSettings(API, { readOnly: true, upstreamRepoId: WEB, pushAccess: 'no', guardAllowsCatchUp: false })).toBe(true)
+    expect(await getRepo(API)).toMatchObject({ readOnly: true, upstreamRepoId: WEB, pushAccess: 'no', guardAllowsCatchUp: false })
+    expect(await updateRepoSettings(API, { upstreamRepoId: null })).toBe(true)
+    expect((await getRepo(API))?.upstreamRepoId).toBeNull()
+    expect(await updateRepoSettings(NO_REPO, { readOnly: true })).toBe(false)
+  })
+})
+
+describe('hostRepoWithUpstream', () => {
+  it('makes a repo the hosted one, and a new row of its old remote, credential and upstream its upstream', async () => {
+    const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
+    await repo(WEB)
+    await insertRepo({ id: API, owner: BUILT_IN_USER_ID, remoteUrl: 'https://x/api.git', upstreamRepoId: WEB, pushAccess: 'no' },
+      { id: cred.id, knownHostsEntry: null })
+
+    await hostRepoWithUpstream(API, P, 'http://yaac.internal/api.git')
+    expect(await getRepo(API)).toMatchObject({
+      remoteUrl: 'http://yaac.internal/api.git', hosted: true, gitCredentialId: null, readOnly: false, pushAccess: null,
+      upstreamRepoId: P, guardAllowsCatchUp: true,
+    })
+    // It could not push, so its old remote is read-only now.
+    expect(await getRepo(P)).toMatchObject({
+      owner: BUILT_IN_USER_ID, remoteUrl: 'https://x/api.git', gitCredentialId: cred.id, pushAccess: 'no', readOnly: true, upstreamRepoId: WEB,
+    })
+    // Never probed, it keeps the read-only setting it had.
+    await insertRepo({ id: Q, owner: BUILT_IN_USER_ID, remoteUrl: 'https://x/q.git' })
+    await hostRepoWithUpstream(Q, NO_REPO, 'http://yaac.internal/q.git')
+    expect(await getRepo(NO_REPO)).toMatchObject({ remoteUrl: 'https://x/q.git', pushAccess: null, readOnly: false })
+  })
+})
+
+describe('adoptUpstreamRemote', () => {
+  it("gives a fork its upstream's remote and upstream, repoints the upstream's other forks, and drops its row", async () => {
+    const cred = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
+    await repo(Q)
+    await insertRepo({ id: WEB, owner: BUILT_IN_USER_ID, remoteUrl: 'https://x/web.git', upstreamRepoId: Q, readOnly: true },
+      { id: cred.id, knownHostsEntry: null })
+    await insertRepo({ id: API, owner: BUILT_IN_USER_ID, remoteUrl: 'http://yaac.internal/api.git', hosted: true, upstreamRepoId: WEB })
+    await insertRepo({ id: P, owner: BUILT_IN_USER_ID, remoteUrl: 'https://x/other-fork.git', upstreamRepoId: WEB })
+
+    await adoptUpstreamRemote(API, WEB)
+    expect(await getRepo(API)).toMatchObject({
+      remoteUrl: 'https://x/web.git', hosted: false, keepsHostedRepo: true, gitCredentialId: cred.id, pushAccess: 'yes',
+      readOnly: false, upstreamRepoId: Q,
+    })
+    expect((await getRepo(P))?.upstreamRepoId).toBe(API)
+    expect(await getRepo(WEB)).toBeUndefined()
   })
 })
 

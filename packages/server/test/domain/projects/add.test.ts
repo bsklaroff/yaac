@@ -4,14 +4,15 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
-// Only the clone and the host-key fetch (the two process boundaries) are
-// mocked. Credential lookup, name derivation, rollback and isGitAuthError
+// Only the clone, the push probe, the host-key fetch and GitHub's API (the
+// process boundaries that reach a remote) are mocked. Credential lookup, name derivation, rollback and isGitAuthError
 // run for real.
 const HOST_KEY = 'git.example.com ssh-ed25519 AAAAHOST'
 vi.mock('#domain/git', async (importOriginal) => ({
   ...(await importOriginal<typeof gitModule>()),
   cloneRepo: vi.fn(),
   fetchKnownHostsEntry: vi.fn(() => Promise.resolve(HOST_KEY)),
+  probePushAccess: vi.fn(() => Promise.resolve(null)),
 }))
 
 import { cloneRepo } from '#domain/git'
@@ -57,6 +58,7 @@ let token: string
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   installFakeWorkspaceDriver()
+  vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('offline'))))
   token = (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'default', token: 'ghp_default' })).id
   mockClone.mockReset()
   // Leave a repo behind, as a real clone does, for rollback to remove.
@@ -66,6 +68,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.unstubAllGlobals()
   for (const add of listProjectAdds()) dismissProjectAdd(systemPrincipal, add.id)
   await closeDb()
   await cleanupTempDir(tmpDir)
@@ -75,7 +78,7 @@ describe('addProject', () => {
   it('clones with the credential it is given and records the project around that repo', async () => {
     const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_secret' })
 
-    const { project, knownHostsEntry, allowedHost } = await addProject('https://github.com/acme/Widgets.git', id, BUILT_IN_USER_ID)
+    const { project, knownHostsEntry, allowedHost } = await addProject({ remoteUrl: 'https://github.com/acme/Widgets.git', credentialId: id }, BUILT_IN_USER_ID)
 
     expect(project.id).toMatch(UUID)
     expect(project.name).toBe('widgets')
@@ -108,10 +111,10 @@ describe('addProject', () => {
 
   it('links the repo its owner already has for the remote, rather than cloning again', async () => {
     const url = 'https://github.com/acme/widgets.git'
-    const first = await addProject(url, token, BUILT_IN_USER_ID)
+    const first = await addProject({ remoteUrl: url, credentialId: token }, BUILT_IN_USER_ID)
     const other = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'other', token: 'ghp_other' })
 
-    const second = await addProject(url, other.id, BUILT_IN_USER_ID)
+    const second = await addProject({ remoteUrl: url, credentialId: other.id }, BUILT_IN_USER_ID)
 
     expect(second.project.id).not.toBe(first.project.id)
     expect(mockClone).toHaveBeenCalledTimes(1)
@@ -129,31 +132,29 @@ describe('addProject', () => {
       await fs.mkdir(path.join(dest, '.git'), { recursive: true })
       await new Promise<void>((resolve) => { finish = resolve })
     })
-    const first = addProject(url, token, BUILT_IN_USER_ID, STAGED)
+    const first = addProject({ remoteUrl: url, credentialId: token }, BUILT_IN_USER_ID, STAGED)
     await vi.waitFor(() => expect(mockClone).toHaveBeenCalledTimes(1))
 
     // A second add of the remote while the first clones would only be a
     // duplicate project, under either id.
-    await expect(addProject(url, token, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'CONFLICT' })
-    await expect(addProject('https://github.com/acme/other.git', token, BUILT_IN_USER_ID, STAGED))
+    await expect(addProject({ remoteUrl: url, credentialId: token }, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'CONFLICT' })
+    await expect(addProject({ remoteUrl: 'https://github.com/acme/other.git', credentialId: token }, BUILT_IN_USER_ID, STAGED))
       .rejects.toMatchObject({ code: 'CONFLICT' })
     finish()
     expect((await first).project.id).toBe(STAGED)
     expect(mockClone).toHaveBeenCalledTimes(1)
 
     // Once it is a project, its id is taken; its remote may be added again.
-    await expect(addProject('https://github.com/acme/other.git', token, BUILT_IN_USER_ID, STAGED))
+    await expect(addProject({ remoteUrl: 'https://github.com/acme/other.git', credentialId: token }, BUILT_IN_USER_ID, STAGED))
       .rejects.toMatchObject({ code: 'CONFLICT' })
-    expect((await addProject(url, token, BUILT_IN_USER_ID)).project.id).not.toBe(STAGED)
+    expect((await addProject({ remoteUrl: url, credentialId: token }, BUILT_IN_USER_ID)).project.id).not.toBe(STAGED)
     expect(await listRepos()).toHaveLength(1)
   })
 
   it('clones an SCP-style remote with an ssh key, trusting the host key it fetched', async () => {
     const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
 
-    const { project, knownHostsEntry, allowedHost } = await addProject(
-      'git@git.example.com:group/sub/Repo.git', key.id, BUILT_IN_USER_ID,
-    )
+    const { project, knownHostsEntry, allowedHost } = await addProject({ remoteUrl: 'git@git.example.com:group/sub/Repo.git', credentialId: key.id }, BUILT_IN_USER_ID)
 
     expect(project.name).toBe('repo')
     expect(knownHostsEntry).toBe(HOST_KEY)
@@ -179,7 +180,7 @@ describe('addProject', () => {
       ['https://github.com/acme/c++lib!.git', 'c--lib'],
     ]
     for (const [url, name] of cases) {
-      expect((await addProject(url, token, BUILT_IN_USER_ID)).project.name).toBe(name)
+      expect((await addProject({ remoteUrl: url, credentialId: token }, BUILT_IN_USER_ID)).project.name).toBe(name)
     }
     const rows = (await listProjectRows()).filter((r) => r.name === 'c--lib')
     expect(rows.map((r) => r.repos[0].repo.remoteUrl).sort())
@@ -188,9 +189,9 @@ describe('addProject', () => {
   })
 
   it('refuses a credential of the wrong kind, or none that exists, before cloning', async () => {
-    await expect(addProject('git@github.com:acme/repo.git', token, BUILT_IN_USER_ID))
+    await expect(addProject({ remoteUrl: 'git@github.com:acme/repo.git', credentialId: token }, BUILT_IN_USER_ID))
       .rejects.toThrow(/needs an SSH key, not a token/)
-    await expect(addProject('https://github.com/acme/repo.git', '00000000-0000-4000-8000-000000000000', BUILT_IN_USER_ID))
+    await expect(addProject({ remoteUrl: 'https://github.com/acme/repo.git', credentialId: '00000000-0000-4000-8000-000000000000' }, BUILT_IN_USER_ID))
       .rejects.toMatchObject({ code: 'NOT_FOUND' })
     expect(mockClone).not.toHaveBeenCalled()
     expect(await projectDirs()).toEqual([])
@@ -212,7 +213,7 @@ describe('addProject', () => {
       lastRefresh: '2026-01-01T00:00:00.000Z',
     } })
 
-    const { project } = await addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID)
+    const { project } = await addProject({ remoteUrl: 'https://github.com/acme/repo.git', credentialId: token }, BUILT_IN_USER_ID)
 
     // Placeholders, not real tokens; the proxy swaps them per request.
     const claude = JSON.parse(
@@ -227,7 +228,7 @@ describe('addProject', () => {
   })
 
   it('leaves the tool credential dirs empty when the user has no oauth login', async () => {
-    const { project } = await addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID)
+    const { project } = await addProject({ remoteUrl: 'https://github.com/acme/repo.git', credentialId: token }, BUILT_IN_USER_ID)
 
     await expect(fs.access(projectClaudeCredentialsFile(project.id))).rejects.toThrow()
     await expect(fs.access(projectCodexAuthFile(project.id))).rejects.toThrow()
@@ -242,7 +243,7 @@ describe('addProject', () => {
       'acme/foo',
       'not a url',
     ]) {
-      await expect(addProject(bad, token, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'VALIDATION' })
+      await expect(addProject({ remoteUrl: bad, credentialId: token }, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'VALIDATION' })
     }
     expect(mockClone).not.toHaveBeenCalled()
   })
@@ -251,7 +252,7 @@ describe('addProject', () => {
     const { id } = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_stale' })
     mockClone.mockRejectedValue(new Error('fatal: Authentication failed for https://github.com/'))
 
-    const attempt = addProject('https://github.com/acme/repo.git', id, BUILT_IN_USER_ID)
+    const attempt = addProject({ remoteUrl: 'https://github.com/acme/repo.git', credentialId: id }, BUILT_IN_USER_ID)
     await expect(attempt).rejects.toMatchObject({ code: 'VALIDATION' })
     await expect(attempt).rejects.toThrow(/git authentication failed for github\.com/)
     expect(await projectDirs()).toEqual([])
@@ -262,25 +263,25 @@ describe('addProject', () => {
   it('maps any other clone failure to INTERNAL and leaves no project', async () => {
     mockClone.mockRejectedValue(new Error('fatal: repository not found'))
 
-    const attempt = addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID, STAGED)
+    const attempt = addProject({ remoteUrl: 'https://github.com/acme/repo.git', credentialId: token }, BUILT_IN_USER_ID, STAGED)
     await expect(attempt).rejects.toMatchObject({ code: 'INTERNAL' })
     await expect(attempt).rejects.toThrow(/Failed to clone: fatal: repository not found/)
     expect(await projectDirs()).toEqual([])
     // Listed as failed, for whoever did not see the request answer.
     expect(listProjectAdds()).toEqual([{
       id: STAGED, owner: BUILT_IN_USER_ID, name: 'repo', remoteUrl: 'https://github.com/acme/repo.git', hosted: false,
-      error: 'Failed to clone: fatal: repository not found',
+      gitCredentialId: token, error: 'Failed to clone: fatal: repository not found', errorCode: 'INTERNAL',
     }])
     // Adding the remote again is a retry, which replaces the failure even
     // under another id.
     mockClone.mockResolvedValueOnce(undefined)
-    expect((await addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID, LOCAL)).project.id).toBe(LOCAL)
+    expect((await addProject({ remoteUrl: 'https://github.com/acme/repo.git', credentialId: token }, BUILT_IN_USER_ID, LOCAL)).project.id).toBe(LOCAL)
     expect(listProjectAdds()).toEqual([])
 
     // A caller that picked no id has the error from its own request, so
     // nothing stays listed.
     mockClone.mockRejectedValueOnce(new Error('fatal: repository not found'))
-    await expect(addProject('https://github.com/acme/other.git', token, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'INTERNAL' })
+    await expect(addProject({ remoteUrl: 'https://github.com/acme/other.git', credentialId: token }, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'INTERNAL' })
     expect(listProjectAdds()).toEqual([])
   })
 
@@ -296,7 +297,7 @@ describe('addProject', () => {
     })
 
     try {
-      await expect(addProject('https://github.com/acme/repo.git', token, BUILT_IN_USER_ID)).rejects.toThrow()
+      await expect(addProject({ remoteUrl: 'https://github.com/acme/repo.git', credentialId: token }, BUILT_IN_USER_ID)).rejects.toThrow()
     } finally {
       ids.mockRestore()
     }
@@ -304,6 +305,41 @@ describe('addProject', () => {
     expect(await listProjectRows()).toEqual([])
     // The repo stays among its owner's, ready to link.
     expect((await listRepos()).map((r) => r.id)).toEqual([LOCAL])
+  })
+
+  it("adds a fork, gives a remote its upstream, offers GitHub's parent, and adds around a repo by id", async () => {
+    const real = await vi.importActual<typeof gitModule>('#domain/git')
+    const source = path.join(tmpDir, 'source')
+    await fs.mkdir(source)
+    await git(source, ['init', '-q', '-b', 'main'])
+    await git(source, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'one'])
+    mockClone.mockImplementation((_url, dest) => real.cloneRepo(source, dest, null))
+
+    // A fork is named for its upstream, and links the hosted repo.
+    const fork = await addProject({ remoteUrl: 'https://github.com/acme/tool.git', fork: true }, BUILT_IN_USER_ID)
+    expect(fork.project.name).toBe('tool')
+    const forkRepo = await repoOf(fork.project.id)
+    expect(forkRepo).toMatchObject({ id: fork.repoId, hosted: true })
+    expect((await listRepos()).find((r) => r.id === forkRepo.upstreamRepoId)?.remoteUrl).toBe('https://github.com/acme/tool.git')
+
+    // An upstream named with the add; GitHub's parent offered for one without.
+    vi.mocked(globalThis.fetch).mockResolvedValue(new Response(JSON.stringify({ parent: { clone_url: 'https://github.com/o/p.git' } })))
+    const named = await addProject(
+      { remoteUrl: 'https://github.com/me/lib.git', credentialId: token, upstream: { remoteUrl: 'https://github.com/o/lib.git' } },
+      BUILT_IN_USER_ID,
+    )
+    expect(named.suggestedUpstream).toBeUndefined()
+    const { upstreamRepoId } = await repoOf(named.project.id)
+    expect((await listRepos()).find((r) => r.id === upstreamRepoId)?.remoteUrl).toBe('https://github.com/o/lib.git')
+    expect((await addProject({ remoteUrl: 'https://github.com/me/app.git', credentialId: token }, BUILT_IN_USER_ID)).suggestedUpstream)
+      .toBe('https://github.com/o/p.git')
+
+    // Around a repo its owner has, by id: the upstream, cloned for it.
+    mockClone.mockClear()
+    const around = await addProject({ repoId: forkRepo.upstreamRepoId ?? '' }, BUILT_IN_USER_ID)
+    expect(around).toMatchObject({ repoId: forkRepo.upstreamRepoId, project: { name: 'tool' } })
+    expect(mockClone).toHaveBeenCalledTimes(1)
+    await expect(addProject({ repoId: crypto.randomUUID() }, BUILT_IN_USER_ID)).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })
 

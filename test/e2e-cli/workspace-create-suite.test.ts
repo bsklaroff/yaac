@@ -2217,7 +2217,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const asRepo = `as-repo ${NAME} -- sh -c 'printf %s "$GH_TOKEN"'`
       expect(await mama('/workspace/lib', asRepo)).toBe(`yaac-ph-gh-token-${idOf(NAME)}EXIT:0`)
       await yaac('project', 'repo', 'read-only', NAME, NAME, 'on')
-      expect(await mama('/workspace/lib', asRepo)).toMatch(/is read-only in this project.*EXIT:1$/s)
+      expect(await mama('/workspace/lib', asRepo)).toMatch(/is read-only, so its token is never GH_TOKEN.*EXIT:1$/s)
       await yaac('project', 'repo', 'read-only', NAME, NAME, 'off')
       await yaac('project', 'repo', 'gh-token', NAME, NAME, 'off')
       expect(await mama('/workspace/lib', asRepo)).toMatch(/does not allow .* token as GH_TOKEN.*EXIT:1$/s)

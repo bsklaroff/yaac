@@ -19,6 +19,15 @@ remote.origin.url` starts with `http://yaac.internal/`, yaac hosts this
 project's remote, which has no pull requests. Tell the user this skill does
 not apply there, and stop.
 
+**Name origin's repo for `gh`.** In a fork (a checkout with an `upstream`
+remote), `gh` would act on the upstream's repo rather than `origin`'s, so
+before any `gh` call export origin's as `GH_REPO`, which every `gh` command
+(and `yaac-watch-prs`) then uses:
+
+```sh
+export GH_REPO=$(git remote get-url origin | sed -E 's#^[a-z+]+://([^@/]*@)?##; s#^[^@/]*@([^:]+):#\1/#; s#\.git$##')
+```
+
 **In a workspace with several repos**, each repo sits in its own folder
 under the workspace dir (`$YAAC_CHECKOUTS` lists the folders, colon-separated),
 and this skill works on **one** of them: `cd` into that repo's folder and

@@ -31,6 +31,10 @@ export interface GitRunOptions {
   /** Called with each progress line git prints to stderr (with
    *  `--progress`), parsed. */
   onProgress?: (progress: GitProgress) => void
+  /** Written to git's stdin, such as `update-ref --stdin`'s commands. */
+  input?: string
+  /** Kills git when aborted, which rejects the call. */
+  signal?: AbortSignal
 }
 
 /** Set on the command line for every call, overriding any config. */
@@ -67,7 +71,7 @@ export async function runGit(target: GitTarget, args: string[], opts: GitRunOpti
   }
   const pins = [...PINS]
   if (opts.remoteUrl !== undefined) pins.push(`protocol.${transportOf(opts.remoteUrl)}.allow=always`)
-  const run = execGit([...pins.flatMap((p) => ['-c', p]), ...args], cwd, env, opts.onProgress)
+  const run = execGit([...pins.flatMap((p) => ['-c', p]), ...args], cwd, env, opts)
   if (opts.remoteUrl === undefined) return run
   return run.catch((err: Error) => {
     err.message = withEgressHint(err.message)
@@ -162,15 +166,16 @@ function execGit(
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
-  onProgress?: (progress: GitProgress) => void,
+  { onProgress, input, signal }: Pick<GitRunOptions, 'onProgress' | 'input' | 'signal'>,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = execFile('git', args, { cwd, env, maxBuffer: 64 << 20 }, (err, stdout, stderr) => {
+    const child = execFile('git', args, { cwd, env, maxBuffer: 64 << 20, signal }, (err, stdout, stderr) => {
       if (!err) return resolve(stdout)
       const lines = stderr.split(/\r?\n/).map((l) => l.slice(l.lastIndexOf('\r') + 1))
       const message = lines.join('\n').trim() || err.message
       reject(Object.assign(new Error(message), { code: err.code }))
     })
+    if (input !== undefined) child.stdin?.end(input)
     if (onProgress === undefined) return
     let partial = ''
     child.stderr?.on('data', (chunk: Buffer) => {

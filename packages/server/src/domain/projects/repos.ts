@@ -12,8 +12,17 @@ import {
   type ProjectRow,
   type RepoRow,
 } from '#db'
-import { authorizeProject, type Actor } from '#domain/access'
-import { addRepo, assertCanUseRepo, createHostedRepo } from '#domain/repos'
+import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
+import {
+  addRepo,
+  assertCanUseRepo,
+  createHostedRepo,
+  ensureMainClone,
+  setRepoUpstream,
+  suggestUpstream,
+  type AddRepoOptions,
+  type UpstreamTarget,
+} from '#domain/repos'
 import { workspaceDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { parseGitRemote } from '@yaac/shared/git-remote'
@@ -29,12 +38,22 @@ import { allowRepoHost } from './allowlist'
  * order and k8s-only flags. Unlinking never deletes a repo or a workspace.
  */
 
-/** What a link is made to: a remote the owner reaches with one of their
- *  credentials, a repo they may already use, or a new one yaac hosts. */
+/** What a link is made to: a remote, taken as `addRepo` takes it and
+ *  optionally given an upstream, a repo the owner may already use, or a new
+ *  one yaac hosts. */
 export type RepoToLink =
-  | { remoteUrl: string; credentialId: string }
+  | { remoteUrl: string; upstream?: UpstreamTarget } & AddRepoOptions
   | { repoId: string }
   | { hosted: true }
+
+/** A folder or project name for a repo: its remote's, or for a hosted
+ *  fork its upstream's. */
+export async function repoName(repo: RepoRow): Promise<string> {
+  for (let at: RepoRow | undefined = repo; at !== undefined; at = at.upstreamRepoId !== null ? await getRepo(at.upstreamRepoId) : undefined) {
+    if (!at.hosted) return projectNameFor(parseGitRemote(at.remoteUrl).path) || 'repo'
+  }
+  return 'repo'
+}
 
 /** The link a client's `ref` names in a project: by its folder, else by
  *  the repo's id. */
@@ -113,7 +132,13 @@ export async function addProjectRepo(
   projectId: string,
   what: RepoToLink,
   dir?: string,
-): Promise<{ repoId: string; dir: string; knownHostsEntry: string | null; allowedHost: string | null }> {
+): Promise<{
+  repoId: string
+  dir: string
+  knownHostsEntry: string | null
+  allowedHost: string | null
+  suggestedUpstream?: string
+}> {
   const project = await ownProject(principal, projectId)
   checkLinkable(project, dir, (l) => 'remoteUrl' in what
     ? l.repo.owner === project.owner && l.repo.remoteUrl === what.remoteUrl
@@ -121,13 +146,15 @@ export async function addProjectRepo(
   let knownHostsEntry: string | null = null
   let repo: RepoRow
   if ('remoteUrl' in what) {
-    const added = await addRepo(project.owner, what.remoteUrl, what.credentialId)
-    repo = added.repo
+    const added = await addRepo(project.owner, what.remoteUrl, what)
     knownHostsEntry = added.knownHostsEntry
+    if (what.upstream !== undefined) await setRepoUpstream(systemPrincipal, added.repo.id, what.upstream)
+    repo = await getRepo(added.repo.id) ?? added.repo
   } else if ('repoId' in what) {
     const found = isUuid(what.repoId) ? await getRepo(what.repoId) : undefined
     if (!found) throw new ServerError('NOT_FOUND', `repo ${what.repoId} not found`)
     await assertCanUseRepo(project.owner, found)
+    await ensureMainClone(found)
     repo = found
   } else {
     repo = await createHostedRepo(project.owner)
@@ -135,10 +162,17 @@ export async function addProjectRepo(
   return perProject(projectId, async () => {
     const current = await ownProject(principal, projectId)
     checkLinkable(current, dir, (l) => l.repo.id === repo.id)
-    const named = repo.hosted ? current.name : projectNameFor(parseGitRemote(repo.remoteUrl).path) || 'repo'
+    const named = repo.hosted && repo.upstreamRepoId === null ? current.name : await repoName(repo)
     const at = dir ?? freeDir(current, named)
     await linkProjectRepo(projectId, repo.id, at)
-    return { repoId: repo.id, dir: at, knownHostsEntry, allowedHost: await allowRepoHost(projectId, repo) }
+    const suggestedUpstream = 'remoteUrl' in what ? await suggestUpstream(repo) : undefined
+    return {
+      repoId: repo.id,
+      dir: at,
+      knownHostsEntry,
+      allowedHost: await allowRepoHost(projectId, repo),
+      ...(suggestedUpstream !== undefined ? { suggestedUpstream } : {}),
+    }
   })
 }
 

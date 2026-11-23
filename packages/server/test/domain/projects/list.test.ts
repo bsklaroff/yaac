@@ -118,7 +118,10 @@ describe('listProjects', () => {
     const SHARED = '0a0a0a0a-0000-4000-8000-000000000002'
     await recordTestProject(FOO, { remoteUrl: 'https://github.com/acme/api.git', name: 'api' })
     await recordTestProject(BAR, { repo: false })
-    await insertRepo({ id: WEB, owner: BUILT_IN_USER_ID, remoteUrl: 'https://github.com/acme/web.git' })
+    // WEB is a fork whose pushes are refused.
+    const UP = '0a0a0a0a-0000-4000-8000-000000000003'
+    await insertRepo({ id: UP, owner: BUILT_IN_USER_ID, remoteUrl: 'https://github.com/up/web.git', readOnly: true })
+    await insertRepo({ id: WEB, owner: BUILT_IN_USER_ID, remoteUrl: 'https://github.com/acme/web.git', upstreamRepoId: UP, pushAccess: 'no' })
     await insertRepo({ id: SHARED, owner: ada, remoteUrl: 'http://yaac.internal/api/workspace/git/shared.git', hosted: true })
     await linkProjectRepo(FOO, WEB, 'web')
     await linkProjectRepo(FOO, SHARED, 'shared')
@@ -134,16 +137,19 @@ describe('listProjects', () => {
     expect(byId.get(FOO)?.repos).toEqual([
       {
         id: SHARED, dir: 'shared', remoteUrl: 'http://yaac.internal/api/workspace/git/shared.git', owner: ada, hosted: true,
-        guardDefaultBranch: true, gitCredential: null, readOnly: false, ghToken: true, lastIncluded: false,
+        guardDefaultBranch: true, gitCredential: null, readOnly: false, repoReadOnly: false, guardAllowsCatchUp: true,
+        ghToken: true, lastIncluded: false,
       },
       {
         id: WEB, dir: 'web', remoteUrl: 'https://github.com/acme/web.git', owner: BUILT_IN_USER_ID, hosted: false,
-        guardDefaultBranch: true, gitCredential: { id: cred.id, name: 'gh' }, readOnly: true, ghToken: false,
-        lastIncluded: true, lastBranch: 'dev',
+        guardDefaultBranch: true, gitCredential: { id: cred.id, name: 'gh' }, readOnly: true, repoReadOnly: false,
+        pushRefused: true, upstream: { id: UP, remoteUrl: 'https://github.com/up/web.git' }, guardAllowsCatchUp: true,
+        ghToken: false, lastIncluded: true, lastBranch: 'dev',
       },
       {
         id: FOO, dir: 'api', remoteUrl: 'https://github.com/acme/api.git', owner: BUILT_IN_USER_ID, hosted: false,
-        guardDefaultBranch: true, gitCredential: null, readOnly: false, ghToken: true, lastIncluded: true,
+        guardDefaultBranch: true, gitCredential: null, readOnly: false, repoReadOnly: false, guardAllowsCatchUp: true,
+        ghToken: true, lastIncluded: true,
       },
     ])
   })

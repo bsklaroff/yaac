@@ -7,8 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { addHttpsCredential, adoptRefreshedToolCredentials, generateSshCredential, pushCredentialsToRuntime } from '#domain/auth'
 import { assignRepoCredential } from '#domain/repos'
 import {
-  BUILT_IN_USER_ID, closeDb, getToolCredential, linkProjectRepo, openDb, seeTailnetUser, setRepoGitCredential,
-  setToolCredential, updateProjectRepo,
+  BUILT_IN_USER_ID, closeDb, getToolCredential, insertRepo, linkProjectRepo, openDb, seeTailnetUser, setRepoGitCredential,
+  setProjectRepoOrder, setToolCredential, updateProjectRepo, updateRepoSettings,
 } from '#db'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
@@ -16,6 +16,14 @@ import { setDataDir } from '@yaac/shared/project-paths'
 import { PLACEHOLDER_ACCESS_TOKEN, PLACEHOLDER_REFRESH_TOKEN } from '@yaac/shared/tool-auth'
 import type { ClaudeOAuthBundle, CodexOAuthBundle } from '@yaac/shared/types'
 import type { CredentialBundle } from '#drivers/contract'
+
+import type * as gitModule from '#domain/git'
+
+// A push probe reaches the remote, so it answers nothing here.
+vi.mock('#domain/git', async (importOriginal) => ({
+  ...(await importOriginal<typeof gitModule>()),
+  probePushAccess: vi.fn(() => Promise.resolve(null)),
+}))
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -130,6 +138,35 @@ describe('pushCredentialsToRuntime', () => {
       grants: [{ projectId: BOBS, repoId: BOBS, host: 'github.com', path: 'bob/b', readOnly: false, ghToken: true }],
     }])
     expect(all[OWNER].git).toEqual(mine)
+  })
+
+  it("grants a read-only repo read-only, and a fork's upstream read-only and never GH_TOKEN, to the fork owner's projects", async () => {
+    const UP = '2567a5ec-9705-4b7a-82c9-84033e0618c1'
+    const gh = await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp' })
+    await recordTestProject(WEB, { remoteUrl: 'https://github.com/acme/web.git' })
+    await assignRepoCredential(local, WEB, gh.id)
+    await insertRepo({ id: UP, owner: BUILT_IN_USER_ID, remoteUrl: 'https://github.com/up/web.git', readOnly: true }, { id: gh.id, knownHostsEntry: null })
+    await updateRepoSettings(WEB, { readOnly: true, upstreamRepoId: UP })
+
+    await pushCredentialsToRuntime()
+
+    expect(synced[0].git).toEqual([{
+      token: 'ghp',
+      grants: [
+        { projectId: WEB, repoId: WEB, host: 'github.com', path: 'acme/web', readOnly: true, ghToken: true },
+        { projectId: WEB, repoId: UP, host: 'github.com', path: 'up/web', readOnly: true, ghToken: false },
+      ],
+    }])
+
+    // A project that links the upstream itself gets that link's grant alone,
+    // whichever it lists first, so the proxy never picks the fork's one.
+    await linkProjectRepo(WEB, UP, 'up')
+    await setProjectRepoOrder(WEB, [UP, WEB])
+    await updateRepoSettings(UP, { readOnly: false })
+    synced.length = 0
+    await pushCredentialsToRuntime()
+    expect(synced[0].git[0].grants.filter((g) => g.repoId === UP))
+      .toEqual([{ projectId: WEB, repoId: UP, host: 'github.com', path: 'up/web', readOnly: false, ghToken: true }])
   })
 
   it('hands an ssh key over in the form ssh-add reads, with each repo\'s host, path and trusted host key', async () => {

@@ -3,15 +3,18 @@ import { parseGitRemote, usableAssignment } from '@yaac/shared/git-remote'
 import {
   getGitCredential,
   listGitCredentials,
+  getRepo,
   setRepoGitCredential,
+  updateRepoSettings,
   type GitCredentialRow,
   type RepoRow,
 } from '#db'
-import { fetchKnownHostsEntry } from '#domain/git'
+import { fetchKnownHostsEntry, probePushAccess } from '#domain/git'
 import type { ResolvedGitCredential } from '#domain/git'
 import { encodeOpenSshPrivateKey } from '#lib/ssh-key'
 import type { Actor } from '#domain/access'
 import { ownRepo } from './access'
+import { serverLog } from '#lib/log'
 
 /**
  * A repo's git credential: assigning one of its owner's credentials
@@ -49,7 +52,7 @@ export async function resolveCredentialForRemote(
   owner: string,
   credentialId: string,
   remoteUrl: string,
-): Promise<{ credential: ResolvedGitCredential; knownHostsEntry: string | null }> {
+): Promise<{ credential: ResolvedGitCredential; knownHostsEntry: string | null; name: string }> {
   const { scheme, host } = validateGitRemoteUrl(remoteUrl)
   const cred = await getGitCredential(credentialId)
   if (cred?.owner !== owner) throw new ServerError('NOT_FOUND', 'No such git credential.')
@@ -65,7 +68,7 @@ export async function resolveCredentialForRemote(
   if (secret === undefined) {
     throw new ServerError('VALIDATION', `The git credential "${cred.name}" cannot be opened; replace it.`)
   }
-  if (cred.kind === 'https') return { credential: { kind: 'https', token: secret }, knownHostsEntry: null }
+  if (cred.kind === 'https') return { credential: { kind: 'https', token: secret }, knownHostsEntry: null, name: cred.name }
   let knownHostsEntry: string
   try {
     knownHostsEntry = await fetchKnownHostsEntry(host)
@@ -75,15 +78,15 @@ export async function resolveCredentialForRemote(
       `Could not fetch the host key for ${host}: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
-  return { credential: sshCredential(cred, knownHostsEntry), knownHostsEntry }
+  return { credential: sshCredential(cred, knownHostsEntry), knownHostsEntry, name: cred.name }
 }
 
 function sshCredential(cred: GitCredentialRow, knownHostsEntry: string): ResolvedGitCredential {
   return { kind: 'ssh', id: cred.id, publicKey: cred.publicKey ?? '', knownHostsEntry }
 }
 
-/** Assign a repo its git credential; returns the trusted host key. Only
- *  the repo's owner assigns one. */
+/** Assign a repo its git credential, then probe whether it can push;
+ *  returns the trusted host key. Only the repo's owner assigns one. */
 export async function assignRepoCredential(
   principal: Actor,
   repoId: string,
@@ -95,6 +98,7 @@ export async function assignRepoCredential(
   }
   const { knownHostsEntry } = await resolveCredentialForRemote(repo.owner, credentialId, repo.remoteUrl)
   await setRepoGitCredential(repoId, credentialId, knownHostsEntry)
+  await probeRepoPushAccess([repoId])
   return { knownHostsEntry }
 }
 
@@ -127,7 +131,8 @@ export async function resolveRepoCredential(repo: RepoRow): Promise<ResolvedGitC
     : sshCredential(cred, repo.knownHostsEntry ?? '')
 }
 
-/** The create error for a repo with no usable credential. */
+/** The create error for a repo with no usable credential that needs one
+ *  (`needsGitCredential`). */
 export function missingCredentialError(repo: RepoRow): ServerError {
   return new ServerError(
     'VALIDATION',
@@ -147,4 +152,65 @@ export async function sshKeyMaterial(credentialId: string): Promise<string> {
     throw new ServerError('VALIDATION', 'The SSH key cannot be opened; assign a new one.')
   }
   return encodeOpenSshPrivateKey(Buffer.from(seed, 'base64'), cred.name)
+}
+
+/*
+ * Whether a repo's credential can push to its remote (docs/repo-forks.md
+ * "Push access"), probed when the credential is assigned or replaced, once
+ * a day while a workspace has a checkout of the repo, and on demand. A
+ * refusal on a repo that is not read-only is the warning clients show;
+ * nothing converts a repo on its own.
+ */
+
+/** How often a repo with running checkouts is probed again. */
+const PROBE_INTERVAL_MS = 24 * 60 * 60_000
+
+/** When each repo was last probed, by repo id. */
+const lastProbeMs = new Map<string, number>()
+
+/** Each repo's probe under way, which another caller joins. */
+const probing = new Map<string, Promise<void>>()
+
+/**
+ * Probe each named repo that has something to probe (one on a git host,
+ * not read-only, with a usable credential) and store a definite answer; an
+ * unknown one, such as a network failure, leaves the stored answer as it
+ * was. A caller joins a probe of the repo under way, and `unlessWithinMs`
+ * skips a repo probed that recently. Answers each repo's push access
+ * afterwards.
+ */
+export async function probeRepoPushAccess(
+  repoIds: string[],
+  opts: { unlessWithinMs?: number } = {},
+): Promise<Map<string, 'yes' | 'no' | null>> {
+  await Promise.all(repoIds.map(async (id) => {
+    if (opts.unlessWithinMs !== undefined && Date.now() - (lastProbeMs.get(id) ?? 0) < opts.unlessWithinMs) return
+    const running = probing.get(id) ?? probeOne(id).finally(() => probing.delete(id))
+    probing.set(id, running)
+    await running
+  }))
+  const out = new Map<string, 'yes' | 'no' | null>()
+  for (const id of repoIds) {
+    const repo = await getRepo(id)
+    if (repo) out.set(id, repo.pushAccess)
+  }
+  return out
+}
+
+async function probeOne(id: string): Promise<void> {
+  const repo = await getRepo(id)
+  if (!repo || repo.hosted || repo.readOnly || repo.deletedAt !== undefined) return
+  const credential = await resolveRepoCredential(repo)
+  if (!credential) return
+  lastProbeMs.set(id, Date.now())
+  const answer = await probePushAccess(repo.remoteUrl, credential)
+  if (answer !== null && answer !== repo.pushAccess) await updateRepoSettings(id, { pushAccess: answer })
+}
+
+/** Probe, in the background, each named repo not probed in the last day. */
+export function probeStalePushAccess(repoIds: Iterable<string>): void {
+  const now = Date.now()
+  const stale = [...repoIds].filter((id) => now - (lastProbeMs.get(id) ?? 0) >= PROBE_INTERVAL_MS)
+  if (stale.length === 0) return
+  probeRepoPushAccess(stale).catch((err: unknown) => serverLog(`[git] daily push probe: ${String(err)}`))
 }

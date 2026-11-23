@@ -25,10 +25,13 @@ export {
 export { startGitSshAgent, stopGitSshAgent } from './agent'
 export {
   absorbClone,
+  baseRewritten,
   cloneRepo,
+  compareRemoteBranches,
   createCheckout,
   fetchCommit,
   fetchOrigin,
+  fetchUpstream,
   getDefaultBranch,
   lastFetchedAtMs,
   listRemoteBranches,
@@ -40,13 +43,18 @@ export {
   resolveRemoteRef,
   seedEmptyOrigin,
   setOriginHead,
+  setUpstreamRefs,
+  type MainRemote,
 } from './repo'
 export { bundleCheckout } from './peer-bundle'
 export {
   checkMoveTarget,
+  fillHostedRepo,
   hostedDefaultBranch,
   initHostedRepo,
+  probePushAccess,
   pushHostedRepo,
+  pushMainBranches,
   serveGitHttp,
   setHostedDefaultBranch,
 } from './hosted'

@@ -79,19 +79,37 @@ yaac user                       The install's users (multi-user.md "Roles")
 
 yaac project
   list                          Your projects (or --user's), each with its repos
-  add <remote-url> <credential> Add a project around one git remote (https://,
+  add [remote-url] [credential] Add a project around one git remote (https://,
                                 ssh:// or git@host:path), cloned with the named
                                 git credential (see `yaac auth list`); a remote
-                                you already have a repo for reuses it
+                                you already have a repo for reuses it. One the
+                                credential cannot push to is refused unless
+                                read-only or a fork (repo-forks.md)
+    --read-only                 Workspaces only read it; a public https remote
+                                needs no credential
+    --fork                      Link a fork yaac hosts, with the remote as its
+                                upstream; a public https remote needs no
+                                credential
+    --upstream <upstream>       Its upstream: one of your repos, or a URL
+    --upstream-credential <c>   The credential the --upstream URL is read with
+    --repo-id <id>              Around one of your repos instead of a remote
   create <name>                 Create a project with one empty repo whose git
                                 remote yaac hosts (docs/hosted-projects.md)
   clone <project> [dir]         Clone a project's hosted repo to this machine
     --repo <dir>                Which repo, in a project with several
-  move <project> <remote-url> <credential>
+  move <project> [remote-url] [credential]
                                 Move a hosted repo to an empty remote elsewhere,
                                 stopping every workspace holding a checkout of
                                 it; asks first, on a terminal
     --repo <dir>                Which repo, in a project with several
+    --hosted                    Move a repo on a git host onto yaac instead; the
+                                remote it leaves becomes its upstream
+    --upstream                  Move a fork back onto its upstream instead,
+                                pushing the branches chosen with:
+    --push <branch>[=<name>]    (repeatable) Push this branch, or as <name>
+    --push-all                  Push every branch that can be pushed
+    --leave-rest                Leave every other branch where the fork was
+    -y, --yes                   Without the confirmation prompt
   repo list <project>           The repos a project links: folder, credential,
                                 remote, and under k8s its two flags
   repo add <project> [remote-url] [credential]
@@ -102,6 +120,8 @@ yaac project
     --hosted                    A new, empty repo yaac hosts
     --dir <name>                Its folder in a workspace with several repos
                                 (default: the repo's name)
+    --read-only, --fork, --upstream <upstream>, --upstream-credential <c>
+                                As for `project add`
   repo remove <project> <repo>  Unlink it; the repo and every workspace's
                                 checkout of it stay
   repo rename <project> <repo> <dir>
@@ -117,6 +137,12 @@ yaac repo                       Your git repos, whatever projects link them
   list                          Yours (or --user's) and those shared with you;
                                 unlinked ones first, deleted ones still held
                                 by workspaces last
+  read-only <repo> [on|off]     Show or set whether no workspace, in any
+                                project, pushes to it (repo-forks.md)
+  upstream <repo> [upstream] [credential]
+                                Show or set the repo it is a fork of: one of
+                                yours, or a URL read with the credential
+    --none                      Remove the upstream
   share <repo> <user>           Share a repo yaac hosts with another user, who
                                 can link it into their projects
   unshare <repo> <user>         End the share, stopping their running
@@ -472,6 +498,10 @@ yaac config                     Each setting prints given no value, and is
   default-branch-guard <project> [on|off]
                                 Show or set whether a hosted repo refuses
                                 pushes that delete or rewind it
+  upstream-rebase <project> [on|off]
+                                Show or set whether a hosted fork's guard lets
+                                a rebase onto its upstream through
+                                (repo-forks.md)
   git-credential <project> [credential]
                                 Show or assign a repo's git credential, by its
                                 `yaac auth list` name; every project linking

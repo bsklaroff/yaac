@@ -4,6 +4,7 @@ import {
   AllowlistAddNotice, GitCredentialPicker, remoteKind, remoteProjectName, TrustedHostKey,
 } from '#components/GitCredentialPicker'
 import { repoName } from '#components/settings/Repos'
+import { PushRefusedWarning, UpstreamSuggestion } from '#components/settings/RepoForks'
 import { api } from '#lib/api'
 import { PrevMatchIcon as MoveUpIcon, NextMatchIcon as MoveDownIcon } from '#lib/icons'
 import {
@@ -14,7 +15,7 @@ import { useUiStore } from '#lib/store'
 import { useInlineEdit } from '#lib/useInlineRename'
 import { useSnapshotSelect } from '#lib/useSnapshot'
 import { isGitHubHost } from '@yaac/shared/credentials'
-import { parseGitRemote } from '@yaac/shared/git-remote'
+import { needsGitCredential, parseGitRemote } from '@yaac/shared/git-remote'
 import { REPO_DIR_RE, type ProjectRepo, type ProjectSummary } from '@yaac/shared/types'
 import { YButton, YCheckbox, YInput, YSectionLabel, YSelect, YSettingRow } from '#ui'
 
@@ -76,7 +77,14 @@ export function ProjectRepos({ project, readOnly }: { project: ProjectSummary; r
               <span title={r.remoteUrl} className="min-w-0 flex-1 truncate font-mono text-sm text-subtle">
                 {r.hosted ? 'hosted by yaac' : r.remoteUrl}
               </span>
-              {!r.hosted && r.gitCredential === null && <span className="shrink-0 text-sm text-warning">no git credential</span>}
+              {needsGitCredential({ ...r, readOnly: r.repoReadOnly }) && r.gitCredential === null
+                && <span className="shrink-0 text-sm text-warning">no git credential</span>}
+              {r.repoReadOnly && <span className="shrink-0 text-sm text-subtle">read-only</span>}
+              {r.upstream !== undefined && (
+                <span title={r.upstream.remoteUrl} className="shrink-0 truncate text-sm text-subtle">
+                  fork of {remoteProjectName(r.upstream.remoteUrl) || 'its upstream'}
+                </span>
+              )}
               {!readOnly && (
                 <span className="flex shrink-0 items-center">
                   {/* Reordering needs a second repo. An arrow with nowhere to go
@@ -106,6 +114,8 @@ export function ProjectRepos({ project, readOnly }: { project: ProjectSummary; r
                 </span>
               )}
             </div>
+            {r.pushRefused === true && <PushRefusedWarning repoId={r.id} remoteUrl={r.remoteUrl} owned={!readOnly && r.owner === project.owner} />}
+            {!readOnly && <UpstreamSuggestion repoId={r.id} />}
             {mediatedEgress && <LinkFlags project={project} repo={r} readOnly={readOnly || change.isPending}
               onChange={(flag, enabled) => change.mutate(() => setProjectRepoFlag(project.id, r.id, flag, enabled))} />}
           </div>
@@ -246,8 +256,9 @@ function AddRepoForm({ project, onCancel, onAdded }: {
   const picked = offered.find((r) => r.id === what)
   const link = useMutation({
     mutationFn: (to: RepoToLink) => addProjectRepo(project.id, to, folder === '' ? undefined : folder),
-    onSuccess: async ({ knownHostsEntry }) => {
+    onSuccess: async ({ knownHostsEntry, repoId, suggestedUpstream }) => {
       onAdded(knownHostsEntry)
+      if (suggestedUpstream !== undefined) useUiStore.getState().suggestUpstream(repoId, suggestedUpstream)
       await Promise.all([refreshRepos(queryClient), queryClient.invalidateQueries({ queryKey: allowlistKey })])
     },
   })

@@ -80,6 +80,9 @@ export function GitStatusBar({ workspaceId }: { workspaceId: string }): JSX.Elem
           {describe(shown.branch, shown.comparison)}
         </YButton>
       )}
+      {shown?.comparison?.rewritten === true && (
+        <span className="shrink-0 text-warning" title={rewrittenHint(shown.comparison.ref)}>base rewritten</span>
+      )}
       {shown?.counts && (
         <YButton variant="bare" onClick={() => openChanges(workspaceId)} title="Review changes" className={clsx(LINK, 'shrink-0')}>
           <LineCountsLabel counts={shown.counts} />
@@ -96,6 +99,13 @@ function summarize({ branch, comparison, files }: WorkspaceChanges, repo: string
 /** "2 ahead of origin/main", in few words, since the bar is short of
  *  room. A plain inline run, so a narrow bar truncates it a letter at a
  *  time rather than dropping the ref name whole. */
+/** What a workspace whose base branch was rewritten under it should run
+ *  (docs/repo-forks.md "Catching up with the upstream"). */
+function rewrittenHint(ref: string): string {
+  return `${refName(ref)} was rewritten since this workspace started, so it counts the old commits as its own. `
+    + `Run \`git rebase ${refName(ref)}\`; git drops the commits the new base already has.`
+}
+
 function describe(base: string, comparison: BranchComparison | null): JSX.Element {
   const ref = (r: string): JSX.Element => <span className="font-mono text-text">{refName(r)}</span>
   if (!comparison) return <>no {ref(base)} to compare with</>

@@ -18,7 +18,7 @@ import {
   projectRepoRename,
   type ProjectRepoAddOptions,
 } from '#commands/project-repo'
-import { repoDelete, repoList, repoShare, repoUnshare } from '#commands/repo'
+import { repoDelete, repoList, repoReadOnly, repoShare, repoUnshare, repoUpstream } from '#commands/repo'
 import { groupCreate, groupDelete, groupList, groupMove, groupSetLimit } from '#commands/group'
 import { AGENT_OPTION_HELP, agentOptionArg, workspaceCreate } from '#commands/workspace-create'
 import { scopeToUser } from '#commands/api'
@@ -56,6 +56,7 @@ import { configEgressAllowlist } from '#commands/config-egress-allowlist'
 import { configKeptIgnoredPaths } from '#commands/config-kept-ignored-paths'
 import { configDefaultBranch } from '#commands/config-default-branch'
 import { configDefaultBranchGuard } from '#commands/config-default-branch-guard'
+import { configUpstreamRebase } from '#commands/config-upstream-rebase'
 import { configGitCredential } from '#commands/config-git-credential'
 import { configTimeZone } from '#commands/config-time-zone'
 import { authFake } from '#commands/auth-fake'
@@ -329,11 +330,22 @@ project
   .description('List your projects (or --user\'s)')
   .action(projectList)
 
-project
+/** The options a remote is added with, by `project add` and `project repo
+ *  add` alike (docs/repo-forks.md). */
+function withRepoAddOptions(command: Command): Command {
+  return command
+    .option('--read-only', 'Workspaces only read the repo and never push to it; needs no credential for a public https remote')
+    .option('--fork', 'Link a fork yaac hosts, which workspaces push to, with the remote as its upstream; needs no credential for a public https remote')
+    .option('--upstream <upstream>', 'The repo this one is a fork of, whose history workspaces fetch as upstream/*: one of your repos (see `yaac repo list`) or a remote URL')
+    .option('--upstream-credential <credential>', 'Name of the git credential that reads the --upstream remote (default: none, read anonymously)')
+}
+
+withRepoAddOptions(project
   .command('add')
-  .description('Add a project around one git remote, cloned with — and assigned — the named git credential; a remote you already have a repo for reuses that repo and its clone')
-  .argument('<remote-url>', 'Git remote URL')
-  .argument('<credential>', 'Name of the git credential to clone with and assign (see `yaac auth list`)')
+  .description('Add a project around one git remote, cloned with — and assigned — the named git credential, or around one of your repos (--repo-id); a remote you already have a repo for reuses that repo and its clone. A remote the credential cannot push to is refused unless added --read-only or as a --fork')
+  .argument('[remote-url]', 'Git remote URL')
+  .argument('[credential]', 'Name of the git credential to clone with and assign (see `yaac auth list`); optional with --read-only or --fork')
+  .option('--repo-id <id>', 'Add the project around this repo of yours, as `yaac repo list` prints it, instead of a remote'))
   .action(projectAdd)
 
 project
@@ -352,26 +364,32 @@ project
 
 project
   .command('move')
-  .description('Move a project\'s yaac-hosted repo to an empty git remote elsewhere: stop every workspace holding a checkout of it (other users\' too), push every branch and tag there, and use the remote from then on. Its shares end, and each user it was shared with gets a repo of their own for the remote. yaac keeps its copy, read-only, until removed in Settings. Asks for confirmation, so it needs a terminal')
+  .description('Move a project\'s repo between yaac and a git host, stopping every workspace holding a checkout of it (other users\' too) first. With a remote: push a yaac-hosted repo\'s every branch and tag to an empty remote and use it from then on; its shares end, each user it was shared with gets a repo of their own, and yaac keeps its copy, read-only, until removed in Settings. With --hosted: move a repo on a git host onto yaac, which makes the remote its upstream. With --upstream: move a fork back onto its upstream once its credential can push there. Asks for confirmation')
   .argument('<project>', 'Project name or id')
-  .argument('<remote-url>', 'Git remote URL to push to: an empty repository, e.g. a new GitHub one with no README')
-  .argument('<credential>', 'Name of the git credential that can push there, assigned to the repo (see `yaac auth list`)')
+  .argument('[remote-url]', 'Git remote URL to push to: an empty repository, e.g. a new GitHub one with no README')
+  .argument('[credential]', 'Name of the git credential that can push there, assigned to the repo (see `yaac auth list`)')
   .option('--repo <dir>', REPO_HELP)
+  .option('--hosted', 'Move the repo from its git host onto yaac; the remote it leaves becomes its upstream')
+  .option('--upstream', 'Move a fork back onto its upstream, pushing the branches chosen with --push, --push-all and --leave-rest')
+  .option('--push <branch>', 'With --upstream: push this branch of the fork, or `<branch>=<name>` to push it as another name (repeatable)', (value: string, all: string[] = []) => [...all, value])
+  .option('--push-all', 'With --upstream: push every branch that can be pushed')
+  .option('--leave-rest', 'With --upstream: leave every branch not pushed behind, where the fork was')
+  .option('-y, --yes', 'Skip the confirmation prompt')
   .action(projectMove)
 
 const projectRepo = project
   .command('repo')
   .description('Manage the git repos a project links; each workspace starts with some of them (see `yaac workspace create --repo`)')
 
-projectRepo
+withRepoAddOptions(projectRepo
   .command('add')
   .description('Link a repo into a project: a git remote cloned with the named credential (reusing the repo you already have for that remote), a repo of yours or one shared with you (--repo-id), or a new empty repo yaac hosts (--hosted)')
   .argument('<project>', 'Project name, id, or id prefix')
   .argument('[remote-url]', 'Git remote URL')
-  .argument('[credential]', 'Name of the git credential to clone with and assign (see `yaac auth list`)')
+  .argument('[credential]', 'Name of the git credential to clone with and assign (see `yaac auth list`); optional with --read-only or --fork')
   .option('--repo-id <id>', 'Link this repo, as `yaac repo list` prints it, instead of a remote')
   .option('--hosted', 'Link a new, empty repo yaac hosts instead of a remote')
-  .option('--dir <name>', 'The folder its checkout takes in a workspace with several repos: letters, digits, ".", "_" and "-" (default: the repo\'s name)')
+  .option('--dir <name>', 'The folder its checkout takes in a workspace with several repos: letters, digits, ".", "_" and "-" (default: the repo\'s name)'))
   .action((project: string, remoteUrl: string | undefined, credential: string | undefined, opts: ProjectRepoAddOptions) =>
     projectRepoAdd(project, remoteUrl, credential, opts))
 
@@ -420,6 +438,22 @@ repo
   .command('list')
   .description('List your repos (or --user\'s) and those shared with you: each one\'s remote, credential, the projects linking it and whom it is shared with. Repos no project links come first; a deleted one stays listed while workspaces hold checkouts of it')
   .action(repoList)
+
+repo
+  .command('read-only')
+  .description('Show or set whether a repo is read-only: on, no workspace in any project pushes to it (their checkouts\' push URL is not a repository, and the egress proxy refuses pushes)')
+  .argument('<repo>', REPO_REF_HELP)
+  .addArgument(new Argument('[on|off]').choices(['on', 'off']))
+  .action(repoReadOnly)
+
+repo
+  .command('upstream')
+  .description('Show or set the repo a repo is a fork of: its history is fetched into the fork\'s clone and reaches workspaces as upstream/*, a remote they can only fetch')
+  .argument('<repo>', REPO_REF_HELP)
+  .argument('[upstream]', 'One of your repos (an id, prefix, URL or <project>/<folder>), or a remote URL, recorded without a clone')
+  .argument('[credential]', 'Name of the git credential that reads the upstream remote (default: none, read anonymously)')
+  .option('--none', 'Remove the upstream')
+  .action(repoUpstream)
 
 repo
   .command('share')
@@ -1023,6 +1057,14 @@ config
   .addArgument(new Argument('[on|off]', 'on refuses such pushes, off accepts them').choices(['on', 'off']))
   .option('--repo <dir>', REPO_HELP)
   .action(configDefaultBranchGuard)
+
+config
+  .command('upstream-rebase')
+  .description('Show or set whether a project\'s repo that yaac hosts as a fork lets its default-branch guard through a push that rebases the branch onto the upstream\'s')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .addArgument(new Argument('[on|off]', 'on lets a catch-up rebase through, off refuses every rewrite').choices(['on', 'off']))
+  .option('--repo <dir>', REPO_HELP)
+  .action(configUpstreamRebase)
 
 config
   .command('git-credential')

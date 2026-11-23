@@ -45,6 +45,8 @@ export function isGitAuthError(message: string): boolean {
     /returned error: 40[13]/, // curl: "The requested URL returned error: 401"
     /permission denied \(publickey/i, // SSH key rejected
     /permission to .+ denied/i, // GitHub's 403 remote message on push
+    /marked as read only/i, // a GitHub deploy key without write access, over ssh
+    /not allowed to push/i, // GitLab, over ssh
   ].some((re) => re.test(message))
 }
 

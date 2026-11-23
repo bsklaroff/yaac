@@ -8,7 +8,10 @@ import { hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
 import { closeDb } from '#db/client'
 import { applyWorkspaceEvent, BUILT_IN_USER_ID, insertRepo, markRepoDeleted } from '#db'
 import { cloneRepo, hostedDefaultBranch, initHostedRepo } from '#domain/git'
-import { fetchRepoCommit, fetchRepoOrigin, freshenOrigin, onOriginFetched, refreshRepoOrigins, seedRepoOrigin } from '#domain/repos'
+import {
+  fetchRepoCommit, fetchRepoOrigin, fetchRepoUpstream, freshenOrigin, listRepoSummaries, onOriginFetched, refreshRepoOrigins,
+  seedRepoOrigin,
+} from '#domain/repos'
 
 /**
  * Fixture: a repo whose remote is a local repository, with a main clone,
@@ -137,6 +140,46 @@ describe('seedRepoOrigin', () => {
     expect(await hostedDefaultBranch(hostedRepoDir(hosted))).toBe('main')
     expect((await git(hostedRepoDir(hosted), ['log', '-1', '--format=%an %s', 'main'])).trim()).toBe('Owner Initial commit')
     expect(await tip(repoDir(hosted), 'origin/main')).toBe(await tip(hostedRepoDir(hosted), 'main'))
+
+    // The server never pushes to a read-only repo, so one stays empty.
+    const readOnly = '5b3e2f4c-1d0a-4b9e-8c7f-2a3b4c5d6e80'
+    await insertRepo({ id: readOnly, owner: BUILT_IN_USER_ID, remoteUrl: 'http://yaac.internal/y.git', hosted: true, readOnly: true })
+    await initHostedRepo(hostedRepoDir(readOnly))
+    await cloneRepo(hostedRepoDir(readOnly), repoDir(readOnly), { kind: 'hosted' })
+    await seedRepoOrigin(readOnly, { name: 'Owner', email: 'owner@example.com' })
+    expect(await hostedDefaultBranch(hostedRepoDir(readOnly))).toBeNull()
+  })
+})
+
+describe('fetchRepoUpstream', () => {
+  it("fetches a fork's upstream into its main clone after its origin, and keeps a failure for the upstream's row", async () => {
+    const fork = '5b3e2f4c-1d0a-4b9e-8c7f-2a3b4c5d6e81'
+    const upstream = '5b3e2f4c-1d0a-4b9e-8c7f-2a3b4c5d6e82'
+    const upstreamRemote = path.join(tmp, 'upstream-remote')
+    await fs.mkdir(upstreamRemote)
+    await git(upstreamRemote, ['init', '-q', '-b', 'trunk'])
+    await git(upstreamRemote, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'up'])
+    await insertRepo({ id: upstream, owner: BUILT_IN_USER_ID, remoteUrl: upstreamRemote, readOnly: true })
+    await insertRepo({ id: fork, owner: BUILT_IN_USER_ID, remoteUrl: source, upstreamRepoId: upstream })
+    await cloneRepo(source, repoDir(fork), null)
+    const told = vi.fn()
+    onOriginFetched(told)
+
+    await fetchRepoUpstream(fork)
+    expect(await tip(repoDir(fork), 'refs/remotes/upstream/trunk')).toBe(await tip(upstreamRemote, 'trunk'))
+    expect(told).toHaveBeenCalledWith(fork)
+    // A fetch of the fork's origin follows with its upstream, by itself.
+    await git(upstreamRemote, ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'more'])
+    await fetchRepoOrigin(fork)
+    await vi.waitFor(async () => {
+      expect(await tip(repoDir(fork), 'refs/remotes/upstream/trunk')).toBe(await tip(upstreamRemote, 'trunk'))
+    }, { timeout: 10_000, interval: 50 })
+
+    await fs.rm(upstreamRemote, { recursive: true })
+    await expect(fetchRepoUpstream(fork)).rejects.toThrow()
+    expect((await listRepoSummaries()).find((r) => r.id === upstream)?.upstreamFetchError).toMatch(/upstream-remote/)
+    // A repo with no upstream has nothing to fetch.
+    await expect(fetchRepoUpstream(IDLE_REPO)).resolves.toBeUndefined()
   })
 })
 

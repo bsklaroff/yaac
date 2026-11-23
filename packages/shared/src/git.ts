@@ -1,7 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { env } from '#env'
-import { HOSTED_REMOTE_PREFIX } from '#hosted-git'
 
 const execFileAsync = promisify(execFile)
 
@@ -40,25 +39,56 @@ function singleQuoted(s: string): string {
 }
 
 /**
- * Point a checkout at the main clone's objects, then bring its `origin/*`
- * up to date from the main clone: one shell command, run in the workspace
- * when a launch reuses a checkout. `workspaceDir` is where the workspace
- * sees its checkout, and must be shell-safe (driver paths are). A checkout
- * the launch just created already has both.
+ * The push URL of a remote a workspace only fetches: a path that is not a
+ * repository on any machine (`/dev/null` is no directory), so a push fails
+ * at once and git's error quotes it (docs/repo-forks.md "Read-only repos").
+ */
+export const NO_PUSH_URL = '/dev/null/yaac: workspaces do not push to this remote'
+
+/** A checkout's remotes, as its repo's rows say (docs/repo-forks.md). */
+export interface CheckoutRemotes {
+  /** `origin`'s URL, the repo row's. */
+  url: string
+  /** Whether workspaces only read the repo, so `origin` takes `NO_PUSH_URL`
+   *  as its push URL. */
+  readOnly: boolean
+  /** A fork's upstream URL, a remote that can only be fetched; absent for a
+   *  repo with none, or one the checkout's project owner may not use. */
+  upstream?: string
+}
+
+/**
+ * Point a checkout at the main clone's objects, set its remotes to match
+ * the rows, then bring its `origin/*` (and `upstream/*`) up to date from
+ * the main clone: one shell command, run in the workspace when a launch
+ * reuses a checkout. `workspaceDir` is where the workspace sees its
+ * checkout, and must be shell-safe (driver paths are). A checkout the
+ * launch just created already has all of it.
  *
  * The alternates line is the checkout's only path-dependent git state
  * (docs/server-git.md). It is always the main clone's objects dir as the
  * server sees it; pods mount the main clone at that same path. Rewriting it
- * on every reuse heals a checkout whose data dir moved. An `origin` that
- * still names yaac's hosted remote is set to `remoteUrl`, which heals a
- * checkout whose project moved to another git host; one the user pointed
- * elsewhere is left alone.
+ * on every reuse heals a checkout whose data dir moved. `origin` is yaac's
+ * remote in a checkout, so its URL always becomes the row's, which follows
+ * a repo through every move; a user who wants another remote adds one under
+ * another name.
  */
-export function buildCloneLinkExec(repoGitDir: string, workspaceDir: string, remoteUrl: string): string {
-  return `printf '%s\\n' ${singleQuoted(`${repoGitDir}/objects`)} > ${workspaceDir}/.git/objects/info/alternates`
-    + ` && case "$(git -C ${workspaceDir} config remote.origin.url)" in ${singleQuoted(HOSTED_REMOTE_PREFIX)}*)`
-    + ` git -C ${workspaceDir} config remote.origin.url ${singleQuoted(remoteUrl)};; esac`
-    + ` && { ${buildOriginRefreshExec(repoGitDir, workspaceDir)}; }`
+export function buildCloneLinkExec(repoGitDir: string, workspaceDir: string, remotes: CheckoutRemotes): string {
+  const git = `git -C ${workspaceDir}`
+  const noPush = singleQuoted(NO_PUSH_URL)
+  return [
+    `printf '%s\\n' ${singleQuoted(`${repoGitDir}/objects`)} > ${workspaceDir}/.git/objects/info/alternates`,
+    `${git} config remote.origin.url ${singleQuoted(remotes.url)}`,
+    remotes.readOnly
+      ? `${git} config --replace-all remote.origin.pushurl ${noPush}`
+      : `{ ${git} config --unset-all remote.origin.pushurl 2>/dev/null; true; }`,
+    remotes.upstream !== undefined
+      ? `${git} config --replace-all remote.upstream.url ${singleQuoted(remotes.upstream)}`
+        + ` && ${git} config --replace-all remote.upstream.fetch '+refs/heads/*:refs/remotes/upstream/*'`
+        + ` && ${git} config --replace-all remote.upstream.pushurl ${noPush}`
+      : `{ ${git} remote remove upstream 2>/dev/null; true; }`,
+    buildOriginRefreshExec(repoGitDir, workspaceDir),
+  ].join(' && ')
 }
 
 /**
@@ -72,15 +102,28 @@ export function buildStatusWarmupExec(workspaceDir: string): string {
 }
 
 /**
- * Fast-forward a checkout's `origin/*` from the main clone on disk. The
+ * Bring a checkout's `origin/*`, and a fork's `upstream/*` where the
+ * checkout has that remote, up to date from the main clone on disk. The
  * objects are reachable via alternates, so there is no network or
- * credential use. Not forced (an agent-fetched ref ahead of the main clone
- * is kept), no `--prune`, and no FETCH_HEAD (the agent may be between its
- * own fetch and merge). Failures are ignored; the next refresh retries.
+ * credential use. A branch is fast-forwarded, so a ref an agent's own
+ * fetch moved ahead of the main clone is kept, and set outright only where
+ * neither tip contains the other: the branch was rewritten, not fetched
+ * ahead (docs/server-git.md "Keeping `origin/*` fresh"). No `--prune`, and
+ * no FETCH_HEAD (the agent may be between its own fetch and merge).
+ * Failures are ignored; the next refresh retries.
  */
 export function buildOriginRefreshExec(repoGitDir: string, workspaceDir: string): string {
-  return `git -C ${workspaceDir} fetch --quiet --no-tags --no-write-fetch-head `
-    + `${singleQuoted(repoGitDir)} 'refs/remotes/origin/*:refs/remotes/origin/*' 2>/dev/null || true`
+  const git = `git -C ${workspaceDir}`
+  const main = singleQuoted(repoGitDir)
+  const copy = (remote: string): string =>
+    `${git} fetch --quiet --no-tags --no-write-fetch-head ${main} 'refs/remotes/${remote}/*:refs/remotes/${remote}/*' 2>/dev/null`
+  return `{ ${copy('origin')}; ! ${git} config remote.upstream.url >/dev/null || ${copy('upstream')}; `
+    + `{ ${git} ls-remote ${main} 'refs/remotes/*'; echo; `
+    + `${git} for-each-ref --format='%(objectname)%09%(refname)' refs/remotes/origin refs/remotes/upstream; } 2>/dev/null`
+    + ` | awk -F'\\t' 'NF < 2 { mine = 1; next } !mine { tip[$2] = $1; next }`
+    + ` $2 !~ /\\/HEAD$/ && ($2 in tip) && tip[$2] != $1 { print tip[$2], $1, $2 }'`
+    + ` | while read -r new old ref; do ${git} merge-base --is-ancestor "$new" "$old" 2>/dev/null`
+    + ` || ${git} update-ref "$ref" "$new" "$old"; done; true; }`
 }
 
 /**

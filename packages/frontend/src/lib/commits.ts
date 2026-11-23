@@ -80,5 +80,8 @@ export const isCommit = (ref: string): boolean => FULL_COMMIT_PATTERN.test(ref)
  *  the working tree by name. */
 export function refName(ref: string): string {
   if (ref === WORKTREE_REF) return 'Working tree'
+  // A fork's upstream branch is passed in full (`refs/remotes/upstream/x`)
+  // so an origin branch named `upstream/x` is not taken for it.
+  if (ref.startsWith('refs/remotes/')) return ref.slice('refs/remotes/'.length)
   return isCommit(ref) ? ref.slice(0, 7) : ref
 }

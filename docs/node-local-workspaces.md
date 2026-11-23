@@ -280,7 +280,9 @@ A node dying mid-write cannot leave a log that does not restore:
   pass, so it holds only what differs from the checkouts' start; each
   later one leaves out what the pass before it holds.
   The agent's commits stay in its `.git`, durable as made; a rewrite and
-  prune there cannot leave the chain unwalkable.
+  prune there cannot leave the chain unwalkable. A repo's moves between
+  yaac and a git host keep its id and main clone, so a stopped workspace's
+  chain stays restorable across them (docs/repo-forks.md).
 - **A pass that dies leaves the old checkpoint.** What it leaves behind,
   the server removes.
 

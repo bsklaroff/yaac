@@ -151,6 +151,47 @@ describe('ReposSettings', () => {
     await waitFor(() => expect(server.called('POST /api/repo/repo-api/unshare').map((c) => c.body)).toEqual([{ userId: 'u-ada' }]))
   })
 
+  it("shows a fork's upstream under it, warns of refused pushes with the ways out, and sets read-only and the upstream", async () => {
+    repos = [
+      repoSummary({ id: 'repo-api', remoteUrl: 'https://github.com/o/api.git', pushRefused: true, ...linked }),
+      repoSummary({ id: 'repo-fork', hosted: true, upstreamRepoId: 'repo-up', guardAllowsCatchUp: true, ...linked }),
+      // Only an upstream: listed under its fork, not among the unlinked.
+      repoSummary({ id: 'repo-up', remoteUrl: 'https://github.com/up/api.git', readOnly: true, forks: ['repo-fork'], upstreamFetchError: 'boom' }),
+    ]
+    for (const [route, reply] of Object.entries({
+      'GET /api/repo/repo-fork/branches': { branches: ['main'], defaultBranch: 'main' },
+      'PUT /api/repo/repo-api/read-only': (): undefined => undefined,
+      'POST /api/repo/repo-api/push-access': { pushAccess: 'no' },
+      'PUT /api/repo/repo-api/upstream': { upstreamRepoId: 'repo-up', knownHostsEntry: null, allowedHost: null },
+      'PUT /api/repo/repo-fork/upstream-rebase': (): undefined => undefined,
+    })) server.route(route, reply)
+    show()
+    await waitFor(() => expect(order()).toEqual(['repo-api', 'repo-fork', 'repo-up']))
+    expect(row('repo-fork').textContent).toContain('Fork of https://github.com/up/api.git.')
+    expect(within(row('repo-up')).getByText('upstream')).toBeTruthy()
+    expect(within(row('repo-up')).getByText('read-only')).toBeTruthy()
+    expect(row('repo-up').textContent).toContain('Fetching it as an upstream failed: boom')
+
+    const warning = within(row('repo-api')).getByRole('note', { name: 'Pushes refused' })
+    expect(warning.textContent).toContain('Pushes to o/api are refused.')
+    fireEvent.click(within(warning).getByRole('button', { name: 'Check again' }))
+    await waitFor(() => expect(server.called('POST /api/repo/repo-api/push-access')).toHaveLength(1))
+    fireEvent.click(within(warning).getByRole('button', { name: 'Make read-only' }))
+    await waitFor(() => expect(server.called('PUT /api/repo/repo-api/read-only').map((c) => c.body)).toEqual([{ enabled: true }]))
+
+    manage('repo-api')
+    fireEvent.click(within(row('repo-api')).getByRole('button', { name: 'Set upstream…' }))
+    fireEvent.change(within(row('repo-api')).getByRole('combobox', { name: 'Upstream' }), { target: { value: 'repo-up' } })
+    fireEvent.click(within(row('repo-api')).getByRole('button', { name: 'Set upstream' }))
+    await waitFor(() => expect(server.called('PUT /api/repo/repo-api/upstream').map((c) => c.body)).toEqual([{ repoId: 'repo-up' }]))
+
+    // A hosted fork's guard can let a rebase onto its upstream through.
+    manage('repo-fork')
+    const catchUp = await within(row('repo-fork')).findByRole('checkbox', { name: /Allow rebasing onto the upstream/ })
+    fireEvent.click(catchUp)
+    await waitFor(() => expect(server.called('PUT /api/repo/repo-fork/upstream-rebase').map((c) => c.body)).toEqual([{ enabled: false }]))
+  })
+
   it('warns what a move stops and hands over, then moves the repo with the chosen credential', async () => {
     repos = [repoSummary({ id: 'repo-api', hosted: true, ...linked })]
     server.route('GET /api/repo/repo-api/branches', { branches: ['main'], defaultBranch: 'main' })
