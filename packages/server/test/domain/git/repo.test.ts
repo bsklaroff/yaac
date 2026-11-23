@@ -6,9 +6,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { createAdaptorServer } from '@hono/node-server'
 import {
+  baseRewritten,
   cloneRepo,
+  compareRemoteBranches,
   createCheckout,
   fetchOrigin,
+  fetchUpstream,
   getDefaultBranch,
   initHostedRepo,
   lastFetchedAtMs,
@@ -23,6 +26,7 @@ import {
   seedEmptyOrigin,
   serveGitHttp,
   setOriginHead,
+  setUpstreamRefs,
 } from '#domain/git'
 import { git, stagingBeside } from '@yaac/test-utils/git'
 import type { GitProgress } from '@yaac/shared/types'
@@ -324,6 +328,31 @@ describe('createCheckout', () => {
     await expect(fs.access(staging)).rejects.toThrow()
   })
 
+  it("gives a read-only repo's origin a push URL that is no repository, and a fork's upstream as a fetch-only remote", async () => {
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
+    const base = await getDefaultBranch(main)
+    await git(main, ['update-ref', 'refs/remotes/upstream/up', await resolveRemoteRef(main, base)])
+    const wtPath = path.join(tmpDir, 'fork-workspace')
+    const noPush = '/dev/null/no push'
+
+    await createCheckout(main, wtPath, {
+      staging: stagingBeside(wtPath), branch: 'agent/f', baseBranch: base, commit: await resolveRemoteRef(main, base),
+      remoteUrl: sourceRepo, pushUrl: noPush, upstream: { url: 'https://github.com/up/it.git', pushUrl: noPush },
+    })
+    expect((await git(wtPath, ['config', 'remote.origin.pushurl'])).trim()).toBe(noPush)
+    expect((await git(wtPath, ['config', 'remote.upstream.url'])).trim()).toBe('https://github.com/up/it.git')
+    expect((await git(wtPath, ['config', 'remote.upstream.pushurl'])).trim()).toBe(noPush)
+    expect((await git(wtPath, ['rev-parse', 'upstream/up'])).trim()).toBe(await resolveRemoteRef(main, base))
+    await expect(git(wtPath, ['push', 'origin', 'HEAD:x'])).rejects.toThrow(/no push/)
+
+    // Without an upstream, its refs stay out.
+    const plain = path.join(tmpDir, 'plain-workspace')
+    await createCheckout(main, plain, { staging: stagingBeside(plain), branch: 'agent/p', commit: await resolveRemoteRef(main, base), remoteUrl: sourceRepo })
+    expect(await git(plain, ['for-each-ref', 'refs/remotes/upstream'])).toBe('')
+    await expect(git(plain, ['config', 'remote.origin.pushurl'])).rejects.toThrow()
+  })
+
   it('refuses a shallow main clone', async () => {
     const main = path.join(tmpDir, 'shallow')
     await commitToSource('second.txt', 'second')
@@ -491,6 +520,112 @@ describe('fetchOrigin', () => {
       a.close()
       b.close()
     }
+  })
+})
+
+describe('fetchUpstream', () => {
+  it("fetches every branch of a fork's upstream as upstream/*, pruned, and leaves origin/* and tags alone", async () => {
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
+    const upstream = path.join(tmpDir, 'upstream')
+    await git(tmpDir, ['clone', '-q', sourceRepo, upstream])
+    await git(upstream, ['branch', 'only-upstream'])
+    await git(upstream, ['tag', 'up-tag'])
+    const origin = await git(main, ['for-each-ref', 'refs/remotes/origin'])
+
+    await fetchUpstream(main, upstream, null)
+    expect(await listRemoteBranches(main, 'upstream')).toEqual(expect.arrayContaining(['only-upstream']))
+    expect(await git(main, ['for-each-ref', 'refs/remotes/origin'])).toBe(origin)
+    expect(await git(main, ['tag'])).toBe('')
+
+    await git(upstream, ['branch', '-D', 'only-upstream'])
+    await fetchUpstream(main, upstream, null)
+    expect(await listRemoteBranches(main, 'upstream')).not.toContain('only-upstream')
+  })
+})
+
+describe('setUpstreamRefs', () => {
+  it('copies origin/* to upstream/*, replacing what was there, or drops them all', async () => {
+    const main = path.join(tmpDir, 'main')
+    await git(sourceRepo, ['branch', 'feature'])
+    await cloneRepo(sourceRepo, main, null)
+    await git(main, ['update-ref', 'refs/remotes/upstream/stale', await resolveRemoteRef(main, 'feature')])
+    await git(main, ['update-ref', 'refs/remotes/upstream/feature', await resolveRemoteRef(main, 'feature')])
+
+    await setUpstreamRefs(main)
+    expect((await listRemoteBranches(main, 'upstream')).sort()).toEqual((await listRemoteBranches(main)).sort())
+    expect(await resolveRemoteRef(main, 'feature', 'upstream')).toBe(await resolveRemoteRef(main, 'feature'))
+
+    await setUpstreamRefs(main, { drop: true })
+    expect(await listRemoteBranches(main, 'upstream')).toEqual([])
+  })
+})
+
+describe('compareRemoteBranches', () => {
+  it("sorts every branch by how origin's stands against the upstream's", async () => {
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
+    const base = await getDefaultBranch(main)
+    const tip = await resolveRemoteRef(main, base)
+    await commitToSource('ahead.txt', 'ahead')
+    const ahead = (await git(sourceRepo, ['rev-parse', 'HEAD'])).trim()
+    await git(sourceRepo, ['reset', '-q', '--hard', tip])
+    await commitToSource('other.txt', 'other')
+    const other = (await git(sourceRepo, ['rev-parse', 'HEAD'])).trim()
+    await git(sourceRepo, ['branch', 'keep-ahead', ahead])
+    await fetchOrigin(main, sourceRepo, null)
+    await git(main, ['update-ref', '-d', 'refs/remotes/origin/keep-ahead'])
+    const set = (ref: string, sha: string): Promise<string> => git(main, ['update-ref', ref, sha])
+    await set('refs/remotes/origin/same', tip)
+    await set('refs/remotes/upstream/same', tip)
+    await set('refs/remotes/origin/behind', tip)
+    await set('refs/remotes/upstream/behind', ahead)
+    await set('refs/remotes/origin/ahead', ahead)
+    await set('refs/remotes/upstream/ahead', tip)
+    await set('refs/remotes/origin/diverged', ahead)
+    await set('refs/remotes/upstream/diverged', other)
+    await set('refs/remotes/origin/mine', tip)
+    await set('refs/remotes/upstream/theirs', tip)
+    await git(main, ['update-ref', '-d', `refs/remotes/origin/${base}`])
+
+    expect(await compareRemoteBranches(main)).toEqual([
+      { branch: 'ahead', state: 'ahead' },
+      { branch: 'behind', state: 'same' },
+      { branch: 'diverged', state: 'diverged' },
+      { branch: 'mine', state: 'fork-only' },
+      { branch: 'same', state: 'same' },
+      { branch: 'theirs', state: 'upstream-only' },
+    ])
+  })
+})
+
+describe('baseRewritten', () => {
+  it('says a checkout still sits on commits its base branch no longer has, and not once it rebased or for a reset', async () => {
+    const main = path.join(tmpDir, 'main')
+    await cloneRepo(sourceRepo, main, null)
+    const base = await getDefaultBranch(main)
+    const old = await resolveRemoteRef(main, base)
+    await commitToSource('two.txt', 'two')
+    const start = (await git(sourceRepo, ['rev-parse', 'HEAD'])).trim()
+    await fetchOrigin(main, sourceRepo, null)
+    // A plain base that moved on, merge base at the start: not rewritten.
+    expect(await baseRewritten(main, base, start, start)).toBe(false)
+
+    // The branch is rewritten: `two` is replaced.
+    await git(sourceRepo, ['reset', '-q', '--hard', old])
+    await commitToSource('two.txt', 'two, rewritten')
+    const rewritten = (await git(sourceRepo, ['rev-parse', 'HEAD'])).trim()
+    await git(sourceRepo, ['reflog', 'expire', '--expire=now', '--all'])
+    await fetchOrigin(main, sourceRepo, null)
+    expect(await baseRewritten(main, base, start, old)).toBe(true)
+    // Rebased onto the new branch, its merge base is the new tip.
+    expect(await baseRewritten(main, base, start, rewritten)).toBe(false)
+
+    // A checkout reset to an older commit on an intact branch is not one.
+    await git(sourceRepo, ['reset', '-q', '--hard', start])
+    await fetchOrigin(main, sourceRepo, null).catch(() => {})
+    await git(main, ['fetch', '-q', '--force', sourceRepo, `+${start}:refs/remotes/origin/${base}`])
+    expect(await baseRewritten(main, base, start, old)).toBe(false)
   })
 })
 

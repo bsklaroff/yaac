@@ -345,7 +345,9 @@ never changes and the client caches it for good.
 A Changes pane can show any range instead of the workspace's own changes.
 Its target names it, `changes:<from>...<to>` (a ref name holds no `..`, so
 the first `...` splits it), and each end is a branch on origin (by name,
-tried as `origin/<name>` before itself), a commit, or `HEAD`, which is
+tried as `origin/<name>` before itself), a fork's upstream branch (as its
+full ref, `refs/remotes/upstream/<name>`, which the picker lists after
+origin's; docs/repo-forks.md "Seeing the difference"), a commit, or `HEAD`, which is
 always the checkout's own and never `origin/HEAD`. The newer end may also be
 `:worktree`, the working tree, uncommitted work included; `:` cannot appear
 in a ref name.
@@ -394,7 +396,13 @@ comparison's tooltip shows `fetchedAt`, the newest mtime among:
   (git empties `FETCH_HEAD` even when a fetch fails);
 - the checkout's `FETCH_HEAD`, for a fetch the agent ran;
 - the branch reflogs in the main clone and the checkout, for a fetch that
-  moved the branch.
+  moved the branch (the upstream's, for a base on a fork's upstream).
+
+When the base branch was rewritten under a workspace that still sits on its
+old commits, such as a fork that caught up with its upstream, the answer's
+`comparison.rewritten` is set (`baseRewritten`, read from the main clone),
+and the bar says so, its tooltip naming what to run: `git rebase
+origin/<base>`.
 
 ### Commits
 

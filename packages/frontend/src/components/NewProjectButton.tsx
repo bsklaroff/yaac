@@ -103,13 +103,24 @@ export const AddProjectDialog = memo(function AddProjectDialog(): JSX.Element {
 /** The allowlist a project starts with: the defaults and nothing added. */
 const NEW_PROJECT_ALLOWLIST = { hosts: [], defaults: true }
 
+/** How workspaces use a cloned repo (docs/repo-forks.md). */
+type CloneUse = 'push' | 'read' | 'fork'
+
+const CLONE_USES: Array<{ value: CloneUse; label: string }> = [
+  { value: 'push', label: 'Push to it' },
+  { value: 'read', label: 'Only read it' },
+  { value: 'fork', label: 'Fork it into yaac' },
+]
+
 function CloneForm({ initialUrl, onDone }: { initialUrl: string; onDone: () => void }): JSX.Element {
   const queryClient = useQueryClient()
   const [url, setUrl] = useState(initialUrl)
+  const [use, setUse] = useState<CloneUse>('push')
   const remoteUrl = url.trim()
+  const how = use === 'read' ? { readOnly: true } : use === 'fork' ? { fork: true } : {}
 
-  const add = (credentialId: string): Promise<void> => {
-    addProjectInBackground(remoteUrl, remoteProjectName(remoteUrl) || remoteUrl, credentialId, queryClient)
+  const add = (credentialId: string | undefined): Promise<void> => {
+    addProjectInBackground(remoteUrl, remoteProjectName(remoteUrl) || remoteUrl, credentialId, queryClient, how)
     onDone()
     return Promise.resolve()
   }
@@ -125,6 +136,15 @@ function CloneForm({ initialUrl, onDone }: { initialUrl: string; onDone: () => v
         className="font-mono"
       />
       <AllowlistAddNotice remoteUrl={remoteUrl} allowlist={NEW_PROJECT_ALLOWLIST} />
+      <div className="flex flex-col gap-1">
+        <YSegmented options={CLONE_USES} value={use} onChange={setUse} size="sm" ariaLabel="How workspaces use it" />
+        <p className="text-sm text-subtle">
+          {use === 'push' && 'Workspaces push to this remote, so the credential must be able to.'}
+          {use === 'read' && 'Workspaces fetch it and never push. A public https remote needs no credential.'}
+          {use === 'fork' && 'yaac hosts a fork that workspaces push to, and this remote becomes its upstream, '
+            + 'which they only read. A public https remote needs no credential.'}
+        </p>
+      </div>
       <GitCredentialPicker
         kind={remoteKind(remoteUrl)}
         projectName={remoteProjectName(remoteUrl)}
@@ -133,6 +153,11 @@ function CloneForm({ initialUrl, onDone }: { initialUrl: string; onDone: () => v
         onSubmit={add}
         onCancel={onDone}
       />
+      {use !== 'push' && remoteKind(remoteUrl) === 'https' && (
+        <YButton variant="secondary" size="sm" disabled={remoteUrl === ''} onClick={() => void add(undefined)} className="self-start">
+          Add without a credential
+        </YButton>
+      )}
     </div>
   )
 }

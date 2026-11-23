@@ -7,7 +7,8 @@ import { CHANGE_STAGES, lineTotals, stageTotals } from '#lib/gitStatus'
 import { RangeArrowIcon, BranchIcon, CommitsIcon, FileIcon } from '#lib/icons'
 import { useUiStore } from '#lib/store'
 import { relativeAge } from '#lib/time'
-import { useRepoBranches } from '#lib/repoApi'
+import { useQuery } from '@tanstack/react-query'
+import { fetchRepoBranches, repoBranchesKey, useRepoBranches } from '#lib/repoApi'
 import { useCheckout } from '#lib/checkouts'
 import { CheckoutSwitcher } from '#components/CheckoutSwitcher'
 import { YButton, YChip, YPopover, YPopoverPopup, YTypeahead, type YTypeaheadItem } from '#ui'
@@ -45,6 +46,14 @@ export function ChangesStrip({ workspaceId, range, data, files }: {
     if (range) retargetRange(workspaceId, changesTarget(range), changesTarget(next))
   }
   const byStage = stageTotals(files)
+  // A fork's default branch, for "Compare with upstream", once its
+  // upstream's has been fetched.
+  const branches = useQuery({
+    queryKey: repoBranchesKey(repoId),
+    queryFn: () => fetchRepoBranches(repoId, false),
+    enabled: repoId !== '',
+  }).data
+  const forkDefault = branches?.upstreamBranches?.includes(branches.defaultBranch) === true ? branches.defaultBranch : undefined
   return (
     <div className="flex h-7 shrink-0 items-center gap-1 border-b border-line px-1.5 text-sm text-muted">
       <CheckoutSwitcher workspaceId={workspaceId} />
@@ -102,14 +111,26 @@ export function ChangesStrip({ workspaceId, range, data, files }: {
             Review diff
           </YButton>
         ) : (
-          <YButton
-            variant="ghost"
-            size="sm"
-            onClick={() => openRange(workspaceId, { from: base ?? 'HEAD', to: WORKTREE_REF })}
-            title="Compare any two branches or commits"
-          >
-            Compare…
-          </YButton>
+          <>
+            {forkDefault !== undefined && (
+              <YButton
+                variant="ghost"
+                size="sm"
+                onClick={() => openRange(workspaceId, { from: `refs/remotes/upstream/${forkDefault}`, to: forkDefault })}
+                title={`What the fork's ${forkDefault} adds to the upstream's`}
+              >
+                Compare with upstream
+              </YButton>
+            )}
+            <YButton
+              variant="ghost"
+              size="sm"
+              onClick={() => openRange(workspaceId, { from: base ?? 'HEAD', to: WORKTREE_REF })}
+              title="Compare any two branches or commits"
+            >
+              Compare…
+            </YButton>
+          </>
         )}
       </div>
     </div>
@@ -124,7 +145,8 @@ function RefIcon({ value }: { value?: string }): JSX.Element {
 
 /**
  * One end of a range: origin's branches (by name, as the server tries
- * `origin/<name>` first), HEAD, the working tree when `worktree`, `PARENT`
+ * `origin/<name>` first), a fork's upstream branches (by full ref), HEAD,
+ * the working tree when `worktree`, `PARENT`
  * when `parent`, or a commit id typed into the filter. An unset `value` is a
  * single commit's parent.
  */
@@ -145,6 +167,9 @@ function RefPicker({ repoId, value, ariaLabel, worktree = false, parent = false,
     ...parent && value !== undefined ? [{ value: PARENT, label: 'Parent', detail: 'show one commit' }] : [],
     { value: 'HEAD', label: 'HEAD', detail: 'committed only' },
     ...(listed.data?.branches ?? []).map((b) => ({ value: b, label: b })),
+    // After origin's, each as its full ref (docs/repo-forks.md "Seeing the
+    // difference").
+    ...(listed.data?.upstreamBranches ?? []).map((b) => ({ value: `refs/remotes/upstream/${b}`, label: `upstream/${b}`, detail: 'upstream' })),
     ...COMMIT_PREFIX.test(typed) ? [{ value: typed, label: typed, detail: 'commit' }] : [],
   ]
   return (

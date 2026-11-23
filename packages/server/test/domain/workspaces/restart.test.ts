@@ -333,10 +333,10 @@ describe('prepareRestart', () => {
 
     expect(calls.some((c) => c.startsWith('destroy'))).toBe(false)
     // The checkout predates this launch, so the command that starts the
-    // agent first relinks it to the main clone, and to the project's remote
-    // if it still names yaac's, and brings `origin/*` up.
+    // agent first relinks it to the main clone, points its remotes at the
+    // rows', and brings `origin/*` up.
     expect(windowsExec()).toMatch(
-      /^printf .*\/\.git\/objects\/info\/alternates && case .* esac && \{ git -C \S+ fetch /)
+      /^printf .*\/\.git\/objects\/info\/alternates && git -C \S+ config remote\.origin\.url .* && \{ git -C \S+ fetch /)
     expect(windowsExec()).toContain('--permission-mode plan')
     expect(windowsExec()).toContain('--effort low')
     // Its next life is the current one, with no stop, and has come up.

@@ -150,7 +150,9 @@ current default when claimed.
 would find ambiguous. While a repo's default-branch guard is on
 (`repos.guardDefaultBranch`, on by default), it also refuses a push
 that deletes the default branch, or moves it to a commit that does not
-contain its old tip. Agents can still rewrite every other branch. The owner
+contain its old tip, except, in a fork, a rebase onto its upstream
+(docs/repo-forks.md "Catching up with the upstream"). Agents can still
+rewrite every other branch. The owner
 turns the guard off and on in Project settings or with `yaac config
 default-branch-guard <project> on|off`
 (`PUT /api/repo/<id>/default-branch-guard`). The hook runs after the
@@ -183,7 +185,9 @@ push the repository through the workspace route, they push through the user
 route, and a push lands in the one main clone and reaches every running
 checkout. The default branch and its guard stay the owner's to set.
 
-Only a repo the server hosts can be shared. One hosted elsewhere already
+Only a repo the server hosts can be shared. A fork's history contains its
+upstream's, and the user it is shared with gets the fork, not its upstream
+(docs/repo-forks.md). One hosted elsewhere already
 has a remote each user can add under their own credential, which is what a
 shared repo becomes when it moves to another git host (see "Moving to a git
 host").
@@ -200,6 +204,10 @@ step (`reconcileRevokedShares`), which on every pass tears down any running
 workspace holding a checkout of a repo its project's owner may not use.
 
 ## Moving to a git host
+
+A repo also moves the other way, from a git host onto yaac, which makes it
+a fork of the remote it leaves (docs/repo-forks.md "Moving a repo to
+yaac"). A fork moved to a git host keeps its upstream.
 
 The owner can move a hosted repo to an empty repository elsewhere, such as
 a new one on GitHub, with one of their git credentials (`yaac project move

@@ -4,6 +4,9 @@ import { GitCredentialPicker, remoteKind, remoteProjectName, TrustedHostKey } fr
 import { HostedRemote } from '#components/settings/HostedRemote'
 import { KeptHostedRepo } from '#components/settings/KeptHostedRepo'
 import { MoveToRemote } from '#components/settings/MoveToRemote'
+import {
+  MoveToUpstream, MoveToYaac, PushRefusedWarning, RepoReadOnly, RepoUpstream, UpstreamSuggestion,
+} from '#components/settings/RepoForks'
 import { SettingsPageTitle } from '#components/settings/SettingsPage'
 import { DeleteIcon } from '#lib/icons'
 import {
@@ -12,6 +15,7 @@ import {
 import { useUiStore } from '#lib/store'
 import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useTeammateView, useViewedUserId, useWhoami } from '#lib/viewer'
+import { needsGitCredential } from '@yaac/shared/git-remote'
 import type { RepoSummary } from '@yaac/shared/types'
 import { cn, YBadge, YButton, YConfirm, YRowFrame, YSection, YSectionLabel, YSelect } from '#ui'
 
@@ -28,7 +32,8 @@ export function repoName(repo: RepoSummary, dir?: string): string {
  * shows them; then the linked ones; then repos others shared; and last the
  * repos deleted while workspaces still hold a checkout, each with what
  * holds it. A row carries the repo's credential, its hosted settings and
- * sharing, and Delete. A teammate's are shown read-only.
+ * sharing, its fork settings (docs/repo-forks.md), and Delete. An upstream
+ * no project links sits under its fork. A teammate's are shown read-only.
  *
  * `settingsFocusRepo`, set by links elsewhere, scrolls that repo's row into
  * view, open.
@@ -41,11 +46,14 @@ export function ReposSettings(): JSX.Element {
   const [focus] = useState(useUiStore.getState().settingsFocusRepo)
   const live = (repos ?? []).filter((r) => r.deleted === undefined)
   const own = live.filter((r) => r.owner === viewed)
+  // An upstream no project links shows under its fork, not among the repos
+  // nothing uses (docs/repo-forks.md).
+  const onlyUpstream = (r: RepoSummary): boolean => r.projects.length === 0 && r.forks.length > 0
   const groups: { label: string; hint?: string; repos: RepoSummary[] }[] = [
     {
       label: 'Not linked to any project',
       hint: 'Link one from a project\'s settings, or delete it.',
-      repos: own.filter((r) => r.projects.length === 0),
+      repos: own.filter((r) => r.projects.length === 0 && !onlyUpstream(r)),
     },
     { label: 'Linked', repos: own.filter((r) => r.projects.length > 0) },
     {
@@ -73,9 +81,19 @@ export function ReposSettings(): JSX.Element {
       {groups.filter((g) => g.repos.length > 0).map((g) => (
         <YSection key={g.label} title={g.label} description={g.hint}>
           <div className="divide-y divide-line border-y border-line text-md">
-            {g.repos.map((r) => (
-              <RepoRow key={r.id} repo={r} readOnly={readOnly || r.owner !== viewed} focused={focus === r.id} />
-            ))}
+            {g.repos.map((r) => {
+              const upstream = live.find((u) => u.id === r.upstreamRepoId && onlyUpstream(u))
+              return (
+                <div key={r.id}>
+                  <RepoRow repo={r} readOnly={readOnly || r.owner !== viewed} focused={focus === r.id} />
+                  {upstream !== undefined && (
+                    <div className="ml-4 border-l border-line pl-3">
+                      <RepoRow repo={upstream} readOnly={readOnly || upstream.owner !== viewed} focused={focus === upstream.id} />
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
         </YSection>
       ))}
@@ -92,7 +110,9 @@ function RepoRow({ repo, readOnly, focused }: { repo: RepoSummary; readOnly: boo
   const queryClient = useQueryClient()
   const users = useWhoami()?.users ?? []
   const refresh = (): void => { void refreshRepos(queryClient) }
-  const missing = !repo.hosted && repo.gitCredential === null && repo.deleted === undefined
+  const missing = needsGitCredential(repo) && repo.gitCredential === null && repo.deleted === undefined
+  const repos = useRepos() ?? []
+  const upstream = repos.find((r) => r.id === repo.upstreamRepoId)
   const [open, setOpen] = useState(focused)
   // A link to a repo's credential opens straight onto its picker.
   const [changing, setChanging] = useState(focused)
@@ -127,6 +147,8 @@ function RepoRow({ repo, readOnly, focused }: { repo: RepoSummary; readOnly: boo
         </span>
         {readOnly && owner !== undefined && <span className="shrink-0 text-sm text-subtle">owned by {owner}</span>}
         {missing && !readOnly && <span className="shrink-0 text-sm text-warning">no git credential</span>}
+        {repo.readOnly && <YBadge>read-only</YBadge>}
+        {repo.projects.length === 0 && repo.forks.length > 0 && <YBadge>upstream</YBadge>}
         {repo.deleted === undefined && !readOnly && (
           <YButton variant="secondary" size="sm" onClick={() => setOpen((o) => !o)} className="ml-auto">
             {open ? 'Close' : 'Manage'}
@@ -138,7 +160,13 @@ function RepoRow({ repo, readOnly, focused }: { repo: RepoSummary; readOnly: boo
           ? 'No project links it.'
           : `Linked by ${repo.projects.map((p) => p.name).join(', ')}.`}
         {repo.gitCredential !== null && ` Credential: ${repo.gitCredential.name}.`}
+        {upstream !== undefined && ` Fork of ${upstream.hosted ? `repo ${upstream.id.slice(0, 8)}` : upstream.remoteUrl}.`}
       </p>
+      {repo.pushRefused === true && <PushRefusedWarning repoId={repo.id} remoteUrl={repo.remoteUrl} owned={!readOnly} />}
+      {repo.upstreamFetchError !== undefined && (
+        <p className="text-sm text-warning">Fetching it as an upstream failed: {repo.upstreamFetchError}</p>
+      )}
+      {!readOnly && <UpstreamSuggestion repoId={repo.id} />}
       {repo.deleted !== undefined && <Holders repo={repo} />}
       {trusted !== null && <TrustedHostKey entry={trusted} />}
       {missing && !readOnly && (
@@ -171,13 +199,25 @@ function RepoRow({ repo, readOnly, focused }: { repo: RepoSummary; readOnly: boo
                 repoId={repo.id}
                 name={name}
                 guardDefaultBranch={repo.guardDefaultBranch}
+                {...(repo.upstreamRepoId !== undefined ? { guardAllowsCatchUp: repo.guardAllowsCatchUp } : {})}
                 readOnly={false}
                 onChanged={refresh}
               />
             </Part>
           )}
+          <Part label="Pushes"><RepoReadOnly repo={repo} /></Part>
+          <Part label="Upstream"><RepoUpstream repo={repo} /></Part>
           {repo.hosted && <RepoSharing repo={repo} onChanged={refresh} />}
           {repo.hosted && <MoveToRemote repoId={repo.id} name={name} onMoved={refresh} />}
+          {!repo.hosted && repo.keepsHostedRepo !== true && (
+            <Part label="Move to yaac">
+              <p className="mb-2 text-sm leading-relaxed text-subtle">
+                yaac hosts the repo from then on, and {repo.remoteUrl} becomes its upstream, which workspaces only read.
+              </p>
+              <MoveToYaac repoId={repo.id} remoteUrl={repo.remoteUrl} />
+            </Part>
+          )}
+          {upstream !== undefined && !upstream.hosted && <MoveToUpstream repo={repo} upstreamUrl={upstream.remoteUrl} />}
           {repo.keepsHostedRepo === true && (
             <KeptHostedRepo repoId={repo.id} remoteUrl={repo.remoteUrl} readOnly={false} onRemoved={refresh} />
           )}

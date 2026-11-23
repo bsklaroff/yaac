@@ -77,21 +77,25 @@ export async function remoteBranchExists(repoPath: string, branch: string): Prom
   }
 }
 
+/** A remote the main clone keeps branches of: its repo's origin, or a
+ *  fork's upstream (docs/repo-forks.md). */
+export type MainRemote = 'origin' | 'upstream'
+
 /**
- * All remote-tracking branch names (without the `origin/` prefix), most
- * recently committed first — the order a branch picker wants on top.
- * Excludes the `HEAD` symref.
+ * All of a remote's branch names in the main clone (without the
+ * `origin/` prefix), most recently committed first — the order a branch
+ * picker wants on top. Excludes the `HEAD` symref.
  */
-export async function listRemoteBranches(repoPath: string): Promise<string[]> {
+export async function listRemoteBranches(repoPath: string, remote: MainRemote = 'origin'): Promise<string[]> {
   const out = await runGit(repo(repoPath), [
-    'for-each-ref', '--sort=-committerdate', '--format=%(refname:strip=3)', 'refs/remotes/origin',
+    'for-each-ref', '--sort=-committerdate', '--format=%(refname:strip=3)', `refs/remotes/${remote}`,
   ])
   return out.split('\n').map((l) => l.trim()).filter((l) => l.length > 0 && l !== 'HEAD')
 }
 
-/** The commit `refs/remotes/origin/<branch>` names; rejects when absent. */
-export async function resolveRemoteRef(repoPath: string, branch: string): Promise<string> {
-  return resolveCommit(repoPath, `refs/remotes/origin/${branch}`)
+/** The commit `refs/remotes/<remote>/<branch>` names; rejects when absent. */
+export async function resolveRemoteRef(repoPath: string, branch: string, remote: MainRemote = 'origin'): Promise<string> {
+  return resolveCommit(repoPath, `refs/remotes/${remote}/${branch}`)
 }
 
 async function resolveCommit(repoPath: string, ref: string): Promise<string> {
@@ -180,6 +184,74 @@ export function fetchOrigin(
   })
   queuedFetches.set(repoPath, run)
   return run
+}
+
+/**
+ * Fetch every branch of a fork's upstream at `remoteUrl` into
+ * `refs/remotes/upstream/*` (docs/repo-forks.md "Upstreams in server git"),
+ * pruned, under the lock origin's fetches take, so the two remotes share
+ * one clone and its objects. Tags are left out, since they would land
+ * among origin's.
+ */
+export function fetchUpstream(
+  repoPath: string,
+  remoteUrl: string,
+  credential: ResolvedGitCredential | null,
+): Promise<void> {
+  return fetchOriginMutex(repoPath, async () => {
+    await runGit(repo(repoPath), ['fetch', '--prune', '--no-tags', remoteUrl, '+refs/heads/*:refs/remotes/upstream/*'], {
+      env: await gitEnvForCredential(credential, remoteUrl), remoteUrl,
+    })
+  })
+}
+
+/**
+ * Set the main clone's `upstream/*` to a copy of `origin/*`, or with
+ * `drop` delete every `upstream/*` ref. The objects stay, as everything a
+ * main clone ever held does.
+ */
+export function setUpstreamRefs(repoPath: string, opts: { drop?: boolean } = {}): Promise<void> {
+  return fetchOriginMutex(repoPath, async () => {
+    const list = async (remote: MainRemote): Promise<string[][]> =>
+      (await runGit(repo(repoPath), ['for-each-ref', '--format=%(objectname) %(refname:strip=3)', `refs/remotes/${remote}`]))
+        .split('\n').filter((l) => l !== '').map((l) => l.split(' ')).filter(([, name]) => name !== 'HEAD')
+    const copies = opts.drop === true ? [] : await list('origin')
+    const copied = new Set(copies.map(([, name]) => name))
+    const lines = [
+      ...(await list('upstream')).filter(([, name]) => !copied.has(name)).map(([, name]) => `delete refs/remotes/upstream/${name}`),
+      ...copies.map(([sha, name]) => `update refs/remotes/upstream/${name} ${sha}`),
+    ]
+    if (lines.length > 0) await runGit(repo(repoPath), ['update-ref', '--stdin'], { input: `${lines.join('\n')}\n` })
+  })
+}
+
+/**
+ * Each branch of the main clone's `origin/*` and `upstream/*`, by name,
+ * against the other remote's (docs/repo-forks.md "Moving back to the
+ * upstream"): `same` where origin's is the upstream's or behind it, `ahead`
+ * where it has the upstream's with commits on top, `diverged` where
+ * neither contains the other, or on one side only.
+ */
+export async function compareRemoteBranches(repoPath: string): Promise<Array<{
+  branch: string
+  state: 'same' | 'upstream-only' | 'fork-only' | 'ahead' | 'diverged'
+}>> {
+  const tips = async (remote: MainRemote): Promise<Map<string, string>> => new Map(
+    (await runGit(repo(repoPath), ['for-each-ref', '--format=%(refname:strip=3) %(objectname)', `refs/remotes/${remote}`]))
+      .split('\n').filter((l) => l !== '').map((l) => l.split(' ') as [string, string]).filter(([name]) => name !== 'HEAD'),
+  )
+  const [fork, upstream] = await Promise.all([tips('origin'), tips('upstream')])
+  const contains = (tip: string, commit: string): Promise<boolean> =>
+    runGit(repo(repoPath), ['merge-base', '--is-ancestor', commit, tip]).then(() => true, () => false)
+  return Promise.all([...new Set([...fork.keys(), ...upstream.keys()])].sort().map(async (branch) => {
+    const mine = fork.get(branch)
+    const theirs = upstream.get(branch)
+    const state = mine === undefined ? 'upstream-only'
+      : theirs === undefined ? 'fork-only'
+        : await contains(theirs, mine) ? 'same'
+          : await contains(mine, theirs) ? 'ahead' : 'diverged'
+    return { branch, state }
+  }))
 }
 
 /**
@@ -275,7 +347,7 @@ export const NEVER_PRUNE_GC = [
 ]
 
 /**
- * When `origin/<branch>` was last fetched, into the main clone or the
+ * When `<remote>/<branch>` was last fetched, into the main clone or the
  * checkout at `checkoutGitDir`. Takes the newest of: the server's own record
  * (`fetchRecord`), the branch's reflog in either repo, and the checkout's
  * FETCH_HEAD (from an agent's own fetch). Files are only lstat'd for mtimes,
@@ -285,10 +357,11 @@ export async function lastFetchedAtMs(
   repoPath: string,
   branch: string,
   checkoutGitDir: string,
+  remote: MainRemote = 'origin',
 ): Promise<number | null> {
   const mtimes = await Promise.all([
-    path.join(repoPath, '.git', 'logs', 'refs', 'remotes', 'origin', branch),
-    path.join(checkoutGitDir, 'logs', 'refs', 'remotes', 'origin', branch),
+    path.join(repoPath, '.git', 'logs', 'refs', 'remotes', remote, branch),
+    path.join(checkoutGitDir, 'logs', 'refs', 'remotes', remote, branch),
     path.join(checkoutGitDir, 'FETCH_HEAD'),
   ].map((p) => fs.lstat(p).then((st) => st.mtimeMs, () => 0)))
   const recorded = Number(await fs.readFile(fetchRecord(repoPath), 'utf8').catch(() => '0')) || 0
@@ -296,20 +369,37 @@ export async function lastFetchedAtMs(
   return newest > 0 ? newest : null
 }
 
+/**
+ * Whether `origin/<branch>` was rewritten under a checkout that started at
+ * `startCommit` on it and still sits on the old commits: the branch no
+ * longer contains the start, and the checkout's merge base with it
+ * (`mergeBase`) is older than the start. One that has rebased onto the new
+ * branch has a newer merge base, so it is not. Read from the main clone,
+ * which holds every commit named.
+ */
+export async function baseRewritten(repoPath: string, branch: string, startCommit: string, mergeBase: string): Promise<boolean> {
+  if (mergeBase === startCommit) return false
+  const contains = (tip: string, commit: string): Promise<boolean> =>
+    runGit(repo(repoPath), ['merge-base', '--is-ancestor', commit, tip]).then(() => true, () => false)
+  return await contains(startCommit, mergeBase) && !await contains(`refs/remotes/origin/${branch}`, startCommit)
+}
+
 /** Never-prune keys for the main clone's real config, read by git run there
  *  without the server's pins. */
 export const NEVER_PRUNE_KEYS = ['gc.pruneExpire', 'gc.reflogExpire', 'gc.reflogExpireUnreachable']
 
-/** A checkout's copy of the main clone's refs: `origin/*` and tags as
+/** A checkout's copy of the main clone's refs: `origin/*`, tags and a
+ *  fork's `upstream/*` as
  *  `[sha, refname]`, and the target of the symbolic `origin/HEAD`. */
 interface MainRefs {
   refs: Array<[string, string]>
   originHead: string | null
 }
 
-async function mainRefs(repoPath: string): Promise<MainRefs> {
+async function mainRefs(repoPath: string, withUpstream: boolean): Promise<MainRefs> {
   const out = await runGit(repo(repoPath), [
     'for-each-ref', '--format=%(objectname) %(refname) %(symref)', 'refs/remotes/origin', 'refs/tags',
+    ...(withUpstream ? ['refs/remotes/upstream'] : []),
   ])
   const refs: Array<[string, string]> = []
   let originHead: string | null = null
@@ -382,6 +472,10 @@ const CHECKOUT_WORKERS = 8
 export async function createCheckout(repoPath: string, workspacePath: string, params: {
   branch: string
   remoteUrl: string
+  /** `origin`'s push URL, for a repo workspaces only read. */
+  pushUrl?: string
+  /** A fork's upstream, as a remote that can only be fetched. */
+  upstream?: { url: string; pushUrl: string }
   /** Where the `.git` is assembled: a dir of the caller's that no
    *  workspace mounts, on the checkout's filesystem. */
   staging: string
@@ -393,7 +487,7 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
     throw new Error(`${repoPath} is a shallow clone, which a workspace cannot borrow from`)
   }
   const { branch, baseBranch, commit, staging } = params
-  const main = await mainRefs(repoPath)
+  const main = await mainRefs(repoPath, params.upstream !== undefined)
   const gitDir = params.gitOnly ? path.join(workspacePath, '.git') : path.join(staging, '.git')
   await fs.rm(staging, { recursive: true, force: true })
   await fs.mkdir(staging, { recursive: true })
@@ -423,6 +517,15 @@ export async function createCheckout(repoPath: string, workspacePath: string, pa
       '[remote "origin"]',
       `\turl = ${gitConfigValue(params.remoteUrl)}`,
       '\tfetch = +refs/heads/*:refs/remotes/origin/*',
+      ...(params.pushUrl !== undefined ? [`\tpushurl = ${gitConfigValue(params.pushUrl)}`] : []),
+      ...(params.upstream !== undefined
+        ? [
+          '[remote "upstream"]',
+          `\turl = ${gitConfigValue(params.upstream.url)}`,
+          '\tfetch = +refs/heads/*:refs/remotes/upstream/*',
+          `\tpushurl = ${gitConfigValue(params.upstream.pushUrl)}`,
+        ]
+        : []),
       ...(baseBranch !== undefined
         ? [`[branch ${gitConfigValue(branch)}]`, '\tremote = origin', `\tmerge = ${gitConfigValue(`refs/heads/${baseBranch}`)}`]
         : []),

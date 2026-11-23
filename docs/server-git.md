@@ -28,7 +28,9 @@ objects. It starts with the main clone's `origin/*` refs and tags written as
 `packed-refs` (so thousands of branches do not become thousands of files),
 `agent/<id>` checked out at the commit the start picked (below), and a
 server-written config: the object format, `remote.origin` (the repo row's
-URL, without a token), and `agent/<id>`'s upstream. It is built in a staging dir beside the workspace
+URL, without a token, and for a read-only repo a push URL that is no
+repository), a fork's `remote.upstream` with its `upstream/*` refs
+(docs/repo-forks.md), and `agent/<id>`'s upstream. It is built in a staging dir beside the workspace
 dir, where no workspace mounts it, and renamed in as `.git`, so the checkout
 directory itself is never replaced; a pod may already have the workspace
 dir bound as `/workspace`. Plain `git clone` can't do this: it refuses a
@@ -47,7 +49,8 @@ written as files, and a `checkout -B` sets `agent/<id>` with its reflog and
 writes the tree. So a checkout costs three git processes: the `init`, the
 `for-each-ref` that reads the main clone's refs, and the `checkout`.
 
-**An empty origin gets its default branch from the server.** A just-created
+**An empty origin gets its default branch from the server**, unless the
+repo is read-only, which the server never pushes to. A just-created
 remote has no branches, and a host such as GitHub makes the first branch
 pushed to it the default, whatever its name. Left alone, that would be an
 agent's `agent/<id>` or a PR branch. So once a create's fetch finds origin
@@ -70,12 +73,13 @@ mounts the main clone at that same path
 (`/yaac/global/repos/<repo id>/.git` under the in-cluster server), so the
 line is valid everywhere. A launch that reuses a checkout rewrites it
 (`buildCloneLinkExec`), which repairs a checkout last launched by a server
-that saw the data dir at another path. The same command sets an `origin`
-that still names yaac's hosted remote to the repo row's URL, so a
-checkout of a repo that moved to another git host
-(docs/hosted-projects.md) pushes there once restarted. An `origin` the
-user pointed elsewhere is left alone. A checkout the launch made has both
-already.
+that saw the data dir at another path. The same command sets `origin`'s
+URL to the repo row's, always, and its push URL and a fork's `upstream`
+remote to match the rows, so a checkout of a repo that moved
+(docs/hosted-projects.md, docs/repo-forks.md) pushes to its new remote
+once restarted. `origin` is yaac's remote in a checkout: a user who wants
+another adds one under another name. A checkout the launch made has all of
+it already.
 
 Workspaces share no git state: branches, tags, stash, hooks and config are
 per checkout, so one agent's `git config`, `gc --prune=now` or `branch -D`
@@ -231,20 +235,24 @@ git -C <checkout> fetch --quiet --no-tags --no-write-fetch-head \
     <main clone>/.git 'refs/remotes/origin/*:refs/remotes/origin/*'
 ```
 
-Every object is already reachable through the alternate, so nothing crosses
-the network and no credential is used. The refspec has no `+`, so a ref the
-agent fetched ahead of the main clone is never moved back (the cost: a
-force-pushed branch stays stale until the agent fetches it). There is no
-`--prune`, so refs the agent fetched are kept. `FETCH_HEAD` is not written,
-since the agent may be between its own `fetch` and `merge FETCH_HEAD`.
+and the same for `refs/remotes/upstream/*` in a checkout that has a fork's
+`upstream` remote (docs/repo-forks.md). Every object is already reachable
+through the alternate, so nothing crosses the network and no credential is
+used. The refspec has no `+`, so a ref the agent fetched ahead of the main
+clone is never moved back. A ref where neither tip contains the other was
+rewritten, not fetched ahead, so the refresh then sets it outright
+(comparing `ls-remote` of the main clone with the checkout's refs, so only
+the refs that differ cost a process), which is how a running workspace
+follows a force-push. There is no `--prune`, so refs the agent fetched are
+kept. `FETCH_HEAD` is not written, since the agent may be between its own
+`fetch` and `merge FETCH_HEAD`.
 
 An agent's own `git fetch origin` goes to the network, but because the pod
 also mounts the main clone's refs, git offers their tips as haves and
 downloads only what the main clone lacks.
 
-A start's catch-up ("Starting a workspace") is the one place a checkout's
-`origin/<branch>` is set outright rather than fast-forwarded, which is how
-it follows a force-push.
+A start's catch-up ("Starting a workspace") also sets the checkout's
+`origin/<branch>` outright, to the commit it moves the checkout to.
 
 ## Where the server runs git
 
@@ -370,7 +378,9 @@ The URL a fetch goes to and the credential matched to it come from the
 repo's row (`origin.ts` in `#domain/repos`), as do the grants that tell the
 egress path which repo each credential may reach (docs/git-credentials.md).
 For a repo the server hosts, the server's own fetch reads the bare
-repository from disk instead (docs/hosted-projects.md). `fetchOrigin` fetches by
+repository from disk instead (docs/hosted-projects.md). A fork's upstream
+is fetched from its own row, with its own credential, into the same main
+clone (docs/repo-forks.md). `fetchOrigin` fetches by
 explicit URL and refspec, never by the remote name `origin`, so a
 repository's `remote.origin.*` cannot change where a fetch goes or which
 token it sends. Each clone's `remote.origin.url` is written from the row,

@@ -29,6 +29,7 @@ import type * as sessionCreateModule from '@yaac/server/domain/workspaces/create
 import type * as projectAddModule from '@yaac/server/domain/projects/add'
 import type * as sessionDeleteModule from '@yaac/server/domain/workspaces/stop'
 import type * as projectRemoveModule from '@yaac/server/domain/workspaces/project-teardown'
+import type * as gitModule from '@yaac/server/domain/git'
 import type { ClaudeOAuthBundle } from '@yaac/shared/types'
 import { ServerError } from '@yaac/shared/errors'
 import { asTailnet, makeTestApiClient } from '@yaac/test-utils/api'
@@ -55,12 +56,19 @@ vi.mock('@yaac/server/domain/projects/add', async () => {
   }
 })
 
+// A push probe reaches the remote, so it answers nothing here.
+vi.mock('@yaac/server/domain/git', async (importOriginal) => ({
+  ...await importOriginal<typeof gitModule>(),
+  probePushAccess: vi.fn(() => Promise.resolve(null)),
+}))
+
 vi.mock('@yaac/server/domain/workspaces/project-teardown', async (importOriginal) => ({
   ...await importOriginal<typeof projectRemoveModule>(),
   removeProject: vi.fn(),
 }))
 
 import { createWorkspace } from '@yaac/server/domain/workspaces/create'
+import { probePushAccess } from '@yaac/server/domain/git'
 import { stopWorkspace } from '@yaac/server/domain/workspaces/stop'
 import { addProject } from '@yaac/server/domain/projects/add'
 import { removeProject } from '@yaac/server/domain/workspaces/project-teardown'
@@ -129,9 +137,11 @@ describe('write routes', () => {
       expect(res.status).toBe(400)
     })
 
-    it('rejects requests missing the remoteUrl or the git credential', async () => {
+    // A credential is optional for a fork or read-only add, so its absence
+    // is addProject's to refuse (see below), not the schema's.
+    it('rejects requests missing the remoteUrl', async () => {
       const app = buildApp({ buildId: 'test' })
-      for (const body of [{ gitCredentialId: '00000000-0000-4000-8000-000000000001' }, { remoteUrl: 'x/foo' }]) {
+      for (const body of [{ gitCredentialId: '00000000-0000-4000-8000-000000000001' }, {}]) {
         const res = await app.request('/api/project/add', rawInit({
           method: 'POST',
           body: JSON.stringify(body),
@@ -143,6 +153,7 @@ describe('write routes', () => {
     it('delegates to addProject and returns 200 on success', async () => {
       mockAddProject.mockResolvedValue({
         project: { id: DEMO, name: 'foo', addedAt: 'now' },
+        repoId: DEMO,
         knownHostsEntry: null,
         allowedHost: null,
       })
@@ -150,11 +161,18 @@ describe('write routes', () => {
       const id = '00000000-0000-4000-8000-000000000001'
       const res = await client.project.add.$post({ json: { remoteUrl: 'x/foo', gitCredentialId: id } })
       expect(res.status).toBe(200)
-      expect(mockAddProject).toHaveBeenCalledWith('x/foo', id, BUILT_IN_USER_ID, undefined)
+      expect(mockAddProject).toHaveBeenCalledWith({ remoteUrl: 'x/foo', credentialId: id }, BUILT_IN_USER_ID, undefined)
 
-      // The id a client picks to follow the add reaches addProject.
+      // The id a client picks to follow the add reaches addProject, and so
+      // do a fork or read-only add with no credential, an upstream, and an
+      // add around a repo by id (docs/repo-forks.md).
       await client.project.add.$post({ json: { remoteUrl: 'x/foo', gitCredentialId: id, projectId: DEMO } })
-      expect(mockAddProject).toHaveBeenLastCalledWith('x/foo', id, BUILT_IN_USER_ID, DEMO)
+      expect(mockAddProject).toHaveBeenLastCalledWith({ remoteUrl: 'x/foo', credentialId: id }, BUILT_IN_USER_ID, DEMO)
+      const upstream = { remoteUrl: 'https://github.com/up/foo.git' }
+      await client.project.add.$post({ json: { remoteUrl: 'x/foo', fork: true, readOnly: false, upstream } })
+      expect(mockAddProject).toHaveBeenLastCalledWith({ remoteUrl: 'x/foo', fork: true, readOnly: false, upstream }, BUILT_IN_USER_ID, undefined)
+      await client.project.add.$post({ json: { repoId: id } })
+      expect(mockAddProject).toHaveBeenLastCalledWith({ repoId: id }, BUILT_IN_USER_ID, undefined)
     })
   })
 
@@ -1781,6 +1799,8 @@ describe('write routes', () => {
         })
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ knownHostsEntry: null })
+        // Its push access is probed before the answer (docs/repo-forks.md).
+        expect(vi.mocked(probePushAccess)).toHaveBeenCalledWith('https://github.com/acme/web', { kind: 'https', token: 'ghp_web' })
         // The runtime injects from what it was last told, never from the store.
         expect(synced.mock.calls.at(-1)?.[0][credentialOwnerKey(BUILT_IN_USER_ID)].git).toMatchObject([{ token: 'ghp_web', grants: [{ projectId: WEB, repoId: WEB, host: 'github.com', path: 'acme/web' }] }])
       } finally {

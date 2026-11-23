@@ -21,7 +21,7 @@ import {
   CHANGES_BASE_UNRESOLVED, CHANGES_BUSY, CHANGES_READING_GONE, readChangeDiffs, readComparison, readWorkspaceChanges,
   type ChangesReading,
 } from './changes'
-import { lastFetchedAtMs } from '#domain/git'
+import { baseRewritten, lastFetchedAtMs } from '#domain/git'
 import { authorizeProject, type Actor } from '#domain/access'
 import { ConfinedPathError, normalizeRel } from '#lib/confined-fs'
 import { createKeyedMutex } from '#lib/keyed-mutex'
@@ -238,13 +238,22 @@ export async function getWorkspaceChanges(
   if (reading?.ref && checkout) {
     const { ref } = reading
     comparison = { ref: ref.name, ahead: ref.ahead, behind: ref.behind }
-    const fetchedAtMs = ref.name.startsWith('origin/')
+    // A fork's upstream branch is named in full, so an origin branch that
+    // happens to be called `upstream/<x>` is not taken for it.
+    const tracked = /^(?:(origin)|refs\/remotes\/(upstream))\/(.+)$/.exec(ref.name)
+    const fetchedAtMs = tracked !== null
       ? await lastFetchedAtMs(
-        repoDir(checkout.repoId), ref.name.slice('origin/'.length),
+        repoDir(checkout.repoId), tracked[3],
         path.join(workspaceDir(projectId, workspaceId), checkout.path, '.git'),
+        tracked[1] !== undefined ? 'origin' : 'upstream',
       )
       : null
     if (fetchedAtMs !== null) comparison.fetchedAt = formatUtcTimestamp(fetchedAtMs)
+    const { baseBranch, startCommit } = checkout
+    if (ref.name === `origin/${baseBranch}` && startCommit !== undefined && reading.changes.base !== ''
+      && baseBranch !== undefined && await baseRewritten(repoDir(checkout.repoId), baseBranch, startCommit, reading.changes.base)) {
+      comparison.rewritten = true
+    }
   }
   const listing = opts.listing !== undefined
     ? await workspaceListing(await openCheckout(idOrName), jobName, readings, row?.scratchDirs ?? [], opts.listing)

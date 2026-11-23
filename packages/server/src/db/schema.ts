@@ -188,6 +188,18 @@ export const repos = snakeCase.table('repos', {
    *  the repository it hosted, read-only, until the owner removes it
    *  (docs/hosted-projects.md "Moving to a git host"). */
   keepsHostedRepo: boolean().notNull().default(false),
+  /** No workspace pushes to it, in any project (docs/repo-forks.md
+   *  "Read-only repos"). */
+  readOnly: boolean().notNull().default(false),
+  /** The repo it is a fork of, whose history workspaces fetch as
+   *  `upstream/*` (docs/repo-forks.md). Another of its owner's repos. */
+  upstreamRepoId: uuid().references((): AnyPgColumn => repos.id),
+  /** Whether its credential can push to its remote, as last probed; null
+   *  until a probe answers. */
+  pushAccess: text().$type<'yes' | 'no'>(),
+  /** For a hosted repo with an upstream: the default-branch guard lets a
+   *  push through that rebases the branch onto the upstream's. */
+  guardAllowsCatchUp: boolean().notNull().default(true),
   /** Set when its owner deleted it while workspaces still held checkouts,
    *  which borrow the main clone's objects. No project can link it, and it
    *  goes for good with the last such workspace. */

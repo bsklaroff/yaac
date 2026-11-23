@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseGitRemote, usableAssignment } from '#git-remote'
+import { needsGitCredential, parseGitRemote, usableAssignment } from '#git-remote'
 
 describe('parseGitRemote', () => {
   it('parses https URLs at any path depth, dropping .git and a trailing slash', () => {
@@ -103,5 +103,15 @@ describe('usableAssignment', () => {
     expect(usableAssignment(https, { owner: 'bob', kind: 'https' })).toBe(false)
     expect(usableAssignment(https, { owner: 'me', kind: 'ssh' })).toBe(false)
     expect(usableAssignment({ ...https, remoteUrl: 'ext::sh' }, { owner: 'me', kind: 'https' })).toBe(false)
+  })
+})
+
+describe('needsGitCredential', () => {
+  it('asks for one except for a hosted repo and a read-only https one', () => {
+    expect(needsGitCredential({ hosted: false, readOnly: false, remoteUrl: 'https://github.com/a/b.git' })).toBe(true)
+    expect(needsGitCredential({ hosted: false, readOnly: true, remoteUrl: 'https://github.com/a/b.git' })).toBe(false)
+    expect(needsGitCredential({ hosted: false, readOnly: true, remoteUrl: 'git@github.com:a/b.git' })).toBe(true)
+    expect(needsGitCredential({ hosted: false, readOnly: true, remoteUrl: 'not a remote' })).toBe(true)
+    expect(needsGitCredential({ hosted: true, readOnly: false, remoteUrl: 'http://yaac.internal/x.git' })).toBe(false)
   })
 })

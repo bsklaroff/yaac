@@ -1569,7 +1569,7 @@ async function runAsRepo(caller: MamaCaller, request: MamaRequestInput): Promise
     return { ok: false, error: `${link.dir} is not an https GitHub repo, so it has no token gh could use` }
   }
   if (workspacesSandboxed()) {
-    if (link.readOnly) return { ok: false, error: `${link.dir} is read-only in this project, so its token is never GH_TOKEN` }
+    if (link.readOnly || repo.readOnly) return { ok: false, error: `${link.dir} is read-only, so its token is never GH_TOKEN` }
     if (!link.ghToken) return { ok: false, error: `this project does not allow ${link.dir}'s token as GH_TOKEN` }
     return { ok: true, output: ghTokenPlaceholder(repo.id) }
   }

@@ -23,6 +23,7 @@ export {
 } from './repos'
 export {
   addAllowedHostToProject,
+  allowRepoHostWhereLinked,
   getProjectAllowlist,
   setProjectAllowlist,
 } from './allowlist'

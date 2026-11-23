@@ -5,9 +5,10 @@ import {
   getProjectRow,
   getRepo,
   setRepoDefaultBranchGuard,
+  updateRepoSettings,
   type RepoRow,
 } from '#db'
-import { hostedDefaultBranch, serveGitHttp, setHostedDefaultBranch, setOriginHead } from '#domain/git'
+import { hostedDefaultBranch, resolveRemoteRef, serveGitHttp, setHostedDefaultBranch, setOriginHead } from '#domain/git'
 import { isUuid } from '#lib/uuid'
 import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
 import { serverLog } from '#lib/log'
@@ -89,12 +90,17 @@ export async function serveHostedRepo(
   if (caller.kind === 'workspace') {
     const project = await getProjectRow(caller.projectId)
     const link = project?.repos.find((l) => l.repo.id === repo.id)
-    if (!project || !link || !await canUseRepo(project.owner, repo)) {
+    // A fork's upstream is read too, never pushed (docs/repo-forks.md
+    // "What a workspace can reach").
+    const forkOf = project?.repos.some((l) => l.repo.upstreamRepoId === repo.id && repo.owner === project.owner) === true
+    if (!project || (!link && !forkOf) || !await canUseRepo(project.owner, repo)) {
       throw new ServerError('FORBIDDEN', 'a workspace may only reach the repos its project links')
     }
     if (push) {
       await authorizeProject(systemPrincipal, caller.projectId)
-      if (link.readOnly) throw new ServerError('FORBIDDEN', `${link.dir} is read-only in this project`)
+      if (!link || link.readOnly || repo.readOnly) {
+        throw new ServerError('FORBIDDEN', `${link?.dir ?? repo.remoteUrl} is read-only in this project`)
+      }
     }
   } else if (push && caller.principal.kind !== 'system' && !await canUseRepo(caller.principal.userId, repo)) {
     throw new ServerError('FORBIDDEN', 'only the owner of this repo, or a user it is shared with, may push to it')
@@ -107,12 +113,28 @@ export async function serveHostedRepo(
   return serveGitHttp(hostedRepoDir(repo.id), request, pathInfo, {
     allowPush: push,
     guardDefaultBranch: repo.guardDefaultBranch,
+    ...(push && repo.guardDefaultBranch && repo.upstreamRepoId !== null ? { catchUp: await catchUpCommit(repo) } : {}),
     onPushed: () => {
       fetchIntoMainClone(repo.id).catch((err: unknown) => {
         serverLog(`[git] fetching ${repo.id} after a push: ${(err as Error).message}`)
       })
     },
   })
+}
+
+/**
+ * What the default-branch guard lets a fork's rewrite of its default
+ * branch land on (docs/repo-forks.md "Catching up with the upstream"): the
+ * upstream's branch of the same name as the server last fetched it, or
+ * `off` while the owner allows no catch-up. A fork whose upstream has no
+ * such branch gets none, so its guard refuses every rewrite.
+ */
+async function catchUpCommit(repo: RepoRow): Promise<{ commit: string } | 'off' | undefined> {
+  if (!repo.guardAllowsCatchUp) return 'off'
+  const branch = await hostedDefaultBranch(hostedRepoDir(repo.id))
+  if (branch === null) return undefined
+  const commit = await resolveRemoteRef(repoDir(repo.id), branch, 'upstream').catch(() => undefined)
+  return commit !== undefined ? { commit } : undefined
 }
 
 /**
@@ -163,6 +185,18 @@ export async function setDefaultBranch(principal: Actor, repoId: string, branch:
 export async function setDefaultBranchGuard(principal: Actor, repoId: string, enabled: boolean): Promise<void> {
   await ownHostedRepo(principal, repoId, 'default-branch guard')
   await setRepoDefaultBranchGuard(repoId, enabled)
+}
+
+/**
+ * Turn on or off whether a hosted fork's default-branch guard lets a push
+ * through that rebases the branch onto the upstream's (docs/repo-forks.md
+ * "Catching up with the upstream"). It means nothing on a repo without an
+ * upstream or with the guard off.
+ */
+export async function setUpstreamRebase(principal: Actor, repoId: string, enabled: boolean): Promise<void> {
+  const repo = await ownHostedRepo(principal, repoId, 'upstream rebase setting')
+  if (repo.upstreamRepoId === null) throw new ServerError('VALIDATION', 'the repo has no upstream to rebase onto.')
+  await updateRepoSettings(repoId, { guardAllowsCatchUp: enabled })
 }
 
 /**

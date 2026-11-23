@@ -18,6 +18,14 @@ import { assignRepoCredential, resolveRepoCredential, sshKeyMaterial } from '#do
 import { BUILT_IN_USER_ID, closeDb, getRepo, seeTailnetUser } from '#db'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 
+import type * as gitModule from '#domain/git'
+
+// A push probe reaches the remote, so it answers nothing here.
+vi.mock('#domain/git', async (importOriginal) => ({
+  ...(await importOriginal<typeof gitModule>()),
+  probePushAccess: vi.fn(() => Promise.resolve(null)),
+}))
+
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 

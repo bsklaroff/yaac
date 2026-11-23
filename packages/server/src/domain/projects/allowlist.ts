@@ -1,4 +1,4 @@
-import { addProjectEgressHost, getProjectRow, setProjectEgressAllowlist, type RepoRow } from '#db'
+import { addProjectEgressHost, getProjectRow, getRepo, listProjectRows, setProjectEgressAllowlist, type RepoRow } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import { assertProjectExists } from './detail'
 import type { EgressAllowlist } from '@yaac/shared/types'
@@ -58,17 +58,39 @@ function checkedHost(host: string): string {
 }
 
 /**
- * Add the host of a repo just linked into a project to the project's
- * allowlist when the list does not admit it, since a workspace could not
- * fetch the repo otherwise. Answers the host added, for the client to tell
- * the user, or null when nothing changed: the repo is hosted, the host is
- * already allowed or no literal hostname (`repoHostToAllow`), or
- * workspaces run without an egress proxy. The caller has already
- * authorized the link.
+ * Add the host of a repo just linked into a project, and of a fork's
+ * upstream, to the project's allowlist when the list does not admit it,
+ * since a workspace could not fetch the repo otherwise. Answers the first
+ * host added, for the client to tell the user, or null when nothing
+ * changed: the repo is hosted, the host is already allowed or no literal
+ * hostname (`repoHostToAllow`), or workspaces run without an egress proxy.
+ * The caller has already authorized the link.
  */
 export async function allowRepoHost(projectId: string, repo: RepoRow): Promise<string | null> {
-  if (repo.hosted || !workspacesSandboxed()) return null
-  const host = repoHostToAllow(await getProjectAllowlist(projectId), repo.remoteUrl)
-  if (host !== null) await addProjectEgressHost(projectId, host)
-  return host
+  if (!workspacesSandboxed()) return null
+  const upstream = repo.upstreamRepoId !== null ? await getRepo(repo.upstreamRepoId) : undefined
+  let added: string | null = null
+  for (const r of [repo, upstream]) {
+    if (r === undefined || r.hosted) continue
+    const host = repoHostToAllow(await getProjectAllowlist(projectId), r.remoteUrl)
+    if (host === null) continue
+    await addProjectEgressHost(projectId, host)
+    added ??= host
+  }
+  return added
+}
+
+/**
+ * Allow a repo's hosts, its upstream's included, in each of its owner's
+ * projects that link it, as setting an upstream does (docs/repo-forks.md
+ * "What a workspace can reach"). Answers the first host added.
+ */
+export async function allowRepoHostWhereLinked(repoId: string): Promise<string | null> {
+  const repo = await getRepo(repoId)
+  if (!repo) return null
+  let added: string | null = null
+  for (const project of (await listProjectRows()).filter((p) => p.owner === repo.owner && p.repos.some((l) => l.repo.id === repoId))) {
+    added ??= await allowRepoHost(project.id, repo)
+  }
+  return added
 }

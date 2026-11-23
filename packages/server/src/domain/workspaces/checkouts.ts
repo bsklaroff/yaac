@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
-import { isBranchName } from '@yaac/shared/git'
+import { NO_PUSH_URL, isBranchName, type CheckoutRemotes } from '@yaac/shared/git'
 import { ServerError } from '@yaac/shared/errors'
 import type { RepoSelection, RepoStart } from '@yaac/shared/types'
 import {
@@ -241,6 +241,8 @@ export interface PlannedCheckout {
   commit?: string
   /** On a resume, the commit it was first created at, whatever its base. */
   startCommit?: string
+  /** Its remotes as the rows say, once the launch has read them. */
+  remotes?: CheckoutRemotes
 }
 
 /**
@@ -331,9 +333,12 @@ export async function provisionCheckout(args: {
     emit(`Reusing existing ${label} at ${dir}`)
     return undefined
   }
+  const { remotes } = checkout
   const params = {
     branch: `agent/${workspaceId}`,
     remoteUrl: repo.remoteUrl,
+    ...(remotes?.readOnly === true ? { pushUrl: NO_PUSH_URL } : {}),
+    ...(remotes?.upstream !== undefined ? { upstream: { url: remotes.upstream, pushUrl: NO_PUSH_URL } } : {}),
     // Beside the workspace dir, where no workspace mounts it.
     staging: path.join(path.dirname(workspaceDir(projectId, workspaceId)), `.staging-${workspaceId}-${repo.id}`),
     ...(args.gitOnly === true ? { gitOnly: true } : {}),

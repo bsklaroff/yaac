@@ -9,6 +9,7 @@ import { createTempDataDir, cleanupTempDir, getDataDir } from '@yaac/test-utils/
 import {
   assignRepoCredential,
   missingCredentialError,
+  probeRepoPushAccess,
   repoCredentialNames,
   resolveCredentialForRemote,
   resolveRepoCredential,
@@ -16,6 +17,8 @@ import {
   validateGitRemoteUrl,
 } from '#domain/repos'
 import { addHttpsCredential, generateSshCredential, listAuth } from '#domain/auth'
+import { probePushAccess } from '#domain/git'
+import type * as gitModule from '#domain/git'
 import { BUILT_IN_USER_ID, closeDb, getRepo, insertRepo, listRepos, seeTailnetUser, type RepoRow } from '#db'
 import { forgetSecretConfig } from '#db/secret-key'
 import { secretKeyPath } from '@yaac/shared/project-paths'
@@ -51,13 +54,22 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
+// A push probe reaches the remote, so it answers what a case sets.
+vi.mock('#domain/git', async (importOriginal) => ({
+  ...(await importOriginal<typeof gitModule>()),
+  probePushAccess: vi.fn(() => Promise.resolve(null)),
+}))
+
 const execFileAsync = promisify(execFile)
+const mockProbe = vi.mocked(probePushAccess)
 
 let tmpDir: string
 
 beforeEach(async () => {
   tmpDir = await createTempDataDir()
   sshRuns.length = 0
+  mockProbe.mockReset()
+  mockProbe.mockResolvedValue(null)
 })
 
 afterEach(async () => {
@@ -144,11 +156,12 @@ describe('resolveCredentialForRemote', () => {
     const key = await generateSshCredential(BUILT_IN_USER_ID, { name: 'deploy' })
 
     expect(await resolveCredentialForRemote(BUILT_IN_USER_ID, token.id, 'https://github.com/acme/web.git'))
-      .toEqual({ credential: { kind: 'https', token: 'ghp_abcd1234' }, knownHostsEntry: null })
+      .toEqual({ credential: { kind: 'https', token: 'ghp_abcd1234' }, knownHostsEntry: null, name: 'gh' })
     for (const url of ['git@git.example.com:acme/svc.git', 'ssh://git@git.example.com/acme/svc.git']) {
       expect(await resolveCredentialForRemote(BUILT_IN_USER_ID, key.id, url)).toEqual({
         credential: { kind: 'ssh', id: key.id, publicKey: key.publicKey, knownHostsEntry: HOST_KEY },
         knownHostsEntry: HOST_KEY,
+        name: 'deploy',
       })
     }
 
@@ -218,5 +231,35 @@ describe('sshKeyMaterial', () => {
     expect(stdout.trim()).toBe(publicKey)
 
     await expect(sshKeyMaterial('00000000-0000-4000-8000-000000000000')).rejects.toMatchObject({ code: 'VALIDATION' })
+  })
+})
+
+describe('probeRepoPushAccess', () => {
+  it('stores a definite answer for a plain repo with a credential, keeps the last one on an unknown, and skips the rest', async () => {
+    const token = (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'gh', token: 'ghp_x' })).id
+    await insertRepo({ id: WEB, owner: BUILT_IN_USER_ID, remoteUrl: 'https://github.com/acme/web.git' }, { id: token, knownHostsEntry: null })
+    await insertRepo({ id: SVC, owner: BUILT_IN_USER_ID, remoteUrl: 'https://github.com/acme/svc.git', readOnly: true },
+      { id: token, knownHostsEntry: null })
+    await repo(BARE, 'https://github.com/acme/bare.git')
+    await insertRepo({ id: API, owner: BUILT_IN_USER_ID, remoteUrl: hostedRemoteUrl(API), hosted: true })
+
+    mockProbe.mockResolvedValue('no')
+    expect(await probeRepoPushAccess([WEB, SVC, BARE, API, NOPE])).toEqual(new Map([[WEB, 'no'], [SVC, null], [BARE, null], [API, null]]))
+    expect(mockProbe).toHaveBeenCalledTimes(1)
+    expect(mockProbe).toHaveBeenCalledWith('https://github.com/acme/web.git', { kind: 'https', token: 'ghp_x' })
+    expect((await row(WEB)).pushAccess).toBe('no')
+
+    mockProbe.mockResolvedValue(null)
+    expect((await probeRepoPushAccess([WEB])).get(WEB)).toBe('no')
+    mockProbe.mockResolvedValue('yes')
+    expect((await probeRepoPushAccess([WEB])).get(WEB)).toBe('yes')
+    expect((await row(WEB)).pushAccess).toBe('yes')
+
+    // Callers share a probe under way, and a recent one can be skipped.
+    mockProbe.mockClear()
+    await Promise.all([probeRepoPushAccess([WEB]), probeRepoPushAccess([WEB])])
+    expect(mockProbe).toHaveBeenCalledTimes(1)
+    expect((await probeRepoPushAccess([WEB], { unlessWithinMs: 60_000 })).get(WEB)).toBe('yes')
+    expect(mockProbe).toHaveBeenCalledTimes(1)
   })
 })

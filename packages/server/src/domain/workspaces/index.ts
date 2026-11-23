@@ -43,6 +43,13 @@ export {
   reconcileRevokedShares,
   unshareRepo,
 } from './repo-teardown'
+export {
+  moveRepoToUpstream,
+  moveRepoToYaac,
+  previewRepoHost,
+  previewUpstreamMove,
+  type UpstreamMoveChoices,
+} from './repo-forks'
 export { propagateOrigin } from './origin-fanout'
 export { reconcilePrewarmPool } from './prewarm-reconcile'
 export { dismissProvisioning, listProvisioning } from './provisioning'

@@ -1,4 +1,4 @@
-import { api, findUser, projectScope, resolveRepo } from '#commands/api'
+import { api, findUser, projectScope, resolveGitCredentialId, resolveRepo } from '#commands/api'
 import { repoRemote } from '#commands/project-list'
 import { printTable } from '#commands/table'
 import { confirmDefault } from '@yaac/shared/confirm'
@@ -6,8 +6,8 @@ import type { RepoHolder, RepoSummary } from '@yaac/shared/types'
 
 /**
  * `yaac repo …`: a user's git repos, whatever projects link them
- * (docs/project-repos.md): the listing, sharing a repo yaac hosts, and
- * deleting one. A repo is named by its id or unique id prefix, its remote
+ * (docs/project-repos.md): the listing, sharing a repo yaac hosts, its
+ * read-only and upstream settings (docs/repo-forks.md), and deleting one. A repo is named by its id or unique id prefix, its remote
  * URL, or `<project>/<folder>` (`resolveRepo`).
  */
 
@@ -38,9 +38,86 @@ export async function repoList(): Promise<void> {
       r.projects.length === 0 ? '(not linked)' : r.projects.map((p) => p.name).join(', '),
       r.owner !== scope.userId ? `by ${userName(r.owner)}`
         : r.sharedWith.length > 0 ? `with ${r.sharedWith.map(userName).join(', ')}` : '',
-      r.deleted !== undefined ? `deleted; held by ${r.deleted.heldBy.length} workspace(s)` : '',
+      [
+        ...(r.deleted !== undefined ? [`deleted; held by ${r.deleted.heldBy.length} workspace(s)`] : []),
+        ...repoNotes(r, repos),
+      ].join('; '),
     ]),
   )
+}
+
+/** What `repo list` notes about a repo's fork settings (docs/repo-forks.md). */
+function repoNotes(r: RepoSummary, repos: RepoSummary[]): string[] {
+  const remote = (id: string): string => {
+    const other = repos.find((o) => o.id === id)
+    return other === undefined ? id.slice(0, 8) : repoRemote(other)
+  }
+  return [
+    ...(r.readOnly ? ['read-only'] : []),
+    ...(r.pushRefused === true ? ['pushes refused'] : []),
+    ...(r.upstreamRepoId !== undefined ? [`fork of ${remote(r.upstreamRepoId)}`] : []),
+    ...(r.forks.length > 0 ? [`upstream of ${r.forks.map(remote).join(', ')}`] : []),
+    ...(r.upstreamFetchError !== undefined ? [`upstream fetch failed: ${r.upstreamFetchError}`] : []),
+  ]
+}
+
+/** Make a repo read-only, so no workspace pushes to it, or writable again;
+ *  with no value, say which it is. */
+export async function repoReadOnly(repo: string, value: 'on' | 'off' | undefined): Promise<void> {
+  const target = await resolveRepo(repo)
+  const name = repoRemote(target)
+  const says = (on: boolean): string => (on ? 'is read-only: workspaces fetch it and never push' : 'can be pushed to by workspaces')
+  if (value === undefined) {
+    console.log(`${name} ${says(target.readOnly)}.`)
+    return
+  }
+  await api.repo[':repoId']['read-only'].$put({ param: { repoId: target.id }, json: { enabled: value === 'on' } })
+  console.log(`${name} now ${says(value === 'on')}. Running workspaces follow from their next start.`)
+}
+
+/** An upstream as the CLI names it: one of your repos (see `resolveRepo`),
+ *  else a remote URL read with the named credential, or anonymously. */
+export async function upstreamTarget(
+  ref: string,
+  credential?: string,
+): Promise<{ repoId: string } | { remoteUrl: string; credentialId?: string }> {
+  if (credential === undefined) {
+    const repo = await resolveRepo(ref).catch(() => undefined)
+    if (repo !== undefined) return { repoId: repo.id }
+  }
+  return { remoteUrl: ref, ...(credential !== undefined ? { credentialId: await resolveGitCredentialId(credential) } : {}) }
+}
+
+/**
+ * Set the repo a fork's history comes from (docs/repo-forks.md), or with
+ * `--none` remove it; with neither, say what it is.
+ */
+export async function repoUpstream(
+  repo: string,
+  upstream: string | undefined,
+  credential: string | undefined,
+  opts: { none?: boolean },
+): Promise<void> {
+  const target = await resolveRepo(repo)
+  const name = repoRemote(target)
+  const param = { repoId: target.id }
+  if (opts.none === true) {
+    if (upstream !== undefined) throw new Error('Give an <upstream> or --none, not both.')
+    await api.repo[':repoId'].upstream.$delete({ param })
+    console.log(`${name} has no upstream now; its upstream/* refs are gone.`)
+    return
+  }
+  if (upstream === undefined) {
+    const repos = await api.repo.list.$get()
+    const up = repos.find((r) => r.id === target.upstreamRepoId)
+    console.log(up === undefined ? `${name} has no upstream.` : `${name} is a fork of ${repoRemote(up)} (repo ${up.id.slice(0, 8)}).`)
+    return
+  }
+  const result = await api.repo[':repoId'].upstream.$put({ param, json: await upstreamTarget(upstream, credential) })
+  console.log(`${name} is now a fork of ${upstream} (repo ${result.upstreamRepoId?.slice(0, 8) ?? ''}). Its workspaces `
+    + 'see that history as upstream/* within minutes; "sync with upstream" in one of them catches the fork up.')
+  if (result.knownHostsEntry !== null) console.log(`Host key trusted: ${result.knownHostsEntry}`)
+  if (result.allowedHost !== null) console.log(`Added ${result.allowedHost} to the egress allowlist of the projects linking it.`)
 }
 
 /** Share a repo yaac hosts with another user, who can then link it into

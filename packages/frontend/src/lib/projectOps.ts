@@ -4,6 +4,7 @@ import { useUiStore, type ProjectOp } from '#lib/store'
 import { AUTH_LIST_KEY } from '#lib/useAuthList'
 import { projectNameFor } from '@yaac/shared/project-name'
 import type { ProjectAddEntry } from '@yaac/shared/types'
+import { ServerError } from '@yaac/shared/errors'
 
 /*
  * Project add and remove run in the background: a clone can take minutes and
@@ -16,26 +17,36 @@ import type { ProjectAddEntry } from '@yaac/shared/types'
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 /**
- * Clone `remoteUrl` as a new project and select its pending entry. An SSH
- * clone queues the host key it trusted for the add dialog to show.
+ * Clone `remoteUrl` as a new project and select its pending entry, with
+ * the named credential or, read-only or as a fork, anonymously
+ * (docs/repo-forks.md). An SSH clone queues the host key it trusted for the
+ * add dialog to show, and an upstream GitHub suggests is offered on the
+ * repo's rows.
  */
 export function addProjectInBackground(
   remoteUrl: string,
   name: string,
-  gitCredentialId: string,
+  gitCredentialId: string | undefined,
   queryClient: QueryClient,
+  how: { readOnly?: boolean; fork?: boolean } = {},
 ): void {
   const id = crypto.randomUUID()
   const state = useUiStore.getState()
-  state.putProjectOp({ id, kind: 'add', name, remoteUrl })
+  state.putProjectOp({ id, kind: 'add', name, remoteUrl, ...(gitCredentialId !== undefined ? { gitCredentialId } : {}) })
   state.setActiveProject(id)
-  api.project.add.$post({ json: { remoteUrl, gitCredentialId, projectId: id } }).then(
-    ({ knownHostsEntry }) => {
+  api.project.add.$post({
+    json: { remoteUrl, ...(gitCredentialId !== undefined ? { gitCredentialId } : {}), ...how, projectId: id },
+  }).then(
+    ({ knownHostsEntry, repoId, suggestedUpstream }) => {
       // Refresh the credential's repo list.
       void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
       if (knownHostsEntry !== null) useUiStore.getState().pushTrustedHostKey({ projectName: name, entry: knownHostsEntry })
+      if (suggestedUpstream !== undefined) useUiStore.getState().suggestUpstream(repoId, suggestedUpstream)
     },
-    (e: unknown) => useUiStore.getState().patchProjectOp(id, { error: errorText(e) }),
+    (e: unknown) => useUiStore.getState().patchProjectOp(id, {
+      error: errorText(e),
+      ...(e instanceof ServerError ? { errorCode: e.code } : {}),
+    }),
   )
 }
 
@@ -81,6 +92,8 @@ export function mergeProjectOps(adds: ProjectAddEntry[], ops: ProjectOp[]): Proj
       hosted: a.hosted,
       ...(a.progress !== undefined && { progress: a.progress }),
       ...(a.error !== undefined && { error: a.error }),
+      ...(a.errorCode !== undefined && { errorCode: a.errorCode }),
+      ...(a.gitCredentialId !== undefined && { gitCredentialId: a.gitCredentialId }),
     })),
     ...ops.filter((o) => !listed.has(o.id)),
   ]

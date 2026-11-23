@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import {
   addAllowedHostToProject,
+  allowRepoHostWhereLinked,
   getProjectAllowlist,
   setProjectAllowlist,
 } from '#domain/projects'
-import { BUILT_IN_USER_ID, recordProject } from '#db'
+import { BUILT_IN_USER_ID, insertRepo, linkProjectRepo, recordProject, seeTailnetUser } from '#db'
 import { DEMO_PROJECT_ID } from '@yaac/test-utils/project-fixture'
 
 /** The caller of every user-caused write here. */
@@ -75,5 +77,31 @@ describe('addAllowedHostToProject', () => {
     await Promise.all(['A.com', 'b.com', 'c.com'].map((h) => addAllowedHostToProject(local, projectId, h)))
     expect((await getProjectAllowlist(projectId)).hosts.sort()).toEqual(['a.com', 'b.com', 'c.com'])
     await expect(addAllowedHostToProject(local, projectId, 'a.com/x')).rejects.toMatchObject({ code: 'VALIDATION' })
+  })
+})
+
+describe('allowRepoHostWhereLinked', () => {
+  it("allows a fork's upstream host in each of its owner's projects that link it, and in no other", async () => {
+    installFakeWorkspaceDriver()
+    try {
+      const ada = await seeTailnetUser('ada@example.com', 'Ada')
+      const HERS = '5d0f2b9e-27a4-4a3c-9a43-1b1c2f3e4d5b'
+      await recordProject({ id: HERS, name: 'hers', addedAt: '2026-01-01T00:00:00.000Z' }, ada)
+      const up = await insertRepo({ id: '5d0f2b9e-27a4-4a3c-9a43-1b1c2f3e4d60', owner: BUILT_IN_USER_ID, remoteUrl: 'https://gitlab.example.com/up/x.git' })
+      const fork = await insertRepo({
+        id: '5d0f2b9e-27a4-4a3c-9a43-1b1c2f3e4d61', owner: BUILT_IN_USER_ID, remoteUrl: 'http://yaac.internal/x.git', hosted: true, upstreamRepoId: up.id,
+      })
+      await linkProjectRepo(projectId, fork.id, 'x')
+      await linkProjectRepo(HERS, fork.id, 'x')
+
+      expect(await allowRepoHostWhereLinked(fork.id)).toBe('gitlab.example.com')
+      expect((await getProjectAllowlist(projectId)).hosts).toEqual(['gitlab.example.com'])
+      // Another user gets no upstream through a shared fork, nor its host.
+      expect((await getProjectAllowlist(HERS)).hosts).toEqual([])
+      expect((await getProjectAllowlist(OTHER)).hosts).toEqual([])
+      expect(await allowRepoHostWhereLinked(fork.id)).toBeNull()
+    } finally {
+      resetWorkspaceDriver()
+    }
   })
 })

@@ -31,6 +31,14 @@ export interface RepoRow {
   /** Whether yaac still keeps the repository it hosted before the repo
    *  moved to another git host. */
   keepsHostedRepo: boolean
+  /** No workspace pushes to it, in any project. */
+  readOnly: boolean
+  /** The repo it is a fork of (docs/repo-forks.md). */
+  upstreamRepoId: string | null
+  /** Whether its credential can push to its remote, as last probed. */
+  pushAccess: 'yes' | 'no' | null
+  /** For a hosted fork: the guard lets a rebase onto the upstream through. */
+  guardAllowsCatchUp: boolean
   /** Set once its owner deleted it while workspaces held checkouts. */
   deletedAt?: Date
 }
@@ -63,7 +71,8 @@ function toRepoRow(r: typeof repos.$inferSelect): RepoRow {
 }
 
 export async function insertRepo(
-  repo: Pick<RepoRow, 'id' | 'owner' | 'remoteUrl'> & { hosted?: boolean },
+  repo: Pick<RepoRow, 'id' | 'owner' | 'remoteUrl'>
+    & Partial<Pick<RepoRow, 'hosted' | 'readOnly' | 'upstreamRepoId' | 'pushAccess'>>,
   gitCredential?: { id: string; knownHostsEntry: string | null },
 ): Promise<RepoRow> {
   const db = await getDb()
@@ -142,6 +151,81 @@ export async function clearRepoKeepsHostedRepo(repoId: string): Promise<boolean>
  *  is no such repo. */
 export async function setRepoDefaultBranchGuard(repoId: string, enabled: boolean): Promise<boolean> {
   return updateRepo(repoId, { guardDefaultBranch: enabled })
+}
+
+/** Change a repo's fork and push settings (docs/repo-forks.md). False
+ *  when there is no such repo. */
+export async function updateRepoSettings(
+  repoId: string,
+  set: Partial<Pick<RepoRow, 'readOnly' | 'upstreamRepoId' | 'pushAccess' | 'guardAllowsCatchUp'>>,
+): Promise<boolean> {
+  return updateRepo(repoId, set)
+}
+
+/**
+ * Make a repo on a git host the hosted repo it moves to
+ * (docs/repo-forks.md "Moving a repo to yaac"), in one transaction: a new
+ * row `upstreamId` takes over its remote, credential, host key, push access
+ * and upstream, read-only if it could not be pushed to, and the repo takes
+ * `hostedUrl` with the new row as its upstream. Read-only stays as it
+ * was unless the last probe found its credential cannot push.
+ */
+export async function hostRepoWithUpstream(repoId: string, upstreamId: string, hostedUrl: string): Promise<void> {
+  const db = await getDb()
+  await db.transaction(async (tx) => {
+    const [row] = await tx.select().from(repos).where(eq(repos.id, repoId))
+    await tx.insert(repos).values({
+      id: upstreamId,
+      owner: row.owner,
+      remoteUrl: row.remoteUrl,
+      addedAt: new Date().toISOString(),
+      gitCredentialId: row.gitCredentialId,
+      knownHostsEntry: row.knownHostsEntry,
+      pushAccess: row.pushAccess,
+      readOnly: row.readOnly || row.pushAccess === 'no',
+      upstreamRepoId: row.upstreamRepoId,
+    })
+    await tx.update(repos).set({
+      remoteUrl: hostedUrl,
+      hosted: true,
+      gitCredentialId: null,
+      knownHostsEntry: null,
+      pushAccess: null,
+      readOnly: false,
+      upstreamRepoId: upstreamId,
+      guardDefaultBranch: true,
+      guardAllowsCatchUp: true,
+    }).where(eq(repos.id, repoId))
+  })
+  notifyWorkspaceListChanged()
+}
+
+/**
+ * Give a fork its upstream's remote (docs/repo-forks.md "Moving back to the
+ * upstream"), in one transaction: the repo takes the upstream's remote,
+ * credential, host key and own upstream, every other fork of the upstream
+ * names the repo instead, and the upstream's row goes. A repo that was
+ * hosted keeps its old repository, read-only.
+ */
+export async function adoptUpstreamRemote(repoId: string, upstreamId: string): Promise<void> {
+  const db = await getDb()
+  await db.transaction(async (tx) => {
+    const [row] = await tx.select().from(repos).where(eq(repos.id, repoId))
+    const [up] = await tx.select().from(repos).where(eq(repos.id, upstreamId))
+    await tx.update(repos).set({
+      remoteUrl: up.remoteUrl,
+      hosted: false,
+      keepsHostedRepo: row.hosted || row.keepsHostedRepo,
+      gitCredentialId: up.gitCredentialId,
+      knownHostsEntry: up.knownHostsEntry,
+      pushAccess: 'yes',
+      readOnly: false,
+      upstreamRepoId: up.upstreamRepoId,
+    }).where(eq(repos.id, repoId))
+    await tx.update(repos).set({ upstreamRepoId: repoId }).where(eq(repos.upstreamRepoId, upstreamId))
+    await tx.delete(repos).where(eq(repos.id, upstreamId))
+  })
+  notifyWorkspaceListChanged()
 }
 
 /** Mark a repo deleted: it stays only for the workspaces that hold a

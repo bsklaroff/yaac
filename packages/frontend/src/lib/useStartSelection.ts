@@ -1,3 +1,4 @@
+import { needsGitCredential } from '@yaac/shared/git-remote'
 import { useQueries } from '@tanstack/react-query'
 import { FULL_COMMIT_PATTERN } from '@yaac/shared/steps'
 import type { ProjectRepo, ProjectSummary, RepoSelection, RepoStart } from '@yaac/shared/types'
@@ -108,7 +109,8 @@ export function useStartSelection(
   const cwd = !nested ? lone
     : wanted !== undefined && (wanted === '.' || included.some((r) => r.repo.id === wanted)) ? wanted
     : lone
-  const needsCredential = included.find((r) => !r.repo.hosted && r.repo.gitCredential === null)?.repo
+  const needsCredential = included.find((r) => needsGitCredential({ ...r.repo, readOnly: r.repo.repoReadOnly })
+    && r.repo.gitCredential === null)?.repo
   return {
     rows,
     included,

@@ -148,6 +148,8 @@ export const projectRepo = (over: Partial<ProjectRepo> = {}): ProjectRepo => ({
   guardDefaultBranch: true,
   gitCredential: { id: 'cred-1', name: 'gh' },
   readOnly: false,
+  repoReadOnly: false,
+  guardAllowsCatchUp: true,
   ghToken: true,
   lastIncluded: true,
   ...over,
@@ -164,6 +166,9 @@ export const repoSummary = (over: Partial<RepoSummary> = {}): RepoSummary => ({
   gitCredential: { id: 'cred-1', name: 'gh' },
   projects: [],
   sharedWith: [],
+  readOnly: false,
+  forks: [],
+  guardAllowsCatchUp: true,
   ...over,
 })
 

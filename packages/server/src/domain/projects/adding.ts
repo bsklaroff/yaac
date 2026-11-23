@@ -62,7 +62,7 @@ function drop(id: string): void {
  * refused too.
  */
 export async function trackProjectAdd<T>(
-  entry: Omit<ProjectAddEntry, 'progress' | 'error'>,
+  entry: Omit<ProjectAddEntry, 'progress' | 'error' | 'errorCode'>,
   keepFailure: boolean,
   add: (onProgress: (progress: GitProgress) => void) => Promise<T>,
 ): Promise<T> {
@@ -88,7 +88,11 @@ export async function trackProjectAdd<T>(
     if (!keepFailure) {
       drop(entry.id)
     } else {
-      entries.set(entry.id, { ...entry, error: err instanceof Error ? err.message : String(err) })
+      entries.set(entry.id, {
+        ...entry,
+        error: err instanceof Error ? err.message : String(err),
+        ...(err instanceof ServerError ? { errorCode: err.code } : {}),
+      })
       notifyWorkspaceListChanged()
     }
     throw err

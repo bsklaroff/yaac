@@ -9,6 +9,9 @@ export interface RepoBranches {
   branches: string[]
   /** The remote's default branch (origin/HEAD). */
   defaultBranch: string
+  /** A fork's upstream branches, newest-committed first, as fetched into
+   *  the main clone (docs/repo-forks.md "Seeing the difference"). */
+  upstreamBranches?: string[]
 }
 
 /**
@@ -41,9 +44,10 @@ export async function getRepoBranches(repoId: string, opts: { refresh?: boolean 
     }
   }
 
-  const [branches, defaultBranch] = await Promise.all([
+  const [branches, defaultBranch, upstreamBranches] = await Promise.all([
     listRemoteBranches(repo),
     getDefaultBranch(repo),
+    listRemoteBranches(repo, 'upstream'),
   ])
-  return { branches, defaultBranch }
+  return { branches, defaultBranch, ...(upstreamBranches.length > 0 ? { upstreamBranches } : {}) }
 }

@@ -13,6 +13,7 @@ export { getRepoBranches } from './branches'
 export {
   assignRepoCredential,
   missingCredentialError,
+  probeRepoPushAccess,
   repoCredentialNames,
   resolveCredentialForRemote,
   resolveRepoCredential,
@@ -24,8 +25,27 @@ export {
   serveHostedRepo,
   setDefaultBranch,
   setDefaultBranchGuard,
+  setUpstreamRebase,
   withRepoHeld,
 } from './hosted'
 export { moveLegacyMainClones } from './legacy-main-clones'
-export { fetchRepoCommit, fetchRepoOrigin, freshenOrigin, onOriginFetched, refreshRepoOrigins, seedRepoOrigin } from './origin'
-export { addRepo, createHostedRepo, listRepoSummaries, registerStagedRepo, shareRepo } from './repos'
+export {
+  fetchRepoCommit,
+  fetchRepoOrigin,
+  fetchRepoUpstream,
+  freshenOrigin,
+  onOriginFetched,
+  refreshRepoOrigins,
+  seedRepoOrigin,
+} from './origin'
+export {
+  addRepo,
+  createHostedRepo,
+  ensureMainClone,
+  listRepoSummaries,
+  registerStagedRepo,
+  setRepoReadOnly,
+  shareRepo,
+  type AddRepoOptions,
+} from './repos'
+export { recordRemoteRepo, setRepoUpstream, suggestUpstream, usableUpstream, type UpstreamTarget } from './upstream'

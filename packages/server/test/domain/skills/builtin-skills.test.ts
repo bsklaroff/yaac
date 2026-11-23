@@ -73,6 +73,24 @@ describe('push-pr skill', () => {
   })
 })
 
+describe('PR skills', () => {
+  it("name origin's repo for gh, which would act on a fork's upstream remote", async () => {
+    for (const name of ['push-pr', 'review-pr', 'spawn-pr-reviewers']) {
+      expect(await bodyOf(name)).toContain('export GH_REPO=$(git remote get-url origin')
+    }
+  })
+})
+
+describe('sync-upstream skill', () => {
+  it('is discoverable, rebases onto the upstream, and falls back to a merge when the guard refuses', async () => {
+    expectShipped('sync-upstream')
+    const body = await bodyOf('sync-upstream')
+    for (const step of ['remote.upstream.url', 'git rebase upstream/main', '--force-with-lease', 'cannot be force-pushed', 'yaac-mama list']) {
+      expect(body).toContain(step)
+    }
+  })
+})
+
 describe('yaac-mama skill', () => {
   it('is discoverable and documents the workspace-bin usage shape', async () => {
     expectShipped('yaac-mama')

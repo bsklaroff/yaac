@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import { LoadingIcon } from '#lib/icons'
-import { dismissProjectAdd } from '#lib/projectOps'
+import { useQueryClient } from '@tanstack/react-query'
+import { addProjectInBackground, dismissProjectAdd } from '#lib/projectOps'
 import { useUiStore, type ProjectOp } from '#lib/store'
 import type { GitProgress } from '@yaac/shared/types'
 import { YButton } from '#ui'
@@ -38,6 +39,12 @@ export function ProjectOpPane({ op }: { op: ProjectOp }): JSX.Element {
   const setAddProjectForm = useUiStore((s) => s.setAddProjectForm)
   const adding = op.kind === 'add'
   const dismiss = (): void => (adding ? dismissProjectAdd(op.id) : dropProjectOp(op.id))
+  const queryClient = useQueryClient()
+  // A refused add sent again, as a fork or read-only, with its credential.
+  const again = (how: { fork?: boolean; readOnly?: boolean }): void => {
+    dismiss()
+    addProjectInBackground(op.remoteUrl, op.name, op.gitCredentialId, queryClient, how)
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
@@ -63,9 +70,21 @@ export function ProjectOpPane({ op }: { op: ProjectOp }): JSX.Element {
           <p className="text-base font-medium text-danger">
             Couldn&apos;t {adding ? (op.hosted === true ? 'create' : 'add') : 'remove'} {op.name}
           </p>
-          <p className="max-w-md text-md text-subtle">{op.error}</p>
+          <p className="max-w-md text-md text-subtle">{op.errorCode === 'PUSH_REFUSED' ? op.error.split('\n')[0] : op.error}</p>
+          {op.errorCode === 'PUSH_REFUSED' && (
+            <div className="mt-1 flex flex-col items-center gap-2">
+              <p className="max-w-md text-md text-subtle">Add it so workspaces can still work with it:</p>
+              <div className="flex items-center gap-2">
+                <YButton variant="primary" onClick={() => again({ fork: true })}
+                  title="yaac hosts a fork of it that workspaces push to">
+                  Add as a fork
+                </YButton>
+                <YButton onClick={() => again({ readOnly: true })} title="Workspaces only read it">Add read-only</YButton>
+              </div>
+            </div>
+          )}
           <div className="mt-1 flex items-center gap-2">
-            {adding && (
+            {adding && op.errorCode !== 'PUSH_REFUSED' && (
               <YButton
                 variant="primary"
                 onClick={() => {

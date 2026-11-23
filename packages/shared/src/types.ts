@@ -856,8 +856,14 @@ export interface ProjectAddEntry {
   /** Empty for a project whose remote yaac hosts. */
   remoteUrl: string
   hosted: boolean
+  /** The credential it was asked to clone with, so a refused add can be
+   *  sent again as a fork or read-only. */
+  gitCredentialId?: string
   progress?: GitProgress
   error?: string
+  /** The failure's code, when the webapp acts on it (`PUSH_REFUSED`
+   *  offers the fork and read-only adds). */
+  errorCode?: ErrorCode
 }
 
 /**
@@ -934,8 +940,21 @@ export interface ProjectRepo {
   /** Its git credential. Without one no workspace can start with it,
    *  unless it is hosted, which needs none. */
   gitCredential: { id: string; name: string } | null
-  /** k8s only (docs/project-repos.md "Read-only repos"). */
+  /** k8s only: this project's workspaces only read it (docs/project-repos.md
+   *  "Read-only repos"). */
   readOnly: boolean
+  /** Whether no workspace pushes to it, in any project (docs/repo-forks.md
+   *  "Read-only repos"). */
+  repoReadOnly: boolean
+  /** Its credential was refused a push and it is not read-only: the
+   *  warning clients show (docs/repo-forks.md "Push access"). */
+  pushRefused?: true
+  /** A fork's upstream (docs/repo-forks.md), when the project's owner may
+   *  use it. */
+  upstream?: { id: string; remoteUrl: string }
+  /** For a hosted fork: whether the default-branch guard lets a rebase
+   *  onto the upstream through. */
+  guardAllowsCatchUp: boolean
   /** k8s only: whether its token may be `GH_TOKEN`. */
   ghToken: boolean
   /** Whether the last create included it, and the branch it named for it
@@ -957,6 +976,18 @@ export interface RepoSummary {
   projects: Array<{ id: string; name: string; owner: string }>
   /** The users it is shared with, by id. */
   sharedWith: string[]
+  /** Whether no workspace pushes to it (docs/repo-forks.md). */
+  readOnly: boolean
+  /** Its credential was refused a push and it is not read-only. */
+  pushRefused?: true
+  /** The repo it is a fork of, and the repos that are forks of it. */
+  upstreamRepoId?: string
+  forks: string[]
+  /** For a hosted fork: whether the guard lets a rebase onto the upstream
+   *  through. */
+  guardAllowsCatchUp: boolean
+  /** Why the last fetch of it as an upstream failed, until one succeeds. */
+  upstreamFetchError?: string
   /** Set once its owner deleted it: the workspaces that still hold a
    *  checkout of it, with the last of which it goes for good. */
   deleted?: { heldBy: RepoHolder[] }
@@ -989,6 +1020,30 @@ export interface RepoMovePreview {
   /** The users it is shared with, by login or name, who each need a
    *  credential of their own for the new remote. */
   sharedWith: string[]
+  /** For a move back onto the upstream (`?target=upstream`): its remote,
+   *  and every branch of either remote by name. */
+  toUpstream?: { remoteUrl: string; branches: UpstreamMoveBranch[] }
+}
+
+/**
+ * One branch as a fork moves back onto its upstream (docs/repo-forks.md
+ * "Moving back to the upstream"), against the upstream's of that name:
+ * `same` (the same commit, or behind it) and `upstream-only` need no
+ * choice; `fork-only` and `ahead` are pushed or left behind; `diverged`
+ * can only be left behind.
+ */
+export interface UpstreamMoveBranch {
+  branch: string
+  state: 'same' | 'upstream-only' | 'fork-only' | 'ahead' | 'diverged'
+  /** What depends on the fork's branch: workspaces based on it, running
+   *  or stopped, and queued entries and routines that name it. */
+  dependents: { running: number; stopped: number; queued: number; routines: number }
+}
+
+/** What moving a repo onto yaac stops (`GET /repo/:repoId/host-preview`):
+ *  the workspaces holding a checkout of it, by project. */
+export interface RepoHostPreview {
+  projects: Array<{ id: string; name: string; workspaces: string[] }>
 }
 
 /** One checkout of a workspace. */
@@ -1622,13 +1677,19 @@ export interface WorkspaceChanges extends WorkspaceDiff {
 /** How far HEAD has diverged from the branch it is compared against.
  *  `behind` is only as fresh as `fetchedAt`. */
 export interface BranchComparison {
-  /** `origin/<branch>`, or `<branch>` for a branch that was never pushed. */
+  /** `origin/<branch>`, a fork's `refs/remotes/upstream/<branch>`, or
+   *  `<branch>` for a branch that was never pushed. */
   ref: string
   ahead: number
   behind: number
   /** When `ref` was last fetched, 'YYYY-MM-DD HH:MM:SS' (UTC); absent for
    *  a local branch or when no fetch is on record. */
   fetchedAt?: string
+  /** The workspace's base branch was rewritten since it started, such as
+   *  a fork catching up with its upstream, and the workspace still sits on
+   *  the old commits, which it counts as its own until it rebases onto the
+   *  new base (docs/repo-forks.md "Catching up with the upstream"). */
+  rewritten?: true
 }
 
 /**

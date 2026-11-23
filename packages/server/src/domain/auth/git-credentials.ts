@@ -10,6 +10,7 @@ import {
   renameGitCredential,
   replaceGitCredential,
   type GitCredentialRow,
+  type RepoRow,
 } from '#db'
 import { encodeOpenSshPrivateKey, generateSshKey, withKeyComment } from '#lib/ssh-key'
 import type { GitCredentialSummary } from '@yaac/shared/types'
@@ -144,22 +145,35 @@ export interface RuntimeGitCredentials {
 
 /**
  * The git credentials handed to the runtime, keyed by their owner. Each
- * carries one grant per repo that uses it and project that links that repo
- * (docs/project-repos.md "Credentials per repo"), so egress uses it for
+ * carries one grant per repo that uses it and project that links that repo,
+ * or links a fork of it (docs/project-repos.md "Credentials per repo"),
+ * read-only for a read-only repo or link and for an upstream, so egress uses it for
  * those projects' workspaces, toward those repos, and nothing else. A
  * credential is only ever usable by its owner's projects. Rows that don't
  * decrypt or that no project can use are left out.
  */
 export async function runtimeGitCredentials(): Promise<Record<string, RuntimeGitCredentials>> {
-  const [creds, projects] = await Promise.all([listGitCredentials(), listProjectRows()])
+  const [creds, projects, repos] = await Promise.all([listGitCredentials(), listProjectRows(), listRepos()])
+  const repoOf = new Map(repos.map((r) => [r.id, r]))
   const out: Record<string, RuntimeGitCredentials> = {}
   for (const c of creds) {
-    const grants = projects.filter((p) => p.owner === c.owner).flatMap((p) => p.repos.flatMap((link) => {
-      const { repo } = link
+    const grant = (projectId: string, repo: RepoRow, readOnly: boolean, ghToken: boolean): Array<RepoGrant & { knownHostsEntry: string }> => {
       if (repo.gitCredentialId !== c.id || repo.deletedAt !== undefined || !usableAssignment(repo, c)) return []
       const { host, path } = parseGitRemote(repo.remoteUrl)
-      const grant: RepoGrant = { projectId: p.id, repoId: repo.id, host, path, readOnly: link.readOnly, ghToken: link.ghToken }
-      return [{ ...grant, knownHostsEntry: repo.knownHostsEntry ?? '' }]
+      return [{ projectId, repoId: repo.id, host, path, readOnly, ghToken, knownHostsEntry: repo.knownHostsEntry ?? '' }]
+    }
+    const grants = projects.filter((p) => p.owner === c.owner).flatMap((p) => p.repos.flatMap((link) => {
+      const { repo } = link
+      // A fork's upstream is only ever read through it, and is its owner's
+      // alone (docs/repo-forks.md "What a workspace can reach"). A project
+      // that links the upstream itself has that link's grant instead: the
+      // proxy takes a path's first grant, so two would race.
+      const upstream = repo.upstreamRepoId !== null ? repoOf.get(repo.upstreamRepoId) : undefined
+      const linksUpstream = upstream !== undefined && p.repos.some((l) => l.repo.id === upstream.id)
+      return [
+        ...grant(p.id, repo, link.readOnly || repo.readOnly, link.ghToken),
+        ...(upstream !== undefined && upstream.owner === p.owner && !linksUpstream ? grant(p.id, upstream, true, false) : []),
+      ]
     }))
     if (grants.length === 0) continue
     const secret = await c.openSecret()

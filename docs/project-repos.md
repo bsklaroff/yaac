@@ -11,7 +11,8 @@ with its own credential.
 
 ```
 repos            id, owner, remoteUrl, gitCredentialId, knownHostsEntry,
-                 hosted, guardDefaultBranch, keepsHostedRepo, deletedAt
+                 hosted, guardDefaultBranch, keepsHostedRepo, readOnly,
+                 upstreamRepoId, pushAccess, guardAllowsCatchUp, deletedAt
 repo_shares      repoId, userId
 project_repos    projectId, repoId, dir, position, readOnly, ghToken,
                  lastIncluded, lastBranch
@@ -22,7 +23,10 @@ workspace_repos  workspaceId, repoId, path, baseBranch, startCommit
   that authenticates to it, the host key, and whether yaac hosts it
   (docs/hosted-projects.md). Its main clone is `global/repos/<repo id>`
   (docs/server-git.md) and, when hosted, its bare repository is
-  `server-local/hosted-repos/<repo id>.git`.
+  `server-local/hosted-repos/<repo id>.git`. It may be read-only, and may
+  name another of its owner's repos as its upstream, which makes it a fork
+  (docs/repo-forks.md); a repo that is only an upstream has no main clone
+  until a project links it.
 - A **project repo** links a repo into a project. `dir` is the folder its
   checkout takes when nested: by default the repo's name, unique in the
   project, one path segment of `[A-Za-z0-9._-]`. `lastIncluded` and
@@ -103,8 +107,8 @@ fields. `branch` and `commit` on their own are shorthand for the start of a
 selection of exactly one repo (`resolveStart`).
 
 Each selected repo must be usable by the project's owner (`canUseRepo`),
-have a credential, and behind the proxy have its host in the egress
-allowlist. A workspace with no repos needs none of that. Linking a repo
+have a credential (a read-only https repo needs none, docs/repo-forks.md),
+and behind the proxy have its host in the egress allowlist. A workspace with no repos needs none of that. Linking a repo
 (adding a project around it, or adding it to one) adds its host to the
 project's allowlist when the list leaves it out, and the webapp and CLI
 say so, so the check only refuses a host someone removed afterwards.
@@ -175,7 +179,9 @@ project env var named `GH_TOKEN` wins. `yaac-mama as-repo <repo> --
 
 ### Read-only repos
 
-Under k8s, `project_repos.readOnly` makes a repo read-only in one project.
+`repos.readOnly` makes a repo read-only in every project, on both drivers
+(docs/repo-forks.md "Read-only repos"). Under k8s,
+`project_repos.readOnly` makes a repo read-only in one project.
 The credential is the repo's and shared by every project that links it, so
 this flag is how one project reads a repo that another writes. From that
 project's workspaces the proxy passes only reads to the repo's path, over
@@ -202,7 +208,8 @@ or not: the project no longer holds a grant for the repo, so a fetch or
 push is refused until the repo is linked again. Unlinking is refused while
 a site of the project is built from the repo.
 
-Only a repo's owner deletes it (`yaac repo delete`). That unlinks it from
+Only a repo's owner deletes it (`yaac repo delete`), and not while another
+repo names it as its upstream. That unlinks it from
 every project, other users' included, ends its shares, and for a hosted
 repo deletes the bare repository, the only copy of its code. It deletes no
 workspace: one that holds a checkout keeps its files and commits, with no

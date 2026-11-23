@@ -1,17 +1,19 @@
-import { fetchCommit, fetchOrigin, maintainRepo, seedEmptyOrigin } from '#domain/git'
+import { fetchCommit, fetchOrigin, fetchUpstream, maintainRepo, seedEmptyOrigin } from '#domain/git'
 import type { RuntimeSnapshot } from '#drivers/contract'
 import { getRepo, listRepos, listWorkspaceReposFor, type RepoRow } from '#db'
 import { serverLog } from '#lib/log'
 import { hostedRepoDir, repoDir } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import { ServerError } from '@yaac/shared/errors'
-import { resolveRepoCredential } from './credentials'
+import { probeStalePushAccess, resolveRepoCredential } from './credentials'
 
 /**
  * Keeps every repo's main clone current (docs/server-git.md). Each fetch is
  * followed by a gc of the clone and by whatever the composition root
  * registered: copying the refs into the running workspaces that have a
- * checkout of the repo, and waking the `sites` step. The `origin-refresh`
+ * checkout of the repo, and waking the `sites` step. A fork then fetches
+ * its upstream into the same clone, and the listeners run again
+ * (docs/repo-forks.md "Upstreams in server git"). The `origin-refresh`
  * reconcile step also fetches on a timer, so idle repos stay within minutes
  * of origin.
  */
@@ -32,6 +34,15 @@ const fetching = new Set<string>()
 const lastFetchEnd = new Map<string, { startedAt: number; at: number; ok: boolean }>()
 
 const fetchedListeners: Array<(repoId: string) => void> = []
+
+/** Why each upstream's last fetch failed, by the upstream's id, until one
+ *  succeeds. */
+const upstreamErrors = new Map<string, string>()
+
+/** Why the last fetch of a repo as an upstream failed, if it did. */
+export function upstreamFetchError(repoId: string): string | undefined {
+  return upstreamErrors.get(repoId)
+}
 
 /** Register what runs after each fetch of a repo's origin succeeds. */
 export function onOriginFetched(fn: (repoId: string) => void): void {
@@ -71,6 +82,10 @@ export async function fetchRepoOrigin(repoId: string, opts: { unlessWithinMs?: n
         serverLog(`[git] maintenance of ${repoId}: ${(err as Error).message}`)
       })
       for (const fn of fetchedListeners) fn(repoId)
+      // Nothing waits for the upstream, and its failure fails nothing.
+      if (repo.upstreamRepoId !== null) {
+        fetchRepoUpstream(repoId).catch((err: unknown) => serverLog(`[git] fetching the upstream of ${repoId}: ${String(err)}`))
+      }
     }, () => {
       // The caller sees the error.
       fetching.delete(repoId)
@@ -78,6 +93,27 @@ export async function fetchRepoOrigin(repoId: string, opts: { unlessWithinMs?: n
     })
   }
   await fetched
+}
+
+/**
+ * Fetch a fork's upstream into its main clone, with the upstream's own
+ * credential, then tell the listeners again so the running checkouts get
+ * `upstream/*`. A no-op for a repo with no upstream. A failure is kept for
+ * the upstream's row in the listing until a fetch succeeds.
+ */
+export async function fetchRepoUpstream(repoId: string): Promise<void> {
+  const repo = await getRepo(repoId)
+  if (repo?.upstreamRepoId == null) return
+  const upstreamId = repo.upstreamRepoId
+  try {
+    const { repo: upstream, url } = await fetchSource(upstreamId)
+    await fetchUpstream(repoDir(repoId), url, await resolveRepoCredential(upstream))
+  } catch (err) {
+    upstreamErrors.set(upstreamId, err instanceof Error ? err.message : String(err))
+    throw err
+  }
+  upstreamErrors.delete(upstreamId)
+  for (const fn of fetchedListeners) fn(repoId)
 }
 
 /**
@@ -105,17 +141,19 @@ export async function fetchRepoCommit(repoId: string, sha: string): Promise<void
 }
 
 /** Give a repo whose origin has no branches its default one, as an empty
- *  commit by `author` (`seedEmptyOrigin`). */
+ *  commit by `author` (`seedEmptyOrigin`). The server never pushes to a
+ *  read-only repo, so one is left empty. */
 export async function seedRepoOrigin(repoId: string, author: { name: string; email: string }): Promise<void> {
   const { repo, url } = await fetchSource(repoId)
+  if (repo.readOnly) return
   await seedEmptyOrigin(repoDir(repoId), url, await resolveRepoCredential(repo), author)
 }
 
 /**
  * The `origin-refresh` reconcile step: fetch every repo a running workspace
  * has a checkout of that hasn't been fetched (by anything) for
- * `ORIGIN_REFRESH_MS`. Detached from the pass; failures are logged and
- * retried next interval.
+ * `ORIGIN_REFRESH_MS`, and probe its push access once a day. Detached from
+ * the pass; failures are logged and retried next interval.
  */
 export async function refreshRepoOrigins(view: RuntimeSnapshot): Promise<void> {
   if (testEnv.e2eSkipFetch) return
@@ -124,6 +162,7 @@ export async function refreshRepoOrigins(view: RuntimeSnapshot): Promise<void> {
   const repoIds = new Set([...(await listWorkspaceReposFor(running)).values()].flat().map((r) => r.repoId))
   // A deleted repo has no remote to fetch.
   const deleted = new Set((await listRepos()).filter((r) => r.deletedAt !== undefined).map((r) => r.id))
+  probeStalePushAccess([...repoIds].filter((id) => !deleted.has(id)))
   for (const repoId of repoIds) {
     if (deleted.has(repoId) || now - (lastFetchMs.get(repoId) ?? 0) < ORIGIN_REFRESH_MS) continue
     fetchRepoOrigin(repoId).catch((err: unknown) => {

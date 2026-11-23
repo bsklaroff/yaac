@@ -6,7 +6,10 @@ import { promisify } from 'node:util'
 import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest'
 import { cloneRepo, createCheckout, fetchOrigin, resolveRemoteRef } from '@yaac/server/domain/git'
 import { git, stagingBeside } from '@yaac/test-utils/git'
-import { buildCloneLinkExec, buildOriginRefreshExec, buildStatusWarmupExec, formatSshCommand, getGitUserConfig, gitConfigValue, torSshOpts } from '#git'
+import {
+  NO_PUSH_URL, buildCloneLinkExec, buildOriginRefreshExec, buildStatusWarmupExec, formatSshCommand, getGitUserConfig, gitConfigValue,
+  torSshOpts,
+} from '#git'
 
 const execFileAsync = promisify(execFile)
 
@@ -116,28 +119,34 @@ describe('clone refresh commands', () => {
   describe('buildCloneLinkExec', () => {
     it('rewrites the alternates line to the main clone as the server sees it', async () => {
       await fs.writeFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), '/yaac/global/elsewhere/.git/objects\n')
-      const cmd = buildCloneLinkExec(path.join(main, '.git'), wt, source)
+      const cmd = buildCloneLinkExec(path.join(main, '.git'), wt, { url: source, readOnly: false })
       await run(cmd)
       expect(await fs.readFile(path.join(wt, '.git', 'objects', 'info', 'alternates'), 'utf8'))
         .toBe(`${path.join(main, '.git', 'objects')}\n`)
       expect((await git(wt, ['status', '--porcelain'])).trim()).toBe('')
     })
 
-    it("points an origin still at yaac's hosted remote at the project's remote, and leaves one the user set", async () => {
+    it("sets the checkout's remotes to the rows': origin's URL always, a read-only push URL, and a fork's upstream", async () => {
       const moved = "https://github.com/acme/it's.git"
-      await git(wt, ['config', 'remote.origin.url', 'http://yaac.internal/api/workspace/git/p.git'])
-      await run(buildCloneLinkExec(path.join(main, '.git'), wt, moved))
+      const upstream = 'https://github.com/upstream/it.git'
+      await git(wt, ['config', 'remote.origin.url', 'git@github.com:me/elsewhere.git'])
+      await run(buildCloneLinkExec(path.join(main, '.git'), wt, { url: moved, readOnly: true, upstream }))
       expect((await git(wt, ['config', 'remote.origin.url'])).trim()).toBe(moved)
+      expect((await git(wt, ['config', 'remote.origin.pushurl'])).trim()).toBe(NO_PUSH_URL)
+      expect((await git(wt, ['config', 'remote.upstream.url'])).trim()).toBe(upstream)
+      expect((await git(wt, ['config', 'remote.upstream.pushurl'])).trim()).toBe(NO_PUSH_URL)
       expect((await git(wt, ['config', 'branch.agent/x.remote'])).trim()).toBe('origin')
+      // A push fails at once, naming the push URL.
+      await expect(git(wt, ['push', 'origin', 'HEAD:refs/heads/x'])).rejects.toThrow(/workspaces do not push to this remote/)
 
-      await git(wt, ['config', 'remote.origin.url', 'git@github.com:me/fork.git'])
-      await run(buildCloneLinkExec(path.join(main, '.git'), wt, moved))
-      expect((await git(wt, ['config', 'remote.origin.url'])).trim()).toBe('git@github.com:me/fork.git')
-      await git(wt, ['config', 'remote.origin.url', source])
+      await run(buildCloneLinkExec(path.join(main, '.git'), wt, { url: source, readOnly: false }))
+      expect((await git(wt, ['config', 'remote.origin.url'])).trim()).toBe(source)
+      await expect(git(wt, ['config', 'remote.origin.pushurl'])).rejects.toThrow()
+      await expect(git(wt, ['config', 'remote.upstream.url'])).rejects.toThrow()
     })
 
     it('fails when the alternates line cannot be written', async () => {
-      const cmd = buildCloneLinkExec(path.join(main, '.git'), path.join(tmp, 'missing'), 'https://github.com/acme/x.git')
+      const cmd = buildCloneLinkExec(path.join(main, '.git'), path.join(tmp, 'missing'), { url: 'https://github.com/acme/x.git', readOnly: false })
       await expect(run(cmd)).rejects.toThrow()
     })
   })
@@ -153,7 +162,7 @@ describe('clone refresh commands', () => {
   })
 
   describe('buildOriginRefreshExec', () => {
-    it('fast-forwards origin/* from the main clone and moves nothing back', async () => {
+    it('fast-forwards origin/* from the main clone, sets a rewritten branch outright, and keeps one fetched ahead', async () => {
       const cmd = buildOriginRefreshExec(path.join(main, '.git'), wt)
       // Upstream: main moves on, a branch appears, `forced` is rewritten.
       await commit(source, 'upstream')
@@ -172,12 +181,24 @@ describe('clone refresh commands', () => {
 
       expect(await tip(wt, 'origin/main')).toBe(await tip(source, 'main'))
       expect(await tip(wt, 'origin/fresh')).toBe(await tip(source, 'fresh'))
-      // Not a fast-forward: left for the agent's own fetch.
-      expect(await tip(wt, 'origin/forced')).toBe(forcedBefore)
+      // Neither tip contains the other: rewritten, so set outright.
+      expect(await tip(wt, 'origin/forced')).not.toBe(forcedBefore)
+      expect(await tip(wt, 'origin/forced')).toBe(await tip(source, 'forced'))
+      // The agent's own fetch is ahead of the main clone, so it stays.
       expect(await tip(wt, 'origin/ahead')).toBe(await tip(source, 'main'))
+      // No upstream remote, so no upstream/* either.
+      expect(await git(wt, ['for-each-ref', 'refs/remotes/upstream'])).toBe('')
       expect(await fs.readFile(path.join(wt, '.git', 'FETCH_HEAD'), 'utf8')).toBe('the agent\'s\n')
       // No new objects: everything came through the alternate.
       expect(await git(wt, ['count-objects', '-v'])).toBe(objects)
+    })
+
+    it("copies a fork's upstream/* where the checkout has that remote", async () => {
+      await git(main, ['update-ref', 'refs/remotes/upstream/main', await tip(source, 'main')])
+      await git(wt, ['config', 'remote.upstream.url', 'https://github.com/upstream/it.git'])
+      await run(buildOriginRefreshExec(path.join(main, '.git'), wt))
+      expect(await tip(wt, 'upstream/main')).toBe(await tip(source, 'main'))
+      await git(wt, ['remote', 'remove', 'upstream'])
     })
   })
 })

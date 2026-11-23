@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { applyObject, deleteObject, k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
 import { LABEL_ROLE, ROLE_SERVER } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
@@ -27,6 +27,10 @@ const MOCK_LLM_PORT = 9100
 const MOCK_GIT_PORT = 9101
 /** In the mock git server's repo store: how long it holds each fetch. */
 const DELAY_FILE = '.fetch-delay-ms'
+/** In a mock repo: refuse a push's probe as a refused credential would. */
+const REFUSE_PUSH = 'yaac-refuse-push'
+/** In a mock repo: advertise receive-pack, so a push's probe passes. */
+const ADVERTISE_PUSH = 'yaac-advertise-push'
 
 export interface MockLLM {
   readonly podName: string
@@ -342,19 +346,41 @@ export async function startMockLLM(): Promise<MockLLM> {
  * under testTmpBase() mounted read-only at /srv/git; seeding and pushing
  * run host-side. A fetch starts by asking for `info/refs`, which waits the
  * milliseconds `DELAY_FILE` holds, so a test can keep origin slow.
+ *
+ * A push's probe (`info/refs?service=git-receive-pack`) is answered as the
+ * repo's marker file says (`seedMockGitRepo`'s `push`): `REFUSE_PUSH` gets
+ * a 403, a credential refused; `ADVERTISE_PUSH` gets the repo's refs as a
+ * receive-pack advertisement, so a dry-run push succeeds while a real one
+ * is still refused; any other a 404, which tells a client nothing about
+ * its credential. ROOT and PORT may be overridden, for a host-side run
+ * (`startHostMockGit`).
  */
 const MOCK_GIT_SCRIPT = `
   const http = require('http');
   const fs = require('fs');
   const path = require('path');
-  const ROOT = '/srv/git';
+  const ROOT = process.env.ROOT || '/srv/git';
 
   const CT = {
     '.pack': 'application/x-git-packed-objects',
     '.idx': 'application/x-git-packed-objects-toc',
   };
+  const pkt = (s) => (Buffer.byteLength(s) + 4).toString(16).padStart(4, '0') + s;
 
-  http.createServer((req, res) => {
+  /** The repo's refs as a smart receive-pack advertisement. */
+  function advertisement(repo) {
+    let refs = [];
+    try {
+      refs = fs.readFileSync(path.join(repo, 'info', 'refs'), 'utf8').split('\\n').filter(Boolean).map((l) => l.split('\\t'));
+    } catch {}
+    const caps = String.fromCharCode(0) + 'report-status delete-refs ofs-delta';
+    let body = pkt('# service=git-receive-pack\\n') + '0000';
+    if (refs.length === 0) body += pkt('0'.repeat(40) + ' capabilities^{}' + caps + '\\n');
+    refs.forEach(([sha, ref], i) => { body += pkt(sha + ' ' + ref + (i === 0 ? caps : '') + '\\n'); });
+    return body + '0000';
+  }
+
+  const server = http.createServer((req, res) => {
     const [url, query = ''] = (req.url || '/').split('?');
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(405);
@@ -363,10 +389,19 @@ const MOCK_GIT_SCRIPT = `
     }
     // A fetch's smart-protocol probe gets the plain file, as a static server
     // gives it, which tells the client to speak dumb HTTP. Some gits do not
-    // ask again after a 404. A push's probe is refused.
+    // ask again after a 404. A push's probe is answered by the repo's marker.
     if (query.includes('service=') && !query.includes('service=git-upload-pack')) {
-      res.writeHead(404);
-      res.end();
+      const repo = path.join(ROOT, url.replace(/\\/info\\/refs$/, ''));
+      if (fs.existsSync(path.join(repo, '${REFUSE_PUSH}'))) {
+        res.writeHead(403);
+        res.end('Permission to this repo denied');
+      } else if (fs.existsSync(path.join(repo, '${ADVERTISE_PUSH}'))) {
+        res.writeHead(200, { 'Content-Type': 'application/x-git-receive-pack-advertisement', 'Cache-Control': 'no-cache' });
+        res.end(advertisement(repo));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
       return;
     }
     const filePath = path.join(ROOT, url);
@@ -392,8 +427,62 @@ const MOCK_GIT_SCRIPT = `
       });
       fs.createReadStream(filePath).pipe(res);
     }), delay);
-  }).listen(${MOCK_GIT_PORT}, '0.0.0.0', () => console.log('mock-git ready'));
+  });
+  server.listen(Number(process.env.PORT || ${MOCK_GIT_PORT}), process.env.PORT ? '127.0.0.1' : '0.0.0.0', () => {
+    console.log('mock-git ready ' + server.address().port);
+  });
 `
+
+/** Append the git config that sends the server's fetches of `remoteBase`
+ *  (`https://host/org/`) to a mock at `origin` (`http://ip:port`) instead. */
+async function rewriteServerFetches(env: NodeJS.ProcessEnv, remoteBase: string, origin: string): Promise<void> {
+  if (env.GIT_CONFIG_GLOBAL === undefined) throw new Error('the test env names no git config')
+  await fs.appendFile(env.GIT_CONFIG_GLOBAL, [
+    `[url "${origin}/"]`,
+    `\tinsteadOf = ${remoteBase}`,
+    // The server's runner allows only the transport its remote's URL
+    // names, which is https.
+    '[protocol "http"]',
+    '\tallow = always',
+    '',
+  ].join('\n'))
+}
+
+/**
+ * The mock git server run as a host process instead of a pod, for the
+ * containerless tier, whose server runs on the host and reaches loopback.
+ * Same script and repo store layout; `serveServerFetches` only rewrites.
+ */
+export async function startHostMockGit(): Promise<MockGit> {
+  const reposDir = await e2eMkdtemp('yaac-mock-git-')
+  const child = spawn(process.execPath, ['-e', MOCK_GIT_SCRIPT], {
+    env: { ...process.env, ROOT: reposDir, PORT: '0' },
+    stdio: ['ignore', 'pipe', 'inherit'],
+  })
+  const port = await new Promise<number>((resolve, reject) => {
+    child.once('exit', (code) => reject(new Error(`the host mock git server exited ${String(code)}`)))
+    child.stdout.on('data', (chunk: Buffer) => {
+      const ready = /mock-git ready (\d+)/.exec(chunk.toString())
+      if (ready) resolve(Number(ready[1]))
+    })
+  })
+  return {
+    podName: '',
+    host: '127.0.0.1',
+    port,
+    reposDir,
+    async delayFetches(ms) {
+      await fs.writeFile(path.join(reposDir, DELAY_FILE), String(ms), { mode: 0o644 })
+    },
+    async serveServerFetches(env, remoteBase) {
+      await rewriteServerFetches(env, remoteBase, `http://127.0.0.1:${String(port)}`)
+    },
+    async stop() {
+      child.kill()
+      await fs.rm(reposDir, { recursive: true, force: true })
+    },
+  }
+}
 
 export async function startMockGit(): Promise<MockGit> {
   const podName = `yaac-mock-git-${crypto.randomBytes(4).toString('hex')}`
@@ -412,16 +501,7 @@ export async function startMockGit(): Promise<MockGit> {
       await fs.writeFile(path.join(reposDir, DELAY_FILE), String(ms), { mode: 0o644 })
     },
     async serveServerFetches(env, remoteBase) {
-      if (env.GIT_CONFIG_GLOBAL === undefined) throw new Error('the test env names no git config')
-      await fs.appendFile(env.GIT_CONFIG_GLOBAL, [
-        `[url "http://${clusterIp}:${String(MOCK_GIT_PORT)}/"]`,
-        `\tinsteadOf = ${remoteBase}`,
-        // The server's runner allows only the transport its remote's URL
-        // names, which is https.
-        '[protocol "http"]',
-        '\tallow = always',
-        '',
-      ].join('\n'))
+      await rewriteServerFetches(env, remoteBase, `http://${clusterIp}:${String(MOCK_GIT_PORT)}`)
       await applyObject({
         apiVersion: 'networking.k8s.io/v1',
         kind: 'NetworkPolicy',
@@ -457,6 +537,9 @@ export async function seedMockGitRepo(
     extraBranches?: Record<string, Record<string, string>>
     authorName?: string
     authorEmail?: string
+    /** How a push's probe is answered (see `MOCK_GIT_SCRIPT`): refused as
+     *  a credential without push access, or advertised so it passes. */
+    push?: 'refuse' | 'advertise'
   } = { files: {} },
 ): Promise<void> {
   const branch = opts.branch ?? 'main'
@@ -494,6 +577,7 @@ export async function seedMockGitRepo(
     }
 
     await execFileAsync('git', ['update-server-info'], { cwd: bareDir })
+    if (opts.push !== undefined) await fs.writeFile(path.join(bareDir, opts.push === 'refuse' ? REFUSE_PUSH : ADVERTISE_PUSH), '')
 
     // Ensure mock-git's pod user can read everything
     await execFileAsync('chmod', ['-R', 'a+rX', bareDir])

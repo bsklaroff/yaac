@@ -20,8 +20,15 @@ Credentials are managed in the webapp (Settings → Git credentials, and the Add
 Project form), and each repo picks its credential in Settings → Repos, which
 lists every repo the user owns with the credential it uses. From the CLI, `yaac auth update` adds one, `yaac auth list`
 lists them by name, and `yaac project add <url> <credential>` clones with the
-named credential and assigns it to the repo; a repo is always added with one.
+named credential and assigns it to the repo. Only a repo added read-only or
+as a fork may go without one, read anonymously (docs/repo-forks.md).
 `yaac config git-credential <project> <credential>` assigns another.
+
+Whether a repo's credential can push is probed at add, when a credential is
+assigned or replaced, and daily while a workspace uses the repo
+(`probePushAccess`). An add of a remote the credential cannot push to is
+refused, and a refusal found later is a warning; docs/repo-forks.md "Push
+access" says how each is answered.
 `yaac auth fake github` seeds `fake-github`, a placeholder token that a parent
 yaac's proxy swaps for its real one (for yaac running inside a yaac workspace).
 
@@ -131,10 +138,12 @@ Ed25519.
   session itself: it reads the git command, checks the path is one of the
   project's ssh repos on that host, and logs in to the host with that
   repo's key, so the key never leaves the proxy and a session carries only
-  git. A link marked read-only takes only reads, on both transports
-  (docs/workspace-egress.md "Read-only repos").
+  git. A link or repo marked read-only takes only reads, on both
+  transports (docs/workspace-egress.md "Read-only repos"), and so does a
+  fork's upstream, granted to the projects of the fork's owner that link
+  the fork (docs/repo-forks.md "What a workspace can reach").
 - **A containerless workspace** is given the credential of each repo it has
-  a checkout of directly: the token, in a credential store keyed by the
+  a checkout of directly, and of each such repo's upstream: the token, in a credential store keyed by the
   repo's path, or the key, fed from the server over a stdin pipe through
   `ssh-add -` into the workspace's own `ssh-agent`, with only the public half
   in its state dir and a wrapper (`yaac-git-ssh`) that has ssh offer the key

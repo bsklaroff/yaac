@@ -1,4 +1,4 @@
-import { countStoppedWorkspaces, listProjectIconHashes, listProjectRows, type StoppedCount } from '#db'
+import { countStoppedWorkspaces, listProjectIconHashes, listProjectRows, listRepos, type StoppedCount } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { repoCredentialNames } from '#domain/repos'
 import type { ProjectSummary } from '@yaac/shared/types'
@@ -13,12 +13,19 @@ import type { ProjectSummary } from '@yaac/shared/types'
 export async function listProjects(
   counts: Promise<StoppedCount[]> = countStoppedWorkspaces(),
 ): Promise<ProjectSummary[]> {
-  const [rows, workspaceCounts, stoppedCounts, iconHashes] = await Promise.all([
+  const [rows, workspaceCounts, stoppedCounts, iconHashes, repos] = await Promise.all([
     listProjectRows(),
     workspaceDriver().count(),
     counts,
     listProjectIconHashes(),
+    listRepos(),
   ])
+  const repoOf = new Map(repos.map((r) => [r.id, r]))
+  // A fork's upstream is its owner's alone, so only their projects see it.
+  const upstreamFor = (repoId: string | null, owner: string): { id: string; remoteUrl: string } | undefined => {
+    const up = repoId === null ? undefined : repoOf.get(repoId)
+    return up !== undefined && up.owner === owner && up.deletedAt === undefined ? { id: up.id, remoteUrl: up.remoteUrl } : undefined
+  }
   const stoppedIn = (projectId: string): Pick<ProjectSummary, 'stoppedCount' | 'deaths' | 'deathsSeenBy'> => {
     const total = { stoppedCount: 0, deaths: 0, deathsSeenBy: {} as Record<string, number> }
     for (const c of stoppedCounts.filter((c) => c.projectId === projectId)) {
@@ -43,20 +50,27 @@ export async function listProjects(
     // untouched create would run (see `resolveToolCreateDefaults`).
     ...(meta.lastTool !== undefined ? { lastTool: meta.lastTool } : {}),
     createDefaults: meta.createDefaults,
-    repos: meta.repos.map((l) => ({
-      id: l.repo.id,
-      dir: l.dir,
-      remoteUrl: l.repo.remoteUrl,
-      owner: l.repo.owner,
-      hosted: l.repo.hosted,
-      guardDefaultBranch: l.repo.guardDefaultBranch,
-      ...(l.repo.keepsHostedRepo ? { keepsHostedRepo: true as const } : {}),
-      gitCredential: credentials.get(l.repo.id) ?? null,
-      readOnly: l.readOnly,
-      ghToken: l.ghToken,
-      lastIncluded: l.lastIncluded,
-      ...(l.lastBranch !== undefined ? { lastBranch: l.lastBranch } : {}),
-    })),
+    repos: meta.repos.map((l) => {
+      const upstream = upstreamFor(l.repo.upstreamRepoId, meta.owner)
+      return {
+        id: l.repo.id,
+        dir: l.dir,
+        remoteUrl: l.repo.remoteUrl,
+        owner: l.repo.owner,
+        hosted: l.repo.hosted,
+        guardDefaultBranch: l.repo.guardDefaultBranch,
+        ...(l.repo.keepsHostedRepo ? { keepsHostedRepo: true as const } : {}),
+        gitCredential: credentials.get(l.repo.id) ?? null,
+        readOnly: l.readOnly,
+        repoReadOnly: l.repo.readOnly,
+        ...(l.repo.pushAccess === 'no' && !l.repo.readOnly && !l.repo.hosted ? { pushRefused: true as const } : {}),
+        ...(upstream !== undefined ? { upstream } : {}),
+        guardAllowsCatchUp: l.repo.guardAllowsCatchUp,
+        ghToken: l.ghToken,
+        lastIncluded: l.lastIncluded,
+        ...(l.lastBranch !== undefined ? { lastBranch: l.lastBranch } : {}),
+      }
+    }),
     ...(meta.lastNested !== undefined ? { lastNested: meta.lastNested } : {}),
     ...(meta.lastCwd !== undefined ? { lastCwd: meta.lastCwd } : {}),
     ...(meta.stoppedWorkspaceRetentionDays !== undefined

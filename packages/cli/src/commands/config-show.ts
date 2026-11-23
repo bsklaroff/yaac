@@ -33,7 +33,11 @@ export async function configShow(project: string): Promise<void> {
       const credential: [string, string] = [
         of('git-credential'), r.hosted ? 'none needed (hosted by yaac)' : r.gitCredential?.name ?? 'none',
       ]
-      return r.hosted ? [credential, [of('default-branch-guard'), onOff(r.guardDefaultBranch)]] : [credential]
+      return [
+        credential,
+        ...(r.hosted ? [[of('default-branch-guard'), onOff(r.guardDefaultBranch)] as [string, string]] : []),
+        ...(r.hosted && r.upstream !== undefined ? [[of('upstream-rebase'), onOff(r.guardAllowsCatchUp)] as [string, string]] : []),
+      ]
     }),
     ['env', list([
       ...vars.map((v) => (v.secret ? `${v.name} (secret)` : v.name)),
@@ -54,7 +58,9 @@ export async function configShow(project: string): Promise<void> {
   console.log(`${p.name} (${projectId.slice(0, 8)})`)
   console.log(p.repos.length === 0 ? '  no repos' : `  repos  ${p.repos.map((r) => `${r.dir} (${[
     r.hosted ? 'hosted by yaac' : r.remoteUrl,
-    ...(k8s && r.readOnly ? ['read-only'] : []),
+    ...(r.repoReadOnly || (k8s && r.readOnly) ? ['read-only'] : []),
+    ...(r.upstream !== undefined ? [`fork of ${r.upstream.remoteUrl}`] : []),
+    ...(r.pushRefused === true ? ['pushes refused'] : []),
     ...(k8s && !r.ghToken ? ['not GH_TOKEN'] : []),
   ].join(', ')})`).join('; ')}`)
   for (const [key, value] of rows) console.log(`  ${key.padEnd(width)}  ${value}`)

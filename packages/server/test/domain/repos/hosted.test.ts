@@ -19,6 +19,7 @@ import {
   seeTailnetUser,
   setRepoRemote,
   updateProjectRepo,
+  updateRepoSettings,
 } from '#db'
 import { addHttpsCredential } from '#domain/auth'
 import { getDefaultBranch } from '#domain/git'
@@ -29,6 +30,7 @@ import {
   serveHostedRepo,
   setDefaultBranch,
   setDefaultBranchGuard,
+  setUpstreamRebase,
   shareRepo,
   withRepoHeld,
 } from '#domain/repos'
@@ -278,6 +280,57 @@ describe('serveHostedRepo', () => {
     await setDefaultBranchGuard(owner, repoId, true)
   })
 
+  it("lets a fork's guarded default branch be rebased onto its upstream's, keeping its own commits, while the owner allows it", async () => {
+    const upstream = path.join(tmp, 'catch-up-upstream')
+    await fs.mkdir(upstream)
+    await run(upstream, ['init', '-q', '-b', 'main'])
+    /** Commit a file of its own in `dir`. */
+    const commitFile = async (dir: string, name: string): Promise<void> => {
+      await fs.writeFile(path.join(dir, name), `${name}\n`)
+      await run(dir, ['add', name])
+      await run(dir, ['commit', '-q', '-m', name])
+    }
+    await commitFile(upstream, 'u1')
+    const fork = (await createHostedRepo(BUILT_IN_USER_ID)).id
+    const up = await insertRepo({ id: '0a0a0a0a-0000-4000-8000-0000000000c1', owner: BUILT_IN_USER_ID, remoteUrl: upstream, readOnly: true })
+    await updateRepoSettings(fork, { upstreamRepoId: up.id })
+    const work = path.join(tmp, 'catch-up-work')
+    await run(tmp, ['clone', '-q', `${origin}/owner/${fork}`, work])
+    await run(work, ['remote', 'add', 'upstream', upstream])
+    await run(work, ['fetch', '-q', 'upstream'])
+    await run(work, ['reset', '-q', '--hard', 'upstream/main'])
+    await commitFile(work, 'fork-own-1')
+    await commitFile(work, 'fork-own-2')
+    await run(work, ['push', '-q', 'origin', 'HEAD:main'])
+    /** The upstream moves on, and the server fetches it. */
+    const upstreamMoves = async (name: string): Promise<void> => {
+      await commitFile(upstream, name)
+      await run(repoDir(fork), ['fetch', '-q', upstream, '+refs/heads/*:refs/remotes/upstream/*'])
+      await run(work, ['fetch', '-q', 'upstream'])
+    }
+
+    await upstreamMoves('u2')
+    // The upstream's tip with something else on top is no catch-up: it
+    // drops the fork's own commits.
+    const forkTip = (await run(work, ['rev-parse', 'HEAD'])).trim()
+    await run(work, ['reset', '-q', '--hard', 'upstream/main'])
+    await commitFile(work, 'unrelated-junk')
+    await expect(run(work, ['push', '-q', '--force', 'origin', 'HEAD:main'])).rejects.toThrow(/drops or changes the fork's own commits/)
+    await run(work, ['reset', '-q', '--hard', forkTip])
+    await run(work, ['rebase', '-q', 'upstream/main'])
+    await run(work, ['push', '-q', '--force', 'origin', 'HEAD:main'])
+    expect((await run(hostedRepoDir(fork), ['rev-parse', 'main'])).trim()).toBe((await run(work, ['rev-parse', 'HEAD'])).trim())
+    // A rewrite of a fork that is already current is no catch-up.
+    await run(work, ['commit', '-q', '--amend', '-m', 'rewritten'])
+    await expect(run(work, ['push', '-q', '--force', 'origin', 'HEAD:main'])).rejects.toThrow(/cannot be force-pushed/)
+
+    // With catch-ups off, the refusal names the setting.
+    await setUpstreamRebase(owner, fork, false)
+    await upstreamMoves('u3')
+    await run(work, ['rebase', '-q', 'upstream/main'])
+    await expect(run(work, ['push', '-q', '--force', 'origin', 'HEAD:main'])).rejects.toThrow(/Allow rebasing onto the upstream/)
+  })
+
   it("serves a moved repo's old repository read-only, to compare with its new remote, and a deleted repo not at all", async () => {
     const { id, tip } = await movedRepo('moved')
     await linkProjectRepo(OTHER_PROJECT, id, 'moved')
@@ -336,6 +389,19 @@ describe('setDefaultBranchGuard', () => {
     await expect(setDefaultBranchGuard({ kind: 'local', userId: ada }, repoId, false)).rejects.toMatchObject({ code: 'FORBIDDEN' })
     const { id: moved } = await movedRepo('moved-guard')
     await expect(setDefaultBranchGuard(owner, moved, false)).rejects.toThrow(/not hosted by yaac/)
+  })
+})
+
+describe('setUpstreamRebase', () => {
+  it('records the setting for the owner of a hosted fork, and refuses a repo with no upstream and anyone else', async () => {
+    const fork = (await createHostedRepo(BUILT_IN_USER_ID)).id
+    await expect(setUpstreamRebase(owner, fork, false)).rejects.toThrow(/no upstream/)
+    const up = await insertRepo({ id: '0a0a0a0a-0000-4000-8000-0000000000c2', owner: BUILT_IN_USER_ID, remoteUrl: tmp, readOnly: true })
+    await updateRepoSettings(fork, { upstreamRepoId: up.id })
+    await setUpstreamRebase(owner, fork, false)
+    expect((await getRepo(fork))?.guardAllowsCatchUp).toBe(false)
+    await expect(setUpstreamRebase({ kind: 'local', userId: STRANGER }, fork, true)).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await expect(setUpstreamRebase(owner, up.id, true)).rejects.toThrow(/not hosted by yaac/)
   })
 })
 

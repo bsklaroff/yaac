@@ -76,7 +76,11 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
   await claimTestScratch(scratchDir)
   const dataDir = path.join(scratchDir, 'data')
   const gitConfigPath = path.join(scratchDir, 'gitconfig')
-  await fs.writeFile(gitConfigPath, '')
+  // The server probes whether a repo's credential can push
+  // (docs/repo-forks.md "Push access"); a probe of the fixtures' github.com
+  // remotes must not reach GitHub, so it finds nothing listening there and
+  // answers "unknown". Fetches are left alone.
+  await fs.writeFile(gitConfigPath, '[url "http://127.0.0.1:1/"]\n\tpushInsteadOf = https://github.com/\n')
   setDataDir(dataDir)
   await ensureDataDir()
   // So helpers used by assertions hit the server's namespace and install.

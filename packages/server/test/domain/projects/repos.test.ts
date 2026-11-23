@@ -4,10 +4,12 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
-// Only the clone (a process boundary) is mocked; a hosted repo's is real.
+// Only the process boundaries that reach a remote are mocked: the clone (a
+// hosted repo's is real), the push probe, and GitHub's API.
 vi.mock('#domain/git', async (importOriginal) => ({
   ...(await importOriginal<typeof gitModule>()),
   cloneRepo: vi.fn(),
+  probePushAccess: vi.fn(() => Promise.resolve(null)),
 }))
 
 import { cloneRepo } from '#domain/git'
@@ -62,6 +64,7 @@ const project = async (id = PROJECT): Promise<ProjectRow> => (await getProjectRo
 const dirs = async (id = PROJECT): Promise<string[]> => (await project(id)).repos.map((l) => l.dir)
 
 beforeEach(async () => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('offline'))))
   tmpDir = await createTempDataDir()
   installFakeWorkspaceDriver()
   token = (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'default', token: 'ghp_default' })).id
@@ -74,6 +77,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.unstubAllGlobals()
   await closeDb()
   await cleanupTempDir(tmpDir)
 })
@@ -167,6 +171,7 @@ describe('addProjectRepo', () => {
     const ada = await seeTailnetUser('ada@example.com', 'Ada')
     const mine = await insertRepo({ id: '0a0a0a0a-0000-4000-8000-00000000000a', owner: BUILT_IN_USER_ID, remoteUrl: 'git@git.example.com:acme/lib.git' })
     const hers = await insertRepo({ id: '0a0a0a0a-0000-4000-8000-00000000000b', owner: ada, remoteUrl: 'http://yaac.internal/api/workspace/git/x.git', hosted: true })
+    for (const id of [mine.id, hers.id]) await fs.mkdir(path.join(repoDir(id), '.git'), { recursive: true })
 
     expect(await addProjectRepo(local, PROJECT, { repoId: mine.id }))
       .toEqual({ repoId: mine.id, dir: 'lib', knownHostsEntry: null, allowedHost: 'git.example.com' })
@@ -181,6 +186,11 @@ describe('addProjectRepo', () => {
     await markRepoDeleted(mine.id)
     await expect(addProjectRepo(local, EMPTY, { repoId: mine.id })).rejects.toMatchObject({ code: 'FORBIDDEN' })
     expect(mockClone).not.toHaveBeenCalled()
+
+    // A repo that was only an upstream has no clone yet, so linking clones it.
+    const upstream = await insertRepo({ id: '0a0a0a0a-0000-4000-8000-00000000000c', owner: BUILT_IN_USER_ID, remoteUrl: 'https://github.com/up/lib.git', readOnly: true })
+    expect(await addProjectRepo(local, EMPTY, { repoId: upstream.id })).toMatchObject({ dir: 'lib' })
+    expect(mockClone).toHaveBeenCalledWith('https://github.com/up/lib.git', repoDir(upstream.id), null, undefined)
   })
 
   it('links a new repo yaac hosts', async () => {

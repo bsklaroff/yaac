@@ -236,10 +236,12 @@ export {
 } from './project-store'
 export {
   addRepoShare,
+  adoptUpstreamRemote,
   clearRepoKeepsHostedRepo,
   deleteRepoRow,
   findOwnerRepo,
   getRepo,
+  hostRepoWithUpstream,
   insertRepo,
   linkProjectRepo,
   listAllProjectRepos,
@@ -259,6 +261,7 @@ export {
   setRepoRemote,
   unlinkProjectRepo,
   updateProjectRepo,
+  updateRepoSettings,
   type ProjectRepoLink,
   type RepoRow,
   type WorkspaceRepoRow,

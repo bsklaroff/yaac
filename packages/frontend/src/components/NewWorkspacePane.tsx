@@ -1,4 +1,5 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent } from 'react'
+import { PushRefusedWarning } from '#components/settings/RepoForks'
 import { createPortal } from 'react-dom'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { ChatIcon, CloseIcon, RenameIcon, RunIcon, SendIcon, SiteIcon, TerminalIcon, TOOL_LABEL, WorkflowIcon } from '#lib/icons'
@@ -1069,6 +1070,11 @@ export function NewWorkspacePane({ projectId, bar }: {
                   </YSettingRow>
                 )}
               </YSettingGroup>
+              {!inWorkspace && selection.included.filter((r) => r.repo.pushRefused === true).map((r) => (
+                <div key={r.repo.id} className="mt-2">
+                  <PushRefusedWarning repoId={r.repo.id} remoteUrl={r.repo.remoteUrl} owned={r.repo.owner === project?.owner} />
+                </div>
+              ))}
             </YSection>
           )}
 

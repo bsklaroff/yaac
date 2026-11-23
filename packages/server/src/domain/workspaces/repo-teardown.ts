@@ -59,7 +59,7 @@ import { withProjectsHeld, type Actor } from '#domain/access'
  * after adopting any token their agents refreshed, as a stop does. Answers
  * the ones that could not be stopped, each with why.
  */
-async function stopWorkspaces(handles: RuntimeHandle[], projects: ProjectRow[]): Promise<string[]> {
+export async function stopWorkspaces(handles: RuntimeHandle[], projects: ProjectRow[]): Promise<string[]> {
   const own = handles.filter((h) => !h.prewarmed)
   for (const project of projects.filter((p) => own.some((h) => h.projectId === p.id))) {
     await harvestToolCredentials(project.owner, { projectId: project.id })
@@ -77,7 +77,7 @@ async function stopWorkspaces(handles: RuntimeHandle[], projects: ProjectRow[]):
  * Reap every spare warmed with a repo, and one whose settings are unknown.
  * Answers the runtime's units that are not being torn down.
  */
-async function reapSparesWith(repoId: string): Promise<RuntimeHandle[]> {
+export async function reapSparesWith(repoId: string): Promise<RuntimeHandle[]> {
   const handles = (await workspaceDriver().list()).filter((h) => !h.terminating)
   for (const h of handles) {
     if (h.prewarmed && spareSettings.get(h.workspaceId)?.repos.some((r) => r.repoId === repoId) !== false) {
@@ -88,7 +88,7 @@ async function reapSparesWith(repoId: string): Promise<RuntimeHandle[]> {
 }
 
 /** The ids of the workspaces holding a checkout of a repo, running or not. */
-async function holdersOf(repoId: string): Promise<Set<string>> {
+export async function holdersOf(repoId: string): Promise<Set<string>> {
   return new Set((await listRepoHolders(repoId)).map((h) => h.workspaceId))
 }
 
@@ -99,7 +99,7 @@ async function holdersOf(repoId: string): Promise<Set<string>> {
  * for. Answers the workspaces holding a checkout once they have settled,
  * for the caller to stop the running ones among.
  */
-async function stopProvisioningWith(repoId: string, projectIds: Set<string>): Promise<Set<string>> {
+export async function stopProvisioningWith(repoId: string, projectIds: Set<string>): Promise<Set<string>> {
   const holders = await holdersOf(repoId)
   const involved = listProvisioning().filter((e) => projectIds.has(e.projectId)
     && (holders.has(e.workspaceId)
@@ -178,13 +178,19 @@ async function movableRepo(principal: Actor, repoId: string): Promise<RepoRow> {
 }
 
 /** The projects that link a repo, any user's. */
-async function projectsLinking(repoId: string): Promise<ProjectRow[]> {
+export async function projectsLinking(repoId: string): Promise<ProjectRow[]> {
   return (await listProjectRows()).filter((p) => p.repos.some((l) => l.repo.id === repoId))
 }
 
 /** What `moveRepoToRemote` would stop and hand over, right now. */
 export async function previewRepoMove(principal: Actor, repoId: string): Promise<RepoMovePreview> {
   await movableRepo(principal, repoId)
+  return movePreviewOf(repoId)
+}
+
+/** The running workspaces a move of the repo would stop, and whom it is
+ *  shared with. */
+export async function movePreviewOf(repoId: string): Promise<RepoMovePreview> {
   const holders = await holdersOf(repoId)
   const running = (await workspaceDriver().list()).filter((h) => holders.has(h.workspaceId) && !h.prewarmed && !h.terminating)
   const users = new Map((await listUsers()).map((u) => [u.id, u.login ?? u.name]))
@@ -284,7 +290,7 @@ export async function moveRepoToRemote(
  * copy of the main clone (their checkouts borrow its objects), and
  * everything of theirs repointed at it, claude's memory of it included.
  */
-async function handOverToLinkers(repo: RepoRow, remoteUrl: string): Promise<void> {
+export async function handOverToLinkers(repo: RepoRow, remoteUrl: string): Promise<void> {
   const projects = await listProjectRows()
   const holding = new Set((await listRepoHolders(repo.id)).map((h) => h.projectId))
   const users = new Set(projects
@@ -330,8 +336,8 @@ export async function previewRepoDelete(principal: Actor, repoId: string): Promi
 
 /**
  * Delete a repo, the one way a repo goes (docs/hosted-projects.md "Deleting
- * a repo"). Only its owner may, and not while a site is built from it or a
- * named workflow runs in it. It is unlinked from every project, other
+ * a repo"). Only its owner may, and not while a site is built from it, a
+ * named workflow runs in it, or another repo names it as its upstream. It is unlinked from every project, other
  * users' included, its shares end, and a hosted repo's bare repository, the
  * only copy of its code, is deleted. No workspace is deleted or stopped:
  * one holding a checkout keeps its files and commits, with no remote to
@@ -345,6 +351,11 @@ export async function previewRepoDelete(principal: Actor, repoId: string): Promi
  */
 export async function deleteRepo(principal: Actor, repoId: string): Promise<{ heldBy: RepoHolder[] }> {
   await ownRepo(principal, repoId)
+  const forks = (await listRepos()).filter((r) => r.upstreamRepoId === repoId)
+  if (forks.length > 0) {
+    throw new ServerError('CONFLICT', `this repo is the upstream of ${forks.map((f) => f.remoteUrl).join(', ')}; `
+      + 'remove their upstream or delete them first')
+  }
   const sites = (await listSites()).filter((s) => siteBuiltFrom(s, repoId))
   if (sites.length > 0) {
     throw new ServerError('CONFLICT', `site ${sites.map((s) => `"${s.name}"`).join(', ')} is built from this repo; `

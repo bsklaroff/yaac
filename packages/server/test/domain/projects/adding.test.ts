@@ -4,11 +4,13 @@ import path from 'node:path'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 
-// Only the clone (a process boundary) is mocked, so a test can hold it open
-// and feed it git's progress.
+// Only the process boundaries that reach a remote are mocked: the clone, so
+// a test can hold it open and feed it git's progress, the push probe, and
+// GitHub's API.
 vi.mock('#domain/git', async (importOriginal) => ({
   ...(await importOriginal<typeof gitModule>()),
   cloneRepo: vi.fn(),
+  probePushAccess: vi.fn(() => Promise.resolve(null)),
 }))
 
 import { cloneRepo } from '#domain/git'
@@ -29,6 +31,7 @@ let tmpDir: string
 let token: string
 
 beforeEach(async () => {
+  vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('offline'))))
   tmpDir = await createTempDataDir()
   installFakeWorkspaceDriver()
   token = (await addHttpsCredential(BUILT_IN_USER_ID, { name: 'default', token: 'ghp_default' })).id
@@ -36,6 +39,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  vi.unstubAllGlobals()
   for (const add of listProjectAdds()) dismissProjectAdd(systemPrincipal, add.id)
   _resetWorkspaceListChangedForTests()
   await closeDb()
@@ -51,7 +55,7 @@ function heldAdd(): { done: Promise<unknown>; progress: (p: GitProgress) => void
     held.progress = (p) => onProgress?.(p)
     await new Promise<void>((resolve) => { held.finish = resolve })
   })
-  const done = addProject(URL, token, BUILT_IN_USER_ID, ADDING)
+  const done = addProject({ remoteUrl: URL, credentialId: token }, BUILT_IN_USER_ID, ADDING)
   return { done, progress: (p) => held.progress(p), finish: () => held.finish() }
 }
 
@@ -61,7 +65,7 @@ describe('listProjectAdds', () => {
     onWorkspaceListChanged(() => { notifies++ })
     const add = heldAdd()
     await vi.waitFor(() => expect(mockClone).toHaveBeenCalledTimes(1))
-    expect(listProjectAdds()).toEqual([{ id: ADDING, owner: BUILT_IN_USER_ID, name: 'widgets', remoteUrl: URL, hosted: false }])
+    expect(listProjectAdds()).toEqual([{ id: ADDING, owner: BUILT_IN_USER_ID, name: 'widgets', remoteUrl: URL, hosted: false, gitCredentialId: token }])
 
     const before = notifies
     add.progress({ phase: 'Receiving objects', percent: 1, detail: '10 KiB' })
@@ -99,14 +103,14 @@ describe('dismissProjectAdd', () => {
     await add.done
     mockClone.mockRejectedValueOnce(new Error('fatal: repository not found'))
     const FAILED = '4f3e2d1c-0b9a-4f8e-9d7c-6b5a4f3e2d1c'
-    await expect(addProject('https://github.com/acme/gone.git', token, BUILT_IN_USER_ID, FAILED)).rejects.toThrow()
+    await expect(addProject({ remoteUrl: 'https://github.com/acme/gone.git', credentialId: token }, BUILT_IN_USER_ID, FAILED)).rejects.toThrow()
     expect(listProjectAdds()).toMatchObject([{ id: FAILED, error: 'Failed to clone: fatal: repository not found' }])
 
     expect(() => dismissProjectAdd({ kind: 'local', userId: 'someone-else' }, FAILED))
       .toThrow(expect.objectContaining({ code: 'FORBIDDEN' }))
     // Nor can another user take its id over with an add of their own.
     // (Refused before the credential is looked up.)
-    await expect(addProject('https://github.com/acme/theirs.git', token, 'someone-else', FAILED))
+    await expect(addProject({ remoteUrl: 'https://github.com/acme/theirs.git', credentialId: token }, 'someone-else', FAILED))
       .rejects.toMatchObject({ code: 'CONFLICT' })
     expect(listProjectAdds()).toMatchObject([{ id: FAILED, owner: BUILT_IN_USER_ID }])
     dismissProjectAdd(local, FAILED)

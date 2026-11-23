@@ -173,6 +173,9 @@ describe('isGitAuthError', () => {
       "fatal: unable to access 'https://github.com/acme/repo.git/': The requested URL returned error: 401",
       'git@github.com: Permission denied (publickey).',
       'remote: Permission to acme/repo.git denied to somebody.',
+      // Read-only refusals over ssh, which a push probe counts as "no".
+      'ERROR: The key you are authenticating with has been marked as read only.',
+      'remote: GitLab: You are not allowed to push code to this project.',
     ]
     for (const msg of authErrors) expect(isGitAuthError(msg), msg).toBe(true)
   })
