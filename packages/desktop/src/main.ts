@@ -164,7 +164,7 @@ async function createWindow(): Promise<BrowserWindow> {
      * until Alt is pressed; its accelerators work either way.
      */
     ...(process.platform === 'darwin'
-      ? { titleBarStyle: 'hidden' as const, trafficLightPosition: { x: 12, y: 15 } }
+      ? { titleBarStyle: 'hidden' as const, trafficLightPosition: TRAFFIC_LIGHTS }
       : { autoHideMenuBar: true }),
     // The renderer is web content from the server: sandboxed, no Node.
     webPreferences: {
@@ -223,10 +223,16 @@ async function createWindow(): Promise<BrowserWindow> {
  * The SPA hides the macOS traffic lights while one of its dialogs covers
  * the window's corner. They show again over the Servers page, which keeps
  * its own room for them, and when a fresh page load drops the dialog.
+ * Showing them again lays them out at macOS's default spot rather than
+ * `trafficLightPosition`, so the position is set again each time.
  */
+const TRAFFIC_LIGHTS = { x: 12, y: 15 }
 let spaCoversLights = false
 function showTrafficLights(w: BrowserWindow): void {
-  if (process.platform === 'darwin' && !w.isDestroyed()) w.setWindowButtonVisibility(!spaCoversLights || pageView !== null)
+  if (process.platform !== 'darwin' || w.isDestroyed()) return
+  const visible = !spaCoversLights || pageView !== null
+  w.setWindowButtonVisibility(visible)
+  if (visible) w.setWindowButtonPosition(TRAFFIC_LIGHTS)
 }
 
 function openInBrowser({ url }: { url: string }): { action: 'deny' } {

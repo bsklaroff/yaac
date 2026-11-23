@@ -22,12 +22,15 @@ let covers = 0
 /**
  * Hide the native traffic lights while a dialog covers the window's top
  * left corner, since web content can never draw over them. Returns the
- * release; they come back once every cover is released.
+ * release; they come back once every cover is released. The hide waits
+ * until the frame holding the dialog has painted (the timer queued from
+ * the next animation frame runs after it), so a dialog slow to render
+ * does not leave the corner empty before it appears.
  */
 export function coverTrafficLights(): () => void {
   const set = windowApi()?.setWindowButtonsVisible
   if (!set || !hidesTitleBar()) return () => {}
-  if (covers++ === 0) set(false)
+  if (covers++ === 0) requestAnimationFrame(() => setTimeout(() => { if (covers > 0) set(false) }))
   return () => { if (--covers === 0) set(true) }
 }
 
