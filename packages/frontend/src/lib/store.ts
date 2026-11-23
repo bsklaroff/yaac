@@ -770,6 +770,9 @@ interface UiState {
   /** Groups the user collapsed; groups start expanded. */
   collapsedGroups: string[]
   setGroupCollapsed: (groupId: string, collapsed: boolean) => void
+  /** Workspaces whose session rows the user folded away; they start shown. */
+  collapsedWorkspaces: string[]
+  setWorkspaceCollapsed: (workspaceId: string, collapsed: boolean) => void
   /** Add an optimistic provisioning row (deduplicated by id). */
   addOptimisticProvisioning: (entry: ProvisioningWorkspaceEntry) => void
   /** Update an optimistic row's message or error, if it exists. */
@@ -1067,6 +1070,10 @@ export const useUiStore = create<UiState>((set, get) => ({
   collapsedGroups: [],
   setGroupCollapsed: (groupId, collapsed) => set((s) => ({
     collapsedGroups: toggled(s.collapsedGroups, groupId, collapsed),
+  })),
+  collapsedWorkspaces: [],
+  setWorkspaceCollapsed: (workspaceId, collapsed) => set((s) => ({
+    collapsedWorkspaces: toggled(s.collapsedWorkspaces, workspaceId, collapsed),
   })),
 
   addOptimisticProvisioning: (entry) => set((s) => (

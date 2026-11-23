@@ -224,7 +224,13 @@ workspace or beside it in its own.
 - **Sidebar.** A workspace with no session reads "No agent" with a hollow
   ring; with one, its agent; with several, "N sessions" and a row per
   session under it, each with its own status and unread dot, which opens
-  the workspace on that session's pane.
+  the workspace on that session's pane. Such a row's mark shows its most
+  pressing session (an ask first, then an unread one, then working,
+  background work, waiting), unlike the server's aggregate, which ranks
+  waiting first for alerts; on hover it turns into the caret that folds
+  the session rows away (on a phone, tapping the "N sessions" count does
+  it). While the workspace is open, the row of the session whose pane has
+  focus is highlighted.
 - **Starting one.** The new-workspace pane's Where field aims it at a
   running workspace, which hides the workspace-only fields and opens a
   session there; New session in a workspace's bar or row menu opens it
