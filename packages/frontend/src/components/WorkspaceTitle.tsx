@@ -33,7 +33,7 @@ export function WorkspaceTitle({ workspaceId, title, prompt, after }: {
   useEffect(() => { setEditing(false) }, [workspaceId, setEditing])
 
   return (
-    <div className="titlebar-drag flex min-w-24 flex-1 items-center gap-0.5">
+    <div className="titlebar-drag flex min-w-24 items-center gap-0.5">
       {editing ? (
         <YInput
           ref={inputRef}

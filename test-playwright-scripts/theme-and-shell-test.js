@@ -9,8 +9,8 @@
  *     recolors the shell and persists yaac.theme.v1; a reload comes back
  *     light before first paint (the inline script in index.html).
  *  4. Hide sidebar removes it, and "Show sidebar" renders only while hidden.
- *  5. The top bar's Show changes button opens the Changes pane ("No changes yet"
- *     on a clean checkout, a changed-file count otherwise).
+ *  5. The top bar's ⋯ → Review changes opens the Changes pane ("No changes
+ *     yet" on a clean checkout, a changed-file count otherwise).
  *
  * Run: node test-playwright-scripts/theme-and-shell-test.js
  * Needs a running server (see lib.js); step 5 opens its first workspace and
@@ -85,7 +85,11 @@ try {
   const [ws] = (await api('/workspace/list')).workspaces
   if (ws) {
     await page.goto(`${origin}/?project=${ws.projectId}&workspace=${ws.workspaceId}`)
-    await page.getByRole('button', { name: 'Show changes' }).click()
+    // Until the workspace bar replaces the new-workspace pane, ⋯ is that
+    // pane's menu, which goes away with it.
+    await page.locator('button[title^="Review commits"]').waitFor({ timeout: 30_000 })
+    await page.getByRole('button', { name: 'More pane actions' }).click()
+    await page.getByRole('menuitem', { name: 'Review changes' }).click()
     const shown = await page.getByText(/^(No changes yet|Nothing uncommitted|\d+ changed)$/)
       .first().waitFor({ timeout: 15_000 }).then(() => true, () => false)
     check('the top bar opens the Changes pane', shown)

@@ -60,17 +60,8 @@ export function paneSession(workspace: WorkspaceListEntry | undefined, target: s
  * step's pane is one: it opens only when the user picks the step, and stays
  * when the step finishes, showing its log.
  */
-/** The Details pane's target: where the workspace runs, its git state, its
- *  network and storage (DetailsPane). */
-export const DETAILS_TARGET = 'details'
-
-export function isDetailsTarget(target: string): boolean {
-  return target === DETAILS_TARGET
-}
-
 export function isSpecialPane(target: string): boolean {
   return isPreviewTarget(target) || isFilesTarget(target) || isChangesTarget(target) || isCommitsTarget(target)
-    || isDetailsTarget(target)
     || isFileTarget(target) || isStepTarget(target) || isHistoryTarget(target)
 }
 

@@ -122,7 +122,8 @@ check('code-labelled external link: only one action', !(popups.length > 0 && ope
   `popups=${JSON.stringify(popups)} openedReadme=${openedReadme}`)
 
 // Terminal Ctrl-click.
-await page.getByRole('button', { name: 'New Shell' }).click()
+await page.getByRole('button', { name: 'More pane actions' }).click()
+await page.getByRole('menuitem', { name: 'New shell' }).click()
 await page.waitForSelector('.xterm-screen', { timeout: 20000 })
 await page.waitForTimeout(2500)
 await page.locator('.xterm-screen').last().click()

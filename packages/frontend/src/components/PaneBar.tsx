@@ -1,7 +1,7 @@
-import type { JSX } from 'react'
+import { useRef, type JSX, type ReactNode, type Ref } from 'react'
 import {
   AddIcon, ChangesIcon, ChatIcon, CommitsIcon, FilesIcon, HistoryIcon, MoreIcon, NavBackIcon, PreviewIcon, SidebarIcon,
-  TabsIcon, TilesIcon, type Icon,
+  TabsIcon, TilesIcon,
 } from '#lib/icons'
 import { goBackScreen } from '#lib/mobileHistory'
 import { hidesTitleBar } from '#lib/platform'
@@ -16,8 +16,7 @@ import { YButton, YMenu, YMenuItem, YMenuLabel, YMenuPopup, YTrafficLights } fro
  * new-workspace pane's, so both offer the same controls in the same place.
  */
 
-/** The bar's classes. On mobile most controls move to an overflow menu;
- *  the warnings are in the Details pane at every width. */
+/** The bar's classes. */
 export function paneBarClass(isMobile: boolean): string {
   return isMobile
     ? 'flex h-12 shrink-0 items-center gap-1 border-b border-line pl-1 pr-1.5 text-md'
@@ -61,10 +60,9 @@ export function PaneBarLeading(): JSX.Element | null {
   )
 }
 
-/** What the pane actions do; `disabled` says why they can't, and `titles`
- *  overrides their hover text. A running workspace can also open a session
- *  (`onNewSession`), and one with earlier conversations its History pane
- *  (`onOpenHistory`). */
+/** What the pane menu's actions do; `disabled` says why they can't. A
+ *  running workspace can also open a session (`onNewSession`), and one with
+ *  earlier conversations its History pane (`onOpenHistory`). */
 interface PaneActions {
   onNewSession?: () => void
   onNewShell?: () => void
@@ -73,45 +71,20 @@ interface PaneActions {
   onOpenCommits: () => void
   onOpenHistory?: () => void
   disabled?: string
-  titles?: { shell: string; files: string; changes: string; commits: string }
 }
 
 /** A new shell's tooltip: what it prints is kept (docs/workspace-steps.md
  *  "Logs"), which a user typing a credential should know. */
 export const NEW_SHELL_TITLE = 'New shell. What it prints is kept in the workspace\'s logs until the workspace is deleted.'
 
-/** The desktop bar's view toggle and pane buttons. */
-export function PaneBarActions({
-  onNewSession, onNewShell, onOpenFiles, onOpenChanges, onOpenCommits, onOpenHistory, disabled, titles,
-}: PaneActions): JSX.Element {
-  const viewMode = useUiStore((s) => s.viewMode)
-  const setViewMode = useUiStore((s) => s.setViewMode)
-  const tiled = viewMode === 'tiles'
-  const off = disabled !== undefined
-  const action = (label: string, icon: Icon, onClick: () => void, title: string, enabled = true): JSX.Element => (
-    <YButton variant="ghost" icon={icon} onClick={onClick} disabled={enabled && off} title={title} aria-label={label} />
-  )
-  return (
-    <>
-      {action(tiled ? 'Tab view' : 'Tile view', tiled ? TabsIcon : TilesIcon, () => setViewMode(tiled ? 'tabs' : 'tiles'),
-        tiled ? 'Switch to tabs' : 'Switch to tiles', false)}
-      {onNewSession !== undefined && action('New Session', ChatIcon, onNewSession, disabled ?? 'Start another agent session here')}
-      {onNewShell !== undefined && action('New Shell', AddIcon, onNewShell, disabled ?? titles?.shell ?? NEW_SHELL_TITLE)}
-      {action('Browse files', FilesIcon, onOpenFiles, disabled ?? titles?.files ?? 'Browse files')}
-      {action('Show changes', ChangesIcon, onOpenChanges, disabled ?? titles?.changes ?? 'Show changes')}
-      {action('Show commits', CommitsIcon, onOpenCommits, disabled ?? titles?.commits ?? 'Show commits')}
-      {onOpenHistory !== undefined
-        && action('History', HistoryIcon, onOpenHistory, "Read or resume closed sessions' conversations", false)}
-    </>
-  )
-}
-
 /**
- * The mobile bar's ⋯ menu, holding the desktop bar's controls that don't
- * fit on a phone.
+ * The bar's ⋯ menu: the pane actions, kept out of the bar so the title and
+ * git status have its room, then `children` (a workspace's Set a timeout).
+ * On a desktop it also switches between tiles and tabs; a phone always
+ * shows tabs, and lists the previews here. Its footnote says why the
+ * actions are off, when they are.
  */
-export function PaneOverflowMenu({
-  label,
+export function PaneMenu({
   previewPorts = [],
   onOpenPreview,
   onNewSession,
@@ -121,29 +94,53 @@ export function PaneOverflowMenu({
   onOpenFiles,
   onOpenHistory,
   disabled,
+  children,
+  triggerRef,
 }: PaneActions & {
-  /** The menu's footnote: the workspace's agent. */
-  label: string
   /** Forwarded ports to preview (empty in a browser). */
   previewPorts?: PortMapping[]
   onOpenPreview?: (containerPort: number) => void
+  children?: ReactNode
+  /** The ⋯ button, for a control that hands focus back to it. */
+  triggerRef?: Ref<HTMLButtonElement>
 }): JSX.Element {
-  // Taller rows than other menus: this one is for touch.
-  const ITEM = 'py-2!'
+  const isMobile = useIsMobile()
+  const viewMode = useUiStore((s) => s.viewMode)
+  const setViewMode = useUiStore((s) => s.setViewMode)
+  const tiled = viewMode === 'tiles'
+  // Taller rows on a phone, for touch.
+  const ITEM = isMobile ? 'py-2!' : undefined
   const off = disabled !== undefined
+  // Whether an item ran: then focus stays where it put it (the pane it
+  // opened, the timeout box), and only a dismissal returns it to ⋯. Not
+  // modal, since a modal menu holds focus while it closes, which would blur
+  // a box an item opens.
+  const picked = useRef(false)
   return (
-    <YMenu.Root>
+    <YMenu.Root modal={false} onOpenChange={(open) => { if (open) picked.current = false }}>
       <YMenu.Trigger
-        render={<YButton variant="ghost" icon={MoreIcon} title="More" aria-label="More pane actions" className="h-9! w-9!" />}
+        ref={triggerRef}
+        render={<YButton variant="ghost" icon={MoreIcon} title="More" aria-label="More pane actions" className={isMobile ? 'h-9! w-9!' : undefined} />}
       />
-      <YMenuPopup side="bottom" align="end" sideOffset={6} className="min-w-[200px]">
+      <YMenuPopup
+        side="bottom"
+        align="end"
+        sideOffset={6}
+        className="min-w-[200px]"
+        // Submenu items bubble here too, through React's portal tree.
+        onClickCapture={(e) => {
+          const item = (e.target as HTMLElement).closest('[role="menuitem"]')
+          if (item !== null && !item.hasAttribute('aria-haspopup')) picked.current = true
+        }}
+        finalFocus={() => !picked.current}
+      >
         {onNewSession !== undefined && (
           <YMenuItem icon={ChatIcon} className={ITEM} disabled={off} onClick={onNewSession}>
             New session
           </YMenuItem>
         )}
         {onNewShell !== undefined && (
-          <YMenuItem icon={AddIcon} className={ITEM} disabled={off} onClick={onNewShell}>
+          <YMenuItem icon={AddIcon} className={ITEM} disabled={off} onClick={onNewShell} title={NEW_SHELL_TITLE}>
             New shell
           </YMenuItem>
         )}
@@ -166,7 +163,13 @@ export function PaneOverflowMenu({
             {previewLabel(previewPorts.length > 1 ? p : undefined)}
           </YMenuItem>
         ))}
-        <YMenuLabel>{disabled ?? label}</YMenuLabel>
+        {children}
+        {!isMobile && (
+          <YMenuItem icon={tiled ? TabsIcon : TilesIcon} onClick={() => setViewMode(tiled ? 'tabs' : 'tiles')}>
+            {tiled ? 'Switch to tabs' : 'Switch to tiles'}
+          </YMenuItem>
+        )}
+        {disabled !== undefined && <YMenuLabel>{disabled}</YMenuLabel>}
       </YMenuPopup>
     </YMenu.Root>
   )

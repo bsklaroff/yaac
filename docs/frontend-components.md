@@ -143,9 +143,13 @@ only signal.
   it (`ServerSnapshot.startedAtMs`).
 - **A workspace**: a top bar over the tile and tab pane layout of
   `lib/layout.ts`, unchanged by the catalog. Each pane is framed by
-  YPanelHeader. Details is a pane target too: it holds what needs a look
-  (the deadline, where it runs, git status, blocked hosts, unforwarded
-  ports), and an amber dot on its icon says it lists something.
+  YPanelHeader. The bar holds the title and git status on the left, and
+  the chips (timeout, volume, a release's site, containerless), Preview,
+  the warning badges
+  (detected ports, git auth, tracked scratch dirs, blocked hosts) and a
+  `⋯` menu of pane actions (`PaneMenu`) on the right. Its bottom line meets
+  the sidebar header's, and a pane's tab strip's meets the sidebar status
+  row's.
 - **The chat pane** keeps its transcript as is; asks (permission, question,
   plan) dock above the composer as YAsk (`docs/permission-modes.md`).
 - **Pages** (create, routine, workflow and site panes, settings) are a

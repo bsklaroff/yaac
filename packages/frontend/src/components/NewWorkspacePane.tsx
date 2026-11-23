@@ -6,7 +6,7 @@ import { BranchPicker } from '#components/BranchPicker'
 import { AgentSettings, PermissionModeSelect } from '#components/ComposerSettings'
 import { ChatBottomBar, COMPOSER_CHIPS, COMPOSER_INPUT, COMPOSER_ROW } from '#components/ConversationView'
 import { ContainerlessBadge } from '#components/ContainerlessBadge'
-import { PaneBarActions, PaneOverflowMenu } from '#components/PaneBar'
+import { PaneMenu } from '#components/PaneBar'
 import { SiteForm } from '#components/SitePane'
 import { StepList } from '#components/WorkflowPane'
 import { api } from '#lib/api'
@@ -26,7 +26,7 @@ import { useInlineEdit } from '#lib/useInlineRename'
 import { useSitesSupported, useSnapshot } from '#lib/useSnapshot'
 import { useVolumes } from '#lib/volumes'
 import { guardNewWorkspace, useUiStore, type LaunchPane } from '#lib/store'
-import { focusRaisesKeyboard, useIsMobile } from '#lib/viewport'
+import { focusRaisesKeyboard } from '#lib/viewport'
 import {
   AGENT_TOOLS,
   SUPPORTED_PERMISSION_MODES,
@@ -194,7 +194,7 @@ const blankForm = (projectId: string): NewWorkspaceForm => ({ projectId, prompt:
  */
 export function NewWorkspacePane({ projectId, bar }: {
   projectId: string
-  /** The header element to render the title and pane buttons into. */
+  /** The header element to render the title and pane menu into. */
   bar: HTMLElement | null
 }): JSX.Element {
   const stored = useUiStore((s) => s.newWorkspace)
@@ -230,7 +230,6 @@ export function NewWorkspacePane({ projectId, bar }: {
   const openSettings = useUiStore((s) => s.openSettings)
   const queryClient = useQueryClient()
   const promptRef = useRef<HTMLTextAreaElement>(null)
-  const isMobile = useIsMobile()
 
   // null = dropdown shown; a string = the "+ New group" name box.
   const [newGroup, setNewGroup] = useState<string | null>(null)
@@ -757,28 +756,13 @@ export function NewWorkspacePane({ projectId, bar }: {
             )}
           </span>
           <ContainerlessBadge />
-          {inWorkspace || kind !== undefined ? null : isMobile ? (
-            <PaneOverflowMenu
-              label={noAgent ? 'No agent' : TOOL_LABEL[tool]}
+          {!inWorkspace && kind === undefined && (
+            <PaneMenu
               onNewShell={() => startNow('shell')}
               onOpenFiles={() => startNow('files')}
               onOpenChanges={() => startNow('changes')}
               onOpenCommits={() => startNow('commits')}
               {...(startBlocked !== null ? { disabled: startBlocked } : {})}
-            />
-          ) : (
-            <PaneBarActions
-              onNewShell={() => startNow('shell')}
-              onOpenFiles={() => startNow('files')}
-              onOpenChanges={() => startNow('changes')}
-              onOpenCommits={() => startNow('commits')}
-              {...(startBlocked !== null ? { disabled: startBlocked } : {})}
-              titles={{
-                shell: 'Start the workspace and open a shell',
-                files: 'Start the workspace and browse its files',
-                changes: 'Start the workspace and show its changes',
-                commits: 'Start the workspace and show its commits',
-              }}
             />
           )}
         </>,

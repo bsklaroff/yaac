@@ -207,8 +207,12 @@ const sendButton = (): HTMLButtonElement =>
   screen.getByRole<HTMLButtonElement>('button', { name: /^(Create|Queue|Save|Create routine)$/ })
 const emptyButton = (): HTMLButtonElement =>
   screen.getByRole<HTMLButtonElement>('button', { name: 'Start without a prompt' })
-const barButton = (name: 'New Shell' | 'Browse files' | 'Show changes'): HTMLButtonElement =>
-  screen.getByRole<HTMLButtonElement>('button', { name })
+/** An item of the bar's ⋯ menu, opening the menu if it is closed. */
+const barItem = (name: 'New shell' | 'Browse files' | 'Review changes'): Promise<HTMLElement> => {
+  if (screen.queryByRole('menu') === null) fireEvent.click(screen.getByRole('button', { name: 'More pane actions' }))
+  return screen.findByRole('menuitem', { name })
+}
+const isDisabled = (item: HTMLElement): boolean => item.getAttribute('aria-disabled') === 'true'
 const branchInput = (): HTMLInputElement => screen.getByLabelText<HTMLInputElement>('Base branch')
 const settingsPill = (): HTMLElement => screen.getByRole('button', { name: 'Agent settings' })
 /** The model the settings pill shows (its first part, before the effort). */
@@ -523,13 +527,13 @@ describe('NewWorkspacePane', () => {
     expect(useUiStore.getState().launches).toEqual({})
   })
 
-  // The bar matches a workspace's, and its pane buttons start the workspace
-  // now, then open that pane once it is up.
+  // The bar matches a workspace's, and its menu's pane actions start the
+  // workspace now, then open that pane once it is up.
   it('starts the workspace from the bar, with or without a prompt, and holds the pane to open', async () => {
     await openReady()
-    expect(screen.getByRole('button', { name: /Tile view|Tab view/ })).toBeTruthy()
-    expect(barButton('Browse files').title).toBe('Start the workspace and browse its files')
-    fireEvent.click(barButton('Browse files'))
+    const files = await barItem('Browse files')
+    expect(screen.getByRole('menuitem', { name: /Switch to t/ })).toBeTruthy()
+    fireEvent.click(files)
     expect(sent(CREATE)).toEqual([expect.objectContaining({ mode: 'acp' })])
     expect(sent(CREATE)[0]).not.toHaveProperty('prompt')
     const first = useUiStore.getState().optimisticProvisioning[0].workspaceId
@@ -538,7 +542,7 @@ describe('NewWorkspacePane', () => {
     // A typed prompt rides along.
     forget()
     typePrompt('look around')
-    fireEvent.click(barButton('New Shell'))
+    fireEvent.click(await barItem('New shell'))
     expect(sent(CREATE)).toEqual([expect.objectContaining({ mode: 'acp', prompt: 'look around' })])
     const second = useUiStore.getState().optimisticProvisioning[1].workspaceId
     expect(useUiStore.getState().launches[second]).toEqual({ pane: 'shell' })
@@ -546,8 +550,8 @@ describe('NewWorkspacePane', () => {
     // What blocks a create blocks them too.
     forget()
     typeInto(branchInput(), 'no-such-branch')
-    expect(barButton('Show changes').disabled).toBe(true)
-    expect(barButton('Show changes').title).toBe('Pick a branch from the list, or give a full commit id')
+    expect(isDisabled(await barItem('Review changes'))).toBe(true)
+    expect(screen.getByRole('menu').textContent).toContain('Pick a branch from the list, or give a full commit id')
   })
 
   it('sends a credential-less agent to settings → credentials, keeping the prompt', async () => {
@@ -804,9 +808,10 @@ describe('NewWorkspacePane', () => {
       expect(screen.getByText('Latest from origin when it starts')).toBeTruthy()
       // A bare terminal can only start now.
       expect(screen.queryByRole('button', { name: 'Start without a prompt' })).toBeNull()
-      // Nor can the bar's pane buttons, which start one now.
-      expect(barButton('Browse files').disabled).toBe(true)
-      expect(barButton('Browse files').title).toBe('Set Start to Now to start it here')
+      // Nor can the bar menu's pane actions, which start one now.
+      expect(isDisabled(await barItem('Browse files'))).toBe(true)
+      expect(screen.getByRole('menu').textContent).toContain('Set Start to Now to start it here')
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
 
       // A queued workspace runs unattended, so it needs something to do.
       expect(sendButton().disabled).toBe(true)
@@ -1284,7 +1289,8 @@ describe('NewWorkspacePane', () => {
       fireEvent.change(screen.getByLabelText('Timeout'), { target: { value: 'soon' } })
       expect(sendButton().title).toBe('Give the timeout as a duration like 1h30m')
       fireEvent.change(screen.getByLabelText('Timeout'), { target: { value: '1h30m' } })
-      expect(barButton('New Shell').disabled).toBe(true)
+      expect(isDisabled(await barItem('New shell'))).toBe(true)
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
       fireEvent.click(sendButton())
       await waitFor(() => expect(sent(QUEUE)).toEqual([expect.objectContaining({
         project: 'proj', startAt: '2026-10-24T13:00:00.000Z', timeout: 90, prompt: 'nightly report',
@@ -1373,7 +1379,8 @@ describe('NewWorkspacePane', () => {
       expect(select('Group').value).not.toBe('')
       expect(option('Group', 'New group').textContent).toBe('New group: Nightly triage')
       expect(screen.getByText(/^Runs start unattended/)).toBeTruthy()
-      expect(barButton('New Shell').disabled).toBe(true)
+      expect(isDisabled(await barItem('New shell'))).toBe(true)
+      fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
       expect(routineButton('Create routine').title).toBe('Type a prompt')
 
       typePrompt('triage new issues')
@@ -1477,7 +1484,7 @@ describe('NewWorkspacePane sessions', () => {
     expect(heading()).toBe('New session in “Parent work”')
     for (const label of ['Start', 'Group', 'Timeout', 'Base branch']) expect(screen.queryByLabelText(label)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'New Shell' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'More pane actions' })).toBeNull()
 
     typePrompt('review the parser')
     fireEvent.click(startSession())

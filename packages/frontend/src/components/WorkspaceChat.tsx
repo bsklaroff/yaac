@@ -42,7 +42,7 @@ import type { AcpContent, AcpEvent, AcpQueuedPrompt } from '@yaac/shared/acp'
  * agent takes messages only on its main thread.
  *
  * Paths of checkout files in the transcript open the file pane
- * (`FileLinksContext`), matched against the listing `GitTopBarSummary` keeps
+ * (`FileLinksContext`), matched against the listing `GitStatusBar` keeps
  * current.
  */
 

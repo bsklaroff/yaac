@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent } from '@testing-library/react'
 import type { ServerSnapshot, StoppedWorkspaceEntry } from '@yaac/shared/types'
 
 vi.mock('#components/WorkspaceTerminal', () => ({ WorkspaceTerminal: () => <textarea data-testid="terminal" /> }))
@@ -10,8 +10,8 @@ import { useUiStore } from '#lib/store'
 import { mockFetch, renderWithClient, serverSnapshot, testQueryClient, workspaceEntry } from './harness'
 
 /**
- * The containerless badge: in a live workspace's Details pane, and in the
- * header of the read-only pane a stopped or teammate's workspace opens in.
+ * The containerless badge: in a live workspace's header, and in the header
+ * of the read-only pane a stopped or teammate's workspace opens in.
  * It follows the server's driver, so a k8s server draws none.
  */
 
@@ -49,23 +49,18 @@ function renderPanes(driver: ServerSnapshot['driver']): void {
 }
 
 describe('ContainerlessBadge', () => {
-  it('draws nothing under k8s', async () => {
+  it('draws nothing under k8s', () => {
     renderPanes('k8s')
     expect(screen.getByText('Stopped run')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Details' }))
-    expect(await screen.findByText('in the cluster')).toBeTruthy()
     expect(screen.queryByRole('button', BADGE)).toBeNull()
   })
 
-  it('flags the read-only header and the live Details pane under containerless, and explains on click', async () => {
+  it('flags the live and read-only headers under containerless, and explains on click', async () => {
     renderPanes('containerless')
-    // The live header carries none; its badge waits in the Details pane.
-    expect(screen.getAllByRole('button', BADGE)).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Details' }))
-    await waitFor(() => expect(screen.getAllByRole('button', BADGE)).toHaveLength(2))
     const badges = screen.getAllByRole('button', BADGE)
+    expect(badges).toHaveLength(2)
 
-    fireEvent.click(badges[1])
+    fireEvent.click(badges[0])
     expect(await screen.findByText('Not sandboxed')).toBeTruthy()
     expect(screen.getByText(/drive the yaac server itself/)).toBeTruthy()
     expect(screen.getByText('yaac cluster install')).toBeTruthy()

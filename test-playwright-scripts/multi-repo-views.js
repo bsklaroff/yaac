@@ -41,7 +41,11 @@ try {
 
   if (workspaceId) {
     await page.goto(`${origin}/?project=${project.id}&workspace=${workspaceId}`)
-    await page.getByRole('button', { name: 'Show changes' }).click()
+    // Until the workspace bar replaces the new-workspace pane, ⋯ is that
+    // pane's menu, which goes away with it.
+    await page.locator('button[title^="Review commits"]').waitFor({ timeout: 30_000 })
+    await page.getByRole('button', { name: 'More pane actions' }).click()
+    await page.getByRole('menuitem', { name: 'Review changes' }).click()
     const switcher = page.locator('select[aria-label="Repo"]').first()
     await switcher.waitFor({ timeout: 15_000 })
     const options = await switcher.locator('option').allTextContents()

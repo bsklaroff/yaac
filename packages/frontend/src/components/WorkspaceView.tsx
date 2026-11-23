@@ -16,10 +16,10 @@ import {
 } from '#lib/files'
 import { isCommitsTarget } from '#lib/commits'
 import {
-  defaultPaneTarget, isDetailsTarget, isHistoryTarget, isSessionTarget, isSpecialPane, paneSession, pastConversations, sessionTarget,
+  defaultPaneTarget, isHistoryTarget, isSessionTarget, isSpecialPane, paneSession, pastConversations, sessionTarget,
   syncPaneLayout,
 } from '#lib/panes'
-import { agentLabel, workspaceAgentLabel } from '#lib/agentLabel'
+import { agentLabel } from '#lib/agentLabel'
 import { isElectron, windowApi } from '#lib/platform'
 import { useIsMobile } from '#lib/viewport'
 import { WorkspaceTitle } from '#components/WorkspaceTitle'
@@ -35,10 +35,16 @@ import { StepPane } from '#components/StepPane'
 import { StepsBar } from '#components/StepsBar'
 import { isLocked, isStepTarget, stepTargetName } from '#lib/steps'
 import { TerminalKeyBar } from '#components/TerminalKeyBar'
-import { ChevronIcon, CloseIcon, DetailsIcon, PreviewIcon, SiteIcon } from '#lib/icons'
-import { PaneBarActions, PaneBarLeading, PaneOverflowMenu, paneBarClass } from '#components/PaneBar'
-import { GitTopBarSummary, useGitStatus } from '#components/GitStatus'
-import { DetailsPane, detailsNeedAttention } from '#components/DetailsPane'
+import { ChevronIcon, CloseIcon, PreviewIcon, SiteIcon } from '#lib/icons'
+import { PaneBarLeading, PaneMenu, paneBarClass } from '#components/PaneBar'
+import { GitStatusBar } from '#components/GitStatus'
+import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
+import { ContainerlessBadge } from '#components/ContainerlessBadge'
+import { DeadlineChip, TimeoutSubmenu, useWorkspaceTimeout } from '#components/DeadlineChip'
+import { GitAuthFailureBadge } from '#components/GitAuthFailureBadge'
+import { TrackedScratchDirsBadge } from '#components/TrackedScratchDirsBadge'
+import { UnforwardedPortsBadge } from '#components/UnforwardedPortsBadge'
+import { VolumeBadge } from '#components/VolumeBadge'
 import { statusKind } from '#components/StatusMark'
 import { StopForwardButton } from '#components/StopForwardButton'
 import { api } from '#lib/api'
@@ -60,23 +66,28 @@ import {
   type PaneLayout,
 } from '#lib/layout'
 import type {
-  GitAuthFailure,
   PortMapping,
-  ProjectSummary,
   ProvisioningWorkspaceEntry,
   ServerSnapshot,
   WorkspaceTerminalEntry,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
-import { YButton, YConfirm, YMenu, YMenuItem, YMenuPopup, YStatus } from '#ui'
+import { cn, YButton, YConfirm, YMenu, YMenuItem, YMenuPopup, YStatus } from '#ui'
 
 /* Panes sit flush: columns touch, cut apart by a 1px line on each
  * column's left edge, and a pane's body fills its frame. */
 const GAP = 0
-/** A pane's header (tab strip) height. */
+/** A pane's header (tab strip) height: the sidebar's status row's (`h-9`), so
+ *  their bottom lines meet. */
 const HEADER_H = 36
 /** The same strip on mobile, tall enough for a finger. */
 const MOBILE_HEADER_H = 40
+/** A phone's second bar line, under the title: the git status and the
+ *  chips. It tucks up into the bar's bottom padding, so it sits close under
+ *  the title, and carries the bar's bottom line. Only its own controls take
+ *  the pointer, so the overlap never covers the bar's buttons. */
+const MOBILE_STRIP = 'pointer-events-none flex h-8 shrink-0 items-center gap-1 border-b border-line px-2 -mt-2.5 '
+  + '[&>*]:pointer-events-auto'
 /** Inner padding around a pane's body. */
 const PAD = 0
 /** Most workspaces attached in the background after a page load. Each costs
@@ -114,7 +125,6 @@ function paneName(
   }
   if (isHistoryTarget(target)) return 'History'
   if (isCommitsTarget(target)) return 'Commits'
-  if (isDetailsTarget(target)) return 'Details'
   if (isFileTarget(target)) return fileLabels?.[fileTargetPath(target)] ?? fileTargetPath(target)
   if (isStepTarget(target)) return stepTargetName(target)
   if (isSessionTarget(target)) {
@@ -148,7 +158,6 @@ export function WorkspaceView({
   const openPreview = useUiStore((s) => s.openPreview)
   const openChanges = useUiStore((s) => s.openChanges)
   const openCommits = useUiStore((s) => s.openCommits)
-  const openDetails = useUiStore((s) => s.openDetails)
   const openFiles = useUiStore((s) => s.openFiles)
   const openHistory = useUiStore((s) => s.openHistory)
   const dirtyFiles = useUiStore((s) => s.dirtyFiles)
@@ -172,6 +181,8 @@ export function WorkspaceView({
   const routineOf = routines.find((r) => r.id === workspace?.routineId)
   // Project-wide, but shown here since it breaks git in this workspace too.
   const gitAuthFailures = (workspace && snapshot?.gitAuthFailures?.[workspace.projectId]) || []
+  const project = (snapshot?.projects ?? []).find((p) => p.id === workspace?.projectId)
+  const timeout = useWorkspaceTimeout(workspace?.workspaceId ?? '', workspace?.deadline)
 
   // Forwarded ports open in a preview: a pane in the desktop app, which
   // proxies the pane's loopback into the workspace, or a native view in the
@@ -591,6 +602,29 @@ export function WorkspaceView({
     : isSessionTarget(activeTab) ? null
     : activeTab
 
+  // Where the workspace runs and until when: beside the bar's actions, or
+  // on a phone, where the title needs the bar's width, beside the git status.
+  const chips: ReactNode = workspace && (
+    <>
+      {/* A release runs until its site stops it, so it takes no timeout. */}
+      {workspace.site === undefined && <DeadlineChip timeout={timeout} />}
+      <VolumeBadge projectId={workspace.projectId} workspaceId={workspace.workspaceId} />
+      {workspace.site !== undefined && (
+        <YButton
+          variant="ghost"
+          size="sm"
+          icon={SiteIcon}
+          onClick={() => openObject(workspace.projectId, { kind: 'site', id: workspace.site ?? '' })}
+          title={`A release of the public site “${workspace.site}”: open the site`}
+          className="no-drag min-w-0 shrink!"
+        >
+          <span className="truncate">release of <span className="font-mono">{workspace.site}</span></span>
+        </YButton>
+      )}
+      <ContainerlessBadge />
+    </>
+  )
+
   return (
     <main className="flex h-full min-w-0 flex-col">
       {/* The workspace bar. */}
@@ -602,118 +636,117 @@ export function WorkspaceView({
           </span>
         </header>
       ) : workspace ? (
-        <header className={headerClass}>
-          {leading}
-          <WorkspaceTitle
-            workspaceId={workspace.workspaceId}
-            title={workspace.title ?? ''}
-            prompt={workspace.prompt ?? ''}
-            after={routineOf !== undefined && (
+        <>
+          {/* On a phone the strip below carries the bar's bottom line. */}
+          <header className={cn(headerClass, isMobile && 'border-b-0')}>
+            {leading}
+            <WorkspaceTitle
+              workspaceId={workspace.workspaceId}
+              title={workspace.title ?? ''}
+              prompt={workspace.prompt ?? ''}
+              after={routineOf !== undefined && (
+                <YButton
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => openObject(routineOf.projectId, { kind: 'routine', id: routineOf.id })}
+                  title="Open the routine it is a run of"
+                  className="no-drag min-w-0 shrink!"
+                >
+                  <span className="truncate">from {routineOf.name}</span>
+                </YButton>
+              )}
+            />
+            {!isMobile && <GitStatusBar key={workspace.workspaceId} workspaceId={workspace.workspaceId} />}
+            <span className="titlebar-drag flex-1 self-stretch" />
+            <StepsBar workspace={workspace} />
+            {!isMobile && chips}
+            {!isMobile && (
+              <>
+                {pickPreviewPort ? (
+                  <PreviewPortMenu
+                    ports={previewPorts}
+                    trigger={previewMenuTrigger}
+                    returnFocus={previewMenuReturn}
+                    onPick={(p) => showPreview(workspace.workspaceId, p)}
+                    onStop={canUnforward ? (p) => stopForwarding(workspace.workspaceId, p) : undefined}
+                  />
+                ) : previewPorts.length > 0 && (
+                  // The one control in the bar whose width varies. Below lg it
+                  // drops its word, as its neighbors do, so the port shows.
+                  <span className="group flex min-w-0 items-center rounded transition hover:bg-hover">
+                    <YButton
+                      variant="ghost"
+                      size="sm"
+                      icon={PreviewIcon}
+                      onClick={() => showPreview(workspace.workspaceId, previewPorts[0].containerPort)}
+                      title={`Open preview (${portLabel(previewPorts[0])})`}
+                      aria-label="Open preview"
+                      className="min-w-0 shrink!"
+                    >
+                      {/* One inline run, so the mono port sits on the label's
+                          baseline; leading-none keeps the mixed fonts from
+                          heightening the line. */}
+                      <span className="min-w-0 truncate">
+                        <span className="max-lg:sr-only">Preview </span>
+                        <span className="font-mono leading-none">{portLabel(previewPorts[0])}</span>
+                      </span>
+                    </YButton>
+                    {canUnforward && (
+                      <StopForwardButton
+                        containerPort={previewPorts[0].containerPort}
+                        onStop={(p) => stopForwarding(workspace.workspaceId, p)}
+                      />
+                    )}
+                  </span>
+                )}
+              </>
+            )}
+            {workspace.unforwardedPorts.length > 0 && (
+              <UnforwardedPortsBadge ports={workspace.unforwardedPorts} workspaceId={workspace.workspaceId} iconSize={11} className="hover:bg-hover" />
+            )}
+            {gitAuthFailures.length > 0 && (
+              <GitAuthFailureBadge projectIds={[workspace.projectId]} failures={gitAuthFailures} iconSize={12} className="hover:bg-danger/25" />
+            )}
+            {/* Its fix restarts the workspace, which a site's release refuses. */}
+            {project && workspace.site === undefined && (
+              <TrackedScratchDirsBadge workspace={workspace} project={project} className="hover:bg-warning/25" />
+            )}
+            {stopError?.id === workspace.workspaceId && (
               <YButton
-                variant="ghost"
+                variant="danger"
                 size="sm"
-                onClick={() => openObject(routineOf.projectId, { kind: 'routine', id: routineOf.id })}
-                title="Open the routine it is a run of"
-                className="no-drag min-w-0 shrink!"
+                onClick={() => setStopError(null)}
+                title="Dismiss"
+                className="min-w-0 shrink! bg-danger-soft"
               >
-                <span className="truncate">from {routineOf.name}</span>
+                <span className="truncate">{stopError.message}</span>
+                <CloseIcon size={9} className="shrink-0" />
               </YButton>
             )}
-          />
-          <StepsBar workspace={workspace} />
-          {workspace.site !== undefined && (
-            <YButton
-              variant="ghost"
-              size="sm"
-              icon={SiteIcon}
-              onClick={() => openObject(workspace.projectId, { kind: 'site', id: workspace.site ?? '' })}
-              title={`A release of the public site “${workspace.site}”: open the site`}
-              className="no-drag min-w-0 shrink!"
-            >
-              <span className="truncate">release of <span className="font-mono">{workspace.site}</span></span>
-            </YButton>
-          )}
-          <span className="flex-1" />
-          {!isMobile && <GitTopBarSummary workspaceId={workspace.workspaceId} />}
-          {!isMobile && (
-            <>
-              <PaneBarActions
-                {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
-                onOpenFiles={() => openFiles(workspace.workspaceId)}
-                onOpenChanges={() => openChanges(workspace.workspaceId)}
-                onOpenCommits={() => openCommits(workspace.workspaceId)}
-                {...onOpenHistory}
-              />
-              {pickPreviewPort ? (
-                <PreviewPortMenu
-                  ports={previewPorts}
-                  trigger={previewMenuTrigger}
-                  returnFocus={previewMenuReturn}
-                  onPick={(p) => showPreview(workspace.workspaceId, p)}
-                  onStop={canUnforward ? (p) => stopForwarding(workspace.workspaceId, p) : undefined}
-                />
-              ) : previewPorts.length > 0 && (
-                // The one control in the bar whose width varies. Below lg it
-                // drops its word, as its neighbors do, so the port shows.
-                <span className="group flex min-w-0 items-center rounded transition hover:bg-hover">
-                  <YButton
-                    variant="ghost"
-                    size="sm"
-                    icon={PreviewIcon}
-                    onClick={() => showPreview(workspace.workspaceId, previewPorts[0].containerPort)}
-                    title={`Open preview (${portLabel(previewPorts[0])})`}
-                    aria-label="Open preview"
-                    className="min-w-0 shrink!"
-                  >
-                    {/* One inline run, so the mono port sits on the label's
-                        baseline; leading-none keeps the mixed fonts from
-                        heightening the line. */}
-                    <span className="min-w-0 truncate">
-                      <span className="max-lg:sr-only">Preview </span>
-                      <span className="font-mono leading-none">{portLabel(previewPorts[0])}</span>
-                    </span>
-                  </YButton>
-                  {canUnforward && (
-                    <StopForwardButton
-                      containerPort={previewPorts[0].containerPort}
-                      onStop={(p) => stopForwarding(workspace.workspaceId, p)}
-                    />
-                  )}
-                </span>
-              )}
-            </>
-          )}
-          {stopError?.id === workspace.workspaceId && (
-            <YButton
-              variant="danger"
-              size="sm"
-              onClick={() => setStopError(null)}
-              title="Dismiss"
-              className="min-w-0 shrink! bg-danger-soft"
-            >
-              <span className="truncate">{stopError.message}</span>
-              <CloseIcon size={9} className="shrink-0" />
-            </YButton>
-          )}
-          <DetailsButton
-            workspace={workspace}
-            project={(snapshot?.projects ?? []).find((p) => p.id === workspace.projectId)}
-            gitAuthFailures={gitAuthFailures}
-            onOpen={() => openDetails(workspace.workspaceId)}
-          />
-          {isMobile && (
-            <PaneOverflowMenu
-              label={workspaceAgentLabel(workspace)}
-              previewPorts={previewPorts}
+            {workspace.blockedHosts.length > 0 && (
+              <BlockedHostsBadge hosts={workspace.blockedHosts} workspaceId={workspace.workspaceId} iconSize={12} className="hover:bg-danger/25" />
+            )}
+            {/* A desktop's previews have their own button above. */}
+            <PaneMenu
+              triggerRef={timeout.menuButton}
+              previewPorts={isMobile ? previewPorts : []}
               {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
               onOpenChanges={() => openChanges(workspace.workspaceId)}
               onOpenCommits={() => openCommits(workspace.workspaceId)}
               onOpenFiles={() => openFiles(workspace.workspaceId)}
               {...onOpenHistory}
               onOpenPreview={(p) => showPreview(workspace.workspaceId, p)}
-            />
+            >
+              {timeout.deadline === undefined && workspace.site === undefined && <TimeoutSubmenu timeout={timeout} />}
+            </PaneMenu>
+          </header>
+          {isMobile && (
+            <div className={MOBILE_STRIP}>
+              <GitStatusBar key={workspace.workspaceId} workspaceId={workspace.workspaceId} />
+              <span className="ml-auto flex shrink-0 items-center gap-1">{chips}</span>
+            </div>
           )}
-        </header>
+        </>
       ) : activeProjectId ? (
         // The new-workspace pane or a routine's fills this bar.
         <header className={headerClass}>
@@ -808,7 +841,6 @@ export function WorkspaceView({
           const preview = isPreviewTarget(target)
           const explorer = isFilesTarget(target) || isChangesTarget(target)
           const commits = isCommitsTarget(target)
-          const details = isDetailsTarget(target)
           const file = isFileTarget(target)
           const owner = workspaces.find((s) => s.workspaceId === id)
           const session = paneSession(owner, target)
@@ -817,7 +849,7 @@ export function WorkspaceView({
           // conversation), as do file panes (unmounting loses undo history,
           // cursor and unsaved text) and previews (unmounting reloads the
           // page from scratch).
-          const ephemeral = explorer || commits || details
+          const ephemeral = explorer || commits
           // In tiles mode, a column's active tab is on-screen in its body.
           const colRect = id === sid && tiled ? activePaneRect.get(target) : undefined
           // Hidden panes never change size, since a resize round-trips to
@@ -906,15 +938,6 @@ export function WorkspaceView({
                 <div className="h-full w-full overflow-hidden">
                   <WorkspaceCommits workspaceId={id} />
                 </div>
-              ) : details ? (
-                owner !== undefined && (
-                  <DetailsPane
-                    workspace={owner}
-                    project={(snapshot?.projects ?? []).find((p) => p.id === owner.projectId)}
-                    gitAuthFailures={snapshot?.gitAuthFailures?.[owner.projectId] ?? []}
-                    interactive={!isLocked(owner)}
-                  />
-                )
               ) : explorer ? (
                 <div className="h-full w-full overflow-hidden">
                   <WorkspaceFiles
@@ -1097,28 +1120,5 @@ function PreviewPortMenu({
         ))}
       </YMenuPopup>
     </YMenu.Root>
-  )
-}
-
-/**
- * The top bar's Details button, with an amber dot while the pane lists
- * something that needs the user. It reads the git status on every width,
- * which also keeps the file listing behind chat and terminal file links
- * current on a phone, where the top bar has no git summary.
- */
-function DetailsButton({ workspace, project, gitAuthFailures, onOpen }: {
-  workspace: WorkspaceListEntry
-  project: ProjectSummary | undefined
-  gitAuthFailures: GitAuthFailure[]
-  onOpen: () => void
-}): JSX.Element {
-  const git = useGitStatus(workspace.workspaceId)
-  return (
-    <span className="relative flex">
-      <YButton variant="ghost" icon={DetailsIcon} onClick={onOpen} title="Where it runs, git, network and storage" aria-label="Details" />
-      {detailsNeedAttention(workspace, project, gitAuthFailures, git.error !== null) && (
-        <span aria-hidden className="pointer-events-none absolute right-1 top-1 h-1.5 w-1.5 bg-warning" />
-      )}
-    </span>
   )
 }

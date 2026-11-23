@@ -189,7 +189,8 @@ describe('WorkspaceView sessions', () => {
   it('reads closed sessions\' conversations beside an open one, and resumes one into a focused pane', async () => {
     const open = sessionEntry({ sessionId: 'sa', conversationId: 'conv-a' })
     const view = show({ sessions: [open], conversations: [older, closed, held] })
-    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+    fireEvent.click(screen.getByRole('button', { name: 'More pane actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Conversation history' }))
     expect(await screen.findByText('the parser is fixed')).toBeTruthy()
     expect(useUiStore.getState().activeTabs.s1).toBe('history')
 

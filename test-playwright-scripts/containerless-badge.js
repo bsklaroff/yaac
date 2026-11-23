@@ -1,8 +1,8 @@
 /*
- * Verifies the containerless badge in a workspace's Details pane (opened
- * from the top bar's Details button): it shows on a workspace of a
- * containerless server, and clicking it opens the popover explaining
- * that the workspace is not sandboxed. Screenshots the pane and the popover,
+ * Verifies the containerless badge in a workspace's top bar: it shows on a
+ * workspace of a containerless server, and clicking it opens the popover
+ * explaining that the workspace is not sandboxed. Screenshots the bar and
+ * the popover,
  * desktop and mobile, to $SCREENSHOT_DIR (default /tmp/yaac-shots).
  *
  * Needs a running containerless `yaac server` (see lib.js). Creates a
@@ -28,7 +28,6 @@ try {
   for (const [name, viewport] of [['desktop', { width: 1400, height: 800 }], ['mobile', { width: 390, height: 800 }]]) {
     const page = await browser.newPage({ viewport })
     await page.goto(url)
-    await page.getByRole('button', { name: 'Details', exact: true }).click({ timeout: 20_000 })
     const badge = page.getByRole('button', { name: /Containerless workspace/ })
     await badge.waitFor({ timeout: 20_000 })
     check(`${name}: badge shows`, await badge.isVisible())
