@@ -27,11 +27,23 @@ export async function claimTestScratch(scratchDir: string): Promise<void> {
   await fs.writeFile(path.join(scratchDir, OWNER_FILE), String(process.pid))
 }
 
+/** A process's cgroup v2 path, or '' where it has none (macOS, cgroup v1). */
+async function cgroupOf(pid: string): Promise<string> {
+  const text = await fs.readFile(`/proc/${pid}/cgroup`, 'utf8').catch(() => '')
+  return /^0::(\/\S*)$/m.exec(text)?.[1] ?? ''
+}
+
 /**
  * Stop every workspace started in a directory under `dir`, and resolve how
  * many there were. Where the launch put a workspace in a systemd slice
  * (docs/containerless-driver.md), stopping the slice also ends what its
  * panes started and detached from.
+ *
+ * A slice is stopped only when the tmux server sits in a `systemd-run` scope
+ * directly in a workspace slice, which is where a launch puts it, and only
+ * when the caller is outside that slice. A tmux server a test starts itself
+ * inherits the caller's cgroup, and inside a containerless workspace that is
+ * the workspace's own slice: stopping it would end the run doing the stop.
  */
 export async function stopTestWorkspaces(
   dir: string,
@@ -39,14 +51,20 @@ export async function stopTestWorkspaces(
 ): Promise<number> {
   const { stdout } = await execFileAsync('ps', ['-ww', '-eo', 'pid=,args='], { maxBuffer: 64 * 1024 * 1024 })
     .catch(() => ({ stdout: '' }))
+  const self = await cgroupOf('self')
   let stopped = 0
   for (const line of stdout.split('\n')) {
     const [, pid, sock, cwd] = /^\s*(\d+) (?:\S*\/)?tmux -S (\S+) .* new-session .* -c (\S+)/.exec(line) ?? []
     if (cwd === undefined || !`${cwd}/`.startsWith(`${dir}/`) || !await only(cwd)) continue
-    const slice = path.basename(path.dirname(await fs.readFile(`/proc/${pid}/cgroup`, 'utf8').catch(() => '')))
+    const scope = await cgroupOf(pid)
+    const slice = path.dirname(scope)
+    const launched = /\/run-[^/]+\.scope$/.test(scope)
+      && /yaac-[0-9a-f]+_[0-9a-f]+\.slice$/.test(path.basename(slice))
+      && !`${self}/`.startsWith(`${slice}/`)
     await execFileAsync('tmux', ['-S', sock, 'kill-server']).catch(() => { /* already gone */ })
-    if (/yaac-[0-9a-f]+_[0-9a-f]+\.slice$/.test(slice)) {
-      await execFileAsync('systemctl', ['--user', 'stop', slice], { timeout: 15_000 }).catch(() => { /* no user session */ })
+    if (launched) {
+      await execFileAsync('systemctl', ['--user', 'stop', path.basename(slice)], { timeout: 15_000 })
+        .catch(() => { /* no user session */ })
     }
     stopped += 1
   }

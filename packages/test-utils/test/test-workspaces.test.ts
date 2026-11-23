@@ -1,4 +1,5 @@
 import { execFile, spawnSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -10,20 +11,31 @@ import { setHermeticScratch, testTmpBase } from '#tmp'
 
 const run = promisify(execFile)
 const HAS_TMUX = ['/usr/bin/tmux', '/opt/homebrew/bin/tmux', '/usr/local/bin/tmux'].some((p) => existsSync(p))
+const HAS_SYSTEMD_RUN = HAS_TMUX
+  && spawnSync('systemd-run', ['--user', '--scope', '--quiet', '--collect', 'true']).status === 0
 
 /** A rig of its own: the data dir `testTmpBase()` hangs off, and a short
  *  dir for sockets, whose paths are length-limited. */
 let rig: string
 let socks: string
 let started: string[]
+/** Slices this file created, which it stops itself once the PATH stub that
+ *  hides `systemctl` is lifted. */
+let madeSlices: string[]
+/** Where the stub `systemctl` on PATH records each call, so no test here
+ *  stops a real slice, least of all the one this run is in. */
+let systemctlLog: string
 
 /** Start a tmux server the way a containerless launch does, in `cwd`, and
- *  return its socket. */
-async function workspaceIn(cwd: string): Promise<string> {
+ *  return its socket. With `slice`, tmux starts in a `systemd-run` scope of
+ *  that slice, as a launch with a user session puts it. */
+async function workspaceIn(cwd: string, slice?: string): Promise<string> {
   await fs.mkdir(cwd, { recursive: true })
   const sock = path.join(socks, `${String(started.length)}.sock`)
   started.push(sock)
-  await run('tmux', ['-S', sock, '-f', '/dev/null', 'new-session', '-d', '-s', 'yaac', '-c', cwd, 'sleep 600'])
+  const tmux = ['tmux', '-S', sock, '-f', '/dev/null', 'new-session', '-d', '-s', 'yaac', '-c', cwd, 'sleep 600']
+  const argv = slice === undefined ? tmux : ['systemd-run', '--user', '--scope', '--quiet', '--collect', `--slice=${slice}`, ...tmux]
+  await run(argv[0], argv.slice(1))
   return sock
 }
 
@@ -34,6 +46,12 @@ beforeEach(async () => {
   rig = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-test-ws-'))
   socks = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-ws-'))
   started = []
+  madeSlices = []
+  const bin = path.join(rig, 'bin')
+  systemctlLog = path.join(rig, 'systemctl.log')
+  await fs.mkdir(bin)
+  await fs.writeFile(path.join(bin, 'systemctl'), `#!/bin/sh\necho "$*" >> '${systemctlLog}'\n`, { mode: 0o755 })
+  vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`)
   // As an e2e run has it: scratch under the rig's data dir, not the OS
   // tmpdir every other test on this host shares.
   setHermeticScratch(false)
@@ -43,6 +61,7 @@ beforeEach(async () => {
 afterEach(async () => {
   for (const sock of started) await run('tmux', ['-S', sock, 'kill-server']).catch(() => {})
   vi.unstubAllEnvs()
+  for (const slice of madeSlices) await run('systemctl', ['--user', 'stop', slice]).catch(() => {})
   setHermeticScratch(true)
   await fs.rm(rig, { recursive: true, force: true })
   await fs.rm(socks, { recursive: true, force: true })
@@ -65,6 +84,30 @@ describe.skipIf(!HAS_TMUX)('stopTestWorkspaces', () => {
     expect(await stopTestWorkspaces(mine)).toBe(2)
 
     expect(await Promise.all([first, second, sibling, elsewhere].map(running))).toEqual([false, false, true, true])
+  })
+
+  it.skipIf(!HAS_SYSTEMD_RUN)('stops the slice a launch put a workspace in, and never the caller\'s', async () => {
+    const hex = (n: number): string => randomBytes(n).toString('hex')
+    const launched = `yaac-${hex(4)}_${hex(16)}.slice`
+    madeSlices.push(launched)
+    // Inside a containerless workspace, that workspace's own slice. The
+    // case runs only there, so a dev host gets no stray slice units.
+    const callerSlice = path.basename(path.dirname(
+      /^0::(\S*)$/m.exec(await fs.readFile('/proc/self/cgroup', 'utf8'))?.[1] ?? ''))
+    const mine = path.join(testTmpBase(), 'yaac-e2ecli-mine')
+    const servers = await Promise.all([
+      workspaceIn(path.join(mine, 'launched'), launched),
+      // Started by the test process, so in its cgroup.
+      workspaceIn(path.join(mine, 'inherited')),
+      .../yaac-[0-9a-f]+_[0-9a-f]+\.slice$/.test(callerSlice)
+        ? [workspaceIn(path.join(mine, 'in-caller'), callerSlice)]
+        : [],
+    ])
+
+    expect(await stopTestWorkspaces(mine)).toBe(servers.length)
+
+    expect(await Promise.all(servers.map(running))).toEqual(servers.map(() => false))
+    expect(await fs.readFile(systemctlLog, 'utf8')).toBe(`--user stop ${launched}\n`)
   })
 })
 
