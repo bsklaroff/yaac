@@ -11,17 +11,18 @@ import {
 } from 'react'
 import clsx from 'clsx'
 import { useMutation } from '@tanstack/react-query'
-import { CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon, TimeoutIcon } from '#lib/icons'
+import { ChevronIcon, CloseIcon, GroupRemoveIcon, LoadingIcon, RestartIcon, TimeoutIcon } from '#lib/icons'
 import { BlockedHostsBadge } from '#components/BlockedHostsBadge'
-import { StatusMark } from '#components/StatusMark'
+import { StatusMark, statusText } from '#components/StatusMark'
 import { StopWorkspaceDialog } from '#components/StopWorkspaceDialog'
 import { SidebarRow } from '#components/sidebar/SidebarRow'
 import { agentLabel, workspaceAgentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
 import { dismissProvisioning } from '#lib/createWorkspace'
 import { stopProvisioning } from '#lib/stopWorkspaceFlow'
-import { useUiStore, isSessionUnread, isUnreadWaiting, isUnseenDeath } from '#lib/store'
-import { sessionTarget } from '#lib/panes'
+import { layoutOf, useUiStore, isSessionUnread, isUnreadWaiting, isUnseenDeath } from '#lib/store'
+import { focusPaneTarget, paneTargets } from '#lib/layout'
+import { defaultPaneTarget, sessionTarget } from '#lib/panes'
 import { isLocked } from '#lib/steps'
 import { relativeAge, timeUntil, useNow } from '#lib/time'
 import { useInlineRename } from '#lib/useInlineRename'
@@ -37,6 +38,7 @@ import type {
   ProvisioningWorkspaceEntry,
   WorkspaceGroupSummary,
   WorkspaceListEntry,
+  WorkspaceStatus,
 } from '@yaac/shared/types'
 import { YButton, YConfirm, YDialog, YDialogClose, YDialogDescription, YDialogTitle, YInput, YStatus } from '#ui'
 
@@ -151,6 +153,22 @@ function onControl(e: ReactPointerEvent): boolean {
   return hit !== null && hit.parentElement !== e.currentTarget
 }
 
+/** Session statuses from busiest to least busy, for `busiestStatus`. */
+const BUSIEST = ['running', 'background', 'waiting'] as const
+
+/**
+ * The status a workspace's row shows: its busiest session's, so work still
+ * going on in one session shows while another waits. An unread session
+ * outranks them all (the row passes `waiting` to show it), and an ask
+ * outranks that, in StatusMark. The server's own aggregate ranks waiting
+ * first, because it drives alerts. With no session reporting a status yet,
+ * the row falls back to the server's.
+ */
+function busiestStatus(workspace: WorkspaceListEntry): WorkspaceStatus {
+  const statuses = new Set(workspace.sessions.map((s) => (s.exited === true ? undefined : s.status)))
+  return BUSIEST.find((s) => statuses.has(s)) ?? workspace.status
+}
+
 /** A live workspace's row. It is memoized and reads only its own slice of
  *  the store, so a frame or a selection change renders just the rows it
  *  touches. */
@@ -167,6 +185,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
   const stopping = useUiStore((s) => isTerminating(workspace, s.pendingDeleteIds))
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
+  const collapsed = useUiStore((s) => s.collapsedWorkspaces.includes(workspace.workspaceId))
+  const setCollapsed = useUiStore((s) => s.setWorkspaceCollapsed)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [grouping, setGrouping] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -204,6 +224,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({
 
   // The age, timeout, and agent count and tool, or the blocked-hosts badge
   // in their place.
+  const multi = workspace.sessions.length > 1
+  const toggleSessions = (): void => setCollapsed(workspace.workspaceId, !collapsed)
   const meta = (
     <>
       <span className="shrink-0">{relativeAge(workspace.createdAt)}</span>
@@ -214,7 +236,8 @@ export const WorkspaceRow = memo(function WorkspaceRow({
         </span>
       )}
       {/* Several sessions are counted here and listed under the row; one is
-          named by its agent. */}
+          named by its agent. On touch the count is the toggle that folds the
+          session rows, a bigger target than the mark. */}
       {workspace.blockedHosts.length > 0 ? (
         <BlockedHostsBadge
           hosts={workspace.blockedHosts}
@@ -222,14 +245,33 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           iconSize={11}
           className="pointer-events-auto ml-auto hover:bg-danger/25"
         />
+      ) : multi && isMobile ? (
+        <YButton
+          variant="bare"
+          onClick={toggleSessions}
+          aria-expanded={!collapsed}
+          className="pointer-events-auto -my-1 ml-auto flex shrink-0 items-center gap-1 py-1"
+        >
+          {workspace.sessions.length} sessions
+          <ChevronIcon size={11} className={clsx(!collapsed && 'rotate-90')} />
+        </YButton>
       ) : (
         <span className="ml-auto shrink-0">
-          {workspace.sessions.length > 1 ? `${String(workspace.sessions.length)} sessions` : workspaceAgentLabel(workspace)}
+          {multi ? `${String(workspace.sessions.length)} sessions` : workspaceAgentLabel(workspace)}
         </span>
       )}
     </>
   )
   const select = (): void => selectWorkspace(workspace.workspaceId)
+  const shownStatus = unread ? 'waiting' : busiestStatus(workspace)
+  const status = (
+    <StatusMark
+      status={shownStatus}
+      asking={workspace.asking === true}
+      unread={unread}
+      {...(teammate !== undefined ? { owner: teammate } : {})}
+    />
+  )
 
   return (
     <div>
@@ -260,14 +302,30 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           }}
           className={clsx('cursor-grab active:cursor-grabbing max-md:cursor-pointer',
             dragging && 'opacity-60')}
-          mark={(
-            <StatusMark
-              status={workspace.status}
-              asking={workspace.asking === true}
-              unread={unread}
-              {...(teammate !== undefined ? { owner: teammate } : {})}
-            />
-          )}
+          // With several sessions the mark turns into the caret that folds
+          // their rows away while the row is hovered or keyboard-focused, as
+          // an object row's icon does. A phone shows no caret and folds them
+          // from the count, so there the mark toggles only when the
+          // blocked-hosts badge takes the count's place. The button's label
+          // carries the status, which a screen reader would not read from
+          // inside it.
+          mark={multi && (!isMobile || workspace.blockedHosts.length > 0) ? (
+            <YButton
+              variant="bare"
+              onClick={toggleSessions}
+              aria-label={`${statusText(shownStatus, workspace.asking, teammate, unread)}. `
+                + `${collapsed ? 'Show' : 'Hide'} ${title}'s sessions`}
+              aria-expanded={!collapsed}
+              className="pointer-events-auto flex size-3.5 items-center justify-center text-subtle transition hover:text-text"
+            >
+              <span className="flex group-hover/row:hidden group-has-focus-visible/row:hidden">{status}</span>
+              <ChevronIcon
+                size={11}
+                className={clsx('hidden transition-transform group-hover/row:block group-has-focus-visible/row:block',
+                  !collapsed && 'rotate-90')}
+              />
+            </YButton>
+          ) : status}
           title={<MarqueeTitle text={title} hovered={hovered && !isMobile} />}
           strong={unread || workspace.asking === true}
           meta={meta}
@@ -290,7 +348,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           }}
         />
       )}
-      {workspace.sessions.length > 1 && workspace.sessions.map((s) => (
+      {multi && !collapsed && workspace.sessions.map((s) => (
         <SessionRow key={s.sessionId} workspace={workspace} session={s} />
       ))}
 
@@ -314,15 +372,26 @@ export const WorkspaceRow = memo(function WorkspaceRow({
  * One of a workspace's sessions, listed under its row when it has several:
  * its own status (a bold title while unread), its title or opening message,
  * and its agent. Clicking it opens the workspace on that session's pane.
+ * While its workspace is selected, the row is highlighted if its pane is the
+ * focused one, the pane WorkspaceView picks with `focusPaneTarget`.
  */
 function SessionRow({ workspace, session }: { workspace: WorkspaceListEntry; session: SessionEntry }): JSX.Element {
   const me = useWhoami()?.userId
   const teammate = useTeammateName()
   const selectWorkspace = useUiStore((s) => s.selectWorkspace)
   const focusTerminal = useUiStore((s) => s.focusTerminal)
+  const target = sessionTarget(session.sessionId)
+  const isMobile = useIsMobile()
+  const tiled = useUiStore((s) => s.viewMode === 'tiles') && !isMobile
+  const focused = useUiStore((s) => s.selectedWorkspaceId === workspace.workspaceId
+    && focusPaneTarget(
+      paneTargets(layoutOf(s.layouts, workspace.workspaceId, defaultPaneTarget(workspace))),
+      s.activeTabs[workspace.workspaceId],
+      tiled,
+    ) === target)
   const open = (): void => {
     selectWorkspace(workspace.workspaceId)
-    focusTerminal(workspace.workspaceId, sessionTarget(session.sessionId))
+    focusTerminal(workspace.workspaceId, target)
   }
   const name = session.title ?? session.prompt?.split('\n')[0] ?? agentLabel(session.tool, session)
   return (
@@ -330,6 +399,10 @@ function SessionRow({ workspace, session }: { workspace: WorkspaceListEntry; ses
       depth={1}
       label={name}
       onSelect={open}
+      selected={focused}
+      // Its workspace's row is selected too, so the tree line marks which
+      // session is meant.
+      className={clsx(focused && 'before:bg-accent')}
       mark={(
         <StatusMark
           status={session.exited === true ? undefined : session.status}

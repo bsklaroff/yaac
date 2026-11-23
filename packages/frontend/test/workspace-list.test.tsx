@@ -33,7 +33,7 @@ import { ListTitle, useSidebarFollow, WorkspaceList, type ProjectScope } from '#
 import { SidebarTabs } from '#components/sidebar/SidebarTabs'
 import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
-import { mockFetch, renderWithClient, serverError, serverSnapshot, sessionEntry, testQueryClient, type FetchCall, type FetchMock } from './harness'
+import { mockFetch, renderWithClient, serverError, serverSnapshot, sessionEntry, TEST_USER_ID, testQueryClient, type FetchCall, type FetchMock } from './harness'
 import { intersect, intersection } from './setup'
 
 /** Scroll every load-more marker into view: jsdom has no layout, so the
@@ -116,6 +116,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
 })
 
 const entry = (over: Partial<WorkspaceListEntry> = {}): WorkspaceListEntry => ({
@@ -599,19 +600,23 @@ describe('WorkspaceList', () => {
   })
 
   // A workspace with no session runs no agent, one with a single session is
-  // named by it, and one with several lists them under its row.
+  // named by it, and one with several lists them under its row, which folds
+  // away behind its mark and highlights the session whose pane is focused.
   it('names a workspace by its sessions, listing several under its row', () => {
-    renderList([
+    const workspaces = [
       entry({ workspaceId: 'a', title: 'Bare', sessions: [], status: 'idle' }),
       entry({
         workspaceId: 'b',
         title: 'Busy',
+        // The server ranks waiting first; the row shows the busiest session.
+        status: 'waiting',
         sessions: [
           sessionEntry({ sessionId: 'sa', prompt: 'write the parser\nand tests', status: 'running' }),
           sessionEntry({ sessionId: 'sb', tool: 'codex', title: 'Reviewer', status: 'waiting', ordinal: 1 }),
         ],
       }),
-    ])
+    ]
+    const rerender = renderList(workspaces)
     expect(screen.getByText('No agent')).toBeTruthy()
     expect(screen.getByText('2 sessions')).toBeTruthy()
     // Each session row: its own name, agent and status.
@@ -620,11 +625,42 @@ describe('WorkspaceList', () => {
     expect(within(row).getByRole('img', { name: 'Finished since you looked' })).toBeTruthy()
     expect(screen.getByText('Reviewer').className).toContain('font-semibold')
     expect(within(rowOf('write the parser')).getByRole('img', { name: 'Working' })).toBeTruthy()
+    // An unread session outranks the busiest; with none, the busiest shows.
+    expect(screen.getByRole('button', { name: "Finished since you looked. Hide Busy's sessions" })).toBeTruthy()
+    rerender(workspaces.map((w) => ({ ...w, sessions: w.sessions.map((x) => ({ ...x, waitingSeenBy: [TEST_USER_ID] })) })))
+    expect(screen.getByRole('button', { name: "Working. Hide Busy's sessions" })).toBeTruthy()
 
-    // A session row opens its workspace on that session's pane.
+    // A session row opens its workspace on that session's pane, and stays
+    // highlighted while that pane is the focused one.
+    const highlighted = (): string[] => ['write the parser', 'Reviewer']
+      .filter((t) => rowOf(t).dataset.selected !== undefined)
+    act(() => useUiStore.setState({ layouts: { b: [{ tabs: ['session:sa', 'session:sb', 'files'], active: 'session:sa' }] } }))
+    expect(highlighted()).toEqual([])
     fireEvent.click(screen.getByRole('button', { name: 'Reviewer' }))
     expect(useUiStore.getState().selectedWorkspaceId).toBe('b')
     expect(useUiStore.getState().activeTabs.b).toBe('session:sb')
+    expect(highlighted()).toEqual(['Reviewer'])
+    act(() => useUiStore.getState().focusTerminal('b', 'files'))
+    expect(highlighted()).toEqual([])
+
+    // The mark folds the session rows away and back.
+    fireEvent.click(screen.getByRole('button', { name: "Working. Hide Busy's sessions" }))
+    expect(screen.queryByText('Reviewer')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: "Working. Show Busy's sessions" }))
+    expect(screen.getByText('Reviewer')).toBeTruthy()
+
+    // On a phone the count is the toggle, and a tap on the mark opens the
+    // row, unless the blocked-hosts badge has taken the count's place.
+    cleanup()
+    vi.stubGlobal('matchMedia', (q: string) => ({ matches: true, media: q, addEventListener() {}, removeEventListener() {} }))
+    renderList(workspaces)
+    expect(screen.queryByRole('button', { name: /Busy's sessions/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '2 sessions' }))
+    expect(screen.queryByText('Reviewer')).toBeNull()
+    cleanup()
+    renderList(workspaces.map((w) => ({ ...w, blockedHosts: ['evil.example'] })))
+    fireEvent.click(screen.getByRole('button', { name: /Show Busy's sessions/ }))
+    expect(screen.getByText('Reviewer')).toBeTruthy()
   })
 
   it('selects a workspace on tap, which is what advances the mobile pane screen', () => {
