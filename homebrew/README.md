@@ -119,7 +119,9 @@ yaac cluster install
    anything an existing install must do by hand:
 
    ```sh
-   gh release create v<VERSION> packages/desktop/dist-app/*.{dmg,deb,exe} \
+   gh release create v<VERSION> \
+     packages/desktop/dist-app/yaac-<VERSION>-*.{dmg,exe} \
+     packages/desktop/dist-app/yaac-desktop_<VERSION>_*.deb \
      --notes "<notes>"
    ```
 
