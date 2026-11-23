@@ -116,13 +116,16 @@ yaac cluster install
    `.deb`s and Windows installers for x64 and arm64, and prints each
    artifact's path and `sha256`.
 4. Upload them to a `v<VERSION>` GitHub Release, with notes saying
-   anything an existing install must do by hand:
+   anything an existing install must do by hand. `--target` puts the new
+   tag on the commit that bumped the version; without it GitHub tags the
+   tip of `main`, and a release with no title shows that commit's subject:
 
    ```sh
    gh release create v<VERSION> \
      packages/desktop/dist-app/yaac-<VERSION>-*.{dmg,exe} \
      packages/desktop/dist-app/yaac-desktop_<VERSION>_*.deb \
-     --notes "<notes>"
+     --title v<VERSION> --target <version-bump-sha> \
+     --notes-file <notes.md>
    ```
 
    The first release whose cask has no `yaac-server` dependency must tell
