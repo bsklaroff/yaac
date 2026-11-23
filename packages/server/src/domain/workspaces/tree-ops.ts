@@ -3,7 +3,6 @@ import { constants as C, type Stats } from 'node:fs'
 import fs, { type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
-import { mediaType } from '@yaac/shared/media-types'
 import type { SymlinkTarget, WorkspaceDir, WorkspaceFile, WorkspaceFileSaved } from '@yaac/shared/types'
 import { ConfinedPathError, openExactDir, openRoot, type ConfinedRoot, type PinnedDir } from '#lib/confined-fs'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
@@ -29,6 +28,9 @@ const MAX_DIR_ENTRIES = 5_000
 export const MAX_LISTED_PATHS = 50_000
 /** How many folders the walks for empty and outside folders may open. */
 const MAX_EMPTY_DIR_VISITS = 5_000
+/** The most files a folder download packs. Its walk's answer stays well
+ *  under an exec's output cap. */
+export const MAX_DOWNLOAD_FILES = 10_000
 
 /** A save either lands, or is refused naming the version the file has now
  *  (null: there is no file any more). */
@@ -40,10 +42,12 @@ export interface TreeOps {
   dir(a: { rel: string }): Promise<WorkspaceDir>
   /** One file, its content omitted while `known` is its version. */
   read(a: { rel: string; known?: string }): Promise<WorkspaceFile>
-  /** A media file's size, refusing any file that is not media. */
-  mediaSize(a: { rel: string }): Promise<number>
-  /** Up to `length` bytes of a file from `start`, as base64. */
-  range(a: { rel: string; start: number; length: number }): Promise<string>
+  /** A file's size, or null for a folder. */
+  size(a: { rel: string }): Promise<number | null>
+  /** Up to `length` bytes of each file from `start`, as base64 (`bytes`). */
+  bytes(a: { reads: Array<{ rel: string; start: number; length: number }> }): Promise<string[]>
+  /** Everything a folder download packs (`walk`); `''` is the root. */
+  walk(a: { rel: string; skip: string[] }): Promise<FolderWalk>
   /** Save a file against the version the editor saw (`writeFile`). */
   write(a: { rel: string; data: string; baseVersion: string | null }): Promise<WorkspaceFileWrite>
   /** Make a new empty file, and any missing folders; a conflict if taken. */
@@ -86,6 +90,15 @@ export interface TreeRequest<K extends TreeOp = TreeOp> {
 
 export interface OutsideWalk { paths: string[]; links: string[]; dirs: string[]; truncated: boolean }
 
+/** The files under a folder, and the folders holding none of them. */
+export interface FolderWalk {
+  files: Array<{ rel: string; size: number; mtimeMs: number; mode: number }>
+  emptyDirs: string[]
+}
+
+/** How a helper answers an operation it does not know. */
+export const UNKNOWN_OP = 'unknown file operation'
+
 /** The tree's root could not be opened: the workspace has no checkout. */
 export class NoTreeError extends Error {}
 
@@ -98,7 +111,7 @@ export async function runTreeRequest<K extends TreeOp>(req: TreeRequest<K>): Pro
     throw new NoTreeError(req.root)
   }
   const op = treeOps(root)[req.op] as (a: TreeArgs<K>) => Promise<TreeResult<K>>
-  if (typeof op !== 'function') throw new Error(`unknown file operation ${String(req.op)}`)
+  if (typeof op !== 'function') throw new Error(`${UNKNOWN_OP} ${String(req.op)}`)
   const result = await op(req.args)
   if (req.trigger !== undefined) {
     const now = new Date()
@@ -285,20 +298,35 @@ export function treeOps(root: ConfinedRoot): TreeOps {
 
     read,
 
-    async mediaSize({ rel: relPath }) {
+    async size({ rel: relPath }) {
       const rel = checkPath(relPath)
-      if (mediaType(rel) === null) throw new ServerError('VALIDATION', `${rel} is not an image, video, audio or PDF file`)
-      const fh = await openFile(rel, C.O_RDONLY)
       try {
-        return (await fh.stat()).size
-      } finally {
-        await fh.close()
+        const fh = await root.open(rel, C.O_RDONLY)
+        try {
+          return (await fh.stat()).size
+        } finally {
+          await fh.close()
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EISDIR') return null
+        throw fsFailure(err, rel)
       }
     },
 
-    async range({ rel: relPath, start, length }) {
+    /**
+     * A file gone since it was listed, or one this process may not read or
+     * that now leads out, reads as empty, so a folder download packs what is
+     * there rather than failing partway, after its answer has begun.
+     */
+    bytes: ({ reads }) => Promise.all(reads.map(async ({ rel: relPath, start, length }) => {
       const rel = checkPath(relPath)
-      const fh = await openFile(rel, C.O_RDONLY)
+      let fh: FileHandle
+      try {
+        fh = await openFile(rel, C.O_RDONLY)
+      } catch (err) {
+        if (err instanceof ServerError && (err.code === 'NOT_FOUND' || err.code === 'VALIDATION')) return ''
+        throw err
+      }
       try {
         const buf = Buffer.alloc(length)
         let at = 0
@@ -311,6 +339,73 @@ export function treeOps(root: ConfinedRoot): TreeOps {
       } finally {
         await fh.close()
       }
+    })),
+
+    /**
+     * Every file under a folder, for a download to pack. Folders are
+     * entered only as themselves, never through a link, so a link to an
+     * ancestor cannot loop; a link to a file inside the workspace is packed
+     * as that file. A `.git` is git's own, as in the explorer, and a name
+     * holding `\` is left out, since a zip reads it as a folder separator.
+     * `skip` names the
+     * entries left out, as the listing's `ignored` does: a file by its
+     * path, a folder with a trailing `/`. Over `MAX_DOWNLOAD_FILES` is
+     * refused rather than packed in part.
+     */
+    async walk({ rel: relPath, skip: skipped }) {
+      const rel = relPath === '' ? '' : checkPath(relPath)
+      const skip = new Set(skipped)
+      const out: FolderWalk = { files: [], emptyDirs: [] }
+      const add = (child: string, st: Stats): void => {
+        if (out.files.length >= MAX_DOWNLOAD_FILES) {
+          throw new ServerError('TOO_LARGE', `${rel || 'The workspace'} holds over ${MAX_DOWNLOAD_FILES.toLocaleString('en-US')} files`)
+        }
+        out.files.push({ rel: child, size: st.size, mtimeMs: st.mtimeMs, mode: st.mode })
+      }
+      const visit = async (dir: PinnedDir, at: string): Promise<void> => {
+        let held = 0
+        for (const entry of await fs.readdir(dir.self, { withFileTypes: true })) {
+          const child = at === '' ? entry.name : `${at}/${entry.name}`
+          if (entry.name === '.git' || entry.name.includes('\\') || skip.has(entry.isDirectory() ? `${child}/` : child)) continue
+          if (entry.isDirectory()) {
+            const sub = await openExactDir(dir, entry.name)
+            if (!sub) continue
+            try {
+              await visit(sub, child)
+            } finally {
+              await sub.close()
+            }
+          } else if (entry.isFile()) {
+            const st = await fs.lstat(dir.child(entry.name)).catch(() => null)
+            if (!st?.isFile()) continue
+            add(child, st)
+          } else if (entry.isSymbolicLink()) {
+            const fh = await root.open(child, C.O_RDONLY).catch(() => null)
+            if (!fh) continue
+            try {
+              add(child, await fh.stat())
+            } finally {
+              await fh.close()
+            }
+          } else {
+            continue
+          }
+          held++
+        }
+        if (held === 0) out.emptyDirs.push(at)
+      }
+      let top: PinnedDir
+      try {
+        top = await root.dir(rel)
+      } catch (err) {
+        throw fsFailure(err, rel)
+      }
+      try {
+        await visit(top, rel)
+      } finally {
+        await top.close()
+      }
+      return out
     },
 
     /**

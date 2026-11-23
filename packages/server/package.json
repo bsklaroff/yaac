@@ -68,11 +68,13 @@
     "smol-toml": "catalog:",
     "ws": "catalog:",
     "yaml": "catalog:",
+    "yazl": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "@types/ws": "catalog:",
+    "@types/yazl": "3.3.1",
     "@yaac/test-utils": "workspace:*",
     "drizzle-kit": "1.0.0-rc.4",
     "fengari": "0.1.5"

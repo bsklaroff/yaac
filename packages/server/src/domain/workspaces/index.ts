@@ -108,6 +108,7 @@ export { saveWorkspaceAttachment } from './attachments'
 export {
   createWorkspaceFolder,
   deleteWorkspaceEntry,
+  downloadWorkspaceEntry,
   getWorkspaceChangeDiffs,
   getWorkspaceChanges,
   getWorkspaceComparison,

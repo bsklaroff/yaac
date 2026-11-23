@@ -4,7 +4,7 @@ import type { Context, MiddlewareHandler } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listProvisioning, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, mamaCaller, openSession, assertInteractive, addSteps, rerunStep, cancelStep, prepareRerun, listWorkspaceLogs, readWorkspaceLog, changeSessionAgentOptions, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceBase, setWorkspaceTimeout } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listProvisioning, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, downloadWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, mamaCaller, openSession, assertInteractive, addSteps, rerunStep, cancelStep, prepareRerun, listWorkspaceLogs, readWorkspaceLog, changeSessionAgentOptions, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceBase, setWorkspaceTimeout } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
@@ -938,6 +938,30 @@ export const workspaceApp = new Hono<IdentityEnv>()
       c.header('Cache-Control', 'no-cache')
       if (media.range) c.header('Content-Range', `bytes ${start}-${end}/${media.size}`)
       return c.body(media.body, media.range ? 206 : 200)
+    },
+  )
+  // A file, or a folder as a zip (`path=` empty: the whole workspace), saved
+  // by the browser from the explorer. Sent as an attachment of no renderable
+  // type, under the same sandbox as `raw`, so the workspace's bytes are never
+  // run as a page of the app. `check=1` answers 204 once nothing refuses it,
+  // reading no bytes.
+  .get(
+    '/:id/download',
+    zv('query', z.object({ path: z.string(), check: z.enum(['0', '1']).optional() })),
+    async (c) => {
+      const { path, check } = c.req.valid('query')
+      const { name, size, body } = await downloadWorkspaceEntry(c.req.param('id'), path, { check: check === '1' })
+      if (!body) return c.body(null, 204)
+      const ascii = name.replace(/[^\x20-\x7e]|["\\]/g, '_')
+      // RFC 8187's attr-char leaves out what encodeURIComponent keeps.
+      const encoded = encodeURIComponent(name).replace(/['()*]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`)
+      c.header('Content-Type', size === undefined ? 'application/zip' : 'application/octet-stream')
+      c.header('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`)
+      if (size !== undefined) c.header('Content-Length', String(size))
+      c.header('X-Content-Type-Options', 'nosniff')
+      c.header('Content-Security-Policy', "default-src 'none'; sandbox")
+      c.header('Cache-Control', 'no-store')
+      return c.body(body)
     },
   )
   // A file as it was at a commit, for the editor's diff against the fork

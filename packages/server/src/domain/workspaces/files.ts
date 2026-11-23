@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import path from 'node:path'
+import { Readable } from 'node:stream'
+import { ZipFile } from 'yazl'
 import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
 import { ServerError, type ErrorCode } from '@yaac/shared/errors'
 import { mediaType } from '@yaac/shared/media-types'
@@ -26,13 +28,13 @@ import { authorizeProject, type Actor } from '#domain/access'
 import { ConfinedPathError, normalizeRel } from '#lib/confined-fs'
 import { createKeyedMutex } from '#lib/keyed-mutex'
 import { MAX_TEXT_FILE_BYTES, isBinaryContent } from '#lib/text-file'
-import { getWorkspaceRow, listWorkspaceRepos, type WorkspaceRepoRow } from '#db'
+import { getProjectRow, getWorkspaceRow, listWorkspaceRepos, type WorkspaceRepoRow } from '#db'
 import { checkoutBlobAt, checkoutLog } from './checkout-git'
 import { checkoutAt } from './checkouts'
 import { resolveWorkspaceContainer, resolveWorkspaceRecord } from './resolve'
 import {
-  MAX_LISTED_PATHS, NoTreeError, runTreeRequest,
-  type TreeArgs, type TreeOp, type TreeRequest, type TreeResult, type WorkspaceFileWrite,
+  MAX_LISTED_PATHS, NoTreeError, UNKNOWN_OP, runTreeRequest,
+  type FolderWalk, type TreeArgs, type TreeOp, type TreeRequest, type TreeResult, type WorkspaceFileWrite,
 } from './tree-ops'
 
 export type { WorkspaceFileWrite } from './tree-ops'
@@ -59,7 +61,10 @@ const HELPER_TIMEOUT_MS = 60_000
 const PAGE_BYTES = 2 * 1024 * 1024
 /** Operations that change nothing, so a call that lost its transport may
  *  be sent again. */
-const READ_OPS = new Set<TreeOp>(['dir', 'read', 'mediaSize', 'range', 'walkOutside', 'emptyDirs', 'locate'])
+const READ_OPS = new Set<TreeOp>(['dir', 'read', 'size', 'bytes', 'walk', 'walkOutside', 'emptyDirs', 'locate'])
+/** The most reads one `bytes` call carries, so a folder of empty files
+ *  still answers in pages. */
+const MAX_BATCH_READS = 1_000
 /** The refusals the helper may carry back; anything else is a fault. */
 const REFUSALS = new Set<ErrorCode>(['NOT_FOUND', 'CONFLICT', 'VALIDATION', 'TOO_LARGE'])
 
@@ -130,6 +135,11 @@ async function callHelper<K extends TreeOp>(jobName: string, req: TreeRequest<K>
   const { code, message } = answer.error ?? {}
   if (REFUSALS.has(code as ErrorCode) && typeof message === 'string') throw new ServerError(code as ErrorCode, message)
   if ('result' in answer) return answer.result as TreeResult<K>
+  // The helper is staged when the workspace starts, so one started before a
+  // server upgrade may not know an operation added since.
+  if (typeof answer.fault === 'string' && answer.fault.startsWith(UNKNOWN_OP)) {
+    throw new ServerError('CONFLICT', 'Restart the workspace to use this: it runs an older file helper than the server')
+  }
   throw new Error(`${FILES_HELPER} ${req.op}: ${typeof answer.fault === 'string' ? answer.fault : 'no answer'}`)
 }
 
@@ -492,23 +502,151 @@ export async function readWorkspaceMedia(idOrName: string, relPath: string, rang
   const rel = checkPath(co, relPath)
   const type = mediaType(rel)
   if (type === null) throw new ServerError('VALIDATION', `${rel} is not an image, video, audio or PDF file`)
-  const size = await co.call('mediaSize', { rel })
+  const size = await co.call('size', { rel })
+  if (size === null) throw new ServerError('VALIDATION', `${rel} is a folder`)
   const slice = byteRange(range, size)
-  const end = slice?.end ?? size - 1
-  let at = slice?.start ?? 0
-  const body = new ReadableStream<Uint8Array<ArrayBuffer>>({
+  return { type, size, range: slice, body: fileBytes(co, rel, slice?.start ?? 0, slice?.end ?? size - 1) }
+}
+
+/**
+ * Bytes `start` to `end` of a file, read a page at a time as the stream is
+ * pulled. The end is fixed by a size read first, so a file growing mid-read
+ * cannot overrun the declared length, and one shrinking fails the stream.
+ */
+function fileBytes(co: Checkout, rel: string, start: number, end: number): ReadableStream<Uint8Array<ArrayBuffer>> {
+  let at = start
+  return new ReadableStream({
     async pull(controller) {
       if (at > end) {
         controller.close()
         return
       }
-      const page = Buffer.from(await co.call('range', { rel, start: at, length: Math.min(PAGE_BYTES, end - at + 1) }), 'base64')
-      if (page.length === 0) throw new Error(`${rel} ended before its ${String(size)} bytes`)
+      const [b64] = await co.call('bytes', { reads: [{ rel, start: at, length: Math.min(PAGE_BYTES, end - at + 1) }] })
+      const page = Buffer.from(b64, 'base64')
+      if (page.length === 0) throw new Error(`${rel} ended before its ${String(end + 1)} bytes`)
       at += page.length
       controller.enqueue(new Uint8Array(page))
     },
   })
-  return { type, size, range: slice, body }
+}
+
+/** A file or folder as the browser saves it. */
+export interface WorkspaceDownload {
+  /** The name to save it under: the file's own, or the folder's plus `.zip`. */
+  name: string
+  /** A file's length; a zip's is not known until it is written. */
+  size?: number
+  /** Left out for a `check`. */
+  body?: ReadableStream<Uint8Array<ArrayBuffer>>
+}
+
+/**
+ * A file's bytes, or a folder packed as a zip (`TreeOps.walk`) under one top
+ * folder of its name, so it unpacks as that folder. `''` is the whole
+ * workspace, named after its project and id. A folder's zip leaves out what
+ * git ignores, as the explorer hides it, read from the listing, so it needs
+ * the workspace running; a folder that is itself ignored has nothing inside
+ * it listed, so it is packed whole. A folder reached through a link is
+ * walked, and its ignored entries matched, at the path it leads to, and
+ * packed under the name asked for. The zip is written as it is read, so a
+ * large folder costs the server no memory, and its files' bytes cross from
+ * a running workspace in batches (`folderPages`) rather than a helper call
+ * per file.
+ *
+ * A `check` does everything that can refuse (the listing and the walk) and
+ * reads no bytes, so the webapp can show a refusal before the browser
+ * downloads it.
+ */
+export async function downloadWorkspaceEntry(
+  idOrName: string, relPath: string, opts: { check?: boolean } = {},
+): Promise<WorkspaceDownload> {
+  const co = await openCheckout(idOrName)
+  const rel = relPath === '' ? '' : checkPath(co, relPath)
+  if (rel !== '') {
+    const size = await co.call('size', { rel })
+    const name = path.posix.basename(rel)
+    if (size !== null) return { name, size, ...opts.check ? {} : { body: fileBytes(co, rel, 0, size - 1) } }
+  }
+  // The listing covers every checkout whichever one is named; naming one
+  // keeps a workspace with several from being refused.
+  const { listing } = await getWorkspaceChanges(idOrName, undefined, { repo: co.repos[0]?.path, diff: false, listing: 'full' })
+  // The ignored entries are cut at the listing's cap, past which more
+  // could be ignored than they name.
+  if (listing === undefined || listing.ignored.length >= MAX_LISTED_PATHS) {
+    throw new ServerError('TOO_LARGE', 'this workspace lists too many files to tell which are ignored')
+  }
+  const at = rel === '' ? '' : (await co.call('locate', { rels: [rel] }))[0].target
+  if (at === null) throw new ServerError('NOT_FOUND', `no such folder: ${rel}`)
+  const skip = listing.ignored.filter((e) => at === '' || e.startsWith(`${at}/`))
+  const { files, emptyDirs } = await co.call('walk', { rel: at, skip })
+  const top = rel === ''
+    ? `${(await getProjectRow(co.projectId))?.name ?? 'workspace'}-${co.workspaceId.slice(0, 8)}`
+    : path.posix.basename(rel)
+  if (opts.check === true) return { name: `${top}.zip` }
+  const inZip = (p: string): string => (at === '' ? `${top}/${p}` : `${top}${p.slice(at.length)}`)
+  const zip = new ZipFile()
+  const out = zip.outputStream as Readable
+  zip.on('error', (err: Error) => out.destroy(err))
+  const pages = folderPages(co, files)
+  // A page read ahead belongs to a later file than the one being packed;
+  // those of a file left out of the zip are passed over.
+  let ahead: IteratorResult<[number, Buffer]> | undefined
+  async function* pagesOf(index: number): AsyncGenerator<Buffer> {
+    for (;;) {
+      ahead ??= await pages.next()
+      if (ahead.done === true || ahead.value[0] > index) return
+      if (ahead.value[0] === index) yield ahead.value[1]
+      ahead = undefined
+    }
+  }
+  // yazl refuses a name it cannot store safely, which `walk` already leaves
+  // out; one it still refuses is left out here rather than failing the zip.
+  const add = (fn: () => void): void => {
+    try {
+      fn()
+    } catch {
+      // Left out.
+    }
+  }
+  files.forEach((file, i) => {
+    const options = { mtime: new Date(file.mtimeMs), mode: file.mode }
+    add(() => zip.addReadStreamLazy(inZip(file.rel), options, (cb) => {
+      // yazl pipes the stream, which does not pass on its failure.
+      cb(null, Readable.from(pagesOf(i)).on('error', (err) => out.destroy(err)))
+    }))
+  })
+  for (const dir of emptyDirs) add(() => zip.addEmptyDirectory(inZip(dir)))
+  zip.end()
+  return { name: `${top}.zip`, body: Readable.toWeb(out) as ReadableStream<Uint8Array<ArrayBuffer>> }
+}
+
+/**
+ * The bytes of a folder walk's files in order, as `[index, page]` for each
+ * page that holds any. One helper call reads up to `PAGE_BYTES` in all, from
+ * as many files as that takes, so a folder of small files costs a call per
+ * page rather than one per file. Each file is read up to the size the walk
+ * found; one that has shrunk since ends early.
+ */
+async function* folderPages(co: Checkout, files: FolderWalk['files']): AsyncGenerator<[number, Buffer]> {
+  let next = 0
+  let offset = 0
+  while (next < files.length) {
+    const reads: Array<{ index: number; rel: string; start: number; length: number }> = []
+    let budget = PAGE_BYTES
+    for (let i = next, start = offset; i < files.length && budget > 0 && reads.length < MAX_BATCH_READS; i++, start = 0) {
+      const length = Math.min(files[i].size - start, budget)
+      reads.push({ index: i, rel: files[i].rel, start, length })
+      budget -= length
+    }
+    const got = await co.call('bytes', { reads: reads.map(({ rel, start, length }) => ({ rel, start, length })) })
+    for (const [k, { index, start, length }] of reads.entries()) {
+      const page = Buffer.from(got[k], 'base64')
+      if (page.length > 0) yield [index, page]
+      const done = page.length < length || start + length >= files[index].size
+      next = done ? index + 1 : index
+      offset = done ? 0 : start + length
+    }
+  }
 }
 /**
  * One file's text at commit `rev` (the fork base the changes diff reports)

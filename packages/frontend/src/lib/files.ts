@@ -215,6 +215,20 @@ export function renameWorkspaceEntry(workspaceId: string, from: string, to: stri
   return api.workspace[':id'].rename.$post({ param: { id: workspaceId }, json: { from, to } })
 }
 
+/**
+ * Save a file, or a folder as a zip (`''`: the whole workspace), through the
+ * browser's own download, so a large one streams to disk. The route's check
+ * runs first, so a refusal (a folder of too many files) rejects here with
+ * its message instead of showing only as a failed download.
+ */
+export async function downloadWorkspaceEntry(workspaceId: string, path: string): Promise<void> {
+  await api.workspace[':id'].download.$get({ param: { id: workspaceId }, query: { path, check: '1' } })
+  const link = document.createElement('a')
+  link.href = `/api/workspace/${encodeURIComponent(workspaceId)}/download?${new URLSearchParams({ path })}`
+  link.download = ''
+  link.click()
+}
+
 export async function deleteWorkspaceEntry(workspaceId: string, path: string): Promise<void> {
   await api.workspace[':id'].file.$delete({ param: { id: workspaceId }, query: { path } })
 }
