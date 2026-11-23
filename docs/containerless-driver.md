@@ -772,13 +772,16 @@ prevent that:
 ## Testing
 
 `pnpm vitest run --project e2e-containerless` drives the real CLI against a
-real containerless server. It needs no cluster or images and runs in
-parallel. A fake agent, placed where yaac installs the pinned one, stands in
-for real agents, since the tests cover launch, exec and recovery rather than
-agent behavior. The project also runs the `test/e2e-cli` files whose commands
-need no workspace runtime (`auth-cli`, `project-cli`, `workspace-cli`), so
-they are checked where there is no cluster as well as in the k8s tier. The
-driver's unit tests mock `host.ts`, its whole process boundary.
+real containerless server. It needs no cluster or images, and runs four files
+at once, each with a host server and data dir of its own. A fake agent,
+placed where yaac installs the pinned one, stands in for real agents, since
+the tests cover launch, exec and recovery rather than agent behavior
+(`test/support/containerless-rig.ts`). The tier also holds the CLI files
+whose commands need no workspace runtime (`auth-cli`, `project-cli`,
+`workspace-cli`): they behave alike under both drivers, so they run here
+only, and what a cluster install adds to them is in the k8s tier's
+`project-settings-k8s`. The driver's unit tests mock `host.ts`, its whole
+process boundary.
 
 Stopping a test's server leaves its workspaces running, as it would a
 user's. `createYaacTestEnv`'s cleanup therefore stops every workspace

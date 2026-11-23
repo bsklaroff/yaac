@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import { inject } from 'vitest'
 import { setDataDir } from '@yaac/shared/paths'
 
 // Keep a parent git hook's env from pointing test git at the real repo.
@@ -53,3 +54,9 @@ process.env.YAAC_E2E_NO_TOKEN_REFRESH = '1'
 // default endpoint at yaac.dev. Tests that send feedback point it at
 // their own endpoint.
 process.env.YAAC_FEEDBACK_URL = ''
+
+// Start every new database from the migrated dump its project's global
+// setup built (db-snapshot.ts), where it built one. Spawned servers
+// inherit it.
+const dbSnapshot = inject('dbSnapshot') as string | undefined
+if (dbSnapshot !== undefined) process.env.YAAC_TEST_DB_SNAPSHOT = dbSnapshot

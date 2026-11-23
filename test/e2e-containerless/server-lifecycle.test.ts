@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest'
 import fs from 'node:fs/promises'
-import { createYaacTestEnv, spawnYaacServer, runYaac, acquireServerMutex, TEST_CLI_ENTRY, type YaacTestEnv } from '#support/cli'
-import { asTailnet, type SpawnedServer } from '@yaac/test-utils/api'
+import { createYaacTestEnv, spawnYaacServer, runYaac, TEST_CLI_ENTRY, type YaacTestEnv } from '#support/cli'
+import { asTailnet } from '@yaac/test-utils/api'
 import { readLock, serverLockPath } from '@yaac/shared/lock'
+import type { ServerLock } from '@yaac/shared/server-lock-file'
 import { MAX_PORT_PROBES } from '@yaac/shared/server-port'
 import { serverLogPath } from '@yaac/shared/paths'
 import { readServerConfig } from '@yaac/shared/server-config'
@@ -19,54 +20,82 @@ import path from 'node:path'
  * test/e2e-cli/server.test.ts.
  */
 
-// These tests spawn detached servers through the CLI rather than
-// spawnYaacServer, so the cross-worker server mutex is held for the whole
-// file.
-let releaseServerMutex: (() => Promise<void>) | null = null
-beforeAll(async () => {
-  releaseServerMutex = await acquireServerMutex()
-})
-afterAll(async () => {
-  await releaseServerMutex?.()
-  releaseServerMutex = null
-})
-
-describe('yaac server lifecycle (real CLI + real server)', () => {
+/**
+ * One host install, walked through by every case below: they share its data
+ * dir, and a case that needs the server running starts it if the one before
+ * left it stopped, so only the first start pays for a new database.
+ */
+describe('yaac server on one host install (real CLI + real server)', () => {
   let testEnv: YaacTestEnv
-  let server: SpawnedServer | null = null
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     testEnv = await createYaacTestEnv()
   })
 
-  afterEach(async () => {
-    if (server) await server.stop()
-    server = null
+  afterAll(async () => {
     await killServerByLock()
     await testEnv.cleanup()
   })
 
-  it('binds, writes the lock at serverLockPath(), serves /health and the CLI, and clears the lock on stop', async () => {
-    // A second `server run` hits the same lock check as the `server start`
-    // idempotency test below.
-    server = await spawnYaacServer(testEnv.env)
-    expect(server.lock.port).toBeGreaterThan(0)
+  /** The lock of the running server, started first unless one already runs. */
+  async function running(): Promise<ServerLock> {
+    const { exitCode, stderr } = await runYaac(testEnv.env, 'server', 'start')
+    expect(exitCode, stderr).toBe(0)
+    return (await readLock())!
+  }
 
-    const res = await fetch(`http://127.0.0.1:${server.lock.port}/api/health`)
-    expect(res.status).toBe(200)
-    expect(await res.json()).toMatchObject({ ok: true })
+  async function status(env: NodeJS.ProcessEnv, ...args: string[]): Promise<string> {
+    const r = await runYaac(env, 'server', 'status', ...args)
+    expect(r.exitCode).toBe(0)
+    return r.stdout.trim()
+  }
 
-    expect(serverLockPath()).toBe(path.join(testEnv.dataDir, 'server-local', '.server.lock'))
-    // `heartbeatAt` is renewed every few seconds.
-    const raw = await fs.readFile(serverLockPath(), 'utf8')
-    expect({ ...JSON.parse(raw) as object, heartbeatAt: server.lock.heartbeatAt }).toEqual(server.lock)
+  it('`server logs`, `status` and `stop` say so when nothing has run', async () => {
+    const logs = await runYaac(testEnv.env, 'server', 'logs')
+    expect(logs.exitCode).toBe(0)
+    expect(logs.stderr).toMatch(/no server log at/)
+    expect(logs.stdout).toBe('')
 
-    const { stdout, exitCode } = await runYaac(testEnv.env, 'project', 'list')
-    expect(exitCode).toBe(0)
-    expect(stdout).toContain('No projects found')
+    expect(await status(testEnv.env)).toBe('not running')
+    expect(JSON.parse(await status(testEnv.env, '--json'))).toMatchObject({ running: false, driver: null, serverBuildId: null, origin: null })
 
-    await server.stop()
-    server = null
+    const stop = await runYaac(testEnv.env, 'server', 'stop')
+    expect(stop.exitCode).toBe(0)
+    expect(stop.stderr).toMatch(/not running/)
+  })
+
+  it('`server run` refuses a bind beyond loopback, where anyone could claim to be this machine', async () => {
+    // Loopback callers are treated as the owner (docs/remote-hosting.md),
+    // so a wider bind would grant that to anyone who sends a loopback Host.
+    // Only the in-cluster pod binds wide, behind its ingress policy.
+    const { exitCode, stderr } = await runYaac(
+      { ...testEnv.env, YAAC_BIND_ADDR: '0.0.0.0' }, 'server', 'run',
+    )
+    expect(exitCode).toBe(1)
+    expect(stderr).toMatch(/YAAC_BIND_ADDR=0\.0\.0\.0 would expose the server.*tailscale serve/s)
+    expect(await readLock()).toBeNull()
+  })
+
+  it('`server run` binds, writes the lock at serverLockPath(), serves /health and the CLI, and clears the lock on stop', async () => {
+    const server = await spawnYaacServer(testEnv.env)
+    try {
+      expect(server.lock.port).toBeGreaterThan(0)
+
+      const res = await fetch(`http://127.0.0.1:${server.lock.port}/api/health`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ ok: true })
+
+      expect(serverLockPath()).toBe(path.join(testEnv.dataDir, 'server-local', '.server.lock'))
+      // `heartbeatAt` is renewed every few seconds.
+      const raw = await fs.readFile(serverLockPath(), 'utf8')
+      expect({ ...JSON.parse(raw) as object, heartbeatAt: server.lock.heartbeatAt }).toEqual(server.lock)
+
+      const { stdout, exitCode } = await runYaac(testEnv.env, 'project', 'list')
+      expect(exitCode).toBe(0)
+      expect(stdout).toContain('No projects found')
+    } finally {
+      await server.stop()
+    }
     expect(await readLock()).toBeNull()
   })
 
@@ -79,118 +108,86 @@ describe('yaac server lifecycle (real CLI + real server)', () => {
       TEST_CLI_ENTRY, 'server', 'run', '--port', String(wanted),
     ], { env: testEnv.env, stdio: ['ignore', 'ignore', 'pipe'] })
     try {
-      // Generous budget for a cold start on a loaded host. The lock is
-      // written at bind time, before DB init, so readiness is not awaited.
+      // Generous budget for a cold start on a loaded host. Ready, not just
+      // bound: the lock is written before the database opens, and the cases
+      // after this one reopen what a kill would interrupt.
       const lock = await vi.waitFor(async () => {
         const l = await readLock()
         if (!l) throw new Error('server never wrote its lock')
+        const health = await (await fetch(`http://127.0.0.1:${l.port}/api/health`)).json() as { ready?: boolean }
+        expect(health.ready).toBe(true)
         return l
       }, { timeout: 60_000, interval: 100 })
       expect(lock.port).toBeGreaterThanOrEqual(wanted)
       expect(lock.port).toBeLessThan(wanted + MAX_PORT_PROBES)
-      const res = await fetch(`http://127.0.0.1:${lock.port}/api/health`)
-      expect(res.status).toBe(200)
     } finally {
       child.kill('SIGTERM')
       await new Promise<void>((resolve) => child.once('exit', () => resolve()))
     }
   })
 
-})
-
-describe('yaac server start / stop / restart (real CLI)', () => {
-  let testEnv: YaacTestEnv
-
-  beforeEach(async () => {
-    testEnv = await createYaacTestEnv()
-  })
-
-  afterEach(async () => {
-    await killServerByLock()
-    await testEnv.cleanup()
-  })
-
-  it('`server start` spawns a background server that writes the lock', async () => {
+  it('`server start` spawns a background server that writes the lock, and is idempotent while its version matches', async () => {
     expect(await readLock()).toBeNull()
-    const { exitCode } = await runYaac(testEnv.env, 'server', 'start')
-    expect(exitCode).toBe(0)
-    const lock = await readLock()
-    expect(lock).not.toBeNull()
+    const lock = await running()
     // Without --port it starts from YAAC_SERVER_PORT and increments if
     // busy, never picking an OS-assigned ephemeral port.
-    expect(lock!.port).toBeGreaterThanOrEqual(testEnv.serverPort)
-    expect(lock!.port).toBeLessThan(testEnv.serverPort + MAX_PORT_PROBES)
-    const res = await fetch(`http://127.0.0.1:${lock!.port}/api/health`)
+    expect(lock.port).toBeGreaterThanOrEqual(testEnv.serverPort)
+    expect(lock.port).toBeLessThan(testEnv.serverPort + MAX_PORT_PROBES)
+    const res = await fetch(`http://127.0.0.1:${lock.port}/api/health`)
     expect(res.status).toBe(200)
     // `server start` waits for readiness (DB init), so the next init
     // command does not race the boot.
     expect(await res.json()).toMatchObject({ ok: true, ready: true })
-  })
 
-  it('`server start` is idempotent when the running version matches', async () => {
-    const first = await runYaac(testEnv.env, 'server', 'start')
-    expect(first.exitCode).toBe(0)
-    const firstLock = await readLock()
     const second = await runYaac(testEnv.env, 'server', 'start')
     expect(second.exitCode).toBe(0)
     expect(second.stderr).toMatch(/already running/)
-    const secondLock = await readLock()
-    expect(secondLock?.pid).toBe(firstLock?.pid)
+    expect((await readLock())?.pid).toBe(lock.pid)
+    expect(await status(testEnv.env)).toBe('running')
   })
 
-  it('`server start` errors when a running server has a mismatched buildId', async () => {
-    const startEnv = { ...testEnv.env, YAAC_BUILD_ID: 'old-build' }
-    const first = await runYaac(startEnv, 'server', 'start')
-    expect(first.exitCode).toBe(0)
+  it('`server logs` prints the log the running server wrote', async () => {
+    // Guarantees a request-log line besides the startup line.
+    await fetch(`http://127.0.0.1:${(await running()).port}/api/health`)
 
-    const second = await runYaac(testEnv.env, 'server', 'start')
-    expect(second.exitCode).toBe(1)
-    expect(second.stderr).toMatch(/outdated version/)
-    expect(second.stderr).toMatch(/yaac server restart/)
-  })
-
-  it('`server stop` SIGTERMs the server and clears the lock', async () => {
-    await runYaac(testEnv.env, 'server', 'start')
-    expect(await readLock()).not.toBeNull()
-    const { exitCode, stderr } = await runYaac(testEnv.env, 'server', 'stop')
+    const { exitCode, stdout } = await runYaac(testEnv.env, 'server', 'logs')
     expect(exitCode).toBe(0)
-    expect(stderr).toMatch(/server stopped/)
-    expect(await readLock()).toBeNull()
-  })
-
-  it('`server stop` is a no-op when no server is running', async () => {
-    const { exitCode, stderr } = await runYaac(testEnv.env, 'server', 'stop')
-    expect(exitCode).toBe(0)
-    expect(stderr).toMatch(/not running/)
+    expect(stdout).toMatch(/\[server\] listening on 127\.0\.0\.1:/)
+    expect(stdout).toMatch(/GET \/api\/health 200/)
   })
 
   it('`server restart` replaces the running server with a fresh one', async () => {
-    await runYaac(testEnv.env, 'server', 'start')
-    const before = await readLock()
-    expect(before).not.toBeNull()
+    const before = await running()
 
     const { exitCode } = await runYaac(testEnv.env, 'server', 'restart')
     expect(exitCode).toBe(0)
 
     const after = await readLock()
     expect(after).not.toBeNull()
-    expect(after!.pid).not.toBe(before!.pid)
+    expect(after!.pid).not.toBe(before.pid)
     const res = await fetch(`http://127.0.0.1:${after!.port}/api/health`)
     expect(res.status).toBe(200)
   })
 
-  it('`server status [--json]` reports whether the server runs, and on which build', async () => {
-    const status = async (env: NodeJS.ProcessEnv, ...args: string[]) => {
-      const r = await runYaac(env, 'server', 'status', ...args)
-      expect(r.exitCode).toBe(0)
-      return r.stdout.trim()
-    }
-    expect(await status(testEnv.env)).toBe('not running')
-    expect(JSON.parse(await status(testEnv.env, '--json'))).toMatchObject({ running: false, driver: null, serverBuildId: null, origin: null })
+  it('`server stop` SIGTERMs the server and clears the lock', async () => {
+    await running()
+    const { exitCode, stderr } = await runYaac(testEnv.env, 'server', 'stop')
+    expect(exitCode).toBe(0)
+    expect(stderr).toMatch(/server stopped/)
+    expect(await readLock()).toBeNull()
+  })
 
+  it('refuses to `start` beside a server on another build, which `status [--json]` reports and `restart` replaces', async () => {
+    await killServerByLock()
     // A server on another build than the CLI is what the desktop tray
     // offers to restart.
     expect((await runYaac({ ...testEnv.env, YAAC_BUILD_ID: 'old-build' }, 'server', 'start')).exitCode).toBe(0)
+
+    const second = await runYaac(testEnv.env, 'server', 'start')
+    expect(second.exitCode).toBe(1)
+    expect(second.stderr).toMatch(/outdated version/)
+    expect(second.stderr).toMatch(/yaac server restart/)
+
     const json = JSON.parse(await status(testEnv.env, '--json')) as Record<string, unknown>
     expect(json).toMatchObject({ running: true, driver: 'containerless', serverBuildId: 'old-build', refused: null, reachable: true })
     // The origin the desktop app trusts this install's pages from.
@@ -212,6 +209,65 @@ describe('yaac server start / stop / restart (real CLI)', () => {
     }
   })
 
+  // These write the log themselves, so they need no server.
+  it('`server logs -n <N>` and `--lines <N>` print only the last lines', async () => {
+    await killServerByLock()
+    await fs.writeFile(serverLogPath(), 'a\nb\nc\nd\n')
+    const one = await runYaac(testEnv.env, 'server', 'logs', '-n', '1')
+    expect(one.exitCode).toBe(0)
+    expect(one.stdout).toBe('d\n')
+    const two = await runYaac(testEnv.env, 'server', 'logs', '--lines', '2')
+    expect(two.exitCode).toBe(0)
+    expect(two.stdout).toBe('c\nd\n')
+  })
+
+  it('`server logs -f` keeps printing new lines until interrupted', async () => {
+    await fs.writeFile(serverLogPath(), 'initial\n')
+
+    const child = spawn(process.execPath, [
+      TEST_CLI_ENTRY, 'server', 'logs', '-f',
+    ], { env: testEnv.env, stdio: ['ignore', 'pipe', 'pipe'] })
+    try {
+      let stdout = ''
+      child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+
+      // The first wait absorbs the CLI's cold start.
+      await vi.waitFor(() => expect(stdout).toContain('initial\n'), { timeout: 15_000, interval: 50 })
+      await fs.appendFile(serverLogPath(), 'appended\n')
+      await vi.waitFor(() => expect(stdout).toContain('appended\n'), { timeout: 5_000, interval: 50 })
+    } finally {
+      child.kill('SIGINT')
+      await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    }
+  })
+})
+
+/**
+ * A signal after the lock is taken but before the server is ready. Its own
+ * data dir, since a kill mid-start can leave a half-made database behind.
+ */
+describe('yaac server run stopped while it starts (real CLI)', () => {
+  let testEnv: YaacTestEnv
+
+  beforeAll(async () => {
+    testEnv = await createYaacTestEnv()
+  })
+
+  afterAll(async () => {
+    await killServerByLock()
+    await testEnv.cleanup()
+  })
+
+  it('removes its lock on SIGTERM, so the next start does not wait it out', async () => {
+    const child = spawn(process.execPath, [TEST_CLI_ENTRY, 'server', 'run'], { env: testEnv.env, stdio: 'ignore' })
+    const exited = new Promise<number | null>((resolve) => child.once('exit', resolve))
+    // The lock is written at bind time, before the database opens.
+    await vi.waitFor(async () => { expect(await readLock()).not.toBeNull() }, { timeout: 60_000, interval: 20 })
+    child.kill('SIGTERM')
+    // 1 is the startup exit; a server already ready would exit 0.
+    expect(await exited).toBe(1)
+    expect(await readLock()).toBeNull()
+  })
 })
 
 describe('yaac server start|restart --tailnet/--admin/--yes, and yaac user (access modes and roles)', () => {
@@ -440,99 +496,6 @@ describe('yaac server and yaac cluster: two installs, two data dirs', () => {
     )
     expect(exitCode).not.toBe(0)
     expect(stderr).toMatch(/unknown option/i)
-  })
-})
-
-describe('yaac server run refuses what the identity rule cannot defend', () => {
-  let testEnv: YaacTestEnv
-
-  beforeEach(async () => {
-    testEnv = await createYaacTestEnv()
-  })
-
-  afterEach(async () => {
-    await killServerByLock()
-    await testEnv.cleanup()
-  })
-
-  it('a bind beyond loopback, where anyone could claim to be this machine', async () => {
-    // Loopback callers are treated as the owner (docs/remote-hosting.md),
-    // so a wider bind would grant that to anyone who sends a loopback Host.
-    // Only the in-cluster pod binds wide, behind its ingress policy.
-    const { exitCode, stderr } = await runYaac(
-      { ...testEnv.env, YAAC_BIND_ADDR: '0.0.0.0' }, 'server', 'run',
-    )
-    expect(exitCode).toBe(1)
-    expect(stderr).toMatch(/YAAC_BIND_ADDR=0\.0\.0\.0 would expose the server.*tailscale serve/s)
-    expect(await readLock()).toBeNull()
-  })
-})
-
-describe('yaac server logs (real CLI)', () => {
-  let testEnv: YaacTestEnv
-
-  beforeEach(async () => {
-    testEnv = await createYaacTestEnv()
-  })
-
-  afterEach(async () => {
-    await killServerByLock()
-    await testEnv.cleanup()
-  })
-
-  it('tells the user when no log file exists yet', async () => {
-    const { exitCode, stderr, stdout } = await runYaac(testEnv.env, 'server', 'logs')
-    expect(exitCode).toBe(0)
-    expect(stderr).toMatch(/no server log at/)
-    expect(stdout).toBe('')
-  })
-
-  it('prints the server log after `server start` has written to it', async () => {
-    const started = await runYaac(testEnv.env, 'server', 'start')
-    expect(started.exitCode).toBe(0)
-
-    // Guarantees a request-log line besides the startup line.
-    const lock = await readLock()
-    await fetch(`http://127.0.0.1:${lock!.port}/api/health`)
-
-    const { exitCode, stdout } = await runYaac(testEnv.env, 'server', 'logs')
-    expect(exitCode).toBe(0)
-    expect(stdout).toMatch(/\[server\] listening on 127\.0\.0\.1:/)
-    expect(stdout).toMatch(/GET \/api\/health 200/)
-  })
-
-  it('`-n 1` prints only the last line', async () => {
-    await fs.writeFile(serverLogPath(), 'first\nsecond\nthird\n')
-    const { exitCode, stdout } = await runYaac(testEnv.env, 'server', 'logs', '-n', '1')
-    expect(exitCode).toBe(0)
-    expect(stdout).toBe('third\n')
-  })
-
-  it('`--lines 2` prints only the last 2 lines', async () => {
-    await fs.writeFile(serverLogPath(), 'a\nb\nc\nd\n')
-    const { exitCode, stdout } = await runYaac(testEnv.env, 'server', 'logs', '--lines', '2')
-    expect(exitCode).toBe(0)
-    expect(stdout).toBe('c\nd\n')
-  })
-
-  it('`-f` keeps printing new lines until interrupted', async () => {
-    await fs.writeFile(serverLogPath(), 'initial\n')
-
-    const child = spawn(process.execPath, [
-      TEST_CLI_ENTRY, 'server', 'logs', '-f',
-    ], { env: testEnv.env, stdio: ['ignore', 'pipe', 'pipe'] })
-    try {
-      let stdout = ''
-      child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-
-      // The first wait absorbs the CLI's cold start.
-      await vi.waitFor(() => expect(stdout).toContain('initial\n'), { timeout: 15_000, interval: 50 })
-      await fs.appendFile(serverLogPath(), 'appended\n')
-      await vi.waitFor(() => expect(stdout).toContain('appended\n'), { timeout: 5_000, interval: 50 })
-    } finally {
-      child.kill('SIGINT')
-      await new Promise<void>((resolve) => child.once('exit', () => resolve()))
-    }
   })
 })
 

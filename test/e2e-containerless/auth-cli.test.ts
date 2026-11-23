@@ -27,12 +27,10 @@ import type { AgentTool, CustomEndpointSummary, ToolAuthSummary } from '@yaac/sh
  * the authorize URL, or, with an SSH login standing in for a headless
  * machine, the test answering the CLI's prompts.
  *
- * The containerless tier's server runs on this host and can reach a stub
- * here (the fake vendor, an endpoint's /models); a cluster's server pod
- * cannot, so the cases that need one run in that tier only. Run elsewhere,
- * they would send a k8s tier's sign-ins to the real vendors.
+ * The server runs on this host, so it can reach a stub here (the fake
+ * vendor, an endpoint's /models), which a cluster's server pod could not:
+ * run against one, these sign-ins would go to the real vendors.
  */
-const reachesHost = process.env.YAAC_DRIVER === 'containerless'
 
 describe('yaac auth (real CLI + shared server)', () => {
   let testEnv: YaacTestEnv
@@ -128,13 +126,20 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(seeded.exitCode, seeded.stderr).toBe(0)
     })
 
-    it('auth fake claude-oauth seeds an OAuth bundle of placeholders', async () => {
+    it('seeds every kind passed in one invocation, each as its tool\'s placeholder credential', async () => {
       // Re-seeding over the previous case's fake is allowed.
-      const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'claude-oauth')
+      const { exitCode, stdout, stderr } = await runYaac(
+        testEnv.env, 'auth', 'fake', 'claude-oauth', 'opencode-openrouter', 'pi-openrouter', 'omp-openrouter',
+      )
       expect(exitCode, stderr).toBe(0)
+      expect(stdout).toContain('Claude OAuth')
+      expect(stdout).toContain('OpenCode OpenRouter')
 
       // `yaac-ph-access`, masked.
       expect(await stored('claude')).toMatchObject({ kind: 'oauth', keyPreview: '***cess' })
+      expect(await stored('opencode')).toMatchObject({ kind: 'api-key', opencodeProvider: 'openrouter', keyPreview: '***-key' })
+      expect(await stored('pi')).toMatchObject({ kind: 'api-key', piProvider: 'openrouter', keyPreview: '***-key' })
+      expect(await stored('omp')).toMatchObject({ kind: 'api-key', ompProvider: 'openrouter', keyPreview: '***-key' })
     })
 
     it('auth fake github seeds the fake-github git credential, once', async () => {
@@ -145,39 +150,6 @@ describe('yaac auth (real CLI + shared server)', () => {
       // Git credentials are rows, listed by the name `project add` takes.
       const { stdout } = await runYaac(testEnv.env, 'auth', 'list')
       expect(stdout.match(/^\s+fake-github\s+https\s+\*\*\*oken$/gm)).toHaveLength(1)
-    })
-
-    it('auth fake opencode-openrouter seeds a placeholder openrouter api-key', async () => {
-      const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'opencode-openrouter')
-      expect(exitCode, stderr).toBe(0)
-
-      expect(await stored('opencode')).toMatchObject({ kind: 'api-key', opencodeProvider: 'openrouter', keyPreview: '***-key' })
-    })
-
-    it('auth fake pi-openrouter seeds a placeholder openrouter api-key', async () => {
-      const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'pi-openrouter')
-      expect(exitCode, stderr).toBe(0)
-
-      expect(await stored('pi')).toMatchObject({ kind: 'api-key', piProvider: 'openrouter', keyPreview: '***-key' })
-    })
-
-    it('auth fake omp-openrouter seeds a placeholder openrouter api-key', async () => {
-      const { exitCode, stderr } = await runYaac(testEnv.env, 'auth', 'fake', 'omp-openrouter')
-      expect(exitCode, stderr).toBe(0)
-
-      expect(await stored('omp')).toMatchObject({ kind: 'api-key', ompProvider: 'openrouter', keyPreview: '***-key' })
-    })
-
-    it('seeds several kinds passed in one invocation (variadic)', async () => {
-      const { exitCode, stdout, stderr } = await runYaac(
-        testEnv.env, 'auth', 'fake', 'claude-oauth', 'opencode-openrouter',
-      )
-      expect(exitCode, stderr).toBe(0)
-      expect(stdout).toContain('Claude OAuth')
-      expect(stdout).toContain('OpenCode OpenRouter')
-
-      expect(await stored('claude')).toMatchObject({ kind: 'oauth', keyPreview: '***cess' })
-      expect(await stored('opencode')).toMatchObject({ opencodeProvider: 'openrouter' })
     })
 
     it('rejects an unknown kind', async () => {
@@ -300,7 +272,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(listed).toContain(publicKey)
     })
 
-    it.runIf(reachesHost)('signs Claude in through a loopback redirect to the CLI and seeds an unset git identity from git config', async () => {
+    it('signs Claude in through a loopback redirect to the CLI and seeds an unset git identity from git config', async () => {
       const identity = async (): Promise<unknown> =>
         (await (await makeServerApiClient(server).config['git-identity'].$get()).json()).identity
       const gitConfig = testEnv.env.GIT_CONFIG_GLOBAL!
@@ -339,7 +311,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       }
     })
 
-    it.runIf(reachesHost)('signs Claude in on a headless machine with the code its page shows, asking again after a mistyped one', async () => {
+    it('signs Claude in on a headless machine with the code its page shows, asking again after a mistyped one', async () => {
       await resetCreds()
       const res = await runYaac(headless(), 'auth', 'update', {
         stdinOnPrompt: [
@@ -358,7 +330,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(await stored('claude')).toMatchObject({ kind: 'oauth' })
     })
 
-    it.runIf(reachesHost)('exits 1 with the vendor\'s reason when it rejects the code', async () => {
+    it('exits 1 with the vendor\'s reason when it rejects the code', async () => {
       const res = await runYaac(headless(), 'auth', 'update', {
         stdinOnPrompt: [
           { when: /Choice \[1-6\]: /, send: '2\n' },
@@ -370,7 +342,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect(res.stderr).toContain('Claude sign-in failed (HTTP 400): Invalid authorization code')
     })
 
-    it.runIf(reachesHost)('cancels its sign-in on Ctrl-C, so the server stops polling the vendor', async () => {
+    it('cancels its sign-in on Ctrl-C, so the server stops polling the vendor', async () => {
       vendor.setPendingPolls(Number.MAX_SAFE_INTEGER)
       const deviceAuthPolls = (): number => vendor.requests.filter((r) => r.path === '/api/accounts/deviceauth/token').length
       try {
@@ -589,7 +561,7 @@ describe('yaac auth (real CLI + shared server)', () => {
       expect((await runYaac(testEnv.env, 'auth', 'endpoint', 'remove', 'renamed')).stderr).toContain('No custom endpoint named "renamed". Yours: keyed.')
     })
 
-    it.runIf(reachesHost)('adds an endpoint from its /models, then reviews and applies what a refresh finds', async () => {
+    it('adds an endpoint from its /models, then reviews and applies what a refresh finds', async () => {
       listed = [
         { id: 'gpt-oss', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }], default_reasoning_level: 'high' },
         { id: 'qwen3', meta: { llamaswap: { supported_reasoning_levels: ['low', 'medium'] } } },
@@ -656,7 +628,7 @@ describe('yaac auth (real CLI + shared server)', () => {
   // The daemon the desktop app bundles, run from source as its
   // utilityProcess would run the bundle.
   describe('the desktop app\'s auth daemon', () => {
-    it.runIf(reachesHost)('catches a webapp sign-in\'s redirect for the server it was started for, and drops off when stopped', async () => {
+    it('catches a webapp sign-in\'s redirect for the server it was started for, and drops off when stopped', async () => {
       // An earlier case stored the same credential.
       await resetCreds()
       const serverJson = path.join(`${testEnv.dataDir}-client`, 'server.json')

@@ -639,8 +639,13 @@ describe('WorkspaceFile', () => {
     }
     useUiStore.setState({ filePreview: true })
     const { container } = await mount('site/index.html')
-    await tick(100)
     const frame = container.querySelector('iframe')!
+    // The images are read by jsdom's FileReader, whose timers the fake
+    // ones here may not drive, so wait for the page itself.
+    await vi.waitFor(async () => {
+      await tick(20)
+      expect(frame.getAttribute('srcdoc')).not.toBe('')
+    })
     expect(frame.getAttribute('sandbox')).toBe('allow-popups allow-popups-to-escape-sandbox')
     expect(screen.queryByLabelText('Text size')).toBeNull()
     const doc = new DOMParser().parseFromString(frame.getAttribute('srcdoc')!, 'text/html')

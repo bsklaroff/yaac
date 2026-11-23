@@ -5,13 +5,16 @@ import { createYaacTestEnv, spawnYaacServer, runYaac, type RunYaacOptions, type 
 import type { SpawnedServer } from '@yaac/test-utils/api'
 import { createTestRepo } from '@yaac/test-utils/setup'
 import { addTestProject } from '#support/cluster'
-import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
 import { git } from '@yaac/test-utils/git'
-import { cleanupMocks, seedMockGitRepo, startHostMockGit, startMockGit, type MockGit } from '#support/mock-remotes'
+import { startHostMockGit } from '#support/mock-remotes'
+import { describeRepoForks } from '#support/repo-fork-cases'
 
 /**
  * e2e coverage for `yaac project` (list/add/create/clone/move/repo), `yaac
  * repo` and `yaac config`, sharing one test env and server across the file.
+ * None of it touches a workspace's runtime, so it runs against a host
+ * server only; the settings only a cluster install has are in
+ * test/e2e-cli/project-settings-k8s.test.ts.
  *
  * Tests run in declaration order over one data dir, so order matters:
  *  - The empty-state `project list` test runs first.
@@ -28,9 +31,6 @@ import { cleanupMocks, seedMockGitRepo, startHostMockGit, startMockGit, type Moc
 
 let testEnv: YaacTestEnv
 let server: SpawnedServer
-/** The file also runs in the containerless tier, whose server builds no
- *  images, so its Dockerfile routes refuse (see the route matrix). */
-const buildsImages = process.env.YAAC_DRIVER !== 'containerless'
 
 beforeAll(async () => {
   testEnv = await createYaacTestEnv()
@@ -169,14 +169,13 @@ describe('yaac project (real CLI + real server)', () => {
     expect(declined.stdout).toContain('Aborted — nothing was stopped or moved.')
     await stillHosted()
 
-    // Before anything stops, the move fails: behind the egress proxy on the
-    // allowlist, and on the host because it does not exist.
+    // Before anything stops, the move fails, because the remote does not
+    // exist. A cluster's server is refused by its egress allowlist first
+    // (test/e2e-cli/project-settings-k8s.test.ts).
     const unreachable = await move('hosted-demo', target, 'fake-github', answer('y\r'))
     expect(unreachable.exitCode).not.toBe(0)
     expect(unreachable.stdout).toContain(`Moving hosted-demo to ${target}...`)
-    expect(unreachable.stdout + unreachable.stderr).toMatch(buildsImages
-      ? /"gitlab.example.com" is not in the egress allowlist/
-      : /did not move/)
+    expect(unreachable.stdout + unreachable.stderr).toMatch(/did not move/)
     await stillHosted()
 
     const sshWithToken = await move('hosted-demo', 'git@github.com:org/repo.git', 'fake-github', answer('y\r'))
@@ -313,27 +312,10 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect((await config('env', 'demo-settings')).stdout).not.toContain('API_TOKEN')
   })
 
-  it('config egress-allowlist shows and replaces the hosts and defaults, warning when agents lose access; k8s only', async () => {
-    if (!buildsImages) {
-      const refused = await config('egress-allowlist', 'demo-settings', 'api.example.com')
-      expect(refused.exitCode).not.toBe(0)
-      expect(refused.stderr).toContain('This server mediates no egress')
-      return
-    }
-    expect((await config('egress-allowlist', 'demo-settings')).stdout).toMatch(/demo-settings's workspaces may reach the \d+ default hosts\./)
-    const set = await config('egress-allowlist', 'demo-settings', 'api.example.com', '*.example.org')
-    expect(set.exitCode, set.stderr).toBe(0)
-    expect(set.stdout).toMatch(/may now reach the \d+ default hosts, plus api\.example\.com, \*\.example\.org\. Applies to workspaces created from now on\./)
-    expect(set.stderr).not.toContain('Warning')
-
-    const noDefaults = await config('egress-allowlist', 'demo-settings', '--defaults', 'off')
-    expect(noDefaults.stdout).toContain('may now reach only api.example.com, *.example.org.')
-    expect(noDefaults.stderr).toContain('leaves out Anthropic API (api.anthropic.com)')
-    expect(noDefaults.stderr).toContain('leaves out GitHub (github.com)')
-    expect((await config('egress-allowlist', 'demo-settings', '--none')).stdout).toContain('nothing; all egress is blocked')
-    expect((await config('egress-allowlist', 'demo-settings', 'a.com', '--none')).stderr).toContain('hosts or --none, not both')
-    expect((await config('egress-allowlist', 'demo-settings', '--defaults', 'maybe')).stderr).toContain('Allowed choices are on, off')
-    expect((await config('egress-allowlist', 'demo-settings', '--defaults', 'on')).stdout).toMatch(/may now reach the \d+ default hosts\./)
+  it('config egress-allowlist is refused, since nothing mediates a host workspace\'s egress', async () => {
+    const refused = await config('egress-allowlist', 'demo-settings', 'api.example.com')
+    expect(refused.exitCode).not.toBe(0)
+    expect(refused.stderr).toContain('This server mediates no egress')
   })
 
   it('config kept-ignored-paths shows, replaces, refuses a path outside the checkout, and clears', async () => {
@@ -447,63 +429,16 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect((await config('port-forwards', 'demo-settings', '--none')).stdout).toContain('are now: none.')
   })
 
-  it('config cache-volumes and npm-cache show and set the pod settings; k8s only', async () => {
-    if (!buildsImages) {
-      for (const [args, why] of [
-        [['cache-volumes', 'demo-settings', 'pip=/p'], 'keeps no cache volumes'],
-        [['npm-cache', 'demo-settings', 'off'], 'runs no npm cache'],
-      ] as const) {
-        const refused = await config(...args)
-        expect(refused.exitCode, args[0]).not.toBe(0)
-        expect(refused.stderr).toContain(`This server ${why}`)
-      }
-      return
+  it('config cache-volumes, npm-cache and dockerfile are refused, since there is no pod or image to apply them to', async () => {
+    for (const [args, why] of [
+      [['cache-volumes', 'demo-settings', 'pip=/p'], 'keeps no cache volumes'],
+      [['npm-cache', 'demo-settings', 'off'], 'runs no npm cache'],
+      [['dockerfile', 'demo-settings'], 'builds no images'],
+    ] as const) {
+      const refused = await config(...args)
+      expect(refused.exitCode, args[0]).not.toBe(0)
+      expect(refused.stderr).toContain(`This server ${why}`)
     }
-    expect((await config('cache-volumes', 'demo-settings')).stdout).toContain('Cache volumes in demo-settings: none')
-    const volumes = await config('cache-volumes', 'demo-settings', 'pip=/home/yaac/.cache/pip', 'cargo=/home/yaac/.cargo')
-    expect(volumes.exitCode, volumes.stderr).toBe(0)
-    expect(volumes.stdout).toContain('are now: pip at /home/yaac/.cache/pip, cargo at /home/yaac/.cargo.')
-    expect((await config('cache-volumes', 'demo-settings', 'pip')).stderr).toContain('"pip" is not <name>=<absolute path>.')
-    expect((await config('cache-volumes', 'demo-settings', '../up=/x')).stderr).toContain('name "../up" must be')
-    expect((await config('cache-volumes', 'demo-settings', 'a=/x', '--none')).stderr).toContain('Pass volumes or --none, not both.')
-    expect((await config('cache-volumes', 'demo-settings', '--none')).stdout).toContain('are now: none.')
-
-    expect((await config('npm-cache', 'demo-settings')).stdout).toContain('npm cache in demo-settings: on')
-    expect((await config('npm-cache', 'demo-settings', 'off')).stdout).toContain('npm cache in demo-settings is now off.')
-    expect((await config('npm-cache', 'demo-settings', 'maybe')).stderr).toContain('Allowed choices are on, off')
-    expect((await config('npm-cache', 'demo-settings', 'on')).exitCode).toBe(0)
-  })
-
-  it('config dockerfile and user-dockerfile print, replace from a file or stdin, and clear; k8s only', async () => {
-    if (!buildsImages) {
-      const refused = await config('dockerfile', 'demo-settings')
-      expect(refused.exitCode).not.toBe(0)
-      expect(refused.stderr).toContain('This server builds no images')
-      return
-    }
-    const file = path.join(testEnv.scratchDir, 'Dockerfile.yaac')
-    await fs.writeFile(file, 'RUN echo dockerfile-marker\n')
-    expect((await config('dockerfile', 'demo-settings')).stderr).toContain('demo-settings has no Dockerfile.yaac')
-    const set = await config('dockerfile', 'demo-settings', '--file', file)
-    expect(set.exitCode, set.stderr).toBe(0)
-    expect(set.stdout).toContain('Saved demo-settings\'s Dockerfile.yaac')
-    expect((await config('dockerfile', 'demo-settings')).stdout).toBe('RUN echo dockerfile-marker\n')
-    expect((await config('dockerfile', 'demo-settings', '--file', '-', { stdin: 'RUN echo from-stdin\n' })).exitCode).toBe(0)
-    expect((await config('dockerfile', 'demo-settings')).stdout).toBe('RUN echo from-stdin\n')
-    expect((await config('dockerfile', 'demo-settings', '--file', file, '--none')).stderr).toContain('Pass --file or --none, not both.')
-    expect((await config('dockerfile', 'demo-settings', '--none')).stdout).toContain('Cleared demo-settings\'s Dockerfile.yaac')
-    expect((await config('dockerfile', 'demo-settings')).stdout).toBe('')
-
-    const layered = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user-marker\n'
-    expect((await config('user-dockerfile')).stderr).toContain('You have no Dockerfile.user.')
-    const user = await config('user-dockerfile', '--file', '-', { stdin: layered })
-    expect(user.exitCode, user.stderr).toBe(0)
-    expect((await config('user-dockerfile')).stdout).toBe(layered)
-    // The caller is local, so the file is the built-in user's.
-    const target = path.join(testEnv.dataDir, 'server-local', 'users', BUILT_IN_USER_ID, 'build', 'Dockerfile.user')
-    expect(await fs.readFile(target, 'utf8')).toBe(layered)
-    expect((await config('user-dockerfile', '--file', file)).stderr).toMatch(/layered|BASE_IMAGE/)
-    expect((await config('user-dockerfile', '--none')).stdout).toContain('Cleared your Dockerfile.user.')
   })
 
   // Last, so it sees what the cases above left set.
@@ -519,13 +454,9 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect(stdout).toMatch(/\n {2}scratch-dirs +node_modules \(16 GiB\), target \(16 GiB\)\n/)
     expect(stdout).toMatch(/\n {2}workspace-auto-delete +off\n/)
     expect(stdout).toContain('Change one with `yaac config <setting>`.')
-    if (buildsImages) {
-      expect(stdout).toMatch(/\n {2}egress-allowlist +the defaults\n/)
-      expect(stdout).toMatch(/\n {2}npm-cache +on\n {2}dockerfile +none\n/)
-    } else {
-      expect(stdout).not.toContain('egress-allowlist')
-      expect(stdout).not.toContain('cache-volumes')
-    }
+    // The settings only a cluster install has are left out.
+    expect(stdout).not.toContain('egress-allowlist')
+    expect(stdout).not.toContain('cache-volumes')
     expect((await config('show', 'branchy')).stdout).toMatch(/\n {2}git-credential +none needed \(hosted by yaac\)\n {2}default-branch-guard +on\n/)
   })
 })
@@ -664,38 +595,17 @@ describe('yaac project repo and yaac repo (real CLI + real server)', () => {
     expect(declined.stdout).toContain('Aborted — nothing was stopped or moved.')
   })
 
-  it('project repo read-only and gh-token show and set what a project\'s workspaces may do with a repo; k8s only', async () => {
+  it('project repo read-only and gh-token show a repo\'s flags, and refuse to set what no sandbox enforces', async () => {
     expect((await projectRepo('read-only', 'multi', 'library')).stdout).toContain('library of project "multi" can be pushed to by its workspaces.')
     expect((await projectRepo('gh-token', 'multi', 'library')).stdout).toContain('library of project "multi" lets its token be GH_TOKEN.')
     expect((await projectRepo('read-only', 'multi', 'library', 'maybe')).stderr).toContain('Allowed choices are on, off')
     expect((await projectRepo('gh-token', 'multi', 'nope', 'on')).stderr).toContain('Project "multi" has no repo "nope"')
-    if (!buildsImages) {
-      // Without a sandbox a workspace holds every credential.
-      for (const flag of ['read-only', 'gh-token']) {
-        const refused = await projectRepo(flag, 'multi', 'library', 'on')
-        expect(refused.exitCode, flag).not.toBe(0)
-        expect(refused.stderr, flag).toContain('This server limits no repo\'s credential')
-      }
-      return
+    // Without a sandbox a workspace holds every credential.
+    for (const flag of ['read-only', 'gh-token']) {
+      const refused = await projectRepo(flag, 'multi', 'library', 'on')
+      expect(refused.exitCode, flag).not.toBe(0)
+      expect(refused.stderr, flag).toContain('This server limits no repo\'s credential')
     }
-    const readOnly = await projectRepo('read-only', 'multi', 'library', 'on')
-    expect(readOnly.exitCode, readOnly.stderr).toBe(0)
-    expect(readOnly.stdout).toContain('library of project "multi" now is read-only: its workspaces can fetch it but not push to it.')
-    expect((await projectRepo('read-only', 'multi', 'library')).stdout).toContain('is read-only')
-    // Its stored GH_TOKEN setting stands, but does not apply while read-only.
-    expect((await projectRepo('gh-token', 'multi', 'library')).stdout)
-      .toContain('While the repo is read-only its token is never GH_TOKEN, whatever this says.')
-    expect((await projectRepo('list', 'multi')).stdout).toMatch(/library\s+\S+\s+fake-github\s+on\s+off\s+https:/)
-    expect((await config('show', 'multi')).stdout).toMatch(/library \(https:[^)]*, read-only\)/)
-    expect((await projectRepo('read-only', 'multi', 'library', 'off')).stdout).toContain('now can be pushed to by its workspaces.')
-
-    const ghToken = await projectRepo('gh-token', 'multi', 'library', 'off')
-    expect(ghToken.exitCode, ghToken.stderr).toBe(0)
-    expect(ghToken.stdout).toContain('library of project "multi" now keeps its token from being GH_TOKEN.')
-    expect((await projectRepo('list', 'multi')).stdout).toMatch(/library\s+\S+\s+fake-github\s+off\s+off\s+https:/)
-    expect((await projectRepo('gh-token', 'multi', 'library', 'on')).stdout).toContain('now lets its token be GH_TOKEN.')
-    // The other project linking the repo has flags of its own.
-    expect((await projectRepo('read-only', 'lib', 'lib')).stdout).toContain('can be pushed to by its workspaces')
   })
 
   it('repo list shows each repo with what links it, and repo share and unshare take a repo and a user', async () => {
@@ -759,130 +669,4 @@ describe('yaac project repo and yaac repo (real CLI + real server)', () => {
   })
 })
 
-describe('repo forks: project add and move, repo read-only and upstream, config upstream-rebase (real CLI + real server)', () => {
-  /** Remotes under BASE are served by the mock git server: `tool` and
-   *  `app` refuse the credential a push, `up` and `up2` let a push's probe
-   *  through, and the rest answer nothing about it. */
-  const BASE = 'https://git.e2e.test/forks/'
-  const url = (name: string): string => `${BASE}${name}.git`
-  const yaac = (...args: Array<string | RunYaacOptions>): ReturnType<typeof runYaac> => runYaac(testEnv.env, ...args)
-  const repos = async (): Promise<Array<{ id: string; remoteUrl: string; hosted: boolean; readOnly: boolean; upstreamRepoId?: string }>> =>
-    await (await fetch(`http://127.0.0.1:${String(server.lock.port)}/api/repo/list`)).json() as never
-  const repoOf = async (remoteUrl: string): Promise<{ id: string; upstreamRepoId?: string; readOnly: boolean }> => {
-    const found = (await repos()).find((r) => r.remoteUrl === remoteUrl)
-    if (!found) throw new Error(`no repo for ${remoteUrl}`)
-    return found
-  }
-  let mockGit: MockGit
-
-  beforeAll(async () => {
-    mockGit = process.env.YAAC_DRIVER === 'containerless' ? await startHostMockGit() : await startMockGit()
-    await mockGit.serveServerFetches(testEnv.env, BASE)
-    for (const name of ['tool', 'app']) await seedMockGitRepo(mockGit, name, { files: { 'README.md': name }, push: 'refuse' })
-    for (const name of ['up', 'up2']) await seedMockGitRepo(mockGit, name, { files: { 'README.md': name }, push: 'advertise' })
-    for (const name of ['lib2', 'extra']) await seedMockGitRepo(mockGit, name, { files: { 'README.md': name } })
-  })
-
-  afterAll(async () => {
-    await cleanupMocks([mockGit])
-  })
-
-  it('project add refuses a remote the credential cannot push to, naming --fork and --read-only, which add it', async () => {
-    const refused = await yaac('project', 'add', url('tool'), 'fake-github')
-    expect(refused.exitCode).not.toBe(0)
-    expect(refused.stdout + refused.stderr).toMatch(/You can't push to git.e2e.test\/forks\/tool with "fake-github"[\s\S]*--fork[\s\S]*--read-only/)
-
-    // Read-only needs no credential for a public https remote.
-    const readOnly = await yaac('project', 'add', url('tool'), '--read-only')
-    expect(readOnly.exitCode, readOnly.stderr).toBe(0)
-    expect((await repoOf(url('tool'))).readOnly).toBe(true)
-    expect((await yaac('repo', 'list')).stdout).toMatch(/read-only/)
-
-    const fork = await yaac('project', 'add', url('app'), 'fake-github', '--fork')
-    expect(fork.exitCode, fork.stderr).toBe(0)
-    expect(fork.stdout).toContain('Project "app"')
-    const upstream = await repoOf(url('app'))
-    expect(upstream.readOnly).toBe(true)
-    expect((await repos()).find((r) => r.upstreamRepoId === upstream.id)?.hosted).toBe(true)
-    expect((await yaac('repo', 'upstream', 'app/app')).stdout).toContain(`is a fork of ${url('app')}`)
-  })
-
-  it('project add takes an upstream, with its credential, or adds around a repo by id', async () => {
-    const added = await yaac('project', 'add', url('lib2'), 'fake-github', '--upstream', url('up'), '--upstream-credential', 'fake-github')
-    expect(added.exitCode, added.stderr).toBe(0)
-    const up = await repoOf(url('up'))
-    expect((await repoOf(url('lib2'))).upstreamRepoId).toBe(up.id)
-    // Its credential can push there, so it is not read-only.
-    expect(up.readOnly).toBe(false)
-
-    const around = await yaac('project', 'add', '--repo-id', up.id)
-    expect(around.exitCode, around.stderr).toBe(0)
-    expect(around.stdout).toContain('Project "up"')
-  })
-
-  it('project repo add takes --read-only, --fork and --upstream with its credential', async () => {
-    const readOnly = await yaac('project', 'repo', 'add', 'lib2', url('extra'), '--read-only')
-    expect(readOnly.exitCode, readOnly.stderr).toBe(0)
-    expect((await repoOf(url('extra'))).readOnly).toBe(true)
-    const fork = await yaac('project', 'repo', 'add', 'up', url('app'), '--fork', '--dir', 'app-fork')
-    expect(fork.exitCode, fork.stderr).toBe(0)
-    // A second fork of the same upstream.
-    const appUpstream = await repoOf(url('app'))
-    expect((await repos()).filter((r) => r.upstreamRepoId === appUpstream.id)).toHaveLength(2)
-    const withUpstream = await yaac('project', 'repo', 'add', 'up', url('tool'), 'fake-github', '--upstream', url('up2'), '--upstream-credential', 'fake-github')
-    expect(withUpstream.exitCode, withUpstream.stderr).toBe(0)
-    expect((await repoOf(url('tool'))).upstreamRepoId).toBe((await repoOf(url('up2'))).id)
-  })
-
-  it('repo read-only and repo upstream show and set a repo\'s', async () => {
-    expect((await yaac('repo', 'read-only', url('extra'))).stdout).toContain('is read-only')
-    expect((await yaac('repo', 'read-only', url('extra'), 'off')).stdout).toContain('now can be pushed to by workspaces')
-    expect((await repoOf(url('extra'))).readOnly).toBe(false)
-    expect((await yaac('repo', 'read-only', url('extra'), 'on')).exitCode).toBe(0)
-
-    expect((await yaac('repo', 'upstream', url('lib2'))).stdout).toContain(`is a fork of ${url('up')}`)
-    const none = await yaac('repo', 'upstream', url('lib2'), '--none')
-    expect(none.stdout).toContain('has no upstream now')
-    expect((await repoOf(url('lib2'))).upstreamRepoId).toBeUndefined()
-    const set = await yaac('repo', 'upstream', url('lib2'), url('extra'), 'fake-github')
-    expect(set.exitCode, set.stderr).toBe(0)
-    expect((await repoOf(url('lib2'))).upstreamRepoId).toBe((await repoOf(url('extra'))).id)
-  })
-
-  it('config upstream-rebase shows and sets whether a hosted fork lets a rebase onto its upstream through', async () => {
-    expect((await yaac('config', 'upstream-rebase', 'app')).stdout).toContain('lets a rebase of its default branch onto the upstream through')
-    expect((await yaac('config', 'upstream-rebase', 'app', 'off', '--repo', 'app')).stdout).toContain('now refuses every rewrite')
-    expect((await yaac('config', 'upstream-rebase', 'app', 'on')).exitCode).toBe(0)
-    expect((await yaac('config', 'upstream-rebase', 'lib2', '--repo', 'lib2')).stdout).toContain('not a fork yaac hosts')
-  })
-
-  it('project move --hosted moves a repo onto yaac, asking first unless --yes', async () => {
-    const unconfirmed = await yaac('project', 'move', 'lib2', '--repo', 'lib2', '--hosted')
-    expect(unconfirmed.exitCode).toBe(1)
-    expect(unconfirmed.stderr).toContain('No terminal to confirm on; pass --yes')
-    const moved = await yaac('project', 'move', 'lib2', '--repo', 'lib2', '--hosted', '-y')
-    expect(moved.exitCode, moved.stderr).toBe(0)
-    expect(moved.stdout).toContain(`is now hosted by yaac, a fork of ${url('lib2')}`)
-    const upstream = await repoOf(url('lib2'))
-    expect((await repos()).find((r) => r.upstreamRepoId === upstream.id)?.hosted).toBe(true)
-  })
-
-  it('project move --upstream lists the branches that need a choice, and takes --push, --push-all and --leave-rest', async () => {
-    expect((await yaac('project', 'add', url('up2'), 'fake-github', '--fork')).exitCode).toBe(0)
-    // The fork's main gets a commit of its own, so it needs a choice.
-    const clone = path.join(testEnv.scratchDir, 'up2-fork')
-    expect((await yaac('project', 'clone', 'up2', clone)).exitCode).toBe(0)
-    await git(clone, ['-c', 'user.name=T', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'the fork adds'])
-    await git(clone, ['push', '-q', 'origin', 'HEAD:main'])
-
-    const unchosen = await yaac('project', 'move', 'up2', '--upstream', '--yes')
-    expect(unchosen.exitCode).toBe(1)
-    expect(unchosen.stderr + unchosen.stdout).toMatch(/need a choice[\s\S]*main\s+ahead/)
-    // The mock serves no pushes, so each move reaches the push and stays.
-    for (const choice of [['--push', 'main', '--leave-rest'], ['--push-all'], ['--push', 'main=from-fork']]) {
-      const attempt = await yaac('project', 'move', 'up2', '--upstream', ...choice, '--yes')
-      expect(attempt.exitCode).not.toBe(0)
-      expect(attempt.stdout + attempt.stderr).toMatch(/refused the push[\s\S]*stays where it was/)
-    }
-  })
-})
+describeRepoForks({ env: () => testEnv.env, port: () => server.lock.port, scratchDir: () => testEnv.scratchDir }, startHostMockGit)

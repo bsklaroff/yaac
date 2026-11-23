@@ -31,7 +31,6 @@ import { backfillSiteBranches, runSiteCommand } from '#domain/sites'
 import { moveLegacyMainClones } from '#domain/repos'
 import { rememberFeedbackUrl } from '#domain/feedback'
 import { answerSiteCommands, resumeQueuedWorkspaces } from '#domain/workspaces'
-import { createK8sDriver } from '#drivers/k8s'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
 import { AccessModeRefusal, settleAccessMode } from '#main/access-mode'
@@ -128,11 +127,16 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
 
   // The driver follows placement (`#main/driver-choice`). It is registered
   // before anything can ask for it, so a missing driver is a startup-order
-  // bug. This is the only place in `src/` that names a concrete driver.
+  // bug. This is the only place in `src/` that names a concrete driver. The
+  // k8s one is imported only where it runs: it loads the kubernetes client,
+  // over a second of a host server's start.
   await assertHostServerAllowed()
   const driverKind = resolveDriverKind()
   setWorkspaceDriver(
-    driverKind === 'containerless' ? createContainerlessDriver() : createK8sDriver(),
+    driverKind === 'containerless'
+      ? createContainerlessDriver()
+      // eslint-disable-next-line no-restricted-syntax -- defers the kubernetes client; see above
+      : (await import('#drivers/k8s')).createK8sDriver(),
   )
   serverLog(`[server] runtime driver: ${driverKind}`)
   // What Tor covers depends on the driver.
@@ -192,6 +196,12 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await new Promise<void>((resolve) => server.close(() => resolve()))
     return
   }
+  // A signal during startup, or to a start that was refused, still removes
+  // the lock: Node's default action would exit and leave it for the next
+  // start to wait out. The full shutdown takes over once it is defined.
+  const quit = (): void => { void removeLock(lease.instance).finally(() => process.exit(1)) }
+  process.once('SIGTERM', quit)
+  process.once('SIGINT', quit)
   // Under the lock, so a losing start never overwrites the record, and
   // before any route but `/health` is served.
   await rememberFeedbackUrl()
@@ -202,9 +212,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   const refuse = (reason: string): void => {
     access = { refused: reason }
     serverLog(`[server] start refused: ${reason}`)
-    const quit = (): void => { void removeLock(lease.instance).finally(() => process.exit(1)) }
-    process.once('SIGTERM', quit)
-    process.once('SIGINT', quit)
   }
   // Open the DB only under the lock (PGlite's single-writer guard). A
   // database recording a migration this build lacks, or holding secrets
@@ -271,8 +278,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   serverLog(`[server] ${torPrefix}listening on ${env.bindAddr}:${port} lock=${serverLockPath()}`)
   serverLog(`[server] open http://127.0.0.1:${port}/`)
 
-  // Register signal handlers before the async startup below; Node's
-  // default action would exit without removing the lock.
+  // Registered before the async startup below, which a signal must be able
+  // to stop.
   const abortCtrl = new AbortController()
   let loopDone: Promise<void> | null = null
   let shuttingDown = false
@@ -351,8 +358,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(lease.instance)
     process.exit(0)
   }
-  process.on('SIGTERM', () => void shutdown('SIGTERM'))
-  process.on('SIGINT', () => void shutdown('SIGINT'))
+  process.off('SIGTERM', quit).on('SIGTERM', () => void shutdown('SIGTERM'))
+  process.off('SIGINT', quit).on('SIGINT', () => void shutdown('SIGINT'))
 
   // Attach to the substrate (informers, status watchers, port detector).
   // The reconcile loop starts from `onAttached`, since a driver may defer

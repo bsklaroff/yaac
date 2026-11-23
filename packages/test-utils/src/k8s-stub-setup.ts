@@ -9,4 +9,8 @@ import { fakeCluster, k8sClientStub } from '#k8s-stub'
 // factory can use the statically imported helper.
 vi.mock('@kubernetes/client-node', () => k8sClientStub())
 
+// The fake cluster fails only as a test tells it to, so waiting between
+// retries buys nothing.
+process.env.YAAC_TEST_NO_RETRY_BACKOFF = '1'
+
 beforeEach(() => { fakeCluster.reset() })

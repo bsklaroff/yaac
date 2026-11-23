@@ -532,6 +532,26 @@ export const testEnv = {
   },
 
   /**
+   * `YAAC_TEST_DB_SNAPSHOT` — the dump of a freshly migrated database
+   * (`dumpMigratedDb`), which a new database loads instead of replaying
+   * every migration: well under a second against several. Set by the test
+   * setups, which build the dump once per set of migrations.
+   */
+  get dbSnapshot(): string | undefined {
+    return process.env.YAAC_TEST_DB_SNAPSHOT || undefined
+  },
+
+  /**
+   * `YAAC_TEST_NO_RETRY_BACKOFF` — `1` makes the k8s object client retry a
+   * transient failure at once instead of backing off. Set only where the
+   * cluster is the unit tests' fake, which a wait does nothing for: a test
+   * of a failing cluster would otherwise sleep three seconds.
+   */
+  get noRetryBackoff(): boolean {
+    return process.env.YAAC_TEST_NO_RETRY_BACKOFF === '1'
+  },
+
+  /**
    * `YAAC_E2E_DESKTOP_LOCAL_INSTALLS` — `1` makes the desktop shell set up
    * and manage this machine's installs on any platform, as it does on macOS,
    * so the Playwright scripts that cover that run in a Linux workspace.

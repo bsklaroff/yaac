@@ -35,7 +35,7 @@ describe('upsertRunSecret', () => {
     const made = await upsertRunSecret(PROJ, { name: 'P8_KEY', value: '-----BEGIN PRIVATE KEY-----\nabc' })
     expect(made).toMatchObject({ name: 'P8_KEY', value: '-----BEGIN PRIVATE KEY-----\nabc' })
     const [stored] = await (await getDb()).select().from(projectRunSecrets).where(eq(projectRunSecrets.name, 'P8_KEY'))
-    expect(stored.sealedValue).not.toContain('abc')
+    expect(stored.sealedValue).not.toContain('PRIVATE KEY')
     expect(await upsertRunSecret(PROJ, { name: 'P8_KEY', value: 'new' })).toMatchObject({ id: made.id, value: 'new' })
     expect((await listRunSecrets(PROJ)).map((r) => r.name)).toEqual(['P8_KEY'])
   })
