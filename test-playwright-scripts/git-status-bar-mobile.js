@@ -1,9 +1,9 @@
 /*
- * Checks the workspace's git status at phone width (390x844), where the top
- * bar has no git summary and the status lives in the Details pane's Git
- * card: the comparison row shows with its text vertically centered in the
- * row, and the row and its Commits button fit inside the screen. Saves a
- * screenshot of the pane to SHOTS/git-status-bar-mobile.png.
+ * Checks the second line of a workspace's top bar at phone widths (390 and
+ * 320px): the git status is vertically centred in the strip, the chips
+ * after it (timeout, containerless, …) end inside the screen without
+ * overlapping it, and the page does not scroll sideways. Saves a screenshot
+ * per width to SHOTS/git-status-bar-mobile-<width>.png.
  *
  * Creates a terminal-mode workspace in PROJECT (default yaac) unless
  * WORKSPACE_ID is set, and leaves it running. Serves the SPA from the
@@ -20,30 +20,35 @@ const workspaceId = process.env.WORKSPACE_ID
 
 const { chromium } = requirePlaywright()
 const browser = await chromium.launch()
-const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3 })
 const projectId = (await resolveProject(PROJECT)).id
-await page.goto(`${origin}/?project=${projectId}&workspace=${workspaceId}`)
-await page.getByRole('button', { name: 'Details', exact: true }).click({ timeout: 20_000 })
-await until(page, () => /Up to date with|ahead of|behind|No branch named/.test(document.body.innerText))
+for (const width of [390, 320]) {
+  const page = await browser.newPage({ viewport: { width, height: 844 }, deviceScaleFactor: 3 })
+  await page.goto(`${origin}/?project=${projectId}&workspace=${workspaceId}`)
+  const comparison = page.locator('button[title^="Review commits"]')
+  await comparison.waitFor({ timeout: 20_000 })
+  await until(page, () => /up to date with|ahead|behind|to compare with/.test(document.body.innerText))
 
-const m = await page.evaluate(() => {
-  const text = [...document.querySelectorAll('main span')]
-    .find((el) => /^(Up to date with|No branch named|\d+ commits? (ahead|behind))/.test(el.textContent))
-  const row = text.parentElement
-  const commits = [...row.querySelectorAll('button')].find((b) => b.textContent === 'Commits')
-  const rr = row.getBoundingClientRect()
-  const tr = text.getBoundingClientRect()
-  return {
-    rowTop: rr.top, rowBottom: rr.bottom, rowLeft: rr.left, rowRight: rr.right,
-    textTop: tr.top, textBottom: tr.bottom, commitsRight: commits?.getBoundingClientRect().right ?? null,
-  }
-})
-const above = m.textTop - m.rowTop
-const below = m.rowBottom - m.textBottom
-check('text is vertically centered in its row', Math.abs(above - below) <= 1, `above=${above} below=${below}`)
-check('row fits the screen', m.rowLeft >= 0 && m.rowRight <= 390, JSON.stringify(m))
-check('Commits button shows inside the screen', m.commitsRight !== null && m.commitsRight <= 390, `right=${m.commitsRight}`)
-
-await page.screenshot({ path: path.join(SHOTS, 'git-status-bar-mobile.png') })
+  // The button sits in GitStatusBar's wrapper, which sits in the strip;
+  // the strip's last child holds the chips.
+  const m = await comparison.evaluate((button) => {
+    const git = button.parentElement
+    const strip = git.parentElement
+    const rect = (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: r.width } }
+    return {
+      strip: rect(strip), git: rect(git), text: rect(button), chips: rect(strip.lastElementChild),
+      scrolls: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    }
+  })
+  const above = m.text.top - m.strip.top
+  const below = m.strip.bottom - m.text.bottom
+  check(`${width}: git status is centred in the strip`, Math.abs(above - below) <= 1.5, `above=${above} below=${below}`)
+  check(`${width}: the strip fits the screen`, m.strip.left >= 0 && m.strip.right <= width, JSON.stringify(m.strip))
+  check(`${width}: the chips end inside the screen`, m.chips.width === 0 || m.chips.right <= width, JSON.stringify(m.chips))
+  check(`${width}: the git status and the chips do not overlap`, m.chips.width === 0 || m.git.right <= m.chips.left,
+    `git.right=${m.git.right} chips.left=${m.chips.left}`)
+  check(`${width}: no sideways scroll`, !m.scrolls)
+  await page.screenshot({ path: path.join(SHOTS, `git-status-bar-mobile-${width}.png`) })
+  await page.close()
+}
 await browser.close()
 finish()

@@ -12,7 +12,8 @@ import { mockFetch, renderWithClient, serverSnapshot, workspaceEntry, type Fetch
 /*
  * A routine's pane in the main view, and a workspace's ties to routines
  * and timeouts: the header's "from" link back to the routine a run came
- * from, and the Details pane's chip that moves or clears its deadline. The sidebar's
+ * from, and its chip (or, with none, its ⋯ menu) that sets, moves or clears
+ * its deadline. The sidebar's
  * routine rows are workspace-list.test.tsx's; the form is
  * new-workspace-pane.test.tsx's.
  */
@@ -116,12 +117,13 @@ describe('a workspace', () => {
     const run = workspaceEntry({ workspaceId: 'w5', projectId: 'proj', title: 'A run', routineId: 'r1', deadline: inMinutes(42) })
     show(serverSnapshot({ routines: [ROUTINE], workspaces: [run] }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Details' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Stops in 42m' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: '+30m' }))
     await waitFor(() => expect(posted('POST /api/workspace/timeout')).toEqual([{ workspaceId: 'w5', timeout: 72 }]))
     fireEvent.click(screen.getByRole('button', { name: 'Stops in 42m' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'No timeout' }))
+    // The chip is about to go, so focus goes to ⋯.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More pane actions' })))
     fireEvent.click(screen.getByRole('button', { name: 'Stops in 42m' }))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Stop after…' }))
     const box = await screen.findByLabelText('Stop after')
@@ -131,8 +133,38 @@ describe('a workspace', () => {
       { workspaceId: 'w5', timeout: null },
       { workspaceId: 'w5', timeout: 120 },
     ]))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Stops in 42m' }))
 
     fireEvent.click(screen.getByRole('button', { name: 'from Nightly triage' }))
     expect(useUiStore.getState()).toMatchObject({ selectedWorkspaceId: null, selectedObject: { kind: 'routine', id: 'r1' } })
+  })
+  // With no timeout the bar has no chip: the ⋯ menu sets one, and its
+  // duration box opens in the bar.
+  it('sets a timeout from the pane menu when there is none', async () => {
+    useUiStore.setState({ activeProjectId: 'proj', selectedWorkspaceId: 'w5' })
+    show(serverSnapshot({ workspaces: [workspaceEntry({ workspaceId: 'w5', projectId: 'proj', title: 'A run' })] }))
+    expect(screen.queryByRole('button', { name: /Stops in|Set a timeout/ })).toBeNull()
+
+    const openSetTimeout = async (): Promise<void> => {
+      fireEvent.click(screen.getByRole('button', { name: 'More pane actions' }))
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Set a timeout' }))
+    }
+    await openSetTimeout()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Stop in 30m' }))
+    await waitFor(() => expect(posted('POST /api/workspace/timeout')).toEqual([{ workspaceId: 'w5', timeout: 30 }]))
+
+    await openSetTimeout()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Stop after…' }))
+    const box = await screen.findByLabelText('Stop after')
+    fireEvent.change(box, { target: { value: '1h' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    await waitFor(() => expect(posted('POST /api/workspace/timeout').slice(1)).toEqual([{ workspaceId: 'w5', timeout: 60 }]))
+    expect(screen.queryByLabelText('Stop after')).toBeNull()
+    // With no chip to return to, focus goes back to ⋯; so does Escape.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More pane actions' }))
+    await openSetTimeout()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Stop after…' }))
+    fireEvent.keyDown(await screen.findByLabelText('Stop after'), { key: 'Escape' })
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'More pane actions' })))
   })
 })

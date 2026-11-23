@@ -123,9 +123,10 @@ the title's hover marquee is off. Dragging rows between groups is mouse-only
 - **Tabs mode is forced** at render, never written to the store, so a desktop
   tiles preference survives opening the server on a phone. Tabs are not
   draggable, which also avoids a drag vs. scroll conflict.
-- **The header folds.** The title and the Details button stay; New shell,
-  Changes, Files and Preview (in the iPhone app) move into a `⋯` menu
-  (`PaneOverflowMenu`).
+- **The header takes two lines.** The first holds the title, the warning
+  badges and the `⋯` menu (`PaneMenu`), which also lists Preview (in the
+  iPhone app). The second holds the git status, with the chips (timeout,
+  volume, a release's site, containerless) at its right end.
 - **Eager attach drops to 2** (from 12). Each pre-attached pane is a live PTY
   stream; twelve suits a desktop on a LAN, not a metered radio.
 

@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react'
 import {
-  YAgentText, YAsk, YBars, YButton, YChip, YCmdK, YComposer, YDetailCard, YDetailRow, YDetailsPanel,
+  YAgentText, YAsk, YBars, YButton, YChip, YCmdK, YComposer,
   YListRow, YListSection, YMachineCard, YMeter, YPanel, YPanelHeader, YPanelTab, YPersonRow, YProjectCard, YProjectRail,
   YProjectTile, YRailItem, YRoutineRow, YSessionRow, YSidebar, YSidebarAll, YSidebarNewWorkspace, YStatCard, YStep, YTopBar, YUserMessage,
 } from '#ui'
@@ -108,8 +108,7 @@ export function NavigationSection(): JSX.Element {
           trailing={<><span className="mr-2 text-md"><span className="text-success">+37</span> <span className="text-danger">−9</span></span>
             <YButton variant="ghost" icon={icons.PreviewIcon} aria-label="Preview" />
             <YButton variant="ghost" icon={icons.TerminalIcon} aria-label="Terminal" />
-            <YButton variant="ghost" icon={icons.FilesIcon} aria-label="Files" />
-            <YButton variant="ghost" icon={icons.DetailsIcon} aria-label="Details" /></>} />
+            <YButton variant="ghost" icon={icons.FilesIcon} aria-label="Files" /></>} />
       </Item>
       <Item name="YSidebar · Home scope">
         <YSidebar width={248} className="h-[380px]" newWorkspace={<YSidebarNewWorkspace kbd="⌘N" onClick={noop} />} footer={<YSidebarAll count={48} onClick={noop} />}>
@@ -138,9 +137,8 @@ export function NavigationSection(): JSX.Element {
 }
 
 export function PanelsSection(): JSX.Element {
-  const [git, setGit] = useState(true)
   return (
-    <Section title="Panels" note="pane frame, details">
+    <Section title="Panels" note="pane frame">
       <Item name="YPanel · YPanelHeader · YPanelTab">
         <YPanel className="h-48 w-[420px] shadow-inset"
           header={<YPanelHeader tabs={<><YPanelTab active label="Preview" onSelect={noop} /><YPanelTab active={false} label="Changes" onSelect={noop} /></>}
@@ -149,22 +147,6 @@ export function PanelsSection(): JSX.Element {
               <YButton variant="ghost" size="sm" icon={icons.CloseIcon} aria-label="Close" /></>} />}>
           <div className="p-4 text-md text-muted">Pane body</div>
         </YPanel>
-      </Item>
-      <Item name="YDetailsPanel · YDetailCard">
-        <div className="h-[460px] w-[260px] bg-shell">
-          <YDetailsPanel footer={<><YButton>Stop session</YButton><YButton variant="danger">Delete</YButton></>}>
-            <YDetailCard title="Where it runs">
-              <YDetailRow icon={<icons.DockerIcon size={13} />} note="on this computer">Container</YDetailRow>
-              <YDetailRow icon={<icons.QueuedIcon size={13} />} action={<YButton variant="ghost" size="sm">Keep running</YButton>}>Stops in 1h 20m</YDetailRow>
-            </YDetailCard>
-            <YDetailCard title="Git" open={git} onToggle={() => setGit(!git)}>
-              <YDetailRow icon={<icons.BranchIcon size={13} />}>auth/passkeys</YDetailRow>
-              <YDetailRow icon={<icons.CommitsIcon size={13} />} note="1 behind">3 commits ahead of main</YDetailRow>
-            </YDetailCard>
-            <YDetailCard title="Changes" open={false} onToggle={noop} summary="+212 −48" />
-            <YDetailCard title="Network" open={false} onToggle={noop} summary="1 blocked host" tone="warning" />
-          </YDetailsPanel>
-        </div>
       </Item>
     </Section>
   )

@@ -35,7 +35,7 @@ if (!workspace) throw new Error(`no live workspace ${workspaceId}`)
 const session = workspace.sessions.find((s) => s.mode === 'acp')
 if (!session) throw new Error('the workspace has no acp session')
 const url = `${origin}/?project=${workspace.projectId}&workspace=${workspace.workspaceId}`
-const OTHER_PANES = ['files', 'changes', 'details', 'history', 'file:README.md']
+const OTHER_PANES = ['files', 'changes', 'commits', 'history', 'file:README.md']
 
 /**
  * The controls in the row under the composer text box `textarea`: their

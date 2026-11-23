@@ -37,7 +37,6 @@ export {
   ChevronDown as StepDownIcon,
   ChevronDown as DropdownIcon,
   Inbox as InboxIcon,
-  PanelRight as DetailsIcon,
   LogOut as SignOutIcon,
   BookOpen as DocsIcon,
   CircleArrowUp as UpdateIcon,

@@ -11,10 +11,11 @@ The webapp's main pane starts a new workspace whenever no workspace is
 selected (the sidebar's +, Alt+N, a project with none): the chat composer
 for the prompt, its permission mode and effort beside it as in a chat, and
 the other settings where the conversation would be (`NewWorkspacePane`).
-Its header bar is a workspace's: the view toggle, and New Shell, Files and
-Changes, which start the workspace now and open that pane once it is up.
-Send needs a prompt, so an Enter in an empty box starts nothing; a
-workspace starts without one only from those buttons or from "Start
+Its header bar is a workspace's: its `⋯` menu holds the view toggle, and
+New shell, Files and Changes, which start the workspace now and open that
+pane once it is up. Send needs a prompt, so an Enter in an empty box
+starts nothing; a workspace starts without one only from those items or
+from "Start
 without a prompt", in whichever UI is picked.
 
 There is at most one form, kept in the browser's localStorage

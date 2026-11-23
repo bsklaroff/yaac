@@ -99,7 +99,8 @@ describe('WorkspaceView: open-changes', () => {
     await waitFor(() => expect(document.activeElement).toBe(filter))
 
     act(() => useUiStore.getState().focusTerminal('s1', AGENT))
-    fireEvent.click(screen.getByRole('button', { name: 'Show changes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'More pane actions' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Review changes' }))
     expect(useUiStore.getState().activeTabs.s1).toBe('changes')
   })
 })

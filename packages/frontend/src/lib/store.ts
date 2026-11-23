@@ -4,7 +4,7 @@ import { addColumn, isPaneLayout, paneTargets, removeTarget, renameTargets, sing
 import { previewTarget } from '#lib/preview'
 import { stepTarget } from '#lib/steps'
 import { CHANGES_TARGET, FILES_TARGET, changesTarget, fileKey, fileTarget, placeFile, type ChangesRange } from '#lib/files'
-import { DETAILS_TARGET, HISTORY_TARGET } from '#lib/panes'
+import { HISTORY_TARGET } from '#lib/panes'
 import { COMMITS_TARGET } from '#lib/commits'
 import { DEFAULT_BINDINGS, type BindingMap, type Chord, type ShortcutId } from '#lib/shortcuts'
 import { applyThemeAttribute, type ThemePref } from '#lib/theme'
@@ -562,8 +562,6 @@ interface UiState {
    *  is open already, close this one and focus it. */
   retargetRange: (workspaceId: string, from: string, to: string) => void
   openCommits: (workspaceId: string) => void
-  /** Open (or focus) the workspace's Details pane. */
-  openDetails: (workspaceId: string) => void
   /** Open or focus a workspace's file explorer. */
   openFiles: (workspaceId: string) => void
   /** Open or focus a workspace's History pane. */
@@ -1225,7 +1223,6 @@ export const useUiStore = create<UiState>((set, get) => ({
   openFiles: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, FILES_TARGET)),
   openHistory: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, HISTORY_TARGET)),
   openCommits: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, COMMITS_TARGET)),
-  openDetails: (workspaceId) => set((s) => openSpecialPane(s, workspaceId, DETAILS_TARGET)),
   openStep: (workspaceId, name) => set((s) => openSpecialPane(s, workspaceId, stepTarget(name))),
   openFile: (workspaceId, path, line) => set((s) => {
     const target = fileTarget(path)

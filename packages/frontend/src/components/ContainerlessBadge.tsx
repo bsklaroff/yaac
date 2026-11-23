@@ -7,8 +7,8 @@ import { YPopover, YPopoverPopup } from '#ui'
 
 /**
  * Warning that this server runs workspaces on its machine with no sandbox
- * (docs/containerless-driver.md), drawn in a live workspace's Details pane
- * and a read-only workspace's header, and by nothing under k8s. The driver is the server's, so
+ * (docs/containerless-driver.md), drawn by every workspace header, live or
+ * read-only, and by nothing under k8s. The driver is the server's, so
  * a client of a remote containerless server sees it too. The popover says
  * what the agent can reach and where isolation comes from.
  */

@@ -1,6 +1,6 @@
 /*
  * Verifies the Commits pane in real Chromium:
- *   1. The top bar's git summary, "N ahead, M behind <base>", opens the pane,
+ *   1. The top bar's git status, "N ahead, M behind <base>", opens the pane,
  *      which lists HEAD's commits and the base branch's beside a graph:
  *      one dot per commit, a merge drawn across two lanes, the HEAD branch
  *      and origin/main as ref pills, and the commit only origin/main has
@@ -79,8 +79,8 @@ try {
   const page = await browser.newPage({ viewport: { width: 1400, height: 800 } })
   await page.goto(`${origin}/?${new URLSearchParams({ project: projectId, workspace: workspaceId })}`)
 
-  // 1. From the top bar's summary into the pane.
-  const strip = page.locator('button[title="Review commits"]')
+  // 1. From the top bar's git status into the pane.
+  const strip = page.locator('button[title^="Review commits"]')
   await strip.filter({ hasText: 'behind' }).waitFor({ timeout: 30000 })
   check('the summary says how far HEAD is from origin/main', /\d+ ahead, 1 behind\s+origin\/main/.test(await strip.innerText()),
     await strip.innerText())

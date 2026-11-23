@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { screen, cleanup, waitFor, fireEvent, within } from '@testing-library/react'
 import { MAX_LOG_COMMITS, type GitLogCommit, type WorkspaceChanges, type WorkspaceGitLog } from '@yaac/shared/types'
 import { WorkspaceCommits } from '#components/WorkspaceCommits'
-import { GitStatusRows, GitTopBarSummary } from '#components/GitStatus'
+import { GitStatusBar } from '#components/GitStatus'
 import { COMMITS_TARGET, layoutGraph } from '#lib/commits'
 import { changesTarget } from '#lib/files'
 import { useUiStore } from '#lib/store'
@@ -238,24 +238,17 @@ describe('WorkspaceCommits', () => {
   })
 })
 
-describe('git status summaries', () => {
-  // The top bar says it in few words, the Details pane in a sentence; both
-  // open the Commits pane.
+describe('the git status strip', () => {
   it('opens the Commits pane from how far HEAD is from its base', async () => {
     const changes: WorkspaceChanges = {
       base: 'f', work: 'w', baseResolved: true, files: [], truncated: false, readMs: 0,
       branch: 'main', comparison: { ref: 'origin/main', ahead: 2, behind: 1 },
     }
     server.route('GET /api/workspace/s1/changes', changes)
-    renderWithClient(<><GitTopBarSummary workspaceId="s1" /><GitStatusRows workspaceId="s1" /></>)
+    renderWithClient(<GitStatusBar workspaceId="s1" />)
     await waitFor(() => expect(screen.getByTitle('Review commits').textContent).toBe('2 ahead, 1 behind origin/main'))
-    expect(screen.getByText(/2 commits ahead of/).textContent).toBe('2 commits ahead of, 1 commit behind origin/main')
-    expect(screen.getByText('No uncommitted changes')).toBeTruthy()
+    expect(screen.queryByTitle('Review changes')).toBeNull()
     fireEvent.click(screen.getByTitle('Review commits'))
-    expect(useUiStore.getState().activeTabs.s1).toBe(COMMITS_TARGET)
-
-    useUiStore.setState({ activeTabs: {} })
-    fireEvent.click(screen.getByRole('button', { name: 'Commits' }))
     expect(useUiStore.getState().activeTabs.s1).toBe(COMMITS_TARGET)
   })
 
@@ -265,8 +258,7 @@ describe('git status summaries', () => {
       base: start, work: 'w', baseResolved: true, files: [], truncated: false, readMs: 0,
       branch: start, comparison: { ref: start, ahead: 3, behind: 0 },
     } satisfies WorkspaceChanges)
-    renderWithClient(<><GitTopBarSummary workspaceId="s1" /><GitStatusRows workspaceId="s1" /></>)
+    renderWithClient(<GitStatusBar workspaceId="s1" />)
     await waitFor(() => expect(screen.getByTitle('Review commits').textContent).toBe('3 ahead of f000000'))
-    expect(screen.getByText(/3 commits ahead of/).textContent).toBe('3 commits ahead of f000000')
   })
 })

@@ -161,7 +161,7 @@ export function Sidebar({ scope, connected, home, rail }: {
       status={(
         <ListBadges
           projectIds={home ? home.projects.map((p) => p.id) : scope.projectId !== null ? [scope.projectId] : []}
-          className="border-b border-line px-4 py-1 empty:hidden"
+          className="h-9 shrink-0 border-b border-line px-4 empty:hidden"
         />
       )}
       tabs={!home && scope.projectId !== null && <SidebarTabs workspaces={scope.workspaces} className="px-1.5 pt-1.5" />}

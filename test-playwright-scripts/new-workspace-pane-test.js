@@ -16,7 +16,7 @@
  *  5. With UI set to Terminal, "Start without a prompt" creates a terminal
  *     workspace whose create pane shows no prompt, then its terminal.
  *  6. The header bar matches a workspace's. With UI set to Chat and no
- *     prompt, its Files button starts an empty chat, says it will open
+ *     prompt, its ⋯ → Browse files starts an empty chat, says it will open
  *     Files, and once up shows the chat empty with Files open beside it.
  *
  * Needs a containerless server with a claude credential and a project.
@@ -122,14 +122,16 @@ try {
   check('terminal: terminal shown once up', true)
   await page.screenshot({ path: `${SHOTS}/new-workspace-terminal.png` })
 
-  // An empty chat, started from the bar's Files button.
+  // An empty chat, started from the bar menu's Browse files.
   await newWorkspace.click()
   await claude()
   await page.getByLabel('UI').selectOption('acp')
-  check('bar: matches a workspace\'s', await page.getByRole('button', { name: /Tile view|Tab view/ }).count() === 1
-    && await page.getByRole('button', { name: 'Show changes' }).count() === 1)
-  const files = page.getByRole('button', { name: 'Browse files' })
-  await until(page, () => document.querySelector('button[aria-label="Browse files"]')?.disabled === false)
+  await page.getByRole('button', { name: 'More pane actions' }).click()
+  check('bar: matches a workspace\'s', await page.getByRole('menuitem', { name: /Switch to t/ }).count() === 1
+    && await page.getByRole('menuitem', { name: 'Review changes' }).count() === 1)
+  const files = page.getByRole('menuitem', { name: 'Browse files' })
+  await until(page, () => [...document.querySelectorAll('[role="menuitem"]')]
+    .find((el) => el.textContent === 'Browse files')?.getAttribute('aria-disabled') !== 'true')
   await files.click()
   await nextWorkspace(termId)
   check('files: create says it will open Files', await page.getByText(/then opening Files$/).count() === 1)

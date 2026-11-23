@@ -226,5 +226,6 @@ routine form says so beside the permission mode.
   Workflow tab lists each routine after the workflows, describing its cron
   in words (cronstrue), with its runs under its row; a
   routine opens in its own pane with its cron and its runs; a workspace with
-  a deadline shows a chip to extend or clear it, and a routine's run links
-  back to its routine.
+  a deadline shows a chip in its bar to extend or clear it, one without sets
+  a timeout from the bar's `⋯` menu, and a routine's run links back to its
+  routine.

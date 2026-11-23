@@ -376,20 +376,19 @@ screen.
 
 ### Git status
 
-The workspace's top bar (`GitTopBarSummary` in `components/GitStatus.tsx`)
-says in a few words how far HEAD is ahead of and behind the reference
-branch, which opens the Commits pane, then the total changed lines
-(`+52 −3`), which open the Changes pane. The Details pane's Git card
-(`GitStatusRows`) says the same in full, with the checkout picker and when
-the reference branch was fetched. Both come from the changes answer
-(`branch`, `comparison`, `files`), polled every 10 seconds while the
-workspace is on screen. The top bar also asks for `listing=paths`, so the
-explorer's tree and the terminal's and chat pane's file links are ready
-before the explorer opens.
+The workspace's top bar (`GitStatusBar` in `components/GitStatus.tsx`)
+carries, after the title, the checkout picker, how far HEAD is ahead of
+and behind the reference branch in a few words (with when that was
+fetched on hover), which opens the Commits pane, then the total changed
+lines (`+52 −3`), which open the Changes pane. A phone's bar has no room
+for it, so there it is a strip under the bar. It reads the changes answer (`branch`,
+`comparison`, `files`), polled every 10 seconds while the workspace is on
+screen, and also asks for `listing=paths`, so the explorer's tree and the
+terminal's and chat pane's file links are ready before the explorer opens.
 
 It never fetches, so `behind` is only as fresh as the checkout's `origin/*`
 (which the server keeps within minutes of origin, docs/server-git.md). The
-Git card shows `fetchedAt`, the newest mtime among:
+comparison's tooltip shows `fetchedAt`, the newest mtime among:
 
 - `server-local/git-fetched/`, a record each successful server fetch writes
   (git empties `FETCH_HEAD` even when a fetch fails);

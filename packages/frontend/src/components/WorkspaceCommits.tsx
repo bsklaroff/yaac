@@ -32,7 +32,7 @@ const paint = (color: number): string => PALETTE[color % PALETTE.length]
  * The Commits pane: the history of HEAD and of the branch the workspace is
  * based on, as a graph beside a GitHub-style commit list. Its strip picks
  * that branch, which moves the workspace's base for the Changes pane and the
- * git status strip too. Commits only the base branch has (the ones HEAD is
+ * top bar's git status too. Commits only the base branch has (the ones HEAD is
  * behind by) are dimmed. Of the refs at each commit only HEAD, tags and the
  * base branch are marked, since a checkout full of agent branches would bury
  * the subjects in pills.

@@ -38,7 +38,7 @@ export { YAgentText, YAsk, YComposer, YUserMessage, type YAskAction } from './YC
 export { YBars, YMachineCard, YMeter, YStatCard } from './YData'
 export { YListRow, YListSection, YPersonRow, YRoutineRow, YStep } from './YList'
 export { YCmdK, YProjectRail, YRailItem, YSidebar, YSidebarAll, YSidebarNewWorkspace, YTopBar, type YCmdKGroup, type YCmdKItem } from './YNav'
-export { YDetailCard, YDetailRow, YDetailsPanel, YPanel, YPanelHeader, YPanelTab } from './YPanel'
+export { YPanel, YPanelHeader, YPanelTab } from './YPanel'
 export { YProjectCard, YProjectTile, type YProjectTileProps } from './YProject'
 export { YRowFrame, type YRowFrameProps } from './YRow'
 export { YSessionRow } from './YSessionRow'
