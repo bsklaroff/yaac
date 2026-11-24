@@ -159,9 +159,15 @@ policy and the registry grant (over stdin, never argv), then runs one
   step has to run; a fully cached build never pulls it.
 - `--opt cmdline=dockerfile.v0`, so the built-in, pinned frontend parses
   every file: with gateway frontends off a `# syntax=` line would otherwise
-  fail the build.
-- `--import-cache`/`--export-cache type=registry,mode=max,image-manifest=true`
-  on the layer's cache ref (below); `--no-cache` for a rebuild without cache.
+  fail the build. The `InvalidDefaultArgInFrom` lint is skipped: every
+  layered Dockerfile's bare `ARG BASE_IMAGE` trips it, and the build always
+  supplies the value. BuildKit ignores a file's `# check=` directive once a
+  check build-arg is given, so the build-arg is that directive with the rule
+  added to its `skip` list (`skip=all` stays as it is).
+- `--export-cache type=registry,mode=max,image-manifest=true` on the
+  layer's cache ref (below), and `--import-cache` on the same ref unless the
+  registry says it is absent, which BuildKit would log as an error;
+  `--no-cache` for a rebuild without cache.
 - `--output type=image,push=true,compression=zstd` with no attestations, so
   the result, like the cache export, is one tagged manifest, never an index.
 - `--source-policy-file` and `--progress plain`.

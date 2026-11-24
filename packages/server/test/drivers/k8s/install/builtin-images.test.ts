@@ -190,6 +190,7 @@ describe('buildBuiltinImages', () => {
     for (const args of builds) {
       expect(args[args.indexOf('--output') + 1]).toContain('compression=zstd')
       expect(args).toEqual(expect.arrayContaining(['--opt', 'cmdline=dockerfile.v0']))
+      expect(args).toEqual(expect.arrayContaining(['--opt', 'build-arg:BUILDKIT_DOCKERFILE_CHECK=skip=InvalidDefaultArgInFrom']))
     }
     expect(builds[1]).toContain(`build-arg:BASE_IMAGE=${host}/${base.tag}`)
     // Each ends with the normalize step, written beside its context.

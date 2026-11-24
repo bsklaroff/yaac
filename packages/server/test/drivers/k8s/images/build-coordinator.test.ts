@@ -470,6 +470,9 @@ describe('buildImageLayers', () => {
     const chain = await resolveChain(chainSpec)
     const tools = chain.layers[1]
     const project = chain.layers[2]
+    // This window's cache already exists, so the build imports it.
+    const cacheTag = `yaac-buildcache-${PROJ}:project-${IMAGE}-${cacheBucket(PROJ, BUILD_CACHE_MAX_DAYS)}`
+    fakeRegistry.push(cacheTag)
     holdInPodBuild().then(() => {
       held[0].log('#5 [1/2] FROM ubuntu')
       held[0].close(0)
@@ -592,8 +595,9 @@ describe('buildImageLayers', () => {
     expect(build.slice(0, 2)).toEqual(['buildctl', 'build'])
     const args = build.join(' ')
     expect(args).toContain('--opt cmdline=dockerfile.v0')
+    expect(args).toContain('--opt build-arg:BUILDKIT_DOCKERFILE_CHECK=skip=InvalidDefaultArgInFrom')
     expect(args).toContain(`--opt build-arg:BASE_IMAGE=${POD_HOST}/${tools.tag}`)
-    const cacheRef = `${POD_HOST}/yaac-buildcache-${PROJ}:project-${IMAGE}-${cacheBucket(PROJ, BUILD_CACHE_MAX_DAYS)}`
+    const cacheRef = `${POD_HOST}/${cacheTag}`
     expect(args).toContain(`--import-cache type=registry,ref=${cacheRef}`)
     expect(args).toContain(`--export-cache type=registry,ref=${cacheRef},mode=max,image-manifest=true`)
     expect(args).toContain(`--output type=image,name=${POD_HOST}/${project.tag},push=true,compression=zstd`)
@@ -609,7 +613,7 @@ describe('buildImageLayers', () => {
   })
 
   it('builds a standalone layer allowing no registry image, without its cache when asked', async () => {
-    const chainSpec = spec(await source('project', 'FROM ubuntu\n'))
+    const chainSpec = spec(await source('project', '# check=error=true\nFROM ubuntu\n'))
     const { req } = request(chainSpec, ['project'], { noCache: true })
     expect(await buildImageLayers(req)).toMatchObject({ ok: true })
 
@@ -618,7 +622,9 @@ describe('buildImageLayers', () => {
     expect(build).not.toContain('BASE_IMAGE')
     expect((JSON.parse(execs[3].stdin) as { rules: Array<{ action: string }> }).rules.map((r) => r.action))
       .toEqual(['DENY', 'DENY'])
-    expect(execs[2].stdin).toMatch(/^FROM ubuntu\n/)
+    expect(execs[2].stdin).toMatch(/^# check=error=true\nFROM ubuntu\n/)
+    // The file's own check directive survives the lint rule yaac skips.
+    expect(build).toContain('--opt build-arg:BUILDKIT_DOCKERFILE_CHECK=error=true;skip=InvalidDefaultArgInFrom')
     // Rebuilt from scratch, though the result still seeds the cache.
     expect(build).toContain('--no-cache')
     expect(build).not.toContain('--import-cache')
@@ -633,7 +639,9 @@ describe('buildImageLayers', () => {
     const { req } = request(chainSpec, ['project'], { cacheMaxDays: 7 })
     await buildImageLayers(req)
     const build = remoteCommands()[5].join(' ')
-    expect(build).toContain(`${POD_HOST}/yaac-buildcache-${PROJ_B}:project-other-image-${cacheBucket(PROJ_B, 7)}`)
+    expect(build).toContain(`--export-cache type=registry,ref=${POD_HOST}/yaac-buildcache-${PROJ_B}:project-other-image-${cacheBucket(PROJ_B, 7)}`)
+    // A window's first build has no cache to import.
+    expect(build).not.toContain('--import-cache')
     // Windows are cacheMaxDays long, offset per project.
     const day = 86_400_000
     const now = Date.UTC(2026, 10, 23)
@@ -646,10 +654,21 @@ describe('buildImageLayers', () => {
     const { tools } = await resolveTrustedLayers()
     fakeRegistry.tags.add(tools.tag)
     const chainSpec = spec(await source('project'), await source('user'))
+    // The registry gives no answer about the user layer's cache, so that
+    // build still tries to import it; the project layer's is plainly absent.
+    const registryFetch = globalThis.fetch
+    vi.stubGlobal('fetch', (input: string | URL, init?: RequestInit) =>
+      String(input).includes(`/yaac-buildcache-${PROJ}/manifests/user-`)
+        ? Promise.resolve(new Response(null, { status: 500 }))
+        : registryFetch(input, init))
     const { req, seen } = request(chainSpec, ['project', 'user'])
     expect(await buildImageLayers(req)).toMatchObject({ ok: true })
 
     expect(seen.starts).toEqual(['project', 'user'])
+    const builds = remoteCommands().filter((c) => c[0] === 'buildctl' && c[1] === 'build').map((c) => c.join(' '))
+    expect(builds).toHaveLength(2)
+    expect(builds[0]).not.toContain('--import-cache')
+    expect(builds[1]).toContain(`--import-cache type=registry,ref=${POD_HOST}/yaac-buildcache-${PROJ}:user-`)
     expect(appliedKinds().filter((k) => k === 'Pod')).toHaveLength(1)
     expect(deleteCalls()).toHaveLength(1)
     // A shared pod gets a fresh grant per layer, for that layer's repo and,

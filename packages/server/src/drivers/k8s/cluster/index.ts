@@ -49,6 +49,7 @@ export { UTILITY_MIRROR_TAG, UTILITY_UPSTREAM_IMAGE, ensureUtilityImage } from '
 export {
   BUILDKITD_ENV,
   buildkitdConfig,
+  dockerfileFrontendArgs,
   ensureBuilderImage,
   resolveBuilderImageTag,
 } from './builder-image'
