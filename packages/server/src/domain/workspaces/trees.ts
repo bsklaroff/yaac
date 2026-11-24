@@ -386,9 +386,10 @@ const COLLECT_AFTER_MS = 60 * 60_000
  * manifests are the two newest lives' that have one (what a restart
  * restores, and the one before it), an import's until a life has saved,
  * and those of lives lost with their node, in case their tree turns up. A
- * workspace with a manifest that cannot be read keeps everything, for a
- * `--restore-newest` to work from. A tree container deletes nothing there,
- * so this is the only collection.
+ * workspace with no recorded life (a prewarmed spare, whose life is
+ * recorded only when it is claimed) or with a manifest that cannot be read
+ * keeps everything. A tree container deletes nothing there, so this is the
+ * only collection.
  */
 export async function collectCheckpointBundles(): Promise<void> {
   for (const projectId of await fs.readdir(globalPath('projects')).catch(() => [])) {
@@ -410,12 +411,13 @@ async function collectWorkspace(projectId: string, workspaceId: string): Promise
     return
   }
   const manifests = read.filter((x): x is { life: string; m: Manifest } => typeof x.m !== 'string')
-  // With no manifest at all there is nothing to judge by yet.
+  // With no manifest, or no life recorded yet, there is nothing to judge by.
   if (manifests.length === 0) return
+  const lives = await listTreeLives(workspaceId)
+  if (lives.length === 0) return
   // The two newest lives that saved, by their own start times, which no
   // node's clock wrote: what a restart restores and the one before it. A
   // life that saved nothing (a restart that failed early) counts for none.
-  const lives = await listTreeLives(workspaceId)
   const saved = new Set(manifests.map((x) => x.life))
   const newest = new Set(lives.filter((l) => saved.has(l.treeDir)).slice(0, 2).map((l) => l.treeDir))
   const lost = new Set(lives.filter((l) => l.checkpointOutcome === 'lost').map((l) => l.treeDir))
