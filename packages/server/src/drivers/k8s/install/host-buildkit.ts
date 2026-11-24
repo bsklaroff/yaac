@@ -34,6 +34,7 @@ import {
   BUILDKITD_ENV,
   NORMALIZE_STEP,
   buildkitdConfig,
+  dockerfileFrontendArgs,
   registryAuthFile,
   resolveBuilderImageTag,
   stringHash,
@@ -126,14 +127,14 @@ export async function buildTrustedLayers(
         ], { input: tar, logPrefix, timeoutMs: 600_000, label: 'podman exec tar', tailLines: 20 }))
       // Every image ends with the normalize step, the trusted chain too, so
       // a project's build finds nothing of the chain's to fix.
+      const dockerfile = await fs.readFile(layer.dockerfile, 'utf8')
       await podmanExec(name, `mkdir -p ${DOCKERFILE_DIR} && cat > ${DOCKERFILE_DIR}/Dockerfile`,
-        `${await fs.readFile(layer.dockerfile, 'utf8')}\n${NORMALIZE_STEP}`)
+        `${dockerfile}\n${NORMALIZE_STEP}`)
       const args = [
         'exec', name, 'buildctl', 'build',
-        '--frontend', 'dockerfile.v0',
+        ...dockerfileFrontendArgs(dockerfile),
         '--local', `context=${CONTEXT_DIR}`,
         '--local', `dockerfile=${DOCKERFILE_DIR}`,
-        '--opt', 'cmdline=dockerfile.v0',
         '--output', `type=image,name=${endpoint}/${layer.tag},push=true,compression=zstd,oci-mediatypes=true`,
         '--progress', 'plain',
       ]

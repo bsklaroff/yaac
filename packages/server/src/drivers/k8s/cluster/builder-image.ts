@@ -47,6 +47,50 @@ export function buildkitdConfig(opts: { plainHttp: string[] }): string {
   ].join('\n')
 }
 
+/** The lint rule every layered Dockerfile's bare `ARG BASE_IMAGE` trips,
+ *  though the build always supplies the value. */
+const SKIPPED_LINT_RULE = 'InvalidDefaultArgInFrom'
+
+/**
+ * The value of a Dockerfile's `check` parser directive, read as BuildKit's
+ * `ParseDirective` reads it: from the leading run of `# key=value` lines
+ * after any BOM and shebang line, which ends at the first line that is not
+ * a `syntax`, `escape` or `check` directive, and cut at its first space.
+ */
+function checkDirective(dockerfile: string): string | undefined {
+  const lines = dockerfile.replace(/^﻿/, '').split('\n')
+  if (lines[0]?.startsWith('#!')) lines.shift()
+  for (const line of lines) {
+    const m = /^#\s*([a-zA-Z][a-zA-Z0-9]*)\s*=\s*(.+?)\s*$/.exec(line)
+    const key = m?.[1].toLowerCase()
+    if (key === 'check') return m![2].split(' ')[0]
+    if (key !== 'syntax' && key !== 'escape') return undefined
+  }
+  return undefined
+}
+
+/**
+ * The frontend options a `buildctl build` of `dockerfile` passes. `cmdline`
+ * parses every file with the built-in Dockerfile frontend, since gateway
+ * frontends are off. BuildKit reads a file's own `# check=` directive only
+ * when no check build-arg is given, so the build-arg is that directive with
+ * SKIPPED_LINT_RULE added to its `skip` list, and every other part (`error`,
+ * `experimental`, one BuildKit refuses) kept as written.
+ */
+export function dockerfileFrontendArgs(dockerfile: string): string[] {
+  const directive = checkDirective(dockerfile)
+  const parts = directive === undefined ? [] : directive.split(';')
+  const i = parts.findIndex((p) => p.split('=')[0].trim() === 'skip')
+  const skipped = i < 0 ? '' : parts[i].slice(parts[i].indexOf('=') + 1).trim()
+  if (i < 0) parts.push(`skip=${SKIPPED_LINT_RULE}`)
+  else if (skipped !== 'all') parts[i] = `skip=${skipped ? `${skipped},` : ''}${SKIPPED_LINT_RULE}`
+  return [
+    '--frontend', 'dockerfile.v0',
+    '--opt', 'cmdline=dockerfile.v0',
+    '--opt', `build-arg:BUILDKIT_DOCKERFILE_CHECK=${parts.join(';')}`,
+  ]
+}
+
 /**
  * buildkitd's environment: no cap on a step's log size or rate, which by
  * default clips output past 200KiB/s, so a build's log reaches the client

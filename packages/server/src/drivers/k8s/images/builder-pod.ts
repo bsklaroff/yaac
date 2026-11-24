@@ -47,6 +47,7 @@ import {
   buildBuildRegistrationConfigMapManifest,
   buildBuilderEgressNpManifest,
   buildkitdConfig,
+  dockerfileFrontendArgs,
   ensureBuilderImage,
   ensureBuilderRoleGuard,
   ensureMainRegistry,
@@ -57,6 +58,7 @@ import {
   registryHost,
   registryPodHost,
   registryRepoIsProtected,
+  registryTagState,
   stringHash,
   type ImageLayer,
 } from '#drivers/k8s/cluster'
@@ -328,23 +330,24 @@ const WAIT_FOR_BUILDKITD = 'for i in $(seq 120); do buildctl debug workers >/dev
  * `buildctl build` argv for one layer. `BASE_IMAGE` is the parent's pod-port
  * ref, so BuildKit pulls it only if a step has to run. The output is one
  * zstd image manifest with no attestations, which the registry GC requires
- * (docs/image-gc.md), and so is the cache export.
+ * (docs/image-gc.md), and so is the cache export. `importCache` is false
+ * when the cache is known to be absent, so BuildKit does not log the miss
+ * as an error.
  */
 function builderBuildArgs(
   layer: ImageLayer,
-  opts: { cacheRef: string; noCache: boolean },
+  opts: { cacheRef: string; noCache: boolean; importCache: boolean },
 ): string[] {
   const host = registryPodHost()
   const args = [
     'build',
-    '--frontend', 'dockerfile.v0',
+    ...dockerfileFrontendArgs(layer.dockerfile),
     '--local', `context=${BUILDER_CONTEXT_DIR}`,
     '--local', `dockerfile=${BUILDER_DOCKERFILE_DIR}`,
-    // Parse with the built-in frontend even if the file names another.
-    '--opt', 'cmdline=dockerfile.v0',
     '--source-policy-file', BUILDER_POLICY_FILE,
-    '--export-cache', `type=registry,ref=${opts.cacheRef},mode=max,image-manifest=true,oci-mediatypes=true`,
-    ...(opts.noCache ? ['--no-cache'] : ['--import-cache', `type=registry,ref=${opts.cacheRef}`]),
+    '--export-cache', `type=registry,ref=${host}/${opts.cacheRef},mode=max,image-manifest=true,oci-mediatypes=true`,
+    ...(opts.noCache ? ['--no-cache'] : []),
+    ...(opts.importCache ? ['--import-cache', `type=registry,ref=${host}/${opts.cacheRef}`] : []),
     '--output', `type=image,name=${host}/${layer.tag},push=true,compression=zstd,oci-mediatypes=true`,
     '--progress', 'plain',
   ]
@@ -602,11 +605,14 @@ async function runLayerBuild(
   ), execOpts)
 
   const bucket = cacheBucket(ctx.projectId, ctx.cacheMaxDays ?? BUILD_CACHE_MAX_DAYS)
+  const cacheRef = `${buildCacheRepo(ctx.projectId)}:${layer.name}-${layer.cacheKey ?? 'none'}-${bucket}`
+  const noCache = ctx.noCache ?? false
   await execInBuilderPod(
     pod,
     ['buildctl', ...builderBuildArgs(layer, {
-      cacheRef: `${registryPodHost()}/${buildCacheRepo(ctx.projectId)}:${layer.name}-${layer.cacheKey ?? 'none'}-${bucket}`,
-      noCache: ctx.noCache ?? false,
+      cacheRef,
+      noCache,
+      importCache: !noCache && await registryTagState(cacheRef) !== 'absent',
     })],
     { ...execOpts, idleTimeoutMs: BUILDER_BUILD_IDLE_TIMEOUT_MS },
   )
