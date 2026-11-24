@@ -20,13 +20,14 @@ import { languageForPath } from '#lib/highlight'
 import { CHANGES_POLL_MS, useWorkspaceChanges } from '#lib/useWorkspaceChanges'
 import { useCheckout } from '#lib/checkouts'
 import { chordMatches, findChord, formatChord, saveChord, textSizeStep } from '#lib/shortcuts'
-import { IS_MAC } from '#lib/platform'
+import { IS_MAC, canDownload } from '#lib/platform'
 import { usePinchSize, type TouchHandlers } from '#lib/usePinchSize'
 import { useSavedScroll } from '#lib/useSavedScroll'
 import { PHONE_TEXT_PX, focusRaisesKeyboard, useIsMobile } from '#lib/viewport'
 import {
   FileConflict,
   discardFileSavers,
+  downloadWorkspaceEntry,
   fileKey,
   fileSaver,
   fileTarget,
@@ -37,7 +38,7 @@ import {
   workspaceMediaUrl,
 } from '#lib/files'
 import {
-  CheckIcon, CopyIcon, DiffIcon, FileCodeIcon, LoadingIcon, SaveIcon, SearchIcon, ShowIcon, WarningIcon,
+  CheckIcon, CopyIcon, DiffIcon, DownloadIcon, FileCodeIcon, LoadingIcon, SaveIcon, SearchIcon, ShowIcon, WarningIcon,
 } from '#lib/icons'
 import { YButton, YPopover, YPopoverPopup } from '#ui'
 
@@ -502,6 +503,23 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
     }
   }
 
+  /** Download what the pane shows: unsaved text is saved first, and a
+   *  buffer that cannot be saved (a conflict, a failing save) downloads
+   *  nothing rather than the older text on disk. */
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const download = async (): Promise<void> => {
+    setDownloadError(null)
+    if (!await saver.flush()) {
+      setDownloadError('Not downloaded: your edits are not saved yet.')
+      return
+    }
+    try {
+      await downloadWorkspaceEntry(workspaceId, path)
+    } catch (err) {
+      setDownloadError(`Not downloaded: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
   const { phase, conflict, status } = saver
   const slash = path.lastIndexOf('/')
   const statusLabel = conflict?.version != null
@@ -645,6 +663,17 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
             )}
           </div>
         )}
+        {canDownload() && phase.kind !== 'loading' && phase.kind !== 'error' && conflict?.version !== null && (
+          <YButton
+            variant="ghost"
+            size="sm"
+            icon={DownloadIcon}
+            onClick={() => void download()}
+            title="Download"
+            aria-label="Download"
+            className="shrink-0"
+          />
+        )}
       </div>
       {conflict?.version != null && (
         <div role="alert" className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-line
@@ -653,6 +682,12 @@ export function WorkspaceFile({ workspaceId, path, visible, onClose }: {
           <YButton variant="ghost" size="sm" onClick={() => void saver.reload()}>Reload</YButton>
           <span className="text-subtle">(discard yours) ·</span>
           <YButton variant="ghost" size="sm" onClick={() => void saver.overwrite()}>Overwrite</YButton>
+        </div>
+      )}
+      {downloadError && (
+        <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-line bg-warning/10 px-2 py-1 text-sm text-muted">
+          <span className="min-w-0 flex-1">{downloadError}</span>
+          <YButton variant="ghost" size="sm" onClick={() => setDownloadError(null)}>Dismiss</YButton>
         </div>
       )}
       {body}
