@@ -126,6 +126,7 @@ import { waitFor } from '@yaac/shared/wait-for'
 import {
   ACP_ADAPTERS,
   AGENT_CLIS,
+  agentPermissionMode,
   DEFAULT_AGENT_MODE,
   DEFAULT_SCRATCH_DIR_GIB,
   defaultPermissionMode,
@@ -146,6 +147,8 @@ import {
   type PortMapping,
 } from '@yaac/shared/types'
 import { toolApiKeyEnvVar, type CustomEndpoint } from '@yaac/shared/tool-providers'
+import type { Actor } from '#domain/access'
+import { delegateSession } from './calling-session'
 
 /** In-pod claude home, where `claudeDir` is mounted. `CLAUDE_CONFIG_DIR`
  *  points here, which also puts claude's global config at
@@ -666,6 +669,12 @@ export interface CreateSetup {
  * A requested permission mode, effort or agent option the tool or model
  * lacks is refused; a remembered one it lacks falls back to the default. Restart skips this
  * and calls `createWorkspace` directly.
+ *
+ * For a delegate (`actor`), what it names nothing for takes after its
+ * calling session's tool, model (on the same tool) and agent mode ahead of
+ * the project's, its posture is held to its ceiling and is the ceiling
+ * where it names none (never the remembered one, which could leave an
+ * agent at a prompt nobody answers).
  */
 export async function resolveCreate(
   projectId: string,
@@ -677,13 +686,22 @@ export async function resolveCreate(
     mode?: AgentMode
     agentOptions?: AgentOptions
   },
+  actor?: Actor,
 ): Promise<CreateSetup> {
   const row = await getProjectRow(projectId)
-  const tool = request.tool ?? row?.lastTool ?? 'claude'
+  const calling = await delegateSession(actor)
+  const tool = request.tool ?? calling?.tool ?? row?.lastTool ?? 'claude'
   const remembered = row?.createDefaults[tool]
-  const mode = request.mode ?? remembered?.mode ?? DEFAULT_AGENT_MODE
+  const mode = request.mode ?? calling?.mode ?? remembered?.mode ?? DEFAULT_AGENT_MODE
   const driver = workspaceDriver().kind
   const auth = row && await loadToolAuthEntry(row.owner, tool)
+  let requestedMode = request.permissionMode
+  if (actor?.kind === 'delegate') {
+    const posture = agentPermissionMode(tool, actor.ceiling, request.permissionMode)
+    if (!posture.ok) throw new ServerError('VALIDATION', posture.error)
+    requestedMode = posture.permissionMode
+  }
+  const namedModel = request.model ?? (calling?.tool === tool ? calling.model : undefined)
   const provider = authEntryProvider(auth)
   const endpoint = authEntryEndpoint(auth)
   const fallback = resolveToolCreateDefaults({
@@ -694,22 +712,35 @@ export async function resolveCreate(
     defaultModel: defaultModelFor(tool, provider, endpoint),
     effortsFor: (model) => modelEfforts(tool, model, endpoint),
   })
-  const model = request.model ?? fallback.model
+  const model = namedModel ?? fallback.model
   const effort = request.effort !== undefined
     ? namedEffort(tool, model, request.effort, endpoint)
     // A named model re-resolves the remembered effort against itself.
-    : request.model !== undefined
+    : namedModel !== undefined
       ? rememberedEffort(tool, model, remembered?.effort, endpoint)
       : fallback.effort
   return {
     tool,
     ...(model !== '' ? { model } : {}),
-    permissionMode: request.permissionMode !== undefined
-      ? launchPermissionMode({ tool, driver, requested: request.permissionMode })
+    permissionMode: requestedMode !== undefined
+      ? launchPermissionMode({ tool, driver, requested: requestedMode })
       : fallback.permissionMode,
     ...(effort !== undefined ? { effort } : {}),
     mode,
     agentOptions: resolveAgentOptions(tool, namedAgentOptions(tool, request.agentOptions), remembered?.agentOptions),
+  }
+}
+
+/**
+ * Refuse a delegate's launch of an agent on a tool its user has not signed
+ * in to: the agent runs on their credentials, and no one is there to sign
+ * it in.
+ */
+export async function refuseUnsignedTool(actor: Actor, projectId: string, tool: AgentTool): Promise<void> {
+  if (actor.kind !== 'delegate') return
+  const owner = (await getProjectRow(projectId))?.owner
+  if (owner === undefined || !await loadToolAuthEntry(owner, tool)) {
+    throw new ServerError('VALIDATION', `${tool} is not signed in for this project's owner, so its agent could not authenticate`)
   }
 }
 

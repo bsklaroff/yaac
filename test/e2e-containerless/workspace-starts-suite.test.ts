@@ -1131,6 +1131,27 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
           expect(await fs.readFile(sent, 'utf8').catch(() => ''))
             .toContain(`Sent from ${sender} via yaac-mama:\n\na message from a peer\n`)
         }, { timeout: 30_000, interval: 500 })
+
+        // A person messages it too (`yaac workspace send`), naming its
+        // agent or its conversation, the message given or read from a file,
+        // each ending in the 20 characters a send looks for.
+        const { workspaces } = await (await fetch(`${origin()}/api/workspace/list`)).json() as {
+          workspaces: Array<{ workspaceId: string; sessions: SessionEntry[] }>
+        }
+        const target = workspaces.find((w) => w.workspaceId === child)?.sessions[0]
+        expect(target?.conversationId).toBeDefined()
+        const byAgent = await runYaac(serverEnv, 'workspace', 'send', child.slice(0, 8), '--agent', target!.sessionId.slice(0, 8), '--prompt', 'a message from a person')
+        expect(byAgent.stdout, byAgent.stderr).toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex agent ${target!.sessionId.slice(0, 8)};`))
+        await vi.waitFor(async () => {
+          expect(await fs.readFile(sent, 'utf8').catch(() => '')).toContain('Sent by local via yaac workspace send:\n\na message from a person\n')
+        }, { timeout: 30_000, interval: 500 })
+        const note = path.join(testEnv.dataDir, 'note.md')
+        await fs.writeFile(note, 'a note read from a file')
+        const byConversation = await runYaac(serverEnv, 'workspace', 'send', child, '--conversation', target!.conversationId!, '--prompt-file', note)
+        expect(byConversation.exitCode, byConversation.stderr).toBe(0)
+        await vi.waitFor(async () => {
+          expect(await fs.readFile(sent, 'utf8').catch(() => '')).toContain('Sent by local via yaac workspace send:\n\na note read from a file\n')
+        }, { timeout: 30_000, interval: 500 })
       } finally {
         await runYaac(serverEnv, 'workspace', 'stop', sender)
       }

@@ -568,8 +568,9 @@ another workspace. It is not a security boundary (the agent could run the
 `yaac` CLI directly as the user); it gives attribution, so `list` and
 `create` resolve to the right project.
 
-Both transports end at `runMamaCommand` in `#domain/workspaces`, which holds
-the allowlist. `YAAC_MAMA_URL` is fixed at launch because the tmux server
+Both transports end at `runMamaCommand` in `#api/mama`, which holds the
+allowlist and runs each command on the API's routes as the workspace's
+delegate (docs/multi-user.md "Authorization"). `YAAC_MAMA_URL` is fixed at launch because the tmux server
 keeps its environment for life; if the server moves to a different port,
 running workspaces must be restarted to reach it.
 

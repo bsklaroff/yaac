@@ -3,6 +3,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { addRepoShare, BUILT_IN_USER_ID, closeDb, getRepo, insertRepo, markRepoDeleted, seeTailnetUser, type RepoRow } from '#db'
 import { systemPrincipal } from '#domain/access'
 import { assertCanUseRepo, canUseRepo, ownRepo } from '#domain/repos'
+import { workspaceDelegate } from '#test/support/delegate'
 
 /** Fixture: a repo shared with ada and not with bo, and one its owner
  *  deleted. */
@@ -39,7 +40,7 @@ describe('ownRepo', () => {
     expect(await ownRepo(systemPrincipal, REPO)).toEqual(repo)
     // Sharing gives the use of a repo, not its settings.
     await expect(ownRepo({ kind: 'local', userId: ada }, REPO)).rejects.toMatchObject({ code: 'FORBIDDEN' })
-    await expect(ownRepo({ kind: 'workspace', workspaceId: 'w', userId: bo }, REPO)).rejects.toMatchObject({ code: 'FORBIDDEN' })
+    await expect(ownRepo(workspaceDelegate(bo, 'w'), REPO)).rejects.toMatchObject({ code: 'FORBIDDEN' })
     await expect(ownRepo(systemPrincipal, MISSING)).rejects.toMatchObject({ code: 'NOT_FOUND' })
     // Not an id at all: missing, never a database error.
     await expect(ownRepo(systemPrincipal, 'app')).rejects.toMatchObject({ code: 'NOT_FOUND' })

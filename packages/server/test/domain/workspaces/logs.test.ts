@@ -3,8 +3,8 @@ import fs from 'node:fs/promises'
 import { promisify } from 'node:util'
 import path from 'node:path'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { listWorkspaceLogs, readWorkspaceLog } from '#domain/workspaces/logs'
-import { BUILT_IN_USER_ID, applyWorkspaceEvent, insertAddedSteps } from '#db'
+import { listWorkspaceLogs, readWorkspaceLog, workspaceSteps } from '#domain/workspaces/logs'
+import { BUILT_IN_USER_ID, applyWorkspaceEvent, getWorkspaceRow, insertAddedSteps } from '#db'
 import { createWorkflow, editWorkflow, resolveWorkflow } from '#domain/projects'
 import { lifeDirName, parseStepGraph } from '@yaac/shared/steps'
 import type { WorkspaceLogLife } from '@yaac/shared/types'
@@ -112,5 +112,40 @@ describe('readWorkspaceLog', () => {
     expect(files).not.toContain('fifo.log')
     await expect(readWorkspaceLog(local, WS, NEW, 'leak.log')).rejects.toMatchObject({ code: 'NOT_FOUND' })
     await expect(readWorkspaceLog(local, WS, NEW, 'fifo.log')).rejects.toMatchObject({ code: 'NOT_FOUND' })
+  })
+})
+
+describe('workspaceSteps', () => {
+  it("lists each life's steps, newest first, with their states and log sizes, and where the workspace stands", async () => {
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'ci', steps: { build: { run: 'make' } } })
+    const id = (await resolveWorkflow(DEMO_PROJECT_ID, 'ci')).workflow.id
+    const start = (at: Date, steps: Parameters<typeof parseStepGraph>[0]): Promise<void> => applyWorkspaceEvent({
+      type: 'workspace-life-started', projectId: DEMO_PROJECT_ID, workspaceId: WS, at, startSteps: [{ id, name: 'ci', steps: parseStepGraph(steps) }],
+    })
+    await start(OLD_AT, { setup: { run: 'make setup' } })
+    await start(NEW_AT, { build: { run: 'make' }, serve: { run: 'make serve', needs: ['build'], service: true } })
+    const root = terminalLogDir(DEMO_PROJECT_ID, WS)
+    await fs.writeFile(path.join(root, NEW, 'ci.build.log'), 'one\ntwo\n')
+    await fs.writeFile(path.join(root, NEW, 'ci.build.log.1'), 'zero\n')
+
+    expect(await workspaceSteps('w')).toEqual({
+      workspaceId: WS,
+      // Its row's current life, which names the dir its logs go in.
+      life: lifeDirName((await getWorkspaceRow(DEMO_PROJECT_ID, WS))!.lifeStartedAt),
+      lives: [
+        {
+          life: NEW,
+          steps: [
+            { name: 'ci.build', step: 'build', state: 'pending', needs: [], started: false, logs: [{ file: 'ci.build.log.1', size: 5 }, { file: 'ci.build.log', size: 8 }] },
+            { name: 'ci.serve', step: 'serve', state: 'pending', needs: ['build'], service: true, started: false, logs: [{ file: 'ci.serve.log.1', size: 0 }, { file: 'ci.serve.log', size: 0 }] },
+          ],
+        },
+        // A new life interrupts what the last left unsettled.
+        { life: OLD, steps: [expect.objectContaining({ name: 'ci.setup', state: 'interrupted' })] },
+      ],
+    })
+    await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: WS })
+    expect(await workspaceSteps(WS)).toMatchObject({ stopped: true })
+    await expect(workspaceSteps('nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
   })
 })

@@ -206,17 +206,20 @@ since it may have been recorded before a tool update.
 
 ### A spawned workspace's posture
 
-`yaac-mama create`, `yaac-mama queue`, `yaac-mama edit-queued` and
-`yaac-mama routine create|edit` (docs/queued-workspaces.md,
-docs/routines.md) resolve the posture with `agentPermissionMode`
-(`@yaac/shared/types`) instead. It treats the **caller's** posture as a
-ceiling: a sibling may run at most as permissively as its parent, in the
-order `bypass > auto > accept-edits > manual > plan = read-only`. Otherwise
-an agent left in `plan` could get its work done unrestricted by asking a
-sibling. The caller is the session whose agent asked, which every launch
-names in `YAAC_SESSION_ID` and `yaac-mama` sends; the server takes it only
-as one of the calling workspace's open sessions, and reads its posture
-from its row, never from the request (`mamaCaller`). A call from outside
+A delegate (docs/multi-user.md "Authorization"), such as a workspace's
+`yaac-mama` call, carries a **ceiling**, and the verbs that launch or
+message an agent hold it there whichever route asked: a create, a session
+opened in a running workspace, a queued entry or a routine resolves its
+posture with `agentPermissionMode` (`@yaac/shared/types`) against it
+(`resolveCreate`), and the rest refuse with `requireWithinCeiling` in
+`#domain/access`. A sibling may run at most as permissively as its parent,
+in the order `bypass > auto > accept-edits > manual > plan = read-only`.
+Otherwise an agent left in `plan` could get its work done unrestricted by
+asking a sibling. A workspace's ceiling is the posture of the session
+whose agent asked, which every launch names in `YAAC_SESSION_ID` and
+`yaac-mama` sends; the server takes it only as one of the calling
+workspace's open sessions, and reads its posture from its row, never from
+the request (`callingWorkspace`). A call from outside
 any session gets the strictest posture among the workspace's open
 sessions, or with none open among those closed during its current life.
 Anything in the workspace could name another of its sessions,
@@ -232,7 +235,7 @@ person (see "Following the agent") and shows as waiting.
 - A named `--permission-mode` above the ceiling, or one the tool lacks, is
   refused. This is the last point a refusal can reach the caller, since the
   create itself runs detached.
-- An unnamed posture is inherited (the caller's for `create`; for `queue`,
+- An unnamed posture is inherited (the ceiling for `create`; for `queue`,
   the parent workspace's or the stored posture of the entry it chains after)
   and lowered to the most permissive the tool has at or below both it and the
   ceiling. If there is none (pi under a non-`bypass` caller), it is refused.
@@ -255,7 +258,8 @@ gives pi `bypass` whatever the row says), and so does each agent someone
 started by hand in one of its terminals, which the restart brings back as a
 session in the first session's posture (else the driver's default for its
 tool). An agent may restart only a workspace where every one of these would
-come back at or below its own (`decideRestart` in `#domain/workspaces`).
+come back at or below its own, and never its own workspace or a running
+one (`prepareRestart`).
 
 The check sees a mode as the agent reported it, and a `tui` agent reports a
 change late: claude on its next prompt or stop, codex in its next turn's

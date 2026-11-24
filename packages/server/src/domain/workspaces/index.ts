@@ -2,9 +2,10 @@
 // SEALED_FOLDERS).
 //
 // This feature owns a workspace's life: creating, starting, restarting,
-// stopping, reaping and deleting it, and its rows; the `yaac-mama` commands
-// an agent runs against its siblings; and the file editor's reads and writes of a
-// workspace's checkout. It drives the runtime only through
+// stopping, reaping and deleting it, and its rows; who a workspace's
+// `yaac-mama` call acts as, and the reads and messages an agent sends its
+// siblings; and the file editor's reads and writes of a workspace's
+// checkout. It drives the runtime only through
 // `#drivers/driver` and `#drivers/contract`, and uses `#runtime/agents` and
 // `#runtime/status`. The reconcile entry points are idempotent, since the
 // background loop calls them every tick.
@@ -73,7 +74,7 @@ export {
 export { previewWorkspaceRetention, reconcileWorkspaceRetention, setWorkspaceRetention } from './retention'
 export { prepareRerun, prepareRestart } from './restart'
 export { VOLUME_NEED, addSteps, assertInteractive, cancelStep, onReleaseStepChanged, reconcileSteps, rerunStep, volumeUsers } from './steps'
-export { listWorkspaceLogs, readWorkspaceLog } from './logs'
+export { listWorkspaceLogs, readWorkspaceLog, workspaceSteps } from './logs'
 export { prepareStart, startOf } from './start'
 export { reconcileStaleWorkspaces } from './stale-workspaces'
 export { stopWorkspace } from './stop'
@@ -121,7 +122,10 @@ export {
   uploadWorkspaceFile,
   writeWorkspaceFile,
 } from './files'
-export { answerSiteCommands, mamaCaller, runMamaCommand, type MamaCaller, type MamaOutcome, type MamaRequestInput } from './mama'
+export { callingWorkspace } from './caller'
+export { sendMessage } from './send'
+export { workspaceRepoToken } from './gh-token'
+export { workspaceBundle, workspaceHistory, workspaceHistoryContent } from './peer-reads'
 export { convergeAgentHistory, removeAgentHistory } from './history'
 export { reconcileGeneratedTitles } from './title-generation'
 export { serverUsageReport } from './usage-report'

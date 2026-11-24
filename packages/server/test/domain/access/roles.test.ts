@@ -3,6 +3,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import type { ServerError } from '@yaac/shared/errors'
 import { BUILT_IN_USER_ID, closeDb, getUser, listAdmins, recordAccessMode, seeTailnetUser } from '#db'
 import { listInstallAdmins, replaceAdmins, requireAdmin, setUserRole, systemPrincipal, type Actor } from '#domain/access'
+import { workspaceDelegate } from '#test/support/delegate'
 
 function user(userId: string): Actor {
   return { kind: 'tailnet', userId, login: `${userId}@example.com`, name: userId }
@@ -36,7 +37,7 @@ describe('requireAdmin', () => {
     await expect(requireAdmin(systemPrincipal)).resolves.toBeUndefined()
     expect(await codeOf(requireAdmin(user(member)))).toBe('FORBIDDEN')
     // An admin's agent does not act with the role.
-    expect(await codeOf(requireAdmin({ kind: 'workspace', workspaceId: 'w1', userId: admin }))).toBe('FORBIDDEN')
+    expect(await codeOf(requireAdmin(workspaceDelegate(admin, 'w1')))).toBe('FORBIDDEN')
     await expect(requireAdmin(user(member), 'publish sites')).rejects.toThrow(/only an admin of this yaac install may publish sites/)
   })
 })

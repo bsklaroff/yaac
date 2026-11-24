@@ -9,8 +9,9 @@ runtime import graph has no cycles (docs/modularity-metrics.md).
 ```
 main       composition root: startup, shutdown, the reconcile loop and
            its step list, the boot-time forwarder restore
-api        routes/, http/, events.ts (the /events snapshot hub),
-           ws-routes.ts (the WebSocket routes)
+api        routes/, http/, mama/ (yaac-mama's commands on the routes),
+           events.ts (the /events snapshot hub), ws-routes.ts (the
+           WebSocket routes)
   ↓
 domain     reads rows, owns what a project and a workspace keep on disk,
            and drives the runtime
@@ -134,16 +135,22 @@ happens a layer up, in `recordedTranscript`.
   `yaac server start|stop|…` is the CLI's (`#commands/server-lifecycle`),
   which talks to the server only through its lock and `/health`.
 - **`api/`**: `routes/` (translation only; policy lives below), `http/`
-  (auth middleware, the token store, the error envelope, static SPA
-  serving), `events.ts` (the snapshot hub), `ws-routes.ts` (the WebSocket
-  routes: the events stream, the auth daemon's socket, and the pty, forward
-  and acp attaches).
+  (auth middleware and the delegate gate, the token store, the error
+  envelope, static SPA serving), `mama/` (the endpoint a workspace calls,
+  and `yaac-mama`'s commands translated onto the routes: each is one or
+  more requests made in the server process as the calling workspace's
+  delegate, through `delegateApp`, and rendered as text for the agent, so
+  a capability has one implementation and the translator holds no limit
+  of its own), `events.ts` (the snapshot hub), `ws-routes.ts` (the
+  WebSocket routes: the events stream, the auth daemon's socket, and the
+  pty, forward and acp attaches).
 - **`domain/`**: `workspaces/` (the lifecycle verbs: create, restart,
   stop, cleanup, list, detail, resolve; plus the prewarm pool, discovery
   sweeps, prompt capture, the provisioning registry, the stale reaper,
   checkout seeding, each workspace's conversations on disk, generated
-  titles, `yaac-mama`'s commands and spawn policy, and the file editor's
-  reads and writes of a checkout), `projects/` (which projects exist
+  titles, who a workspace's `yaac-mama` call acts as (`callingWorkspace`)
+  and what it reads of and sends its siblings, and the file editor's reads
+  and writes of a checkout), `projects/` (which projects exist
   and what each keeps on disk: the repos it links, the two config layers,
   Dockerfiles and build files), `repos/` (each user's git repos: the main
   clone and its branches, the remote of a repo the server hosts, which git
@@ -152,8 +159,11 @@ happens a layer up, in `recordedTranscript`.
   `auth/` (each user's tool sign-ins and git credentials), `skills/`,
   `sites/` (public sites' settings, deploys and the replacement of a
   release that died, over `workspaces/`; docs/public-sites.md),
-  `access/` (who may act on what: the verbs that make a user-caused write
-  take the caller and `authorize` it).
+  `access/` (who may act on what: a caller is a person, a delegate or the
+  server; the verbs that make a user-caused write take it and check it at
+  a level with `authorizeProject`, hold a delegate to its ceiling, and read
+  a person's own id through `personId`; docs/multi-user.md
+  "Authorization").
 
   Config and credentials live in domain because writing them is policy: a
   saved allowed host or port forward applies to every future workspace of

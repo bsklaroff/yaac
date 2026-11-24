@@ -246,7 +246,7 @@ export async function deploySite(
     approve?: { workflowId: string; commits: SiteCommit[] }
   } = {},
 ): Promise<{ workspaceId?: string; commits: SiteCommit[]; awaitingApproval?: true }> {
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, 'delegate')
   const found = await requireSite(projectId, name)
   if (isPerson(principal)) await authorizeExposure(principal, found, 'deploy a published site')
   const { timeoutMinutes } = opts
@@ -287,7 +287,7 @@ export async function deploySite(
         await admitLaunch(isPerson(principal), projectId, spec, commits)
       } catch (err) {
         if (!(err instanceof ApprovalRequiredError)) throw err
-        await requestDeploy(site, err.request, principal.kind === 'workspace' ? principal.workspaceId : 'person')
+        await requestDeploy(site, err.request, principal.kind === 'delegate' ? principal.via.id : 'person')
         return { commits: siteCommits(project, commits), awaitingApproval: true }
       }
     }
@@ -342,7 +342,7 @@ export async function approveRelease(principal: Actor, site: SiteRow): Promise<v
 /** Serve a stopped site again: a deploy of the release it last ran, at
  *  its commits and image, with its graph and volume. */
 export async function startSite(principal: Actor, projectId: string, name: string): Promise<{ workspaceId: string; commits: SiteCommit[] }> {
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, 'delegate')
   const found = await requireSite(projectId, name)
   await authorizeExposure(principal, found, 'start a published site')
   return await withSiteLock(found.id, async () => {
@@ -363,7 +363,7 @@ export async function startSite(principal: Actor, projectId: string, name: strin
 /** Stop serving a site: its deploy and its releases stop, and its
  *  hostname answers 503 until it is started or deployed again. */
 export async function stopSite(principal: Actor, projectId: string, name: string): Promise<void> {
-  await authorizeSiteEnd(principal, projectId)
+  await authorizeSiteEnd(principal, projectId, 'delegate')
   const { id, published } = await requireSite(projectId, name)
   if (published) requirePerson(principal, 'stop a published site')
   await withSiteLock(id, () => endReleases(id))

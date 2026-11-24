@@ -10,10 +10,11 @@ import { ServerError } from '@yaac/shared/errors'
 import { isAgentWindow, lifeDirName, type StepGraph } from '@yaac/shared/steps'
 import type { WorkspaceLogLife } from '@yaac/shared/types'
 import type { Actor } from '#domain/access'
-import { listWorkspaceSteps } from '#db'
-import { resolveWorkspaceRecord } from './resolve'
-import { authorizeWorkspace } from './steps'
+import { findWorkspaceRow, listWorkspaceSteps } from '#db'
+import { resolveWorkspaceId, resolveWorkspaceRecord } from './resolve'
+import { authorizeWorkspace, stepName } from './steps'
 import { openTerminalLogs } from './life'
+import { inFlightWorkspaceIds } from './provisioning'
 
 /** A life dir (`lifeDirName`) and a file in one, its window's name
  *  captured: no separators, no `..`. */
@@ -21,21 +22,7 @@ const LIFE = /^\d{4}-\d{2}-\d{2}T[\d.-]+Z$/
 const FILE = /^([A-Za-z0-9_][A-Za-z0-9_.-]*)\.(?:log(?:\.1)?|events)$/
 
 /** At most this much of a log is answered at once. */
-export const READ_LIMIT = 4 * 1024 * 1024
-
-/** How much of a log `readWindowLogEnd` reads at a time. */
-const CHUNK = 256 * 1024
-
-/** A window of a life, as a step row names one. */
-interface LoggedWindow {
-  life: Date
-  name: string
-}
-
-/** A window's log files, the rotated-out part first. */
-function windowLogFiles({ life, name }: LoggedWindow): string[] {
-  return [`${lifeDirName(life)}/${name}.log.1`, `${lifeDirName(life)}/${name}.log`]
-}
+const READ_LIMIT = 4 * 1024 * 1024
 
 /**
  * The graph each workflow of each life ran, by life dir and then by the
@@ -102,55 +89,43 @@ export async function readWorkspaceLog(
   }
 }
 
-/** How many bytes each window's log holds. */
-export async function windowLogSizes(projectId: string, workspaceId: string, windows: LoggedWindow[]): Promise<number[]> {
-  const logs = await openTerminalLogs(projectId, workspaceId)
-  return await Promise.all(windows.map(async (w) => {
-    const sizes = await Promise.all(windowLogFiles(w).map(async (f) => (await logs.stat(f))?.size ?? 0))
-    return sizes[0] + sizes[1]
-  }))
-}
-
 /**
- * The end of a window's log: enough of it for its last `lines` lines, or
- * all of it, but never more than 4 MiB, read backwards so a long log costs
- * only what is answered. `skipped` is how many bytes come before `data`.
- * Undefined when the window has logged nothing. The current half is read
- * before the rotated-out one, so a rotation between the two reads can
- * repeat a stretch but never drop one.
+ * A workspace's steps, newest life first, each with its state and its log
+ * files' sizes, and where the workspace stands: provisioning with no row
+ * yet, or stopped with the outcome its steps had. For an agent following a
+ * CI run or a site's release (`yaac-mama status` and `logs`); a stopped
+ * workspace's rows keep the states its last life left. Any user may read
+ * them.
  */
-export async function readWindowLogEnd(
-  projectId: string,
-  workspaceId: string,
-  window: LoggedWindow,
-  lines?: number,
-): Promise<{ data: Buffer; skipped: number } | undefined> {
-  const logs = await openTerminalLogs(projectId, workspaceId)
-  const chunks: Buffer[] = []
-  let taken = 0
-  let newlines = 0
-  let skipped = 0
-  let found = false
-  const enough = (): boolean => taken >= READ_LIMIT || (lines !== undefined && newlines > lines)
-  for (const file of windowLogFiles(window).reverse()) {
-    const handle = await logs.open(file, C.O_RDONLY).catch(() => undefined)
-    if (handle === undefined) continue
-    found = true
-    try {
-      let end = (await handle.stat()).size
-      while (end > 0 && !enough()) {
-        const start = Math.max(0, end - Math.min(CHUNK, READ_LIMIT - taken))
-        const chunk = Buffer.alloc(end - start)
-        const { bytesRead } = await handle.read(chunk, 0, chunk.length, start)
-        chunks.unshift(chunk.subarray(0, bytesRead))
-        taken += bytesRead
-        for (const byte of chunk.subarray(0, bytesRead)) if (byte === 0x0a) newlines++
-        end = start
-      }
-      skipped += end
-    } finally {
-      await handle.close()
-    }
+export async function workspaceSteps(idOrPrefix: string) {
+  const workspaceId = await resolveWorkspaceId(idOrPrefix, { provisioning: true })
+  const row = await findWorkspaceRow(workspaceId)
+  if (row === undefined) {
+    if (inFlightWorkspaceIds(Date.now()).includes(workspaceId)) return { workspaceId, provisioning: true as const, lives: [] }
+    throw new ServerError('NOT_FOUND', `workspace ${idOrPrefix} not found`)
   }
-  return found ? { data: Buffer.concat(chunks), skipped } : undefined
+  const logs = await openTerminalLogs(row.projectId, workspaceId)
+  const steps = await listWorkspaceSteps(workspaceId)
+  const lives = [...new Set(steps.map((s) => s.life.getTime()))].sort((a, b) => b - a)
+  return {
+    workspaceId,
+    ...(row.stoppedAt !== undefined ? { stopped: true as const } : {}),
+    ...(row.stepsOutcome !== undefined ? { stepsOutcome: row.stepsOutcome } : {}),
+    life: lifeDirName(row.lifeStartedAt),
+    lives: await Promise.all(lives.map(async (at) => ({
+      life: lifeDirName(new Date(at)),
+      steps: await Promise.all(steps.filter((s) => s.life.getTime() === at).map(async (s) => ({
+        name: stepName(s),
+        step: s.name,
+        state: s.state,
+        ...(s.exitCode !== undefined ? { exitCode: s.exitCode } : {}),
+        needs: s.spec.needs ?? [],
+        ...(s.spec.service === true ? { service: true as const } : {}),
+        started: s.startedAt !== undefined,
+        logs: await Promise.all([`${stepName(s)}.log.1`, `${stepName(s)}.log`].map(async (file) => ({
+          file, size: (await logs.stat(`${lifeDirName(s.life)}/${file}`))?.size ?? 0,
+        }))),
+      }))),
+    }))),
+  }
 }

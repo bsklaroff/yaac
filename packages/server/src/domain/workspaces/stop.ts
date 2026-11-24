@@ -36,7 +36,7 @@ export async function stopWorkspace(principal: Actor, idOrPrefix: string): Promi
   // asked, so a non-owner is refused whatever state the workspace is in.
   const row = await findWorkspaceRow(workspaceId)
   const recorded = listProvisioning().find((p) => p.workspaceId === workspaceId) ?? row
-  if (recorded) await authorizeProject(principal, recorded.projectId)
+  if (recorded) await authorizeProject(principal, recorded.projectId, 'delegate')
   if (recorded && principal.kind !== 'system' && (row === undefined || row.siteId !== undefined)) {
     await checkSiteRelease(principal, recorded.projectId, row?.siteId, workspaceId)
   }
@@ -84,7 +84,7 @@ async function stopRunning(principal: Actor, workspaceId: string, idOrPrefix: st
       `No workspace found matching "${idOrPrefix}". Run "yaac workspace list" to see running workspaces.`,
     )
   }
-  await authorizeProject(principal, target.projectId)
+  await authorizeProject(principal, target.projectId, 'delegate')
 
   // Adopt any token the agent refreshed (without a proxy it exists only in
   // the project's tool home). Best-effort.

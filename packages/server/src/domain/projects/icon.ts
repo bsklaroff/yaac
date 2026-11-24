@@ -21,13 +21,13 @@ export async function readProjectIcon(projectId: string): Promise<ProjectIcon> {
 /** Replace the project's picture with an uploaded PNG, JPEG, GIF or WebP. */
 export async function setProjectIcon(principal: Actor, projectId: string, bytes: Uint8Array): Promise<void> {
   await assertProjectExists(projectId)
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, 'delegate')
   await storeProjectIcon(projectId, toIcon(bytes))
 }
 
 export async function removeProjectIcon(principal: Actor, projectId: string): Promise<void> {
   await assertProjectExists(projectId)
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, 'delegate')
   await deleteProjectIcon(projectId)
 }
 

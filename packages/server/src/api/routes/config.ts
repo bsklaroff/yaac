@@ -5,10 +5,11 @@ import { readUserDockerfile, writeUserDockerfile } from '#domain/projects'
 import { userBuildDir } from '#lib/build-dirs'
 import { buildFilesApp } from '#routes/build-files'
 import { requireDriverFeature } from '#api/http/driver-features'
-import type { IdentityEnv } from '#api/http/web-auth'
+import { personOnly, type IdentityEnv } from '#api/http/web-auth'
 import { getGitIdentity, getTimeZone, setGitIdentity, setTimeZone } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import { isTimeZone } from '@yaac/shared/schedule'
+import { personId } from '#domain/access'
 
 /**
  * The caller's own (not project-scoped) editable config: the git identity
@@ -17,9 +18,10 @@ import { isTimeZone } from '@yaac/shared/schedule'
  * files in its build context.
  */
 export const configApp = new Hono<IdentityEnv>()
+  .use(personOnly)
   // Not gated on a driver feature: every substrate makes commits. Stored in
   // the server so a client on another machine can set it.
-  .get('/git-identity', async (c) => c.json({ identity: await getGitIdentity(c.get('principal').userId) }))
+  .get('/git-identity', async (c) => c.json({ identity: await getGitIdentity(personId(c.get('principal'))) }))
   .put(
     '/git-identity',
     // Capped and free of control characters, since both values land in a
@@ -37,11 +39,11 @@ export const configApp = new Hono<IdentityEnv>()
       if (!identity.email.includes('@')) {
         throw new ServerError('VALIDATION', `"${identity.email}" is not an email address.`)
       }
-      await setGitIdentity(c.get('principal').userId, identity)
+      await setGitIdentity(personId(c.get('principal')), identity)
       return c.json({ identity })
     },
   )
-  .get('/time-zone', async (c) => c.json(await getTimeZone(c.get('principal').userId)))
+  .get('/time-zone', async (c) => c.json(await getTimeZone(personId(c.get('principal')))))
   // `pinned` absent is a device report, which a zone the user chose in
   // settings outranks; present, it is that choice (`false` returns the zone
   // to following devices).
@@ -53,7 +55,7 @@ export const configApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { timeZone, pinned } = c.req.valid('json')
-      const owner = c.get('principal').userId
+      const owner = personId(c.get('principal'))
       if (pinned !== undefined || !(await getTimeZone(owner)).pinned) {
         await setTimeZone(owner, timeZone, pinned ?? false)
       }
@@ -63,7 +65,7 @@ export const configApp = new Hono<IdentityEnv>()
   // Both refuse on a runtime that builds no images.
   .get('/user-dockerfile', async (c) => {
     requireDriverFeature('images')
-    return c.json({ content: await readUserDockerfile(c.get('principal').userId) })
+    return c.json({ content: await readUserDockerfile(personId(c.get('principal'))) })
   })
   .put(
     '/user-dockerfile',
@@ -71,8 +73,8 @@ export const configApp = new Hono<IdentityEnv>()
     async (c) => {
       requireDriverFeature('images')
       const { content } = c.req.valid('json')
-      await writeUserDockerfile(c.get('principal').userId, content)
+      await writeUserDockerfile(personId(c.get('principal')), content)
       return c.json({ content })
     },
   )
-  .route('/user-build-files', buildFilesApp((c) => Promise.resolve(userBuildDir(c.get('principal').userId))))
+  .route('/user-build-files', buildFilesApp((c) => Promise.resolve(userBuildDir(personId(c.get('principal'))))))

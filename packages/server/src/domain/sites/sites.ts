@@ -61,20 +61,19 @@ const SHOWN_RELEASES = 20
  *  in person, while an admin of the install. */
 async function authorizeSitePublish(principal: Actor, projectId: string): Promise<void> {
   await authorizeProject(principal, projectId)
-  requirePerson(principal, 'publish a site')
   await requireAdmin(principal, 'publish sites')
 }
 
 /**
- * Authorize stopping or deleting a site: any admin, or its project's owner
- * even once they are not one, so a site can always be taken down and its
- * hostname freed.
+ * Authorize stopping or deleting a site (at `delegate`) or unpublishing it
+ * (at `owner`): any admin, or its project's owner even once they are not
+ * one, so a site can always be taken down and its hostname freed.
  */
-export async function authorizeSiteEnd(principal: Actor, projectId: string): Promise<void> {
+export async function authorizeSiteEnd(principal: Actor, projectId: string, level: 'delegate' | 'owner'): Promise<void> {
   const project = await getProjectRow(projectId)
   const admin = await requireAdmin(principal).then(() => true, () => false)
   if (project && admin && !isProjectHeld(projectId)) return
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, level)
 }
 
 export async function requireSite(projectId: string, name: string): Promise<SiteRow> {
@@ -249,7 +248,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
   follow?: boolean
   deployTimeoutMinutes?: number
 }): Promise<void> {
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, 'delegate')
   const project = await getProjectRow(projectId)
   if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   if (!SITE_NAME.test(input.name)) {
@@ -294,12 +293,12 @@ export async function editSite(principal: Actor, projectId: string, name: string
   deployTimeoutMinutes?: number
 }): Promise<void> {
   if (input.follow === false && Object.entries(input).every(([k, v]) => k === 'follow' || v === undefined)) {
-    await authorizeSiteEnd(principal, projectId)
+    await authorizeSiteEnd(principal, projectId, 'delegate')
     const { id } = await requireSite(projectId, name)
     await withSiteLock(id, () => updateSite(id, { follow: false }))
     return
   }
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, 'delegate')
   const found = await requireSite(projectId, name)
   await authorizeExposure(principal, found, 'change a published site')
   const { id } = found
@@ -368,8 +367,7 @@ export async function publishSite(principal: Actor, projectId: string, name: str
 /** Stop routing a site's hostname and let it go. Its releases keep running
  *  for its owner's forward, as before it was published. */
 export async function unpublishSite(principal: Actor, projectId: string, name: string): Promise<void> {
-  await authorizeSiteEnd(principal, projectId)
-  requirePerson(principal, 'unpublish a site')
+  await authorizeSiteEnd(principal, projectId, 'owner')
   const { id } = await requireSite(projectId, name)
   await withSiteLock(id, () => updateSite(id, { published: false, hostname: null }))
   await syncSiteRoutes()
@@ -378,7 +376,7 @@ export async function unpublishSite(principal: Actor, projectId: string, name: s
 /** Delete a site: stop its releases and its deploy, then the row, under
  *  one lock so no deploy starts between, and the hostname stops routing. */
 export async function deleteSite(principal: Actor, projectId: string, name: string): Promise<void> {
-  await authorizeSiteEnd(principal, projectId)
+  await authorizeSiteEnd(principal, projectId, 'delegate')
   const { id, published } = await requireSite(projectId, name)
   if (published) requirePerson(principal, 'delete a published site')
   await withSiteLock(id, async () => {

@@ -1,5 +1,6 @@
 import type { MiddlewareHandler } from 'hono'
 import { serverLog } from '#lib/log'
+import { actorLabel } from '#domain/access'
 import type { IdentityEnv } from './web-auth'
 
 // CORS preflight refusal and the request log. The identity gate and the
@@ -18,8 +19,9 @@ export function denyBrowserCors(): MiddlewareHandler {
 }
 
 /**
- * Log method, path, status, duration and the tailnet user, as an audit trail.
- * Never log request or response bodies.
+ * Log method, path, status, duration and, for a tailnet or delegated caller,
+ * who it is (`actorLabel`), as an audit trail. Never log request or
+ * response bodies.
  */
 export function requestLogger(): MiddlewareHandler<IdentityEnv> {
   return async (c, next) => {
@@ -27,7 +29,7 @@ export function requestLogger(): MiddlewareHandler<IdentityEnv> {
     await next()
     const dur = Date.now() - t0
     const who = c.get('principal') as IdentityEnv['Variables']['principal'] | undefined
-    const as = who?.kind === 'tailnet' ? ` ${who.login}` : ''
+    const as = who !== undefined && who.kind !== 'local' ? ` ${actorLabel(who)}` : ''
     serverLog(`[server] ${c.req.method} ${c.req.path} ${c.res.status} ${dur}ms${as}`)
   }
 }

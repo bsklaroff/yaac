@@ -90,7 +90,7 @@ describe('deleteWorkspace', () => {
     await stoppedWorkspace('wt-restarting')
     registerProvisioning({ workspaceId: 'wt-restarting', projectId: PROJ, tool: 'claude', kind: 'restart' })
     await stoppedWorkspace('wt-parent')
-    await queueWorkspace(local, PROJ, { parent: 'wt-parent', prompt: 'next', tool: 'claude' }, 'user')
+    await queueWorkspace(local, PROJ, { parent: 'wt-parent', prompt: 'next', tool: 'claude' })
     await stoppedWorkspace('wt-mine')
 
     await expect(deleteWorkspace(local, 'nope')).rejects.toMatchObject({ code: 'NOT_FOUND' })
@@ -164,7 +164,7 @@ describe('deleteWorkspace', () => {
     await vi.waitFor(() => expect(gate).toBeUndefined())
 
     await expect(prepareRestart(local, 'wt-doomed')).rejects.toMatchObject({ code: 'CONFLICT', message: /being deleted/ })
-    await expect(queueWorkspace(local, PROJ, { parent: 'wt-doomed', prompt: 'next', tool: 'claude' }, 'user'))
+    await expect(queueWorkspace(local, PROJ, { parent: 'wt-doomed', prompt: 'next', tool: 'claude' }))
       .rejects.toMatchObject({ code: 'CONFLICT', message: /being deleted/ })
     expect(listProvisioning()).toEqual([])
 

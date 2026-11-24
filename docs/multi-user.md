@@ -138,8 +138,8 @@ owner and nothing else.
   rolls the pod.
 - `requireAdmin(actor)` in `#domain/access` reads the role on every
   check, so a demotion holds from the next request. The server passes; a
-  workspace's `yaac-mama` call never does, so under `k8s` an admin's agent
-  does not act with the role.
+  delegate never does (it asks `isPerson`), so an admin's agent does not
+  act with the role.
 - A login `--admin` named that never signed in owns nothing, so revoking
   it deletes its row rather than keeping a member, unless a project was
   shared to it.
@@ -149,15 +149,27 @@ owner and nothing else.
 ## Authorization
 
 The sealed `#domain/access` folder owns the check. A verb's caller is an
-`Actor`: a request's `Principal`; `systemPrincipal`, for a gated verb the
-server calls with no request behind it (a queued workspace's launch, whose
-queuer was authorized when queuing); or a workspace's `yaac-mama` call,
-which `workspacePrincipal` resolves to the calling workspace's project
-owner. A spawned workspace therefore belongs to its caller's owner and
-uses that owner's credentials; the cap on spawns in flight stays per
-calling workspace, not per user.
+`Actor`, which is one of three things:
 
-There are three access levels:
+- **A person**: a request's `local` or `tailnet` principal.
+- **A delegate**: something acting for a user within limits that is not
+  that person (`Delegate` in `@yaac/shared/types`). A workspace's
+  `yaac-mama` call is one: `callingWorkspace` resolves it to a delegate of
+  the calling workspace's project owner, scoped to that project, with the
+  calling session's posture as its **ceiling** (docs/permission-modes.md).
+  A workspace it starts therefore belongs to that owner and uses their
+  credentials. Its launches in flight are capped per delegate
+  (`withLaunchSlot`), not per user.
+- **The server**: `systemPrincipal`, for a gated verb the server calls with
+  no request behind it (a queued workspace's launch, whose queuer was
+  authorized when queuing).
+
+A delegate is a kind of its own rather than a flag on a person, so code
+that forgets to ask treats it as not a person. The verbs read its limits
+from it: the level below, its project, its ceiling (`requireWithinCeiling`,
+and `resolveCreate` for a posture it names none of), and its launch slots.
+
+There are four access levels:
 
 - **`reader`**: any user, any resource. Workspace lists and details,
   transcripts, diffs, project pages, build files, the file explorer's
@@ -174,36 +186,49 @@ There are three access levels:
   `/feedback` is open to every user too. Every report is signed with the
   one install key, so an endpoint that limits per key (docs/feedback.md)
   throttles every user of the install together when one of them floods it.
-- **`owner`**: the resource's owner only. Every write, and the reads that
+- **`delegate`**: the resource's owner, or a delegate of theirs in its own
+  project. The verbs an agent reaches: a workspace's create, stop,
+  restart and rerun; opening and closing sessions; adding steps; its title
+  and base branch; messaging it (`/workspace/:id/send`), and its own repo's
+  `GH_TOKEN` for the workspace itself; its step logs; which tools the
+  project's owner is signed in to (`/project/:projectId/models`), a
+  user's sign-ins being their own; the queue, routines,
+  groups (create, move, set-limit) and workflows; the project icon; and an
+  unpublished site's create, edit, deploy, start, stop and delete.
+- **`owner`**: the resource's owner in person. Every other write, and the reads that
   grant execution or reach: `/pty/attach`, `/acp/attach` (whose frames
   prompt, cancel and answer permission asks) and `/forward/attach` (a
   tunnel into the workspace's listeners, and so into a nested yaac's full
-  API), and a workspace's terminal logs (`/workspace/:id/logs…`), which
-  hold whatever its shells printed, credentials included
-  (docs/workspace-steps.md "Logs"). The attaches are classed by what they
-  grant, not by their method.
+  API). The attaches are classed by what they grant, not by their method.
+  A workspace's terminal logs (`/workspace/:id/logs…`), which hold
+  whatever its shells printed, credentials included (docs/workspace-steps.md
+  "Logs"), are `delegate`: its agents read them already.
   A push to a hosted repo's remote is a write, so it is the owner's or a
   user's it is shared with; a clone or fetch of it is a read
   (docs/hosted-projects.md).
-- **`admin`**: an admin of the install (see "Roles"), who must also own
-  what the route names, if anything: setting roles, and publishing a site.
-  Building a site (create, edit, deploy, start) is `owner`, though deploying
-  or starting a published one takes an admin too; stopping, unpublishing
-  and deleting one stay at `owner`, open to any admin too.
+- **`admin`**: an admin of the install in person (see "Roles"), who must
+  also own what the route names, if anything: setting roles, and publishing a site.
+  Building a site (create, edit, deploy, start) is `delegate`, though
+  deploying or starting a published one takes an admin in person too;
+  stopping and deleting one stay at `delegate`, and unpublishing at
+  `owner`, each open to any admin too.
 
-A few verbs are a person's alone, never a workspace's agent's even as its
-project's owner (`requirePerson` in `#domain/access`): approving a
-privileged launch (docs/workflows.md "Approvals"), which a person's action
-does and an agent's never does, and publishing, unpublishing, changing,
-stopping, starting or deleting a published site. They change what reaches
-a run secret or the internet, which is what an agent writing a workflow or
-a site must leave to a person. That holds under `k8s`, where an agent
+A few `delegate` verbs turn into a person's on the state they find
+(`requirePerson` in `#domain/access`): approving a privileged launch
+(docs/workflows.md "Approvals"), which a person's action does and a
+delegate's never does, and changing, stopping, starting or deleting a
+published site, or cancelling its deploy. They change what reaches a run
+secret or the internet, which is what an agent writing a workflow or a
+site must leave to a person. A refusal names the delegate (`workspace
+1a2b3c4d`). That holds under `k8s`, where an agent
 reaches the server only through `yaac-mama`; under `containerless` an
 agent's shell reaches the API over loopback as the user, so these verbs
 organize there rather than protect (see "Trust model").
 
-`authorizeProject(actor, projectId)` is the check verbs make: every
-workspace-scoped verb resolves its workspace's project and asks it. A
+`authorizeProject(actor, projectId, level)` is the check verbs make: every
+workspace-scoped verb resolves its workspace's project and asks it, at
+`owner` unless it passes `delegate`, so a verb written later refuses
+delegates without saying anything. A
 project that does not exist is `NOT_FOUND`, never open. A refusal is
 `FORBIDDEN` (403). A project held by a verb that writes must not race,
 such as a move to another git host (`withProjectsHeld`), refuses every
@@ -216,8 +241,9 @@ write as `CONFLICT` (409), the server's own included.
   `resolveWorkspaceContainer`, which checks the workspace's row before
   asking the runtime, so a non-owner gets 403 whether or not it runs.
 - Routes that write rows directly through `#db` (titles, groups, group
-  moves) call `authorizeProject` before the write, and a provisioning
-  entry is dismissed or stopped only by its project's owner.
+  moves) call `authorizeProject` before the write, at `delegate` where an
+  agent reaches them, and a provisioning entry is dismissed or stopped
+  only by its project's owner.
 - A project's build files are read at `reader` and written at `owner`: the
   build-files routes ask `resolveRoot` for the dir at the level each needs.
 - An `owner` attach is checked against the workspace's row before the
@@ -226,7 +252,15 @@ write as `CONFLICT` (409), the server's own included.
   `/acp/observe` checks only that the workspace exists and runs.
 - Routes that act only on the caller's own data need no check, and a
   second user gets their own answer rather than a 403: `/auth/*` and the
-  `/agent/sign-in` socket, `/config/*`, `/shortcuts/*`. A git credential is
+  `/agent/sign-in` socket, `/config/*`, `/shortcuts/*`, the projects one
+  adds or orders, the seen marks and `/feedback`. They read the caller's
+  user id through `personId`, which refuses a delegate: it has no account
+  of its own, and neither reads nor changes its user's sign-ins,
+  credentials, settings or shortcuts. What an agent needs of them is asked
+  about a project instead (its owner's models and time zone). An eslint
+  rule on the server's `src` bans reading `userId` off a principal or an
+  actor, so `personId`, and the owner comparison in `authorizeProject`,
+  are the only reads. A git credential is
   its owner's alone: renaming, replacing or deleting another user's reads
   as missing, and a repo is assigned (or cloned with) only its owner's
   credential (`resolveCredentialForRemote`).
@@ -237,13 +271,29 @@ write as `CONFLICT` (409), the server's own included.
   administration (upgrades, restarts, server env, `--admin`) happens
   through host or cluster access, outside the API.
 
+**Delegates on the API.** `delegateApp(resolve)` serves the API's HTTP
+routes to a delegate alone: `resolve` turns a request into a delegate or
+nothing, and nothing is a 401 with `WWW-Authenticate: Bearer`. No route
+behind it is public, and it runs none of the browser guards. Reads carry
+no check of their own, so the gate holds a delegate scoped to one project
+to it (`refuseScopedRead`): a request naming another project in its path
+or its `project` query is refused, and so is a read naming none, but `GET
+/whoami`. A workspace in its path is looked for in its own project alone,
+so one it cannot find there is not found, whether or not another project
+has it, and it learns nothing of the others. `yaac-mama`'s commands are requests to these
+routes, made in the server process as the calling workspace's delegate
+(`#api/mama`), so a capability an agent has is a route at `delegate`.
+
 Every route's row in `test/api/route-matrix.ts` states its `access`
-(`public`, `reader`, `owner` or `admin`). The matrix drives every `owner`
-and `admin` row that is not marked `callerScoped` as a second tailnet
-user, a member, against a server holding
-the built-in user's project, workspace, queued workspace, draft,
-provisioning entry and build, and expects 403 (or the
-substrate's 501); every `reader` row must admit that user. The attaches are
+(`public`, `reader`, `delegate`, `owner` or `admin`). The matrix drives
+every `delegate`, `owner` and `admin` row that is not marked
+`callerScoped` as a second tailnet user, a member, against a server
+holding the built-in user's project, workspace, queued workspace, draft,
+provisioning entry and build, and expects 403 (or the substrate's 501);
+every `reader` row must admit that user. Through `delegateApp` it drives
+every row as a delegate of that owner: `owner`, `admin` and caller-scoped
+rows refuse it, and the rest admit it; and as a delegate scoped to another
+project, which every `reader` and `delegate` row refuses. The attaches are
 registered in `server-run`, outside `buildApp`, so
 `test/api/identity-flow.test.ts` drives them as a non-owner.
 

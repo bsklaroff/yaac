@@ -1,93 +1,21 @@
-import crypto from 'node:crypto'
-import path from 'node:path'
 /**
- * Runs in-workspace `yaac-mama` commands. Both ways in (the k8s proxy relay
- * and the containerless route) end here, so `MAMA_COMMANDS` is enforced for
- * both.
- *
- * An agent may list the project's workspaces (running, queued or stopped),
- * create or queue one, edit, run or discard a queued one, manage routines,
- * send a running one a message, retitle, group, stop one (its own
- * included), restart a stopped one, fetch another's branches and read
- * another's conversation history and step logs, change its own
- * reference branch, and read, set or remove the project's icon.
- * Stopping is allowed because it is reversible: the checkout, row and
- * conversations are kept. Restarting a stopped workspace only undoes a
- * stop, and is held to the caller's own permission mode, as is everything a
- * routine launches. Discarding a queued workspace loses only a prompt and
- * settings that never ran; deleting a routine loses its schedule and the
- * run history it lists, but no run's workspace. Replacing the project's
- * icon loses the old picture, which every viewer of the project sees, but
- * like a `rename` title it changes nothing that runs. An agent may also
- * write the project's workflows and build, deploy, stop and delete its
- * unpublished sites (the `site-*` commands, which `#domain/sites` answers):
- * whatever of that would run with run secrets, or in front of a published
- * site's visitors, waits for a person's review (docs/workflows.md
- * "Approvals"). Deleting a workspace, publishing or changing a site once
- * published and the rest of the project's config stay the user's. That
- * holds because, under k8s, an agent reaches the server only here; under
- * containerless its shell reaches the API as the user.
- *
- * The caller's workspace comes from the transport (pod IP under k8s, a
- * per-workspace token under containerless), never the request, and every
- * command is scoped to the caller's project. Which of its sessions is asking
- * is the agent's word (`mamaCaller`).
+ * The `yaac-mama` commands, translated onto the API's routes: each is one
+ * or more requests made in the server process as the calling workspace's
+ * delegate (`callingWorkspace`), through `delegateApp`, and its text is
+ * rendered from their answers. A route refuses through it exactly what it
+ * refuses any delegate, so this holds no limit of its own
+ * (docs/multi-user.md "Authorization"). What it keeps is the command
+ * allowlist, each command's options, the mapping of options onto a route's
+ * input, and every line the agent reads.
  */
-import { decideRestart, decideSpawn, type SpawnRequest } from './spawn-policy'
-import { listStoppedWorkspaces, toStoppedEntries } from './stopped-list'
-import { listActiveWorkspaces } from './list'
-import { inFlightWorkspaceIds } from './provisioning'
-import { listWorkspaceGroups, resolveGroup } from './groups'
-import { listVolumes } from './volumes'
-import { moveWorkspaceToGroup, setGroupWorkspaceLimit } from './group-edits'
-import {
-  discardQueuedWorkspace,
-  queueWorkspace,
-  runQueuedWorkspace,
-  updateQueuedWorkspace,
-  type QueueRequest,
-  type QueueStart,
-} from './queued-workspaces'
-import { resolveProjectWorkspace, resolveWorkspaceContainer } from './resolve'
-import {
-  createRoutine,
-  deleteRoutine,
-  listRoutines,
-  runRoutineNow,
-  setRoutinePaused,
-  updateRoutine,
-} from './routines'
-import { stopWorkspace } from './stop'
-import { prepareRerun } from './restart'
-import { serverLog } from '#lib/log'
-import { addSteps, findStep, stepName } from './steps'
-import { READ_LIMIT, readWindowLogEnd, windowLogSizes } from './logs'
-import { closeSession } from './sessions'
-import {
-  getProjectRow,
-  getProjectWorkspaceRows,
-  getTimeZone,
-  getWorkspaceRow,
-  listProjectSites,
-  listQueuedWorkspaceRows,
-  listWorkspaceConversations,
-  listWorkspaceRepos,
-  listWorkspaceReposFor,
-  listWorkspaceSessions,
-  listWorkspaceSteps,
-  setWorkspaceTitle,
-  type QueuedWorkspaceRow,
-} from '#db'
+import crypto from 'node:crypto'
+import type { createApiClient } from '@yaac/shared/api-core'
 import { ServerError } from '@yaac/shared/errors'
 import { stripAnsi, stripControlChars } from '@yaac/shared/ansi'
 import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import { FULL_COMMIT_PATTERN, formatCommits, stepSettled } from '@yaac/shared/steps'
-import { parseGitRemote } from '@yaac/shared/git-remote'
-import { isGitHubHost } from '@yaac/shared/credentials'
-import { ghTokenPlaceholder } from '@yaac/shared/tool-auth'
-import { workspacesSandboxed } from '#drivers/driver'
-import { canUseRepo, resolveRepoCredential } from '#domain/repos'
 import { formatDuration, formatInZone, minutesUntil, parseDuration } from '@yaac/shared/schedule'
+import { formatSize } from '@yaac/shared/sizes'
 import {
   AGENT_MODES,
   AGENT_TOOLS,
@@ -97,130 +25,49 @@ import {
   promptFits,
   MODEL_RE,
   PERMISSION_MODES,
-  isRankedPermissionMode,
-  launchableModel,
-  morePermissive,
   routineSettingsSchema,
   timeoutMinutesSchema,
   type AgentMode,
   type AgentTool,
+  type Delegate,
   type PermissionMode,
   type MamaCommand,
+  type QueuedWorkspaceEntry,
   type RepoStart,
   type RoutineEntry,
   type RoutineSettings,
+  type SiteEntry,
   type StoppedWorkspaceEntry,
   type WorkspaceListEntry,
+  type WorkspaceRepo,
 } from '@yaac/shared/types'
-import { authEntryEndpoint, authEntryProvider, loadToolAuthEntry, modelsForTool } from '#domain/auth'
-import {
-  createWorkflow,
-  deleteWorkflow,
-  editWorkflow,
-  listProjectWorkflows,
-  readProjectIcon,
-  removeProjectIcon,
-  setProjectIcon,
-  showWorkflow,
-} from '#domain/projects'
-import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
-import { liveAgents } from '#runtime/status'
-import { bundleCheckout } from '#domain/git'
-import { repoDir, workspaceDir } from '@yaac/shared/project-paths'
-import {
-  formatSize,
-  historyFiles,
-  historyTranscripts,
-  MAX_HISTORY_FILE_BYTES,
-  oversized,
-  withFiles,
-  type HistoryConversation,
-} from './history-export'
-import { workspacePrincipal, type Actor } from '#domain/access'
-import type { SessionRow, SiteRow, WorkspaceRepoRow, WorkspaceRow } from '#db'
-import { resolveCreate } from './create'
-import { setWorkspaceBase } from './base-branch'
-import { checkoutAt } from './checkouts'
+import { runSiteCommand } from './sites'
 
-/** Answers the `site-*` commands, which `#domain/sites` owns and the
- *  composition root wires (`answerSiteCommands`). */
-let siteCommands: ((caller: MamaCaller, request: MamaRequestInput) => Promise<MamaOutcome>) | undefined
+/** The API's typed client, over `delegateApp` as the caller's delegate. */
+export type MamaApi = ReturnType<typeof createApiClient>
 
-/** Register what answers the `site-*` commands. Sites sit above this
- *  folder, so they are handed in rather than imported. */
-export function answerSiteCommands(fn: (caller: MamaCaller, request: MamaRequestInput) => Promise<MamaOutcome>): void {
-  siteCommands = fn
-}
-
-/** Who is asking — resolved by the transport and `mamaCaller`. */
+/** Who is asking, and the API it asks through. */
 export interface MamaCaller {
+  /** The delegate the calling workspace acts as. */
+  delegate: Delegate
   /** The calling workspace. */
   workspaceId: string
   /** The calling session, when the call came from one's agent. */
   sessionId?: string
-  /** Who its writes act for (`workspacePrincipal`). */
-  principal: Actor
-  /** Its project. Every command is scoped to this and nothing else. */
+  /** Its project, which every command is about. */
   projectId: string
-  /** The tool it runs, if known; used in the spawned workspace's tool
-   *  precedence. */
-  tool?: AgentTool
-  /** The model it runs now, as its agent last reported it; what a
-   *  workspace or session it starts on the same tool defaults to. */
-  model?: string
-  /** Its permission mode, the most anything it starts or messages may run
-   *  in. */
-  permissionMode: PermissionMode
-  /** Its agent mode, the default for a workspace it starts. */
-  mode: AgentMode
+  api: MamaApi
 }
 
-/**
- * The caller of a `yaac-mama` command, from the workspace the transport
- * identified and the session its agent says it runs in (`YAAC_SESSION_ID`,
- * which every session's launch sets). The session counts only as one of that
- * workspace's open sessions, and then the ceiling is its own posture. A call
- * from outside any session, such as a user's shell, gets the strictest
- * posture among the workspace's open sessions; with none open, among those
- * closed during its current life, since an agent's detached child can
- * outlive its session; and with neither, the one a create would resolve.
- * Anything in the workspace could claim any of its sessions, so this is a
- * guardrail, not a boundary (docs/permission-modes.md).
- */
-export async function mamaCaller(
-  workspace: { workspaceId: string; projectId: string },
-  claimedSessionId: string | undefined,
-): Promise<MamaCaller> {
-  const { workspaceId, projectId } = workspace
-  const sessions = await listWorkspaceSessions(workspaceId, { all: true })
-  const open = sessions.filter((s) => s.closedAt === undefined)
-  const own = open.find((s) => s.id === claimedSessionId)
-  const lifeStarted = (await getWorkspaceRow(projectId, workspaceId))?.lifeStartedAt
-  const closedThisLife = sessions.filter((s) =>
-    s.closedAt !== undefined && lifeStarted !== undefined && s.closedAt >= lifeStarted)
-  const lead = own ?? strictest(open) ?? strictest(closedThisLife) ?? await resolveCreate(projectId, {})
-  // Anything in the workspace can set a reported model, so only a
-  // launchable one is passed on.
-  const model = lead.model !== undefined ? launchableModel(lead.tool, lead.model) : undefined
+/** The caller of a command made as `delegate` through `api`. */
+export function mamaCaller(delegate: Delegate, api: MamaApi): MamaCaller {
   return {
-    workspaceId,
-    projectId,
-    principal: await workspacePrincipal(workspaceId, projectId),
-    ...(own !== undefined ? { sessionId: own.id } : {}),
-    tool: lead.tool,
-    ...(model !== undefined ? { model } : {}),
-    permissionMode: lead.permissionMode,
-    mode: lead.mode,
+    delegate,
+    workspaceId: delegate.via.id,
+    ...(delegate.via.sessionId !== undefined ? { sessionId: delegate.via.sessionId } : {}),
+    projectId: delegate.projectId ?? '',
+    api,
   }
-}
-
-/** The session in the strictest posture; a posture this build does not
- *  rank counts as stricter than any it does. */
-function strictest(sessions: SessionRow[]): SessionRow | undefined {
-  const stricter = (a: PermissionMode, b: PermissionMode): boolean =>
-    !isRankedPermissionMode(a) || (isRankedPermissionMode(b) && morePermissive(b, a))
-  return sessions.reduce<SessionRow | undefined>(
-    (best, s) => (best === undefined || stricter(s.permissionMode, best.permissionMode) ? s : best), undefined)
 }
 
 /** One command as received, not yet validated. */
@@ -333,6 +180,7 @@ const COMMAND_ARGS: Record<MamaCommand, readonly string[]> = {
 /**
  * Run one `yaac-mama` command for a workspace and return the text for its
  * stdout (plain text, since the reader is an agent via a shell script).
+ * A route's refusal is the command's error, in the route's words.
  * Errors are returned, never thrown, so the transport always has an answer.
  * The body is a prompt or other text, held to the prompt cap, for every
  * command but `icon-set`, whose image `setProjectIcon` bounds.
@@ -406,10 +254,7 @@ export async function runMamaCommand(
       case 'site-start':
       case 'site-stop':
       case 'site-delete':
-        if (siteCommands === undefined) {
-          return { ok: false, error: 'this server serves no sites: it has no sandbox to put between the internet and its host' }
-        }
-        return await siteCommands(caller, request)
+        return await runSiteCommand(caller, request)
     }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -432,36 +277,35 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
   const stray = STOPPED_ARGS.find((a) => request.args[a] !== undefined)
   if (stray !== undefined) return { ok: false, error: `list takes '--${stray}' only with --stopped` }
 
-  const [active, groups, allQueued, rows, zone, allRoutines, sites] = await Promise.all([
-    listActiveWorkspaces(caller.projectId),
-    listWorkspaceGroups(caller.projectId),
-    listQueuedWorkspaceRows(caller.projectId),
-    getProjectWorkspaceRows(caller.projectId),
-    ownerTimeZone(caller.projectId),
-    projectRoutines(caller.projectId),
-    listProjectSites(caller.projectId),
+  const { api, projectId } = caller
+  const project = { query: { project: projectId } }
+  // Stopped workspaces leave out one being restarted, as the webapp's
+  // sidebar does.
+  const [active, { groups }, allQueued, detail, allRoutines, sites, { entries: allStopped }] = await Promise.all([
+    api.workspace.list.$get(project),
+    api.workspace.group.list.$get(project),
+    api.workspace.queue.list.$get(project),
+    api.project[':projectId'].$get({ param: { projectId } }),
+    api.routine.list.$get(project),
+    projectSites(api, projectId),
+    api.workspace['list-stopped'].$get(project),
   ])
-  const placed = placements(rows, sites, await listWorkspaceReposFor([...rows.keys()]))
-  const clock = { zone, now: new Date() }
+  const placed = placements(sites)
+  const clock = { zone: detail.ownerTimeZone, now: new Date() }
   let workspaces = active.workspaces
   let queued = allQueued
   let routines = allRoutines
-  // A restart keeps its stop until its next life starts, so one under way
-  // is left out as the webapp's sidebar leaves it out.
-  const notStopped = new Set([...workspaces.map((w) => w.workspaceId), ...inFlightWorkspaceIds(Date.now())])
-  const allStopped = [...rows.values()].filter((r) => r.stoppedAt !== undefined && !notStopped.has(r.workspaceId))
   let stopped: StoppedWorkspaceEntry[] = []
   const names = new Map(groups.map((g) => [g.groupId, g.name]))
 
   const wanted = request.body.split(/\s+/).filter((t) => t !== '')
   const prompts: Array<{ id: string; prompt: string }> = []
   if (wanted.length > 0) {
-    // Stopped prompts are read only for the ones asked about.
     const entries: Array<{ id: string; prompt?: string }> = [
       ...workspaces.map((w) => ({ id: w.workspaceId, prompt: w.prompt ?? '' })),
       ...queued.map((r) => ({ id: r.id, prompt: r.prompt })),
       ...routines.map((r) => ({ id: r.id, prompt: r.prompt })),
-      ...allStopped.map((r) => ({ id: r.workspaceId })),
+      ...allStopped.map((e) => ({ id: e.workspaceId, prompt: e.prompt ?? '' })),
     ]
     const picked: Array<{ id: string; prompt?: string }> = []
     for (const token of wanted) {
@@ -473,10 +317,8 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     workspaces = workspaces.filter((w) => ids.has(w.workspaceId))
     queued = queued.filter((r) => ids.has(r.id))
     routines = routines.filter((r) => ids.has(r.id))
-    stopped = await toStoppedEntries(allStopped.filter((r) => ids.has(r.workspaceId)))
-    for (const p of picked) {
-      prompts.push({ id: p.id, prompt: p.prompt ?? stopped.find((e) => e.workspaceId === p.id)?.prompt ?? '' })
-    }
+    stopped = allStopped.filter((e) => ids.has(e.workspaceId))
+    for (const p of picked) prompts.push({ id: p.id, prompt: p.prompt ?? '' })
   }
 
   if (request.args.json !== undefined) {
@@ -504,10 +346,10 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
         id: r.id,
         tools: [r.tool],
         status: 'queued',
-        queueState: r.launchWorkspaceId !== undefined ? 'launching' : r.approvalRequest !== undefined ? 'awaiting-approval'
+        queueState: r.awaitingApproval !== undefined ? 'awaiting-approval'
           : r.launchError !== undefined ? 'failed'
           : queuedState(r) === 'queued' ? 'queued' : 'waiting-for-room',
-        launchWorkspaceId: r.launchWorkspaceId ?? null,
+        launchWorkspaceId: null,
         launchError: r.launchError ?? null,
         title: r.title ?? r.generatedTitle ?? null,
         group: groupName(r.groupId),
@@ -561,14 +403,21 @@ async function runList(caller: MamaCaller, request: MamaRequestInput): Promise<M
     ? 'No groups yet. Make one with: yaac-mama group create "<name>"'
     : `Groups: ${groups.map((g) => g.workspaceLimit !== undefined ? `${g.name} (limit ${g.workspaceLimit})` : g.name).join(', ')}`)
   // The folders `--repo` and `--cwd` take, where there is a choice to make.
-  const repos = (await getProjectRow(caller.projectId))?.repos ?? []
-  if (repos.length > 1) lines.push(`Repos: ${repos.map((l) => l.dir).join(', ')}`)
+  if (detail.repos.length > 1) lines.push(`Repos: ${detail.repos.map((l) => l.dir).join(', ')}`)
   // Every prompt line is indented, so a prompt cannot fake another's header.
   for (const p of prompts) {
     const body = p.prompt === '' ? ['(none yet)'] : p.prompt.split('\n')
     lines.push('', `Prompt of ${p.id.slice(0, 8)}:`, ...body.map((l) => `  ${l}`))
   }
   return { ok: true, output: lines.join('\n') }
+}
+
+/** The project's sites; none on a server that serves no sites. */
+async function projectSites(api: MamaApi, projectId: string): Promise<SiteEntry[]> {
+  return await api.site.list.$get({ query: { project: projectId } }).catch((err: unknown) => {
+    if (err instanceof ServerError && err.code === 'NOT_SUPPORTED') return []
+    throw err
+  })
 }
 
 /**
@@ -585,20 +434,20 @@ async function runListStopped(caller: MamaCaller, request: MamaRequestInput): Pr
   if (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > STOPPED_PAGE_MAX) {
     return { ok: false, error: `--limit must be a whole number from 1 to ${STOPPED_PAGE_MAX}` }
   }
-  const [groups, groupId, rows, sites] = await Promise.all([
-    listWorkspaceGroups(caller.projectId),
-    group === undefined ? undefined : resolveGroup(caller.projectId, group).then((g) => g.groupId),
-    getProjectWorkspaceRows(caller.projectId),
-    listProjectSites(caller.projectId),
+  const { api, projectId } = caller
+  const [{ groups }, page, sites] = await Promise.all([
+    api.workspace.group.list.$get({ query: { project: projectId } }),
+    api.workspace['list-stopped'].$get({
+      query: {
+        project: projectId,
+        limit,
+        ...(search !== undefined ? { q: search } : {}),
+        ...(group !== undefined ? { group } : {}),
+        ...(cursor !== undefined ? { cursor } : {}),
+      },
+    }),
+    projectSites(api, projectId),
   ])
-  const page = await listStoppedWorkspaces({
-    project: caller.projectId,
-    ...(search !== undefined ? { q: search } : {}),
-    ...(groupId !== undefined ? { group: groupId } : {}),
-    ...(cursor !== undefined ? { cursor } : {}),
-    exclude: inFlightWorkspaceIds(Date.now()),
-    limit: Number(limit),
-  })
   const matching = search !== undefined ? ` matching "${flatten(search, 40)}"` : ''
   if (page.entries.length === 0) {
     return {
@@ -609,8 +458,7 @@ async function runListStopped(caller: MamaCaller, request: MamaRequestInput): Pr
   const lines = [
     `Stopped workspaces in this project${matching} (${page.entries.length} of ${page.total}, newest stop first):`,
     '',
-    ...renderStopped(page.entries, new Map(groups.map((g) => [g.groupId, g.name])),
-      placements(rows, sites, await listWorkspaceReposFor(page.entries.map((e) => e.workspaceId)))),
+    ...renderStopped(page.entries, new Map(groups.map((g) => [g.groupId, g.name])), placements(sites)),
     '',
   ]
   if (page.nextCursor !== undefined) {
@@ -630,12 +478,7 @@ function shellQuote(value: string): string {
   return /^[\w./:@-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`
 }
 
-/** The zone times are shown in: the project owner's, else UTC
- *  (docs/routines.md "Times and zones"). */
-async function ownerTimeZone(projectId: string): Promise<string> {
-  const owner = (await getProjectRow(projectId))?.owner
-  return (owner !== undefined ? (await getTimeZone(owner)).timeZone : null) ?? 'UTC'
-}
+
 
 /** The zone and instant a listing renders times against. */
 interface ListClock { zone: string; now: Date }
@@ -651,7 +494,7 @@ function renderWorkspaces(
   groupNames: Map<string, string>,
   callerId: string,
   clock: ListClock,
-  placed: (workspaceId: string) => Placement,
+  placed: ReturnType<typeof placements>,
 ): string[] {
   const rows = [...workspaces]
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
@@ -661,7 +504,7 @@ function renderWorkspaces(
       status: w.status,
       group: w.groupId !== undefined ? groupNames.get(w.groupId) ?? '' : '',
       stops: w.deadline !== undefined ? when(w.deadline, clock) : '',
-      ...placed(w.workspaceId),
+      ...placed(w),
       title: flatten(w.title ?? '', 40),
       prompt: flatten(w.prompt ?? '', 60),
     }))
@@ -689,21 +532,18 @@ interface Placement {
   url: string
 }
 
-function placements(
-  rows: Map<string, WorkspaceRow>,
-  sites: SiteRow[],
-  checkouts: Map<string, WorkspaceRepoRow[]>,
-): (workspaceId: string) => Placement {
-  const byId = new Map(sites.map((s) => [s.id, s]))
-  return (workspaceId) => {
-    const row = rows.get(workspaceId)
-    const commit = formatCommits((checkouts.get(workspaceId) ?? [])
+/** Where each listed workspace stands, from its own checkouts and its
+ *  project's `sites`. */
+function placements(sites: SiteEntry[]): (w: { workspaceId: string; repos?: WorkspaceRepo[]; site?: string }) => Placement {
+  const byName = new Map(sites.map((s) => [s.name, s]))
+  return ({ workspaceId, repos = [], site: siteName }) => {
+    const commit = formatCommits(repos
       .flatMap((c) => (c.baseBranch === undefined && c.startCommit !== undefined ? [{ dir: c.path, commit: c.startCommit }] : [])))
-    if (row?.siteId === undefined) return { commit, site: '', url: '' }
-    const site = byId.get(row.siteId)
+    if (siteName === undefined) return { commit, site: '', url: '' }
+    const site = byName.get(siteName)
     if (site === undefined) return { commit, site: '(deleted site)', url: '' }
-    const role = site.liveWorkspaceId === workspaceId ? 'live'
-      : site.deployWorkspaceId === workspaceId ? `deploying: ${site.deployPhase ?? 'launching'}`
+    const role = site.live?.workspaceId === workspaceId ? 'live'
+      : site.deploy?.workspaceId === workspaceId ? `deploying: ${site.deploy.phase}`
       : 'not serving'
     return { commit, site: `${site.name} (${role})`, url: site.hostname !== undefined ? `https://${site.hostname}` : '' }
   }
@@ -740,7 +580,7 @@ function renderAgents(workspaces: WorkspaceListEntry[], callerSessionId: string 
 function renderStopped(
   entries: StoppedWorkspaceEntry[],
   groupNames: Map<string, string>,
-  placed: (workspaceId: string) => Placement,
+  placed: ReturnType<typeof placements>,
 ): string[] {
   const rows = entries.map((e) => ({
     id: e.workspaceId.slice(0, 8),
@@ -752,7 +592,7 @@ function renderStopped(
       : e.deathDetail !== undefined ? `${e.deathReason}: ${flatten(e.deathDetail, 40)}`
       : e.deathReason,
     group: e.groupId !== undefined ? groupNames.get(e.groupId) ?? '' : '',
-    ...placed(e.workspaceId),
+    ...placed(e),
     title: flatten(e.title ?? '', 40),
     prompt: flatten(e.prompt ?? '', 60),
   }))
@@ -793,25 +633,23 @@ function renderRoutines(routines: RoutineEntry[], clock: ListClock): string[] {
 }
 
 /** A queued entry's state as the listing words it. */
-function queuedState(r: QueuedWorkspaceRow, errorChars = 200): string {
-  return r.launchWorkspaceId !== undefined ? `launching as ${r.launchWorkspaceId.slice(0, 8)}`
-    : r.approvalRequest !== undefined ? 'awaiting a person\'s approval, which their review gives'
+function queuedState(r: QueuedWorkspaceEntry, errorChars = 200): string {
+  return r.awaitingApproval !== undefined ? 'awaiting a person\'s approval, which their review gives'
     : r.launchError !== undefined ? `failed: ${flatten(r.launchError, errorChars)}`
-    : r.releasedAt !== undefined || (r.parentWorkspaceId ?? r.parentQueuedId ?? r.startAt) === undefined
-      ? 'waiting for room'
-      : 'queued'
+    : r.waitingForRoom === true ? 'waiting for room'
+    : 'queued'
 }
 
 /** Queued entries as a tree under the workspace each waits on, or under
  *  the group one with no parent waits for room in, with a scheduled entry
  *  heading its own tree. */
 function renderQueued(
-  rows: QueuedWorkspaceRow[],
+  rows: QueuedWorkspaceEntry[],
   groupNames: Map<string, string>,
   callerId: string,
   clock: ListClock,
 ): string[] {
-  const children = new Map<string, QueuedWorkspaceRow[]>()
+  const children = new Map<string, QueuedWorkspaceEntry[]>()
   const rooms = new Map<string, string>()
   for (const r of rows) {
     if (r.startAt !== undefined) continue
@@ -824,7 +662,7 @@ function renderQueued(
   }
   const ids = new Set(rows.map((r) => r.id))
   const lines: string[] = []
-  const line = (r: QueuedWorkspaceRow): string => {
+  const line = (r: QueuedWorkspaceEntry): string => {
     const status = queuedState(r, 60)
     const stops = r.timeoutMinutes !== undefined ? `  stops after ${formatDuration(r.timeoutMinutes)}` : ''
     return `${r.id.slice(0, 8)}  ${r.tool}  ${status}${stops}  ${flatten(r.prompt ?? '(non-interactive)', 60)}`
@@ -836,7 +674,7 @@ function renderQueued(
     }
   }
   for (const r of rows.filter((e) => e.startAt !== undefined)
-    .sort((a, b) => (a.startAt?.getTime() ?? 0) - (b.startAt?.getTime() ?? 0))) {
+    .sort((a, b) => (a.startAt ?? '').localeCompare(b.startAt ?? ''))) {
     lines.push(`at ${when(r.startAt ?? clock.now, clock)}:`, `  ${line(r)}`)
     walk(r.id, 1)
   }
@@ -871,7 +709,7 @@ function flatten(text: string, max: number): string {
 }
 
 /**
- * Start an agent (`decideSpawn`): a session in a new workspace of the
+ * Start an agent: a session in a new workspace of the
  * caller's project, or with `--workspace` in that running one (the caller's
  * own included). `--no-agent` starts a workspace with no agent.
  */
@@ -882,10 +720,6 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
   if (stray !== undefined) return { ok: false, error: `--${stray} goes with --workspace and --run` }
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
-  if (settings.settings.steps != null) {
-    const refused = refuseCommands(caller, '--steps')
-    if (refused !== undefined) return refused
-  }
   const { workspace, resume } = request.args
   const noSession = request.args['no-agent'] !== undefined || settings.settings.nonInteractive === true
   const sessionArgs = ['tool', 'model', 'effort', 'permission-mode', 'ui-mode', 'resume']
@@ -905,36 +739,56 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
     }
   }
 
-  const decision = await decideSpawn({
-    principal: caller.principal,
-    callerWorkspaceId: caller.workspaceId,
-    callerProjectId: caller.projectId,
-    ...(caller.tool !== undefined ? { callerTool: caller.tool } : {}),
-    ...(caller.model !== undefined ? { callerModel: caller.model } : {}),
-    callerPermissionMode: caller.permissionMode,
-    callerMode: caller.mode,
-    prompt: request.body,
-    ...(workspace !== undefined ? { workspace } : {}),
-    ...(resume !== undefined ? { resume } : {}),
-    ...(noSession ? { noSession: true } : {}),
-    ...(request.args.volume !== undefined ? { volume: request.args.volume } : {}),
-    ...settings.settings,
-  })
-  return decision.ok
-    // The id alone, so `id=$(yaac-mama create "…")` works: the agent's for
-    // one opened in a running workspace, else the new workspace's.
-    ? { ok: true, output: decision.sessionId ?? decision.workspaceId }
-    : { ok: false, error: decision.error }
+  const { tool, model, permissionMode, effort, uiMode, cwd, title, timeout, ...start } = settings.settings
+  if (!noSession && resume === undefined && request.body.trim() === '') return { ok: false, error: 'prompt must not be empty' }
+  const agent = {
+    ...(tool !== undefined ? { tool } : {}),
+    ...(model !== undefined ? { model } : {}),
+    ...(permissionMode !== undefined ? { permissionMode } : {}),
+    ...(effort !== undefined ? { effort } : {}),
+    ...(uiMode !== undefined ? { mode: uiMode } : {}),
+  }
+  const { api, projectId } = caller
+  if (workspace !== undefined) {
+    // The id alone, so `id=$(yaac-mama create "…")` works: the agent's.
+    const { sessionId } = await api.workspace[':id'].sessions.$post({
+      param: { id: workspace.trim() },
+      json: {
+        ...agent,
+        ...(request.body.trim() !== '' ? { prompt: request.body } : {}),
+        ...(resume !== undefined ? { resume } : {}),
+        ...(cwd !== undefined ? { cwd } : {}),
+        ...(title !== undefined ? { title } : {}),
+      },
+    })
+    return { ok: true, output: sessionId }
+  }
+  if (resume !== undefined) return { ok: false, error: '--resume needs --workspace: a conversation resumes in the workspace that holds it' }
+  const workspaceId = crypto.randomUUID()
+  // Refused before the route streams, the last point the caller can see a
+  // refusal: the create itself runs on.
+  drain(await api.workspace.create.$post({
+    json: {
+      project: projectId,
+      workspaceId,
+      ...(noSession ? { noSession: true } : { ...agent, prompt: request.body }),
+      ...start,
+      ...(cwd !== undefined ? { cwd } : {}),
+      ...(title !== undefined ? { title } : {}),
+      ...(timeout !== undefined ? { timeout } : {}),
+      ...(request.args.volume !== undefined ? { volume: request.args.volume } : {}),
+    },
+  }))
+  // The id alone, so `id=$(yaac-mama create "…")` works: the new workspace's.
+  return { ok: true, output: workspaceId }
 }
 
-/**
- * Queue a workspace to start when its parent (a workspace in this project,
- * often the caller itself, or another queued entry) stops, or with no
- * parent when `--group` names a group with a workspace limit, to start once
- * that group has room (docs/workspace-groups.md). Settings default from the
- * parent, or with none as `create`'s do; the permission mode is capped at
- * the caller's own.
- */
+/** Let a provisioning stream run to its end unread: the launch it reports
+ *  goes on, and a failure shows on its provisioning row. */
+function drain(res: Response): void {
+  void res.body?.pipeTo(new WritableStream()).catch(() => undefined)
+}
+
 /**
  * Add a step to a running workspace of the project, the caller's own
  * included (docs/workspace-steps.md): `--run`, a JSON list of its commands
@@ -951,8 +805,6 @@ async function runAddStep(caller: MamaCaller, request: MamaRequestInput): Promis
   const stray = Object.keys(args).find((a) => a !== 'workspace' && a !== 'repos' && !(STEP_ARGS as readonly string[]).includes(a))
   if (stray !== undefined) return { ok: false, error: `--run does not take --${stray}` }
   if (request.body.trim() !== '') return { ok: false, error: '--run takes no prompt' }
-  const refused = refuseCommands(caller, '--run')
-  if (refused !== undefined) return refused
   let run: unknown
   try {
     run = JSON.parse(args.run ?? '')
@@ -970,17 +822,19 @@ async function runAddStep(caller: MamaCaller, request: MamaRequestInput): Promis
   if (repos !== undefined && !(Array.isArray(repos) && repos.every((r) => typeof r === 'string' && /^[^@]+$/.test(r)))) {
     return { ok: false, error: 'with --run, --repo takes a repo\'s folder: the checkout the step runs in' }
   }
-  const workspaceId = await resolveProjectWorkspace(target, caller.projectId)
-  const [added] = await addSteps(caller.principal, workspaceId, {
-    steps: {
-      [name]: {
-        run,
-        ...(needs !== undefined && needs.length > 0 ? { needs } : {}),
-        ...(args.service !== undefined ? { service: true } : {}),
-        ...(args.ready !== undefined ? { ready: args.ready } : {}),
+  const [added] = await caller.api.workspace[':id'].steps.$post({
+    param: { id: target },
+    json: {
+      steps: {
+        [name]: {
+          run,
+          ...(needs !== undefined && needs.length > 0 ? { needs } : {}),
+          ...(args.service !== undefined ? { service: true } : {}),
+          ...(args.ready !== undefined ? { ready: args.ready } : {}),
+        },
       },
+      ...(repos !== undefined ? { repos: repos as string[] } : {}),
     },
-    ...(repos !== undefined ? { repos: repos as string[] } : {}),
   })
   return { ok: true, output: added.name }
 }
@@ -994,8 +848,10 @@ async function runAddWorkflow(caller: MamaCaller, request: MamaRequestInput): Pr
   const stray = Object.keys(request.args).find((a) => a !== 'workspace' && a !== 'workflow')
   if (stray !== undefined) return { ok: false, error: `--workspace with --workflow does not take --${stray}` }
   if (request.body.trim() !== '') return { ok: false, error: '--workflow takes no prompt' }
-  const workspaceId = await resolveProjectWorkspace(request.args.workspace ?? '', caller.projectId)
-  const added = await addSteps(caller.principal, workspaceId, { workflow: request.args.workflow ?? '' })
+  const added = await caller.api.workspace[':id'].steps.$post({
+    param: { id: request.args.workspace?.trim() ?? '' },
+    json: { workflow: request.args.workflow ?? '' },
+  })
   return { ok: true, output: added.map((s) => s.name).join('\n') }
 }
 
@@ -1008,11 +864,9 @@ async function runRerun(caller: MamaCaller, request: MamaRequestInput): Promise<
   const target = request.args.workspace?.trim() ?? ''
   if (target === '') return { ok: false, error: 'rerun needs a workspace id' }
   const workspaceId = crypto.randomUUID()
-  const run = await prepareRerun(caller.principal, await resolveProjectWorkspace(target, caller.projectId), {
-    workspaceId,
-    ...(request.args.interactive !== undefined ? { interactive: true } : {}),
-  })
-  void run().catch((err: unknown) => serverLog(`[mama] rerun of ${target} failed: ${String(err)}`))
+  drain(await caller.api.workspace.rerun.$post({
+    json: { workspaceId: target, rerunId: workspaceId, ...(request.args.interactive !== undefined ? { interactive: true } : {}) },
+  }))
   return { ok: true, output: workspaceId }
 }
 
@@ -1025,20 +879,45 @@ async function runRerun(caller: MamaCaller, request: MamaRequestInput): Promise<
 async function runStatus(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = request.args.workspace?.trim() ?? ''
   if (target === '') return { ok: false, error: 'status needs a workspace id' }
-  const workspaceId = await resolveProjectWorkspace(target, caller.projectId)
-  const row = await getWorkspaceRow(caller.projectId, workspaceId)
-  if (row === undefined) return { ok: true, output: inFlightWorkspaceIds(Date.now()).includes(workspaceId) ? 'running' : 'gone' }
+  const steps = await caller.api.workspace[':id'].steps.$get({ param: { id: target } }).catch((err: unknown) => {
+    if (err instanceof ServerError && err.code === 'NOT_FOUND') return undefined
+    throw err
+  })
+  if (steps === undefined) return { ok: true, output: 'gone' }
+  if ('provisioning' in steps) return { ok: true, output: 'running' }
   const step = request.args.step?.trim()
   if (step === undefined || step === '') {
-    if (row.stepsOutcome !== undefined) return { ok: true, output: row.stepsOutcome }
-    return { ok: true, output: row.stoppedAt !== undefined ? 'stopped' : 'running' }
+    if (steps.stepsOutcome !== undefined) return { ok: true, output: steps.stepsOutcome }
+    return { ok: true, output: steps.stopped === true ? 'stopped' : 'running' }
   }
-  const found = findStep((await listWorkspaceSteps(workspaceId))
-    .filter((s) => s.life.getTime() === row.lifeStartedAt.getTime()), step)
-  if (found === undefined) return { ok: false, error: `workspace ${workspaceId.slice(0, 8)} has no step "${step}"` }
+  const found = findStep(steps.lives.find((l) => l.life === steps.life)?.steps ?? [], step)
+  if (found === undefined) return { ok: false, error: `workspace ${steps.workspaceId.slice(0, 8)} has no step "${step}"` }
   return { ok: true, output: found.exitCode !== undefined ? `${found.state}\n${found.exitCode}` : found.state }
 }
 
+/**
+ * The step `name` names: by its full name, or by its bare name while only
+ * one workflow has a step so named.
+ */
+function findStep<T extends { name: string; step: string }>(steps: T[], name: string): T | undefined {
+  const exact = steps.find((s) => s.name === name)
+  if (exact !== undefined || name.includes('.')) return exact
+  const matches = steps.filter((s) => s.step === name)
+  if (matches.length > 1) {
+    throw new ServerError('VALIDATION', `"${name}" is a step of several workflows: ${matches.map((s) => s.name).join(', ')}; `
+      + 'give its full name')
+  }
+  return matches[0]
+}
+
+/**
+ * Queue a workspace to start when its parent (a workspace in this project,
+ * often the caller itself, or another queued entry) stops, or with no
+ * parent when `--group` names a group with a workspace limit, to start once
+ * that group has room (docs/workspace-groups.md). Settings default from the
+ * parent, or with none as `create`'s do; the permission mode is capped at
+ * the caller's own.
+ */
 async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const parent = request.args['parent-workspace']?.trim() ?? ''
   const start = startArgs(request.args)
@@ -1048,25 +927,25 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
   }
   const settings = createSettings(request.args)
   if (!settings.ok) return settings
-  if (settings.settings.steps != null) {
-    const refused = refuseCommands(caller, '--steps')
-    if (refused !== undefined) return refused
-  }
-  const entry = await queueWorkspace(caller.principal, caller.projectId, {
-    ...(start.start !== undefined ? { start: start.start } : {}),
-    ...(request.body !== '' ? { prompt: request.body } : {}),
-    ...(parent !== '' ? { parent } : callerDefaults(caller, settings.settings.tool)),
-    ...queueFields(settings.settings),
-  }, { ceiling: caller.permissionMode })
+  const { api, projectId } = caller
+  const entry = await api.workspace.queue.create.$post({
+    json: {
+      project: projectId,
+      ...startFields(start.start),
+      ...(request.body !== '' ? { prompt: request.body } : {}),
+      ...(parent !== '' ? { parent } : {}),
+      ...queueFields(settings.settings),
+    },
+  })
   if (entry.startAt !== undefined) {
-    const zone = await ownerTimeZone(caller.projectId)
+    const zone = (await api.project[':projectId'].$get({ param: { projectId } })).ownerTimeZone
     return { ok: true, output: `${entry.id}\nnote: starts at about ${when(entry.startAt, { zone, now: new Date() })} ${zone}` }
   }
   // The id alone on the first line, so `a=$(yaac-mama queue …)` can chain
   // the next one after it; the script prints any note after it to stderr.
   const parentId = entry.parentWorkspaceId
   const stopped = parentId !== undefined
-    && (await getWorkspaceRow(caller.projectId, parentId))?.stoppedAt !== undefined
+    && (await api.workspace['list-stopped'].$get({ query: { project: projectId, workspace: parentId } })).entries.length > 0
   return {
     ok: true,
     output: stopped
@@ -1085,15 +964,11 @@ async function runQueue(caller: MamaCaller, request: MamaRequestInput): Promise<
 async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = request.args.queued?.trim() ?? ''
   if (target === '') return { ok: false, error: 'edit-queued needs a queued workspace id' }
-  const picked = pickOne(await listQueuedWorkspaceRows(caller.projectId), target, 'queued workspace')
+  const picked = pickOne(await caller.api.workspace.queue.list.$get({ query: { project: caller.projectId } }), target, 'queued workspace')
   if (!picked.ok) return picked
   const { args, cleared } = takeCleared(request.args, 'none')
   const settings = createSettings(args, 'none')
   if (!settings.ok) return settings
-  if (settings.settings.steps != null) {
-    const refused = refuseCommands(caller, '--steps')
-    if (refused !== undefined) return refused
-  }
   const parent = request.args['parent-workspace']?.trim()
   const noParent = request.args['no-parent'] !== undefined
   const start = startArgs(request.args)
@@ -1101,18 +976,18 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
   if ([noParent, parent !== undefined && parent !== '', start.start !== undefined].filter(Boolean).length > 1) {
     return { ok: false, error: 'edit-queued takes one of --parent-workspace, --no-parent, --start-at and --start-in' }
   }
-  const patch: Partial<QueueRequest> = {
+  const patch = {
     ...(request.body !== '' ? { prompt: request.body } : {}),
     ...(parent !== undefined && parent !== '' ? { parent } : {}),
     ...(noParent ? { parent: null } : {}),
-    ...(start.start !== undefined ? { start: start.start } : {}),
+    ...startFields(start.start),
     ...queueFields(settings.settings),
     ...(cleared ? { timeout: null } : {}),
   }
   if (Object.keys(patch).length === 0) {
     return { ok: false, error: 'edit-queued needs a new prompt or an option to change' }
   }
-  const entry = await updateQueuedWorkspace(caller.principal, picked.entry.id, patch, { ceiling: caller.permissionMode })
+  const entry = await caller.api.workspace.queue.update.$post({ json: { id: picked.entry.id, ...patch } })
   return {
     ok: true,
     output: `Updated queued workspace ${entry.id.slice(0, 8)}: ${entry.tool} ${entry.model}, `
@@ -1128,13 +1003,11 @@ async function runEditQueued(caller: MamaCaller, request: MamaRequestInput): Pro
 async function runRunQueued(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = request.args.queued?.trim() ?? ''
   if (target === '') return { ok: false, error: 'run-queued needs a queued workspace id' }
-  const picked = pickOne(await listQueuedWorkspaceRows(caller.projectId), target, 'queued workspace')
+  const picked = pickOne(await caller.api.workspace.queue.list.$get({ query: { project: caller.projectId } }), target, 'queued workspace')
   if (!picked.ok) return picked
-  const { id, permissionMode } = picked.entry
+  const { id } = picked.entry
   const short = id.slice(0, 8)
-  const above = aboveCaller(caller, short, permissionMode, 'edit-queued')
-  if (above !== undefined) return above
-  const { workspaceId } = await runQueuedWorkspace(caller.principal, id)
+  const { workspaceId } = await caller.api.workspace.queue.run.$post({ json: { id } })
   return { ok: true, output: `Started queued workspace ${short} as ${workspaceId.slice(0, 8)}.` }
 }
 
@@ -1149,35 +1022,12 @@ async function runRunQueued(caller: MamaCaller, request: MamaRequestInput): Prom
 async function runDeleteQueued(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = request.args.queued?.trim() ?? ''
   if (target === '') return { ok: false, error: 'delete-queued needs a queued workspace id' }
-  const picked = pickOne(await listQueuedWorkspaceRows(caller.projectId), target, 'queued workspace')
+  const picked = pickOne(await caller.api.workspace.queue.list.$get({ query: { project: caller.projectId } }), target, 'queued workspace')
   if (!picked.ok) return picked
-  await discardQueuedWorkspace(caller.principal, picked.entry.id)
+  await caller.api.workspace.queue.discard.$post({ json: { id: picked.entry.id } })
   return { ok: true, output: `Discarded queued workspace ${picked.entry.id.slice(0, 8)}.` }
 }
 
-/**
- * A refusal for starting `short`, which runs in `permissionMode`, if that is
- * more than the caller's own; `edit` names the command that lowers it.
- */
-function aboveCaller(
-  caller: MamaCaller,
-  short: string,
-  permissionMode: PermissionMode,
-  edit: string,
-): { ok: false; error: string } | undefined {
-  if (isRankedPermissionMode(permissionMode) && isRankedPermissionMode(caller.permissionMode)
-    && !morePermissive(permissionMode, caller.permissionMode)) return undefined
-  return {
-    ok: false,
-    error: `${short} runs in permission mode '${permissionMode}', more than the caller's ceiling `
-      + `('${caller.permissionMode}'); lower it with ${edit} --permission-mode first`,
-  }
-}
-
-/** The caller's project's routines. */
-async function projectRoutines(projectId: string): Promise<RoutineEntry[]> {
-  return (await listRoutines()).filter((r) => r.projectId === projectId)
-}
 
 /** The routine `--routine` names in the caller's project. */
 async function pickRoutine(
@@ -1186,7 +1036,7 @@ async function pickRoutine(
 ): Promise<{ ok: true; entry: RoutineEntry } | { ok: false; error: string }> {
   const target = request.args.routine?.trim() ?? ''
   if (target === '') return { ok: false, error: `${request.command} needs a routine id` }
-  return pickOne(await projectRoutines(caller.projectId), target, 'routine')
+  return pickOne(await caller.api.routine.list.$get({ query: { project: caller.projectId } }), target, 'routine')
 }
 
 /**
@@ -1236,12 +1086,7 @@ async function runRoutineCreate(caller: MamaCaller, request: MamaRequestInput): 
   if (name === undefined || cron === undefined || (prompt === undefined && nonInteractive !== true)) {
     return { ok: false, error: 'routine-create needs --name, --cron and a prompt (or --non-interactive)' }
   }
-  const routine = await createRoutine(caller.principal, caller.projectId, {
-    ...callerDefaults(caller, parsed.fields.tool),
-    ...parsed.fields,
-    name,
-    cron,
-  }, { ceiling: caller.permissionMode })
+  const routine = await caller.api.routine.create.$post({ json: { project: caller.projectId, ...parsed.fields, name, cron } })
   return { ok: true, output: `${routine.id}
 note: ${nextRuns(routine)}` }
 }
@@ -1259,7 +1104,7 @@ async function runRoutineEdit(caller: MamaCaller, request: MamaRequestInput): Pr
   if (Object.keys(parsed.fields).length === 0) {
     return { ok: false, error: 'routine-edit needs a new prompt or an option to change' }
   }
-  const r = await updateRoutine(caller.principal, picked.entry.id, parsed.fields, { ceiling: caller.permissionMode })
+  const r = await caller.api.routine.update.$post({ json: { id: picked.entry.id, ...parsed.fields } })
   return {
     ok: true,
     output: `Updated routine ${r.id.slice(0, 8)} ("${r.name}"): ${r.cron}, ${r.tool} ${r.model}, `
@@ -1276,11 +1121,7 @@ async function runRoutinePause(
   const picked = await pickRoutine(caller, request)
   if (!picked.ok) return picked
   const short = picked.entry.id.slice(0, 8)
-  if (!paused) {
-    const above = aboveCaller(caller, short, picked.entry.permissionMode, 'routine edit')
-    if (above !== undefined) return above
-  }
-  const r = await setRoutinePaused(caller.principal, picked.entry.id, paused)
+  const r = await (paused ? caller.api.routine.pause : caller.api.routine.resume).$post({ json: { id: picked.entry.id } })
   return { ok: true, output: `${paused ? 'Paused' : 'Resumed'} routine ${short} ("${r.name}")${paused ? '' : `; ${nextRuns(r)}`}.` }
 }
 
@@ -1290,9 +1131,7 @@ async function runRoutineRun(caller: MamaCaller, request: MamaRequestInput): Pro
   const picked = await pickRoutine(caller, request)
   if (!picked.ok) return picked
   const short = picked.entry.id.slice(0, 8)
-  const above = aboveCaller(caller, short, picked.entry.permissionMode, 'routine edit')
-  if (above !== undefined) return above
-  const { workspaceId } = await runRoutineNow(caller.principal, picked.entry.id)
+  const { workspaceId } = await caller.api.routine.run.$post({ json: { id: picked.entry.id } })
   return { ok: true, output: `Started routine ${short} ("${picked.entry.name}") as ${workspaceId.slice(0, 8)}.` }
 }
 
@@ -1300,7 +1139,7 @@ async function runRoutineRun(caller: MamaCaller, request: MamaRequestInput): Pro
 async function runRoutineDelete(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const picked = await pickRoutine(caller, request)
   if (!picked.ok) return picked
-  await deleteRoutine(caller.principal, picked.entry.id)
+  await caller.api.routine.delete.$post({ json: { id: picked.entry.id } })
   return {
     ok: true,
     output: `Deleted routine ${picked.entry.id.slice(0, 8)} ("${picked.entry.name}"). `
@@ -1308,134 +1147,61 @@ async function runRoutineDelete(caller: MamaCaller, request: MamaRequestInput): 
   }
 }
 
-/** Deliveries under way, by sender and by target conversation. */
-const sending = new Set<string>()
-
 /**
- * Send a message to a running sibling's agent, as if the user typed it: its
- * first live conversation, or the one `--conversation` names. The message is
- * headed with the caller's id, so the agent can tell a peer's words from its
- * user's and knows where to answer. Only that first line is the server's:
- * the body may claim anything. A busy acp agent takes it mid-turn or queues
- * it. A tui agent gets it submitted on its own, around any draft its user
- * left in the input box, and its own UI queues it if a turn is running
- * (`buildMessageCmd`); the reply waits until it is.
- *
- * Neither the target's row nor the conversation's own reported mode may be
- * more permissive than the caller, or a message would let the caller act
- * through a grant it was never given. The caller itself is refused, since
- * the paste would land in its own running turn. One delivery at a time per
- * caller and per target conversation, so pastes never interleave and a pair
- * of agents cannot pile deliveries onto one pane.
+ * Send a message to a running sibling's agent (`POST /workspace/:id/send`),
+ * as if the user typed it: its first open session but the caller's own, or
+ * the one `--session` or `--conversation` names. The route heads it with
+ * the caller's id and holds it to the caller's ceiling.
  */
 async function runSend(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const workspace = request.args.workspace?.trim() ?? ''
   if (workspace === '') return { ok: false, error: 'send needs a workspace id' }
-  // Bound for a terminal whatever the agent's mode, so stripped here once.
-  const body = stripControlChars(request.body)
-  if (body.trim() === '') return { ok: false, error: 'send needs a message' }
-  const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
-  const short = workspaceId.slice(0, 8)
-
-  const ceiling = caller.permissionMode
-  if (!isRankedPermissionMode(ceiling)) {
-    return { ok: false, error: `this caller's permission mode '${ceiling}' is not one this server knows` }
-  }
-  const targetRow = await getWorkspaceRow(caller.projectId, workspaceId)
-
-  const running = await resolveWorkspaceContainer(workspaceId, { requireRunning: true, exact: true })
-    .catch((err: unknown) => {
-      if (err instanceof ServerError && (err.code === 'NOT_FOUND' || err.code === 'CONFLICT')) return undefined
-      throw err
-    })
-  if (!running) {
-    return {
-      ok: false,
-      error: targetRow?.stoppedAt !== undefined
-        ? `workspace ${short} is stopped; restart it with yaac-mama restart ${short}, then send once it is running`
-        : `workspace ${short} is not running`,
-    }
-  }
-
-  // The caller's own session is never a target: the paste would land in its
-  // own running turn.
-  const sessions = (await listWorkspaceSessions(workspaceId)).filter((s) => s.id !== caller.sessionId)
-  const byAgent = request.args.agent?.trim() ?? ''
-  const byConversation = request.args.conversation?.trim() ?? ''
-  const pick = (wanted: string, key: (s: SessionRow) => string | undefined): SessionRow[] => {
-    const exact = sessions.find((s) => key(s) === wanted)
-    return exact !== undefined ? [exact] : sessions.filter((s) => key(s)?.startsWith(wanted) === true)
-  }
-  const matches = byAgent !== '' ? pick(byAgent, (s) => s.id)
-    : byConversation !== '' ? pick(byConversation, (s) => s.conversationId)
-    : sessions.slice(0, 1)
-  if (matches.length !== 1) {
-    const named = byAgent !== '' ? `agent '${byAgent}'` : `conversation '${byConversation}'`
-    return {
-      ok: false,
-      error: byAgent === '' && byConversation === '' ? `${short} has no other agent to send to`
-        : matches.length === 0 ? `no ${byAgent !== '' ? 'running' : 'open'} ${named} in ${short} (see: yaac-mama list)`
-        : `${named} matches more than one agent in ${short} — use a longer prefix`,
-    }
-  }
-  const [session] = matches
-  const conversationId = session.conversationId
-  const label = `${short}'s ${session.tool} agent ${session.id.slice(0, 8)}`
-  if (conversationId === undefined) return { ok: false, error: `${label} has no conversation yet; try again once its agent is up` }
-
-  // The row follows what the agent reports; its latest report is checked
-  // too, in case it moved since the last pass recorded it.
-  const reported = liveAgents(caller.projectId, workspaceId)?.find((a) => a.handle === session.window)?.reportedMode
-  const postures = [
-    session.permissionMode,
-    reported === undefined
-      ? session.permissionMode
-      : resolveAgentPermissionMode(session.mode, session.tool, reported, session.permissionMode),
-  ]
-  for (const posture of postures) {
-    if (posture === undefined || !isRankedPermissionMode(posture)) {
-      return { ok: false, error: `cannot tell which permission mode ${label} runs in, so it cannot be sent a message` }
-    }
-    if (morePermissive(posture, ceiling)) {
-      return {
-        ok: false,
-        error: `${label} runs in permission mode '${posture}', more than the caller's own `
-          + `('${ceiling}'); only one at or below it can be sent a message`,
-      }
-    }
-  }
-
-  const from = `from:${caller.sessionId ?? caller.workspaceId}`
-  const to = `to:${session.id}`
-  if (sending.has(from)) return { ok: false, error: 'your previous send is still being delivered; send again once it returns' }
-  if (sending.has(to)) return { ok: false, error: `another message to ${label} is still being delivered; try again shortly` }
-  sending.add(from).add(to)
+  if (stripControlChars(request.body).trim() === '') return { ok: false, error: 'send needs a message' }
+  const agent = request.args.agent?.trim() ?? ''
+  const conversation = request.args.conversation?.trim() ?? ''
   try {
-    await agentDriver(session.mode).deliverPrompt(
-      { projectId: caller.projectId, workspaceId, jobName: running.jobName },
-      session.window,
-      `Sent from ${caller.workspaceId} via yaac-mama:\n\n${body}`,
-      { tool: session.tool, conversationId },
-    )
+    const sent = await caller.api.workspace[':id'].send.$post({
+      param: { id: workspace },
+      json: { message: request.body, ...(agent !== '' ? { session: agent } : {}), ...(conversation !== '' ? { conversation } : {}) },
+    })
+    const short = sent.workspaceId.slice(0, 8)
+    return {
+      ok: true,
+      output: `Sent to ${short}'s ${sent.tool} agent ${sent.sessionId.slice(0, 8)}. A busy agent takes it once its current turn allows; `
+        + 'read its reply with yaac-mama history.',
+    }
   } catch (err) {
-    return { ok: false, error: `not delivered to ${label}: ${err instanceof Error ? err.message : String(err)}` }
-  } finally {
-    sending.delete(from)
-    sending.delete(to)
-  }
-  return {
-    ok: true,
-    output: `Sent to ${label}. A busy agent takes it once its current turn allows; `
-      + 'read its reply with yaac-mama history.',
+    if (!(err instanceof ServerError)) throw err
+    // Where the route names no command, name the one that does it.
+    const stopped = /^workspace (\S+) is stopped; restart it, then/.exec(err.message)
+    if (stopped !== null) return { ok: false, error: err.message.replace('restart it,', `restart it with yaac-mama restart ${stopped[1]},`) }
+    if (err.code === 'NOT_FOUND' && /^no (running agent|open conversation) /.test(err.message)) {
+      return { ok: false, error: `${err.message} (see: yaac-mama list)` }
+    }
+    throw err
   }
 }
 
-/** Settings shared by `create`, `queue` and `edit-queued`. */
-type CreateSettings = Pick<
-  SpawnRequest,
-  'tool' | 'model' | 'permissionMode' | 'effort' | 'uiMode' | 'branch' | 'commit' | 'group' | 'title' | 'timeout'
-  | 'steps' | 'workflow' | 'nonInteractive' | 'repos' | 'nested' | 'cwd'
->
+/** Settings shared by `create`, `queue` and `edit-queued`, as the verbs
+ *  take them; `timeout` is in minutes. */
+interface CreateSettings {
+  tool?: AgentTool
+  model?: string
+  permissionMode?: PermissionMode
+  effort?: string
+  uiMode?: AgentMode
+  branch?: string
+  commit?: string
+  group?: string
+  title?: string
+  timeout?: number
+  steps?: unknown
+  workflow?: string
+  nonInteractive?: boolean
+  repos?: RepoStart[]
+  nested?: boolean
+  cwd?: string
+}
 
 /**
  * Validate the shared create options. The group stays a name, resolved
@@ -1550,45 +1316,16 @@ function selectionArgs(
  * `yaac-mama as-repo <repo> -- <command>` runs one command with
  * (docs/project-repos.md "GH_TOKEN"): the repo `repo` names by its folder in
  * the project, its id, or its checkout's path in the caller's workspace.
- * With a sandbox it is that repo's placeholder, which the proxy swaps only
- * while the project's link allows it, so one that does not is refused here;
- * without one it is the repo's token, since the workspace holds every
- * credential anyway. Only an https GitHub repo has one.
  */
 async function runAsRepo(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const ref = request.args.repo?.trim() ?? ''
   if (ref === '') return { ok: false, error: 'as-repo needs a repo' }
-  const project = await getProjectRow(caller.projectId)
-  const checkedOut = (await listWorkspaceRepos(caller.workspaceId)).find((c) => c.path === ref)
-  const link = project?.repos.find((l) => l.dir === ref) ?? project?.repos.find((l) => l.repo.id === ref)
-    ?? project?.repos.find((l) => l.repo.id === checkedOut?.repoId)
-  if (project === undefined || link === undefined) return { ok: false, error: `this project has no repo "${ref}"` }
-  const { repo } = link
-  if (repo.hosted || parseGitRemote(repo.remoteUrl).scheme !== 'https'
-    || !isGitHubHost(parseGitRemote(repo.remoteUrl).host)) {
-    return { ok: false, error: `${link.dir} is not an https GitHub repo, so it has no token gh could use` }
-  }
-  if (workspacesSandboxed()) {
-    if (link.readOnly || repo.readOnly) return { ok: false, error: `${link.dir} is read-only, so its token is never GH_TOKEN` }
-    if (!link.ghToken) return { ok: false, error: `this project does not allow ${link.dir}'s token as GH_TOKEN` }
-    return { ok: true, output: ghTokenPlaceholder(repo.id) }
-  }
-  const credential = await canUseRepo(project.owner, repo) ? await resolveRepoCredential(repo) : null
-  if (credential?.kind !== 'https') return { ok: false, error: `${link.dir} has no git credential` }
-  return { ok: true, output: credential.token }
+  const { token } = await caller.api.workspace[':id']['gh-token'].$get({ param: { id: caller.workspaceId }, query: { repo: ref } })
+  return { ok: true, output: token }
 }
 
-/**
- * Commands a caller hands a workspace to run act as whatever the workspace
- * runs as, so only a caller at `bypass` may (docs/workspace-steps.md
- * "Permissions"); otherwise an agent in `plan` could run anything by asking
- * for a step.
- */
-function refuseCommands(caller: MamaCaller, what: string): MamaOutcome | undefined {
-  if (caller.permissionMode === 'bypass') return undefined
-  return { ok: false, error: `${what} runs commands as the workspace does, which only a caller at bypass may ask for `
-    + `(this one is at ${caller.permissionMode})` }
-}
+/** When a queued workspace starts instead of after a parent. */
+type QueueStart = { at: string } | { inMinutes: number }
 
 /** `--start-at` (read by the queue in the owner's zone) or `--start-in`;
  *  at most one. */
@@ -1641,50 +1378,42 @@ function takeCleared(
 }
 
 /** The same settings in the shape a queue write takes. */
-function queueFields({ uiMode, ...rest }: CreateSettings): Partial<QueueRequest> {
+function queueFields({ uiMode, ...rest }: CreateSettings): Omit<CreateSettings, 'uiMode'> & { mode?: AgentMode } {
   return { ...rest, ...(uiMode !== undefined ? { mode: uiMode } : {}) }
 }
 
-/**
- * What a workspace started later with no parent (a parentless queue, a
- * routine) takes from its caller, as `create` does: its tool, its agent mode,
- * and its current model when the entry runs the caller's tool (`tool`, the
- * one named, if any).
- */
-function callerDefaults(
-  caller: MamaCaller,
-  tool: AgentTool | undefined,
-): { tool?: AgentTool; model?: string; mode: AgentMode } {
-  return {
-    ...(caller.tool !== undefined ? { tool: caller.tool } : {}),
-    ...(caller.model !== undefined && (tool ?? caller.tool) === caller.tool ? { model: caller.model } : {}),
-    mode: caller.mode,
-  }
+/** A start in the shape a queue write takes. */
+function startFields(start: QueueStart | undefined): { startAt?: string; startIn?: number } {
+  return start === undefined ? {} : 'at' in start ? { startAt: start.at } : { startIn: start.inMinutes }
 }
 
 /** Retitle a workspace, by default the caller itself. */
 async function runRename(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
-  const workspaceId = await resolveTargetWorkspace(caller, request.args.workspace)
-
+  const target = targetWorkspace(caller, request.args.workspace)
   const title = request.body.trim()
   if (title === '') return { ok: false, error: 'rename needs a title' }
-  await setWorkspaceTitle(caller.projectId, workspaceId, title)
-  // Read back the stored (normalized) title.
-  const stored = (await getProjectWorkspaceRows(caller.projectId)).get(workspaceId)?.title
-  return { ok: true, output: `Renamed ${workspaceId.slice(0, 8)} to "${stored ?? title}".` }
+  const stored = await caller.api.workspace[':id'].title.$post({ param: { id: target }, json: { title } })
+  return { ok: true, output: `Renamed ${stored.workspaceId.slice(0, 8)} to "${stored.title ?? title}".` }
+}
+
+/** A `--workspace` argument: the workspace it names, or with none the
+ *  caller. */
+function targetWorkspace(caller: MamaCaller, workspace: string | undefined): string {
+  return workspace === undefined || workspace.trim() === '' ? caller.workspaceId : workspace.trim()
 }
 
 /**
  * Point the base branch of one of the caller's checkouts at another branch
- * on its origin (`setWorkspaceBase`), as when its work is stacked on
- * another PR's: the checkout `repo` names by its path, which the script
- * sends for the one the caller's cwd is in, or the workspace's only one.
+ * on its origin, as when its work is stacked on another PR's: the checkout
+ * `repo` names by its path, which the script sends for the one the caller's
+ * cwd is in, or the workspace's only one.
  */
 async function runSetBase(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   if (request.body.trim() === '') return { ok: false, error: 'set-base needs a branch' }
-  const { baseBranch: branch, repo } = await setWorkspaceBase(
-    caller.principal, caller.workspaceId, request.body, request.args.repo,
-  )
+  const { baseBranch: branch, repo } = await caller.api.workspace[':id'].base.$post({
+    param: { id: caller.workspaceId },
+    json: { branch: request.body, ...(request.args.repo !== undefined ? { repo: request.args.repo } : {}) },
+  })
   return {
     ok: true,
     output: `${caller.workspaceId.slice(0, 8)}${repo === '' ? '' : `'s ${repo}`} is now based on ${branch}: the webapp diffs it `
@@ -1694,38 +1423,25 @@ async function runSetBase(caller: MamaCaller, request: MamaRequestInput): Promis
 }
 
 async function runIconGet(caller: MamaCaller): Promise<MamaOutcome> {
-  const { bytes, mimeType } = await readProjectIcon(caller.projectId)
-  return { ok: true, body: Buffer.from(bytes), contentType: mimeType }
+  const res = await caller.api.project[':projectId'].icon.$get({ param: { projectId: caller.projectId } }) as Response
+  return { ok: true, body: Buffer.from(await res.arrayBuffer()), contentType: res.headers.get('content-type') ?? 'application/octet-stream' }
 }
 
 /**
  * Replace the project's icon with the image the body carries as base64,
- * since the envelope is JSON. The script sends a file's bytes; the server
- * checks they are an image (`setProjectIcon`).
+ * since the envelope is JSON. The script sends a file's bytes; the route
+ * checks they are an image.
  */
 async function runIconSet(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const bytes = Buffer.from(request.body, 'base64')
   if (bytes.length === 0) return { ok: false, error: 'icon-set needs an image' }
-  await setProjectIcon(caller.principal, caller.projectId, bytes)
+  await caller.api.project[':projectId'].icon.$put({ param: { projectId: caller.projectId } }, { init: { body: bytes } })
   return { ok: true, output: 'Set the project\'s icon: the sidebar shows it in place of the project\'s initial.' }
 }
 
 async function runIconRemove(caller: MamaCaller): Promise<MamaOutcome> {
-  await removeProjectIcon(caller.principal, caller.projectId)
+  await caller.api.project[':projectId'].icon.$delete({ param: { projectId: caller.projectId } })
   return { ok: true, output: 'Removed the project\'s icon: the sidebar shows the project\'s initial again.' }
-}
-
-/**
- * Resolve a `--workspace` argument within the caller's project; omitted
- * means the caller. An ambiguous prefix fails.
- */
-async function resolveTargetWorkspace(
-  caller: MamaCaller,
-  workspace: string | undefined,
-  opts: { provisioning?: boolean } = {},
-): Promise<string> {
-  const target = workspace === undefined || workspace.trim() === '' ? caller.workspaceId : workspace
-  return await resolveProjectWorkspace(target, caller.projectId, opts)
 }
 
 /**
@@ -1738,21 +1454,21 @@ async function resolveTargetWorkspace(
  */
 async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   if (request.args.agent !== undefined) return await closeOneSession(caller, request.args.agent.trim())
-  // A sibling still being created may have no row yet.
-  const workspaceId = await resolveTargetWorkspace(caller, request.args.workspace, { provisioning: true })
-
-  let stopped: { provisioning?: true }
+  const target = targetWorkspace(caller, request.args.workspace)
+  let stopped: { workspaceId: string; provisioning?: true }
   try {
-    stopped = await stopWorkspace(caller.principal, workspaceId)
+    stopped = await caller.api.workspace.stop.$post({ json: { workspaceId: target } })
   } catch (err) {
-    // The id resolved against rows, so NOT_FOUND here means not running.
+    // Not running: already stopped, or never up.
     if (err instanceof ServerError && err.code === 'NOT_FOUND') {
-      const already = (await getWorkspaceRow(caller.projectId, workspaceId))?.stoppedAt !== undefined
-      return { ok: false, error: `workspace ${workspaceId.slice(0, 8)} is ${already ? 'already stopped' : 'not running'}` }
+      const row = await caller.api.workspace[':id'].steps.$get({ param: { id: target } }).catch(() => undefined)
+      if (row === undefined) return { ok: false, error: `no workspace '${target}' in ${caller.projectId}` }
+      const already = 'stopped' in row && row.stopped === true
+      return { ok: false, error: `workspace ${row.workspaceId.slice(0, 8)} is ${already ? 'already stopped' : 'not running'}` }
     }
     throw err
   }
-  const short = workspaceId.slice(0, 8)
+  const short = stopped.workspaceId.slice(0, 8)
   return {
     ok: true,
     output: stopped.provisioning === true
@@ -1763,15 +1479,33 @@ async function runStop(caller: MamaCaller, request: MamaRequestInput): Promise<M
   }
 }
 
+/** The stopped workspace of the caller's project that `target` names by id
+ *  or prefix, if one is. A prefix of several is refused rather than
+ *  guessed. */
+async function stoppedEntry(caller: MamaCaller, target: string): Promise<StoppedWorkspaceEntry | undefined> {
+  const { entries } = await caller.api.workspace['list-stopped'].$get({ query: { project: caller.projectId } })
+  const exact = entries.find((e) => e.workspaceId === target)
+  if (exact !== undefined) return exact
+  const matches = entries.filter((e) => e.workspaceId.startsWith(target))
+  if (matches.length > 1) {
+    throw new ServerError('VALIDATION', `'${target}' matches more than one workspace in this project — use a longer prefix`)
+  }
+  return matches[0]
+}
+
 /** `stop --agent`: close one session of the caller's project. */
 async function closeOneSession(caller: MamaCaller, wanted: string): Promise<MamaOutcome> {
   if (wanted === '' && caller.sessionId === undefined) {
     return { ok: false, error: 'stop --agent needs an agent id when not run by an agent yaac started (see: yaac-mama list)' }
   }
   const target = wanted === '' ? caller.sessionId! : wanted
-  const open = (await listActiveWorkspaces(caller.projectId)).workspaces.flatMap((w) => w.sessions)
-  const exact = open.find((s) => s.sessionId === target)
-  const matches = exact !== undefined ? [exact] : open.filter((s) => s.sessionId.startsWith(target))
+  const { api, projectId } = caller
+  const open = async (): Promise<Array<{ workspaceId: string; sessionId: string }>> =>
+    (await api.workspace.list.$get({ query: { project: projectId } })).workspaces
+      .flatMap((w) => w.sessions.map((s) => ({ workspaceId: w.workspaceId, sessionId: s.sessionId })))
+  const sessions = await open()
+  const exact = sessions.find((s) => s.sessionId === target)
+  const matches = exact !== undefined ? [exact] : sessions.filter((s) => s.sessionId.startsWith(target))
   if (matches.length !== 1) {
     return {
       ok: false,
@@ -1779,12 +1513,13 @@ async function closeOneSession(caller: MamaCaller, wanted: string): Promise<Mama
         : `'${target}' matches more than one agent — use a longer prefix`,
     }
   }
-  const closed = await closeSession(caller.principal, matches[0].sessionId)
-  const rest = (await listWorkspaceSessions(closed.workspaceId)).length
-  const short = closed.workspaceId.slice(0, 8)
+  const [{ workspaceId, sessionId }] = matches
+  await api.workspace[':id'].sessions[':sessionId'].close.$post({ param: { id: workspaceId, sessionId } })
+  const rest = (await open()).filter((s) => s.workspaceId === workspaceId).length
+  const short = workspaceId.slice(0, 8)
   return {
     ok: true,
-    output: `Stopped agent ${closed.id.slice(0, 8)}; its conversations stay in ${short}'s history. `
+    output: `Stopped agent ${sessionId.slice(0, 8)}; its conversations stay in ${short}'s history. `
       + (rest === 0
         ? `${short} keeps running with no agent; stop it with yaac-mama stop ${short}.`
         : `${short} keeps running.`),
@@ -1793,8 +1528,10 @@ async function closeOneSession(caller: MamaCaller, wanted: string): Promise<Mama
 
 /**
  * Restart a stopped sibling, resuming the conversations it had, as the
- * webapp's Restart does (`decideRestart`). It runs detached, so the reply
- * comes before the workspace is up.
+ * webapp's Restart does (the route holds a delegate to a stopped one within
+ * its ceiling). One that had a timeout keeps its length unless `--timeout`
+ * names one, or `none`. It runs on after the reply, which comes before the
+ * workspace is up.
  */
 async function runRestart(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const workspace = request.args.workspace?.trim() ?? ''
@@ -1802,19 +1539,26 @@ async function runRestart(caller: MamaCaller, request: MamaRequestInput): Promis
   const { cleared } = takeCleared(request.args, 'none')
   const timeout = cleared ? null : parseTimeout(request.args.timeout)
   if (timeout === null && !cleared) return timeoutRefusal(request.args.timeout, 'none')
-  const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
-  const decision = await decideRestart({
-    principal: caller.principal,
-    callerWorkspaceId: caller.workspaceId,
-    callerProjectId: caller.projectId,
-    callerPermissionMode: caller.permissionMode,
-    workspaceId,
-    ...(timeout !== undefined ? { timeout } : {}),
-    ...(request.args['no-volume'] !== undefined ? { noVolume: true } : {}),
-  })
-  if (!decision.ok) return decision
-  const short = workspaceId.slice(0, 8)
-  const n = decision.sessions
+  const entry = await stoppedEntry(caller, workspace)
+  // One not stopped is the route's to refuse, by its full id; one of no
+  // workspace of the project is not found.
+  const running = entry === undefined
+    ? (await caller.api.workspace.list.$get({ query: { project: caller.projectId } })).workspaces
+      .find((w) => w.workspaceId === workspace || w.workspaceId.startsWith(workspace))
+    : undefined
+  if (entry === undefined && running === undefined) return { ok: false, error: `no workspace '${workspace}' in ${caller.projectId}` }
+  const minutes = timeout !== undefined ? timeout : entry?.timeoutMinutes
+  drain(await caller.api.workspace.restart.$post({
+    json: {
+      workspaceId: entry?.workspaceId ?? running?.workspaceId ?? workspace,
+      ...(minutes != null ? { timeout: minutes } : {}),
+      ...(request.args['no-volume'] !== undefined ? { volume: null } : {}),
+    },
+  }))
+  // Its sessions, and each conversation an agent ran by hand in a terminal,
+  // which comes back as a session of its own.
+  const n = (entry?.sessions.length ?? 0) + (entry?.conversations.filter((c) => c.active && c.sessionId === undefined).length ?? 0)
+  const short = (entry?.workspaceId ?? workspace).slice(0, 8)
   return {
     ok: true,
     output: `Restarting ${short}, resuming ${n === 0 ? 'with no agent' : n === 1 ? 'its agent' : `its ${n} agents`}. `
@@ -1833,7 +1577,7 @@ async function runGroupCreate(
     return { ok: false, error: `group name exceeds ${MAX_GROUP_NAME_CHARS} characters` }
   }
   // Idempotent: an existing group of that name is reused.
-  const group = await resolveGroup(caller.projectId, name, { create: true })
+  const group = await caller.api.workspace.group.create.$post({ json: { projectId: caller.projectId, name, reuse: true } })
   return { ok: true, output: `Group "${group.name}" is ready (${group.groupId}).` }
 }
 
@@ -1842,20 +1586,13 @@ async function runGroupMove(caller: MamaCaller, request: MamaRequestInput): Prom
   if (workspace === undefined || workspace.trim() === '') {
     return { ok: false, error: 'group move needs a workspace id' }
   }
-  const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
-
   const target = request.body.trim()
   // No group (or `--`) means ungrouped.
-  const resolved = target === '--' || target === ''
-    ? null
-    : await resolveGroup(caller.projectId, target, { create: true })
-  await moveWorkspaceToGroup(caller.projectId, workspaceId, resolved?.groupId ?? null)
-  return {
-    ok: true,
-    output: resolved === null
-      ? `Moved ${workspaceId.slice(0, 8)} out of its group.`
-      : `Moved ${workspaceId.slice(0, 8)} into "${resolved.name}".`,
-  }
+  const moved = await caller.api.workspace.group.move.$post({
+    json: { projectId: caller.projectId, workspaceId: workspace.trim(), group: target === '--' || target === '' ? null : target, create: true },
+  })
+  const short = moved.workspaceId.slice(0, 8)
+  return { ok: true, output: moved.name === null ? `Moved ${short} out of its group.` : `Moved ${short} into "${moved.name}".` }
 }
 
 /** Set or clear (`none`) how many of a group's workspaces may run at once.
@@ -1867,8 +1604,9 @@ async function runGroupSetLimit(caller: MamaCaller, request: MamaRequestInput): 
   if (limit !== 'none' && !/^[1-9]\d{0,5}$/.test(limit)) {
     return { ok: false, error: 'the limit must be a whole number of workspaces from 1, or none' }
   }
-  const group = await resolveGroup(caller.projectId, name)
-  await setGroupWorkspaceLimit(caller.projectId, group.groupId, limit === 'none' ? null : Number(limit))
+  const group = await caller.api.workspace.group['set-limit'].$post({
+    json: { projectId: caller.projectId, groupId: name, workspaceLimit: limit === 'none' ? null : Number(limit) },
+  })
   return {
     ok: true,
     output: limit === 'none'
@@ -1878,28 +1616,55 @@ async function runGroupSetLimit(caller: MamaCaller, request: MamaRequestInput): 
 }
 
 /**
- * A git bundle of another workspace's branches and HEAD, running or stopped,
- * for the caller to fetch into one of its own checkouts: the one `repo`
- * names by its path, which the script sends for the one the caller's cwd is
- * in, or its only one. The bundle is of the other workspace's checkout of
- * that same repo. Its git dir is read as data, never run
- * (`bundleCheckout`), and nothing is written to it.
+ * A git bundle of another workspace's branches and HEAD, running or stopped
+ * (`GET /workspace/:id/bundle`), for the caller to fetch into one of its own
+ * checkouts: the one `repo` names by its path, which the script sends for
+ * the one the caller's cwd is in, or its only one. The bundle is of the
+ * other workspace's checkout of that same repo.
  */
 async function runFetch(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const workspace = request.args.workspace?.trim() ?? ''
   if (workspace === '') return { ok: false, error: 'fetch needs a workspace id' }
-  const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
-  const mine = checkoutAt((await listWorkspaceRepos(caller.workspaceId)).map((r) => ({ ...r, repo: { id: r.repoId } })), request.args.repo)
-  const theirs = (await listWorkspaceRepos(workspaceId)).find((r) => r.repoId === mine.repoId)
-  if (!theirs) return { ok: false, error: `${workspaceId.slice(0, 8)} has no checkout of this repo` }
-  try {
-    const bundle = await bundleCheckout(
-      path.join(workspaceDir(caller.projectId, workspaceId), theirs.path), repoDir(mine.repoId),
-    )
-    return { ok: true, body: bundle, contentType: 'application/x-git-bundle', workspaceId }
-  } catch (err) {
-    return { ok: false, error: `cannot read ${workspaceId.slice(0, 8)}'s git: ${(err as Error).message}` }
+  const { api, projectId } = caller
+  const own = (await api.workspace.list.$get({ query: { project: projectId } })).workspaces.find((w) => w.workspaceId === caller.workspaceId)
+  const mine = checkoutAt(own?.repos ?? [], request.args.repo)
+  const res = await api.workspace[':id'].bundle.$get({ param: { id: workspace }, query: { repo: mine.repoId } }) as Response
+  return file(res)
+}
+
+/** The checkout of the caller's own a command names by its path or repo
+ *  id, or its only one. */
+function checkoutAt(checkouts: WorkspaceRepo[], at?: string): WorkspaceRepo {
+  if (at !== undefined) {
+    const found = checkouts.find((c) => c.path === at) ?? checkouts.find((c) => c.repoId === at)
+    if (!found) throw new ServerError('NOT_FOUND', `this workspace has no checkout at "${at}"`)
+    return found
   }
+  if (checkouts.length === 1) return checkouts[0]
+  throw new ServerError('VALIDATION', checkouts.length === 0
+    ? 'this workspace has no repos'
+    : `this workspace has several repos; name one of: ${checkouts.map((c) => c.path).join(', ')}`)
+}
+
+/** A route's file answer as the endpoint sends it on, streamed rather than
+ *  held, with the workspace it is about. */
+function file(res: Response, conversationId?: string): MamaOutcome {
+  const workspaceId = res.headers.get('x-yaac-workspace-id') ?? undefined
+  return {
+    ok: true,
+    body: res.body ?? new ReadableStream(),
+    contentType: res.headers.get('content-type') ?? 'application/octet-stream',
+    ...(workspaceId !== undefined ? { workspaceId } : {}),
+    ...(conversationId !== undefined ? { conversationId } : {}),
+  }
+}
+
+/** The tool the caller's session runs, else its workspace's first
+ *  session's. */
+async function callerTool(caller: MamaCaller): Promise<AgentTool | undefined> {
+  const own = (await caller.api.workspace.list.$get({ query: { project: caller.projectId } })).workspaces
+    .find((w) => w.workspaceId === caller.workspaceId)
+  return (own?.sessions.find((s) => s.sessionId === caller.sessionId) ?? own?.sessions[0])?.tool
 }
 
 /**
@@ -1918,80 +1683,62 @@ async function runFetch(caller: MamaCaller, request: MamaRequestInput): Promise<
 async function runHistory(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const workspace = request.args.workspace?.trim() ?? ''
   if (workspace === '') return { ok: false, error: 'history needs a workspace id' }
-  const workspaceId = await resolveProjectWorkspace(workspace, caller.projectId)
-  // Pick the conversation before gathering files, which reads every one's.
-  let rows = await listWorkspaceConversations(caller.projectId, workspaceId)
-
   const wanted = request.args.conversation?.trim() ?? ''
-  if (wanted !== '') {
-    const exact = rows.find((r) => r.conversationId === wanted)
-    const matches = exact !== undefined ? [exact] : rows.filter((r) => r.conversationId.startsWith(wanted))
-    if (matches.length !== 1) {
-      return {
-        ok: false,
-        error: matches.length === 0
-          ? `no conversation '${wanted}' in ${workspaceId.slice(0, 8)} (see: yaac-mama history ${workspaceId.slice(0, 8)})`
-          : `'${wanted}' matches more than one conversation in ${workspaceId.slice(0, 8)} — use a longer prefix`,
-      }
-    }
-    rows = matches
+  const history = caller.api.workspace[':id'].history
+  let listing
+  try {
+    listing = await history.$get({ param: { id: workspace }, query: wanted !== '' ? { conversation: wanted } : {} })
+  } catch (err) {
+    // Where the route names no command, name the one that lists them.
+    const missing = err instanceof ServerError ? /^no conversation '.*' in (\S+)$/.exec(err.message) : null
+    if (missing !== null) return { ok: false, error: `${(err as Error).message} (see: yaac-mama history ${missing[1]})` }
+    throw err
   }
-  const conversations = await withFiles(caller.projectId, workspaceId, rows)
-
+  const { workspaceId, conversations, maxFileBytes } = listing
   // A file over the cap is named on a `# ` line, which the script reports
   // and skips.
   if (request.args.files !== undefined) {
     return {
       ok: true,
-      output: conversations.flatMap((c) => c.files.map((f) => oversized(f)
-        ? `# skipped ${c.row.conversationId}/${f.name}: ${formatSize(f.size)}, past the `
-          + `${formatSize(MAX_HISTORY_FILE_BYTES)} a file is handed out at`
-        : `${c.row.conversationId}/${f.name}`)).join('\n'),
+      output: conversations.flatMap((c) => c.files.map((f) => f.oversized === true
+        ? `# skipped ${c.conversationId}/${f.name}: ${formatSize(f.size)}, past the `
+          + `${formatSize(maxFileBytes)} a file is handed out at`
+        : `${c.conversationId}/${f.name}`)).join('\n'),
     }
   }
-  if (wanted === '') return { ok: true, output: renderHistory(workspaceId, conversations) }
-  const [{ row, files }] = conversations
+  if (wanted === '') return { ok: true, output: renderHistory(workspaceId, conversations, maxFileBytes) }
+  const [{ conversationId, files }] = conversations
   const name = request.args.file
-  if (name !== undefined) {
-    const file = files.find((f) => f.name === name)
-    return file === undefined
-      ? { ok: false, error: `${row.conversationId} has no file '${name}'` }
-      : { ok: true, body: historyFiles([file]), contentType: 'application/octet-stream', workspaceId }
-  }
+  if (name !== undefined && !files.some((f) => f.name === name)) return { ok: false, error: `${conversationId} has no file '${name}'` }
+  const res = await caller.api.workspace[':id'].history[':conversationId'].$get({
+    param: { id: workspaceId, conversationId },
+    query: name !== undefined ? { file: name } : {},
+  }) as Response
   // opencode's history is its database, which the script turns into JSONL.
-  const database = files.find((f) => f.sqlite === true)
-  if (database !== undefined) {
-    return {
-      ok: true,
-      body: historyFiles([database]),
-      contentType: 'application/vnd.sqlite3',
-      workspaceId,
-      conversationId: row.conversationId,
-    }
-  }
-  if (!files.some((f) => f.name.endsWith('.jsonl'))) {
-    return { ok: false, error: `${row.conversationId} has no transcript on the host yet` }
-  }
-  return { ok: true, body: historyTranscripts(files), contentType: 'application/x-ndjson', workspaceId }
+  return file(res, res.headers.get('content-type') === 'application/vnd.sqlite3' ? conversationId : undefined)
 }
 
-function renderHistory(workspaceId: string, conversations: HistoryConversation[]): string {
+function renderHistory(
+  workspaceId: string,
+  conversations: Array<{
+    conversationId: string; tool: string; mode: string; active: boolean; model?: string; lastActiveAt?: string
+    firstPrompt?: string; files: Array<{ size: number; oversized?: boolean }>
+  }>,
+  maxFileBytes: number,
+): string {
   const short = workspaceId.slice(0, 8)
   if (conversations.length === 0) return `${short} has no recorded conversations.`
-  const rows = conversations.map(({ row, files }) => {
-    const last = Math.max(0, row.lastActiveAt?.getTime() ?? 0, ...files.map((f) => f.mtimeMs))
-    return [
-      row.conversationId,
-      row.tool,
-      row.mode,
-      row.active ? 'yes' : 'no',
-      row.model ?? '',
-      last > 0 ? new Date(last).toISOString().slice(0, 16).replace('T', ' ') : '',
-      String(files.length),
-      formatSize(files.reduce((n, f) => n + f.size, 0)),
-      flatten(row.firstPrompt ?? '', 50),
-    ]
-  })
+  const rows = conversations.map((c) => [
+    c.conversationId,
+    c.tool,
+    c.mode,
+    c.active ? 'yes' : 'no',
+    c.model ?? '',
+    c.lastActiveAt !== undefined ? c.lastActiveAt.slice(0, 16).replace('T', ' ') : '',
+    String(c.files.length),
+    formatSize(c.files.reduce((n, f) => n + f.size, 0)),
+    flatten(c.firstPrompt ?? '', 50),
+  ])
   const header = ['CONVERSATION', 'TOOL', 'MODE', 'ACTIVE', 'MODEL', 'LAST ACTIVE (UTC)', 'FILES', 'SIZE', 'OPENING']
   return [
     `Conversations of ${short}, first held first:`,
@@ -2000,8 +1747,8 @@ function renderHistory(workspaceId: string, conversations: HistoryConversation[]
     '',
     `Print one's transcripts: yaac-mama history ${short} <conversation>`,
     `Save every file:         yaac-mama history ${short} [<conversation>] -o <dir>`,
-    ...(conversations.some((c) => c.files.some(oversized))
-      ? [`Files over ${formatSize(MAX_HISTORY_FILE_BYTES)} are not handed out; -o names those it skips.`]
+    ...(conversations.some((c) => c.files.some((f) => f.oversized === true))
+      ? [`Files over ${formatSize(maxFileBytes)} are not handed out; -o names those it skips.`]
       : []),
   ].join('\n')
 }
@@ -2011,28 +1758,25 @@ function renderHistory(workspaceId: string, conversations: HistoryConversation[]
  * models. A workspace cannot tell this itself.
  */
 async function runModels(caller: MamaCaller): Promise<MamaOutcome> {
-  const owner = (await getProjectRow(caller.projectId))?.owner
-  const entries = await Promise.all(AGENT_TOOLS.map(async (tool) => ({
-    tool,
-    auth: owner === undefined ? null : await loadToolAuthEntry(owner, tool),
-  })))
-
-  const lines = [`Agent tools signed in for this project (this workspace runs: ${caller.tool ?? 'unknown'})`, '']
-  for (const { tool, auth } of entries) {
+  const { api, projectId } = caller
+  const [{ tools }, runs] = await Promise.all([
+    api.project[':projectId'].models.$get({ param: { projectId } }),
+    callerTool(caller),
+  ])
+  const lines = [`Agent tools signed in for this project (this workspace runs: ${runs ?? 'unknown'})`, '']
+  for (const { tool, auth, models: offered } of tools) {
     if (!auth) {
       lines.push(`${tool.padEnd(9)} not configured — its agent cannot authenticate`)
       continue
     }
-    const provider = authEntryProvider(auth)
-    const endpoint = authEntryEndpoint(auth)
     // Each model's effort levels follow it, its default starred.
-    const models = modelsForTool(tool, provider, endpoint).map((m) => {
+    const models = offered.map((m) => {
       const efforts = m.efforts !== undefined
         ? ` [effort ${m.efforts.levels.map((l) => (l === m.efforts?.default ? `${l}*` : l)).join(' ')}]`
         : ''
       return `${m.id}${m.name !== undefined ? ` (${m.name})` : ''}${efforts}`
     })
-    lines.push(`${tool.padEnd(9)} ${auth.kind}${provider ? ` (${provider})` : ''}`)
+    lines.push(`${tool.padEnd(9)} ${auth.kind}${auth.provider ? ` (${auth.provider})` : ''}`)
     if (models.length > 0) lines.push(`          models: ${models.join(', ')}`)
   }
   lines.push('', 'Pass one with: yaac-mama create --tool <tool> --model <model> [--effort <level>] "<prompt>"')
@@ -2044,7 +1788,7 @@ async function runModels(caller: MamaCaller): Promise<MamaOutcome> {
  * holds each, so an app can see whether the one it wants is free.
  */
 async function runVolumes(caller: MamaCaller): Promise<MamaOutcome> {
-  const volumes = await listVolumes(caller.projectId)
+  const volumes = await caller.api.volume.list.$get({ query: { project: caller.projectId } })
   if (volumes.length === 0) return { ok: true, output: 'This project has no volumes.' }
   const lines = volumes.map((v) => {
     const holder = v.holder !== undefined
@@ -2059,7 +1803,7 @@ async function runVolumes(caller: MamaCaller): Promise<MamaOutcome> {
  *  steps, the repos it runs in, whether it is an init workflow, and the
  *  run secrets it names. */
 async function runWorkflowList(caller: MamaCaller): Promise<MamaOutcome> {
-  const workflows = await listProjectWorkflows(caller.projectId)
+  const workflows = await caller.api.workflow.list.$get({ query: { project: caller.projectId } })
   if (workflows.length === 0) return { ok: true, output: 'This project has no workflows.' }
   return { ok: true, output: workflows.map((w) => `${w.name.padEnd(20)} steps ${Object.keys(w.steps).join(',')}`
     + (w.repos.length > 0 ? `  repos ${w.repos.join(',')}` : '')
@@ -2072,7 +1816,7 @@ async function runWorkflowList(caller: MamaCaller): Promise<MamaOutcome> {
 async function runWorkflowShow(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const name = request.args.name?.trim() ?? ''
   if (name === '') return { ok: false, error: 'workflow show needs a workflow name' }
-  const w = await showWorkflow(caller.projectId, name)
+  const w = await caller.api.workflow.show.$get({ query: { project: caller.projectId, name } })
   return { ok: true, output: [
     `workflow ${w.name}${w.init ? ' (init: started by every workspace that has its repos)' : ''}`,
     JSON.stringify(w.steps, null, 2),
@@ -2129,9 +1873,9 @@ async function runWorkflowWrite(caller: MamaCaller, request: MamaRequestInput, v
   let w
   if (verb === 'create') {
     if (steps === undefined) return { ok: false, error: 'workflow create needs --file, a JSON object of its steps' }
-    w = await createWorkflow(caller.principal, caller.projectId, { name, steps, ...input })
+    w = await caller.api.workflow.create.$post({ json: { project: caller.projectId, name, steps, ...input } })
   } else {
-    w = await editWorkflow(caller.principal, caller.projectId, name, { ...(steps !== undefined ? { steps } : {}), ...input })
+    w = await caller.api.workflow.edit.$post({ json: { project: caller.projectId, name, ...(steps !== undefined ? { steps } : {}), ...input } })
   }
   return { ok: true, output: [
     `workflow ${w.name}: steps ${Object.keys(w.steps).join(',') || 'none'}`
@@ -2146,52 +1890,52 @@ async function runWorkflowWrite(caller: MamaCaller, request: MamaRequestInput, v
 async function runWorkflowDelete(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const name = request.args.name?.trim() ?? ''
   if (name === '') return { ok: false, error: 'workflow delete needs a workflow name' }
-  await deleteWorkflow(caller.principal, caller.projectId, name)
+  await caller.api.workflow.delete.$post({ json: { project: caller.projectId, name } })
   return { ok: true, output: `deleted workflow ${name}` }
 }
 
+/** At most this much of a log's end is printed. */
+const LOG_END_BYTES = 4 * 1024 * 1024
+
 /**
  * The steps of a workspace's current life, or the end of one step's log (the
- * newest life's that has it) with terminal escapes
- * and control characters stripped, for an agent following a CI run or a
- * site's release (docs/workspace-steps.md "Logs"). A step's log is served
- * only once the step has started in the life its row names: the server
- * clears and recreates the file then, and before it any window opened
- * under the step's name, a shell included, would be writing it. A step
- * waiting to rerun or a service waiting out its restart backoff has
- * started, so its last run's log still reads. A stopped
- * workspace's unsettled steps show as `stopped`, since their rows keep
- * the states its last life left.
+ * newest life's that has it) with terminal escapes and control characters
+ * stripped, for an agent following a CI run or a site's release
+ * (docs/workspace-steps.md "Logs"). A step's log is served only once the
+ * step has started in the life its row names: the server clears and
+ * recreates the file then, and before it any window opened under the step's
+ * name, a shell included, would be writing it. A step waiting to rerun or a
+ * service waiting out its restart backoff has started, so its last run's log
+ * still reads. A stopped workspace's unsettled steps show as `stopped`,
+ * since their rows keep the states its last life left.
  */
 async function runLogs(caller: MamaCaller, request: MamaRequestInput): Promise<MamaOutcome> {
   const target = request.args.workspace?.trim() ?? ''
   if (target === '') return { ok: false, error: 'logs needs a workspace id' }
   const { tail } = request.args
   if (tail !== undefined && !/^[1-9]\d{0,8}$/.test(tail)) return { ok: false, error: '--tail must be a whole number of lines' }
-  const workspaceId = await resolveProjectWorkspace(target, caller.projectId)
-  const short = workspaceId.slice(0, 8)
-  const every = await listWorkspaceSteps(workspaceId)
+  const { api } = caller
+  const info = await api.workspace[':id'].steps.$get({ param: { id: target } })
+  const short = info.workspaceId.slice(0, 8)
   const name = request.args.step?.trim() ?? ''
   if (name === '') {
     if (tail !== undefined) return { ok: false, error: '--tail goes with a step' }
-    const row = await getWorkspaceRow(caller.projectId, workspaceId)
-    const steps = every.filter((s) => s.life.getTime() === row?.lifeStartedAt.getTime())
+    const steps = 'life' in info ? info.lives.find((l) => l.life === info.life)?.steps ?? [] : []
     if (steps.length === 0) return { ok: true, output: `${short} has no steps.` }
-    const stopped = row?.stoppedAt !== undefined
-    const sizes = await windowLogSizes(caller.projectId, workspaceId, steps.map((s) => ({ life: s.life, name: stepName(s) })))
+    const stopped = 'stopped' in info && info.stopped === true
     return {
       ok: true,
       output: [
         `Steps of ${short}${stopped ? ' (stopped)' : ''}, in order:`,
         '',
-        ...table(['STEP', 'STATE', 'EXIT', 'NEEDS', 'LOG'], steps.map((s, i) => {
+        ...table(['STEP', 'STATE', 'EXIT', 'NEEDS', 'LOG'], steps.map((s) => {
           const state = stopped && !stepSettled(s.state) ? 'stopped' : s.state
           return [
-            stepName(s),
-            s.spec.service === true ? `${state} (service)` : state,
+            s.name,
+            s.service === true ? `${state} (service)` : state,
             s.exitCode !== undefined ? String(s.exitCode) : '',
-            (s.spec.needs ?? []).join(','),
-            formatSize(sizes[i]),
+            s.needs.join(','),
+            formatSize(s.logs.reduce((n, l) => n + l.size, 0)),
           ]
         })),
         '',
@@ -2201,24 +1945,41 @@ async function runLogs(caller: MamaCaller, request: MamaRequestInput): Promise<M
   }
   // The latest life's step of that name that has one, else an earlier
   // life's.
-  const lives = [...new Set(every.map((s) => s.life.getTime()))].sort((a, b) => b - a)
-  const step = lives.map((life) => findStep(every.filter((s) => s.life.getTime() === life), name)).find((s) => s !== undefined)
-  if (step === undefined) return { ok: false, error: `workspace ${short} has no step "${name}" (see: yaac-mama logs ${short})` }
+  const found = info.lives.map((l) => ({ life: l.life, step: findStep(l.steps, name) })).find((l) => l.step !== undefined)
+  if (found?.step === undefined) return { ok: false, error: `workspace ${short} has no step "${name}" (see: yaac-mama logs ${short})` }
+  const { life, step } = found
   // A step that failed without starting could not open its window, and its
   // log says why.
-  if (step.startedAt === undefined && step.state !== 'failed') {
+  if (!step.started && step.state !== 'failed') {
     return { ok: false, error: `step "${name}" of ${short} has not run yet (it is ${step.state})` }
   }
   const lines = tail !== undefined ? Number(tail) : undefined
-  const log = await readWindowLogEnd(caller.projectId, workspaceId, { life: step.life, name: stepName(step) }, lines)
-  if (log === undefined) return { ok: false, error: `step "${name}" of ${short} has logged nothing` }
+  const total = step.logs.reduce((n, l) => n + l.size, 0)
+  if (total === 0) return { ok: false, error: `step "${name}" of ${short} has logged nothing` }
+  // Its end, across the rotated-out half and the current one.
+  let skip = Math.max(0, total - LOG_END_BYTES)
+  const skipped = skip
+  const parts: Buffer[] = []
+  for (const l of step.logs) {
+    if (skip >= l.size) {
+      skip -= l.size
+      continue
+    }
+    const res = await api.workspace[':id'].logs[':life'][':file'].$get({
+      param: { id: info.workspaceId, life, file: l.file },
+      query: { offset: String(skip) },
+    }) as Response
+    parts.push(Buffer.from(await res.arrayBuffer()))
+    skip = 0
+  }
+  const data = Buffer.concat(parts)
   // A cut start falls mid-line, so the rest of that line goes too.
-  const from = log.skipped > 0 ? log.data.indexOf(0x0a) + 1 : 0
-  let kept = stripControlChars(stripAnsi(log.data.subarray(from).toString('utf8'))).split('\n')
+  const from = skipped > 0 ? data.indexOf(0x0a) + 1 : 0
+  let kept = stripControlChars(stripAnsi(data.subarray(from).toString('utf8'))).split('\n')
   if (kept.at(-1) === '') kept.pop()
   if (lines !== undefined) kept = kept.slice(-lines)
-  const cut = log.skipped > 0 && (lines === undefined || kept.length < lines)
-    ? [`(the first ${formatSize(log.skipped + from)} of this log are cut: only its last ${formatSize(READ_LIMIT)} is served)`]
+  const cut = skipped > 0 && (lines === undefined || kept.length < lines)
+    ? [`(the first ${formatSize(skipped + from)} of this log are cut: only its last ${formatSize(LOG_END_BYTES)} is served)`]
     : []
-  return { ok: true, body: Buffer.from([...cut, ...kept, ''].join('\n')), contentType: 'text/plain; charset=utf-8', workspaceId }
+  return { ok: true, body: Buffer.from([...cut, ...kept, ''].join('\n')), contentType: 'text/plain; charset=utf-8', workspaceId: info.workspaceId }
 }

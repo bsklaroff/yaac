@@ -43,7 +43,7 @@ export async function setWorkspaceBase(
   const row = await findWorkspaceRow(await resolveWorkspaceId(idOrPrefix))
   if (!row) throw new ServerError('NOT_FOUND', `workspace ${idOrPrefix} not found`)
   const { projectId, workspaceId } = row
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, 'delegate')
   const name = branch.trim()
   if (name === '') throw new ServerError('VALIDATION', 'a base branch is required')
   if (!isBranchName(name)) throw new ServerError('VALIDATION', `"${name}" is not a branch name`)

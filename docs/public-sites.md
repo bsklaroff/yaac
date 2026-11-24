@@ -488,8 +488,10 @@ come back without a command. On macOS the podman machine is not covered.
 What a site serves and where it serves it are split, as Vercel splits a
 deployment from the domain pointed at it. Building an unpublished site (its
 repos, workflow, ports, volume, following) is its owner's, and its agents'
-through `yaac-mama site`. Exposing a site, and changing anything about a
-published one, is a person's who is an admin of the install.
+through `yaac-mama site`, or any other delegate of the owner's
+(docs/multi-user.md "Authorization"). Exposing a site, and changing
+anything about a published one, is a person's who is an admin of the
+install.
 
 - **Unpublished.** A site is created with no hostname. `syncSiteRoutes`
   hands the driver published sites only, so an unpublished site is in
@@ -505,9 +507,10 @@ published one, is a person's who is an admin of the install.
   that release's commits for the spec it ran, so its replacement passes,
   and a following site's branches for that same spec, where a person wrote
   its workflow; an edit made since the preview is approved for nothing.
-- **Published.** An agent may not edit, stop, start or delete a published
-  site, nor change its volume, so the published-volume guard below cannot
-  be walked around; it may still ask to deploy it.
+- **Published.** A delegate, an agent's included, may not edit, stop,
+  start or delete a published site, nor change its volume, so the
+  published-volume guard below cannot be walked around; it may still ask to
+  deploy it.
 - **Unpublish** takes the route away and lets the hostname go; the release
   keeps running for its owner's forward.
 - **Privileged deploys.** A deploy of a published site, or of a workflow
@@ -530,9 +533,9 @@ published one, is a person's who is an admin of the install.
   meanwhile cannot ride on it, and deploys exactly those commits. It approves those commits and that content, and no branch: a
   following site's next tip waits again until a person's own deploy, of
   content they have now seen, approves the branch.
-- **Volumes.** A published site's volume holds its live data, so an agent's
-  launch may not attach it (`create --volume`, `restart`); an unpublished
-  site's volume is staging data.
+- **Volumes.** A published site's volume holds its live data, so a
+  delegate's launch, an agent's included, may not attach it (`create
+  --volume`, `restart`); an unpublished site's volume is staging data.
 
 ## Admin port
 

@@ -5,6 +5,7 @@ import {
   listOpenSessionsFor,
   listProjectRows,
   listStoppedWorkspaceRows,
+  listWorkspaceReposFor,
   conversationTitle,
   openingPrompt,
   siteNames,
@@ -14,6 +15,8 @@ import {
 } from '#db'
 import { toConversationEntry, toSessionEntry } from './conversation-entry'
 import { ensureProjectExists } from './list'
+import { resolveGroup } from './groups'
+import { inFlightWorkspaceIds } from './provisioning'
 import { ServerError } from '@yaac/shared/errors'
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import type { StoppedWorkspaceEntry, StoppedWorkspacePage } from '@yaac/shared/types'
@@ -42,9 +45,10 @@ export interface StoppedListQuery {
 }
 
 /**
- * Recorded workspaces with a recorded stop and nothing running (a restart
- * keeps its stop until its next life starts), one page at a time, newest
- * stop first.
+ * Recorded workspaces with a recorded stop and nothing running or being
+ * restarted (a restart keeps its stop until its next life starts), one page
+ * at a time, newest stop first. `group` is a group's id, or with a project
+ * its name (`resolveGroup`).
  * Built from rows alone: the sidebar asks for this on every search and every
  * stop, so it never touches a transcript. The prompt and last activity are
  * what the conversation registry captured while the workspace ran.
@@ -59,10 +63,10 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
   const { rows, total } = await listStoppedWorkspaceRows({
     projectIds,
     q: query.q,
-    groupId: query.group,
+    groupId: query.group !== undefined && query.project !== undefined ? (await resolveGroup(query.project, query.group)).groupId : query.group,
     excludeGroupIds: query.excludeGroups,
     workspaceId: query.workspace,
-    excludeIds: [...await runningIds(), ...query.exclude ?? []],
+    excludeIds: [...await runningIds(), ...inFlightWorkspaceIds(Date.now()), ...query.exclude ?? []],
   }, {
     // One past the page, so a page that ends with the last row offers no
     // next one.
@@ -84,11 +88,12 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
 /** Stopped rows in wire form, with their conversations. */
 export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWorkspaceEntry[]> {
   const ids = rows.map((r) => r.workspaceId)
-  const [linksByWorkspace, sessionsByWorkspace, closedByWorkspace, sitesById] = await Promise.all([
+  const [linksByWorkspace, sessionsByWorkspace, closedByWorkspace, sitesById, reposByWorkspace] = await Promise.all([
     getConversationsFor(rows),
     listOpenSessionsFor(ids),
     listClosedSessionTitlesFor(ids),
     siteNames([...new Set(rows.flatMap((r) => r.siteId ?? []))]),
+    listWorkspaceReposFor(ids),
   ])
   return rows.map((r) => {
     const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
@@ -104,6 +109,7 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
       stoppedAt: formatUtcTimestamp(stoppedAtOf(r).getTime()),
       sessions: sessions.map((s) => toSessionEntry(s, links)),
       conversations: links.map((l) => toConversationEntry(l, named)),
+      repos: (reposByWorkspace.get(r.workspaceId) ?? []).map(({ workspaceId: _, ...repo }) => repo),
       deathSeenBy: r.deathSeenBy,
       ...(prompt !== undefined ? { prompt } : {}),
       ...(title !== undefined ? { title } : {}),
@@ -111,6 +117,7 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
       ...(timedOut(r) ? { timedOut: true as const, ...(r.deadlineIsNextRun ? { endedAtNextRun: true as const } : {}) } : {}),
       ...(r.deathDetail !== undefined ? { deathDetail: r.deathDetail } : {}),
       ...(r.groupId !== undefined ? { groupId: r.groupId } : {}),
+      ...(r.timeoutMinutes !== undefined ? { timeoutMinutes: r.timeoutMinutes } : {}),
       ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
       ...(r.stepsOutcome !== undefined ? { stepsOutcome: r.stepsOutcome } : {}),
       ...(r.rerunOf !== undefined ? { rerunOf: r.rerunOf } : {}),

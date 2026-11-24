@@ -22,4 +22,3 @@ export {
   unpublishSite,
 } from './sites'
 export { backfillSiteBranches, deploySite, onSiteTimer, reconcileSites, startSite, stopSite } from './deploys'
-export { runSiteCommand } from './mama'

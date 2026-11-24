@@ -15,6 +15,7 @@ import {
   insertSession,
   listWorkspaceSessions,
   markSessionsLaunched,
+  setToolCredential,
 } from '#db'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
 import { recordConversations } from '#db/conversation-store'
@@ -22,6 +23,7 @@ import { closeDb } from '#db/client'
 import { setWorkspaceWindows, _resetWorkspaceStatusStoreForTests } from '#runtime/status/status-store'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver } from '#test/support/fake-driver'
+import { workspaceDelegate } from '#test/support/delegate'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
 import { KEEPER_STARTING, KEEPER_WINDOW, type RuntimeHandle, type RuntimeSnapshot, type WorkspaceWindow } from '#drivers/contract'
 
@@ -174,6 +176,18 @@ describe('openSession', () => {
     failExec = true
     await expect(openSession(local, WS, { tool: 'claude', mode: 'tui' })).rejects.toThrow('no server running')
     expect(await listWorkspaceSessions(WS)).toEqual([])
+  })
+
+  // docs/permission-modes.md "A spawned workspace's posture".
+  it("opens a delegate's session within its ceiling, taking after its calling session, never in another project", async () => {
+    await setToolCredential(BUILT_IN_USER_ID, 'codex', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
+    await setToolCredential(BUILT_IN_USER_ID, 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
+    const lead = await openSession(local, WS, { tool: 'codex', mode: 'acp', permissionMode: 'auto' })
+    const agent = workspaceDelegate(BUILT_IN_USER_ID, WS, { projectId: DEMO_PROJECT_ID, ceiling: 'auto', sessionId: lead.id })
+    expect(await openSession(agent, WS, { prompt: 'help' })).toMatchObject({ tool: 'codex', mode: 'acp', permissionMode: 'auto' })
+    await expect(openSession(agent, WS, { tool: 'claude', permissionMode: 'bypass' }))
+      .rejects.toThrow(/permission mode 'bypass' is more permissive than the caller's ceiling \('auto'\)/)
+    await expect(openSession({ ...agent, projectId: 'elsewhere' }, WS, { tool: 'claude' })).rejects.toMatchObject({ code: 'FORBIDDEN' })
   })
 
   it('refuses a workspace that is not running', async () => {

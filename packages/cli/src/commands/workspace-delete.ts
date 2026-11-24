@@ -10,7 +10,7 @@ import { confirmDefault } from '@yaac/shared/confirm'
  */
 export async function workspaceDelete(idOrName: string, opts: { yes?: boolean }): Promise<void> {
   const token = idOrName.trim().toLowerCase()
-  const queued = (await api.workspace.queue.list.$get()).filter((e) => e.id.startsWith(token))
+  const queued = (await api.workspace.queue.list.$get({ query: {} })).filter((e) => e.id.startsWith(token))
   if (queued.length > 1) throw new Error(`"${idOrName}" matches more than one queued workspace; use a longer prefix.`)
   if (queued.length === 1) {
     // Nothing of it exists yet but the request, so there is nothing to lose.

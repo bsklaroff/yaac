@@ -61,7 +61,7 @@ export async function routineList(project?: string): Promise<void> {
   const scope = await projectScope()
   const ids = new Set(project ? [await resolveProjectId(project, scope)] : scope.projects.map((p) => p.id))
   const names = new Map(scope.all.map((p) => [p.id, p.name]))
-  const routines = (await api.routine.list.$get()).filter((r) => ids.has(r.projectId))
+  const routines = (await api.routine.list.$get({ query: {} })).filter((r) => ids.has(r.projectId))
   if (routines.length === 0) {
     console.log(`No routines${project ? ` in project "${project}"` : ''}. Create one with: yaac routine create <project> --name <name> --cron "<expr>" --prompt "<text>"`)
     return
@@ -160,7 +160,7 @@ function settingsOf(opts: RoutineOptions): Partial<RoutineSettings> {
  *  caller can see. */
 async function findRoutine(id: string): Promise<RoutineEntry> {
   const token = id.trim().toLowerCase()
-  const matches = (await api.routine.list.$get()).filter((r) => r.id.startsWith(token))
+  const matches = (await api.routine.list.$get({ query: {} })).filter((r) => r.id.startsWith(token))
   if (matches.length === 1) return matches[0]
   throw new Error(matches.length === 0
     ? `No routine "${id}". Run "yaac routine list" to see them.`

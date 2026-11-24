@@ -47,6 +47,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { seedProject } from '@yaac/test-utils/project-fixture'
 import { latestCronRun, nextCronRuns } from '@yaac/shared/schedule'
+import { workspaceDelegate } from '#test/support/delegate'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
@@ -76,7 +77,7 @@ afterEach(async () => {
 })
 
 const routine = (over: Partial<Parameters<typeof createRoutine>[2]> = {}) =>
-  createRoutine(local, PROJ, { name: 'Nightly triage', cron: '0 9 * * *', prompt: 'triage the issues', tool: 'claude', ...over }, 'user')
+  createRoutine(local, PROJ, { name: 'Nightly triage', cron: '0 9 * * *', prompt: 'triage the issues', tool: 'claude', ...over })
 
 /** A non-interactive routine running the `relay` workflow, which gives
  *  its runs P8_KEY. */
@@ -86,7 +87,7 @@ const DOCS = '0a0a0a0a-0000-4000-8000-0000000000dd'
 async function relayRoutine(principal: Parameters<typeof createRoutine>[0], over: Partial<Parameters<typeof createRoutine>[2]> = {}) {
   return await createRoutine(principal, PROJ, {
     name: 'Relay', cron: '*/5 * * * *', timeZone: 'UTC', nonInteractive: true, workflow: 'relay', ...over,
-  }, principal.kind === 'workspace' ? { ceiling: 'bypass' } : 'user')
+  })
 }
 
 /** Make a routine's next tick already due, as the clock moving past it
@@ -119,9 +120,27 @@ describe('createRoutine', () => {
   })
 })
 
+describe('createRoutine for a delegate', () => {
+  it("holds a delegate's routine, its resume and its run now to its ceiling, taking its ceiling where it names none", async () => {
+    const agent = workspaceDelegate(BUILT_IN_USER_ID, 'w1', { projectId: PROJ, ceiling: 'accept-edits' })
+    expect((await createRoutine(agent, PROJ, { name: 'Mine', cron: '0 9 * * *', prompt: 'p', tool: 'claude' })).permissionMode)
+      .toBe('accept-edits')
+    await expect(createRoutine(agent, PROJ, { name: 'Loose', cron: '0 9 * * *', prompt: 'p', tool: 'claude', permissionMode: 'bypass' }))
+      .rejects.toThrow(/more permissive than the caller's ceiling \('accept-edits'\)/)
+    const loose = await routine({ permissionMode: 'bypass' })
+    await setRoutinePaused(local, loose.id, true)
+    for (const act of [() => setRoutinePaused(agent, loose.id, false), () => runRoutineNow(agent, loose.id)]) {
+      await expect(act()).rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining(`routine ${loose.id.slice(0, 8)}`) as string })
+    }
+    await expect(updateRoutine(agent, loose.id, { name: 'Renamed' })).rejects.toThrow(/more permissive than the caller's ceiling/)
+    expect((await updateRoutine(agent, loose.id, { permissionMode: 'plan' })).permissionMode).toBe('plan')
+    await expect(setRoutinePaused(agent, loose.id, false)).resolves.toMatchObject({ paused: false })
+  })
+})
+
 describe('createRoutine on a workflow', () => {
   it('approves the commit or branch it runs on when a person saves it, and nothing when an agent does', async () => {
-    const agent = { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const
+    const agent = workspaceDelegate(BUILT_IN_USER_ID, 'w1')
     await setRunSecret(local, PROJ, { name: 'P8_KEY', value: 'pem' })
     await createWorkflow(local, PROJ, { name: 'relay', steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
     // An agent may save one, whose runs then wait for a person's approval.
@@ -147,7 +166,7 @@ describe('createRoutine on a workflow', () => {
     // nothing either.
     const before = (await listProjectWorkflows(PROJ))[0]
     await relayRoutine(local, { name: 'Look', nonInteractive: false, prompt: 'look', repos: [{ repo: PROJ, branch: 'other' }] })
-    await updateRoutine(local, r.id, { name: 'Relay renamed' }, 'user')
+    await updateRoutine(local, r.id, { name: 'Relay renamed' })
     expect((await listProjectWorkflows(PROJ))[0]).toMatchObject({
       approvedCommits: before.approvedCommits, approvedBranches: before.approvedBranches,
     })
@@ -162,22 +181,22 @@ describe('updateRoutine', () => {
   it('replaces what it names, re-reading the next tick only when the schedule changes', async () => {
     const r = await routine({ timeout: 30 })
     const before = (await getRoutineRow(r.id))!.nextRunAt
-    const renamed = await updateRoutine(local, r.id, { name: 'Renamed', timeout: null }, 'user')
+    const renamed = await updateRoutine(local, r.id, { name: 'Renamed', timeout: null })
     expect(renamed).toMatchObject({ name: 'Renamed', groupId: r.groupId })
     expect(renamed.timeoutMinutes).toBeUndefined()
     expect((await getRoutineRow(r.id))!.nextRunAt).toEqual(before)
 
-    const moved = await updateRoutine(local, r.id, { cron: '30 6 * * 1', timeZone: 'Europe/Paris' }, 'user')
+    const moved = await updateRoutine(local, r.id, { cron: '30 6 * * 1', timeZone: 'Europe/Paris' })
     expect((await getRoutineRow(r.id))!.nextRunAt).toEqual(nextCronRuns('30 6 * * 1', 'Europe/Paris', new Date(), 1)[0])
     expect(moved.cron).toBe('30 6 * * 1')
-    await expect(updateRoutine(local, r.id, { cron: '61 * * * *' }, 'user')).rejects.toMatchObject({ code: 'VALIDATION' })
+    await expect(updateRoutine(local, r.id, { cron: '61 * * * *' })).rejects.toMatchObject({ code: 'VALIDATION' })
 
     // What its runs start with is kept where an edit names nothing else; a
     // branch on its own restarts its one repo, and its runs copy the result.
     const dev = { repos: [{ repo: PROJ, branch: 'dev' }], nested: false, cwd: PROJ }
-    expect((await updateRoutine(local, r.id, { branch: 'dev' }, 'user')).selection).toEqual(dev)
-    expect((await updateRoutine(local, r.id, { name: 'Again' }, 'user')).selection).toEqual(dev)
-    expect((await updateRoutine(local, r.id, { repos: [] }, 'user')).selection).toEqual({ repos: [], nested: false, cwd: '.' })
+    expect((await updateRoutine(local, r.id, { branch: 'dev' })).selection).toEqual(dev)
+    expect((await updateRoutine(local, r.id, { name: 'Again' })).selection).toEqual(dev)
+    expect((await updateRoutine(local, r.id, { repos: [] })).selection).toEqual({ repos: [], nested: false, cwd: '.' })
   })
 
   it('keeps its named workflow until an edit names another, or none for the init steps', async () => {
@@ -185,9 +204,9 @@ describe('updateRoutine', () => {
     await createWorkflow(local, PROJ, { name: 'lint', steps: { l: { run: 'true' } } })
     const r = await routine({ prompt: undefined, nonInteractive: true, workflow: 'ci' })
     expect(r.workflow).toBe('ci')
-    expect((await updateRoutine(local, r.id, { name: 'Renamed' }, 'user')).workflow).toBe('ci')
-    expect((await updateRoutine(local, r.id, { workflow: 'lint' }, 'user')).workflow).toBe('lint')
-    const onInit = await updateRoutine(local, r.id, { workflow: null, nonInteractive: false, prompt: 'triage' }, 'user')
+    expect((await updateRoutine(local, r.id, { name: 'Renamed' })).workflow).toBe('ci')
+    expect((await updateRoutine(local, r.id, { workflow: 'lint' })).workflow).toBe('lint')
+    const onInit = await updateRoutine(local, r.id, { workflow: null, nonInteractive: false, prompt: 'triage' })
     expect(onInit.workflow).toBeUndefined()
   })
 
@@ -195,7 +214,7 @@ describe('updateRoutine', () => {
     const r = await routine({ cron: '*/5 * * * *', timeZone: 'UTC' })
     await due(r.id, latestCronRun('*/5 * * * *', 'UTC', new Date())!)
     await Promise.all([
-      updateRoutine(local, r.id, { name: 'renamed' }, 'user'),
+      updateRoutine(local, r.id, { name: 'renamed' }),
       reconcileRoutines().then(() => startScheduledWorkspaces()),
     ])
     await reconcileRoutines()
@@ -205,7 +224,7 @@ describe('updateRoutine', () => {
     expect(launched).toHaveLength(1)
     expect((await getRoutineRow(r.id))!.nextRunAt!.getTime()).toBeGreaterThan(Date.now())
 
-    await Promise.all([setRoutinePaused(local, r.id, true), updateRoutine(local, r.id, { name: 'again' }, 'user')])
+    await Promise.all([setRoutinePaused(local, r.id, true), updateRoutine(local, r.id, { name: 'again' })])
     expect(await getRoutineRow(r.id)).toMatchObject({ paused: true, name: 'again' })
   })
 })
@@ -296,7 +315,7 @@ describe('reconcileRoutines', () => {
     // and what was queued after it waits on Monday's run instead.
     await claimQueuedLaunch(friday.id, 'wt-x')
     await failQueuedLaunch(friday.id, 'wt-x', 'no such branch')
-    const after = await queueWorkspace(local, PROJ, { parent: friday.id, prompt: 'follow up', branch: 'main' }, 'user')
+    const after = await queueWorkspace(local, PROJ, { parent: friday.id, prompt: 'follow up', branch: 'main' })
     expect((await listRoutines())[0].lastError).toBe('no such branch')
     vi.setSystemTime(new Date('2026-10-26T09:00:10Z'))
     await reconcileRoutines()
@@ -331,7 +350,7 @@ describe('deleteRoutine', () => {
     await reconcileRoutines()
     expect(await runsOf(r.id)).toHaveLength(1)
     const [run] = await runsOf(r.id)
-    const after = await queueWorkspace(local, PROJ, { parent: run.id, prompt: 'follow up', branch: 'main' }, 'user')
+    const after = await queueWorkspace(local, PROJ, { parent: run.id, prompt: 'follow up', branch: 'main' })
     await deleteRoutine(local, r.id)
     expect(await getRoutineRow(r.id)).toBeUndefined()
     // Its group stays, an ordinary one now, holding its runs.
@@ -387,7 +406,7 @@ describe('listRoutineRunPage', () => {
     const db = await getDb()
     await db.update(workspaceLives).set({ deadline: new Date(Date.now() - 60_000) }).where(eq(workspaceLives.workspaceId, workspaceId))
     await recordWorkspaceStopped(PROJ, workspaceId)
-    await updateRoutine(local, r.id, { timeout: 30 }, 'user')
+    await updateRoutine(local, r.id, { timeout: 30 })
     expect((await listRoutineRunPage(r.id, { limit: 1 })).runs[0]).toMatchObject({ state: 'ended' })
     expect((await listStoppedWorkspaces({ project: PROJ })).entries[0]).toMatchObject({ timedOut: true, endedAtNextRun: true })
     await recordWorkspaceLife(PROJ, workspaceId, { at: new Date(Date.now() + 1000) })

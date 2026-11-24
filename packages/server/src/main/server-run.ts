@@ -27,10 +27,10 @@ import { TmpDirRefusal } from '@yaac/shared/paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver, workspacesSandboxed } from '#drivers/driver'
 import { importProjectConfigFiles, pushProjectSecrets } from '#domain/projects'
-import { backfillSiteBranches, runSiteCommand } from '#domain/sites'
+import { backfillSiteBranches } from '#domain/sites'
 import { moveLegacyMainClones } from '#domain/repos'
 import { rememberFeedbackUrl } from '#domain/feedback'
-import { answerSiteCommands, resumeQueuedWorkspaces } from '#domain/workspaces'
+import { resumeQueuedWorkspaces } from '#domain/workspaces'
 import { createContainerlessDriver } from '#drivers/containerless'
 import { assertHostServerAllowed, resolveDriverKind } from '#main/driver-choice'
 import { AccessModeRefusal, settleAccessMode } from '#main/access-mode'
@@ -172,7 +172,8 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
       (err: unknown) => serverLog(`[server] plan-usage refresh failed: ${errorText(err)}`),
     )
   }, 5 * 60_000)
-  const app = buildApp({ buildId, isReady: () => ready, access: () => access })
+  const deps = { buildId, isReady: () => ready, access: () => access }
+  const app = buildApp(deps)
 
   registerWebSocketRoutes(app, hub)
 
@@ -252,8 +253,6 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   await moveLegacyMainClones()
   // Reads the main clones, so after they are where they belong.
   await backfillSiteBranches()
-  // A containerless server has no sites, so `yaac-mama site` refuses there.
-  if (workspaceDriver().kind !== 'containerless') answerSiteCommands(runSiteCommand)
 
   // Set synchronously so it is true before any queued request runs.
   ready = true
@@ -262,7 +261,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   // listener that serves nothing else (`WorkspaceDriver.mamaRelay`).
   const relay = workspaceDriver().mamaRelay
   const relayServer = relay && serve({
-    fetch: buildMamaRelayApp(relay.authenticate).fetch,
+    fetch: buildMamaRelayApp(relay.authenticate, deps).fetch,
     port: relay.port,
     hostname: env.bindAddr,
     serverOptions: LONG_UPLOADS,

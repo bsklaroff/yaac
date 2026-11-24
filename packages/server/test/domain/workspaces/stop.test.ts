@@ -48,6 +48,7 @@ import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/stat
 import { serverLog } from '#lib/log'
 import { workspaceDir } from '@yaac/shared/project-paths'
 import { shellQuote } from '#lib/shell'
+import { workspaceDelegate } from '#test/support/delegate'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -119,9 +120,9 @@ describe('stopWorkspace', () => {
   })
 
   it('tears the workspace down, then starts what was queued after it — only the top of a chain', async () => {
-    const child = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'child', tool: 'claude' }, 'user')
-    const sibling = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'sibling', tool: 'claude' }, 'user')
-    const grandchild = await queueWorkspace(local, PROJ, { parent: child.id, prompt: 'grandchild' }, 'user')
+    const child = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'child', tool: 'claude' })
+    const sibling = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'sibling', tool: 'claude' })
+    const grandchild = await queueWorkspace(local, PROJ, { parent: child.id, prompt: 'grandchild' })
 
     // Addressed by a prefix, which the rows expand.
     expect(await stopWorkspace(local, 'par')).toMatchObject({ workspaceId: 'parent', projectId: PROJ })
@@ -167,7 +168,7 @@ describe('stopWorkspace', () => {
 
     it('launches what was queued with no parent once a member stops', async () => {
       await setWorkspaceGroup(PROJ, 'parent', groupId)
-      const waiting = await queueWorkspace(local, PROJ, { prompt: 'waiting', group: 'Workers', mode: 'tui' }, 'user')
+      const waiting = await queueWorkspace(local, PROJ, { prompt: 'waiting', group: 'Workers', mode: 'tui' })
       expect(launched).toEqual([])
 
       await stopWorkspace(local, 'parent')
@@ -178,7 +179,7 @@ describe('stopWorkspace', () => {
 
     it('keeps a child released into a full group waiting for room, not for its parent, until any member stops', async () => {
       await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'other', groupId })
-      const child = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'child', group: groupId }, 'user')
+      const child = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'child', group: groupId })
 
       await stopWorkspace(local, 'parent')
       const released = await getQueuedWorkspaceRow(child.id)
@@ -551,7 +552,7 @@ describe('stopWorkspace', () => {
     await expect(stopWorkspace(local, 'parent')).rejects.toMatchObject({ code: 'CONFLICT', message: expect.stringContaining('yaac site stop') as unknown })
     expect(teardowns.spawned).toEqual([])
     await updateSite(site.id, { liveWorkspaceId: 'other', deployWorkspaceId: 'parent', published: true, hostname: 'shop.example.com' })
-    const agent = { kind: 'workspace', workspaceId: 'w-agent', userId: BUILT_IN_USER_ID } as const
+    const agent = workspaceDelegate(BUILT_IN_USER_ID, 'w-agent')
     await expect(stopWorkspace(agent, 'parent')).rejects.toMatchObject({ code: 'FORBIDDEN' })
     expect(teardowns.spawned).toEqual([])
     // A deploy's release still provisioning has no row naming its site yet.

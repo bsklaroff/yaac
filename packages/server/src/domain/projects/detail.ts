@@ -1,4 +1,4 @@
-import { getProjectRow, listProjectRows, type ProjectRow } from '#db'
+import { getProjectRow, getTimeZone, listProjectRows, type ProjectRow } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
 import { resolveProjectRef } from '@yaac/shared/project-name'
@@ -10,6 +10,9 @@ export interface ProjectDetail {
   /** Its repos, in order: each one's folder and remote. */
   repos: Array<{ id: string; dir: string; remoteUrl: string; hosted: boolean }>
   workspaceCount: number
+  /** The zone its owner's times are read and shown in, else UTC
+   *  (docs/routines.md "Times and zones"). */
+  ownerTimeZone: string
 }
 
 async function loadProjectMeta(projectId: string): Promise<ProjectRow> {
@@ -39,5 +42,6 @@ export async function getProjectDetail(projectId: string): Promise<ProjectDetail
     addedAt: meta.addedAt,
     repos: meta.repos.map((l) => ({ id: l.repo.id, dir: l.dir, remoteUrl: l.repo.remoteUrl, hosted: l.repo.hosted })),
     workspaceCount: workspaceCount[projectId] ?? 0,
+    ownerTimeZone: (await getTimeZone(meta.owner)).timeZone ?? 'UTC',
   }
 }

@@ -30,9 +30,10 @@ import { repoDir } from '@yaac/shared/project-paths'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
 import type { SiteRoute } from '#drivers/contract'
+import { workspaceDelegate } from '#test/support/delegate'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
-const agent = { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const
+const agent = workspaceDelegate(BUILT_IN_USER_ID, 'w1')
 const stranger = { kind: 'local', userId: '4101bef8-794f-4d98-8e95-dfb54850c68b' } as const
 const APP = { app: { run: 'pnpm start', service: true } }
 /** A second repo for the project, in the folder `docs`. */

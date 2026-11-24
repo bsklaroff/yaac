@@ -174,7 +174,7 @@ export async function createWorkflow(actor: Actor, projectId: string, input: {
   init?: boolean
 }): Promise<WorkflowEntry> {
   await assertProjectExists(projectId)
-  await authorizeProject(actor, projectId)
+  await authorizeProject(actor, projectId, 'delegate')
   const name = input.name.trim()
   if (!isStepName(name)) throw new ServerError('VALIDATION', `"${name}" is not a workflow name (${NAME_RULE})`)
   const workflow = await storeWorkflow(projectId, {
@@ -198,7 +198,7 @@ export async function editWorkflow(actor: Actor, projectId: string, name: string
   repos?: string[]
   init?: boolean
 }): Promise<WorkflowEntry> {
-  await authorizeProject(actor, projectId)
+  await authorizeProject(actor, projectId, 'delegate')
   const row = await resolveWorkflow(projectId, name)
   const content = input.steps !== undefined || input.secrets !== undefined || input.repos !== undefined
   if (!content && input.init === undefined) {
@@ -234,7 +234,7 @@ export async function setInitWorkflows(actor: Actor, projectId: string, names: s
  *  follows it. Deleting an init workflow is how its steps stop running.
  *  Its workflows' approvals stay while anything names them. */
 export async function deleteWorkflow(actor: Actor, projectId: string, name: string): Promise<void> {
-  await authorizeProject(actor, projectId)
+  await authorizeProject(actor, projectId, 'delegate')
   const row = await resolveWorkflow(projectId, name)
   const users = [
     ...(await listRoutineRows(projectId)).filter((r) => r.namedWorkflowId === row.id).map((r) => `routine "${r.name}"`),
@@ -303,16 +303,6 @@ function startRefs(repos: RepoStart[]): string[] {
     if (r.branch === undefined) throw new ServerError('VALIDATION', 'a start approved for a launch names a branch or commit per repo')
     return branchRef(r.repo, r.branch)
   })
-}
-
-/**
- * Whether a save of an unattended entry is a person's, whose launch then
- * approves what it runs as the person's own launch would: commits of
- * content a person wrote. An agent's save approves nothing, and its launch
- * waits for a review where it needs one.
- */
-export function savedByPerson(actor: Actor): boolean {
-  return isPerson(actor)
 }
 
 /**

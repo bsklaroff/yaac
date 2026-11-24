@@ -602,6 +602,15 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     const unsent = await runMama(`send ${shortId} "are you there"`)
     expect(unsent.exitCode).toBe(1)
     expect(unsent.output).toContain(`restart it with yaac-mama restart ${shortId}`)
+    // A person's send (`yaac workspace send`) reaches the same route, by
+    // whichever option names its message or its session.
+    const note = path.join(testEnv.dataDir, 'note.md')
+    await fs.writeFile(note, 'are you there')
+    for (const args of [['--prompt', 'are you there'], ['--prompt-file', note, '--agent', 'abc'], ['--prompt', 'x', '--conversation', 'abc']]) {
+      const refused = await runYaac(serverEnv, 'workspace', 'send', shortId, ...args)
+      expect(refused.exitCode, args.join(' ')).toBe(1)
+      expect(refused.stderr).toContain(`workspace ${shortId} is stopped`)
+    }
 
     const restarted = await runMama(`restart ${shortId}`)
     expect(restarted.exitCode, restarted.output).toBe(0)

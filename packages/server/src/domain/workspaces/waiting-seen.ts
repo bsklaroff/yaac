@@ -8,6 +8,7 @@ import { getSessionRow, recordSessionWaitingSeen } from '#db'
 import { readAgentStatus, readWorkspaceWindows } from '#runtime/status'
 import { ServerError } from '@yaac/shared/errors'
 import type { Principal } from '@yaac/shared/types'
+import { personId } from '#domain/access'
 
 /**
  * Record that `principal` saw the session's waiting spell that began at
@@ -30,6 +31,6 @@ export async function markWaitingSeen(
     ? window.deadSinceMs
     : agent !== undefined && (agent.status === 'waiting' || agent.status === 'asking') ? agent.waitingSinceMs ?? 0 : undefined
   if (spell === undefined || spell !== waitingSinceMs) return false
-  await recordSessionWaitingSeen(sessionId, principal.userId)
+  await recordSessionWaitingSeen(sessionId, personId(principal))
   return true
 }

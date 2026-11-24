@@ -302,12 +302,15 @@ it. Two things differ in its steps:
 ## Permissions
 
 A command a caller hands a workspace runs as whatever the workspace runs as,
-so through `yaac-mama` a create or queue with `--steps`, and `--run` on any
-workspace, the caller's own included, are refused unless the caller's
-ceiling is `bypass` (docs/permission-modes.md). `--no-steps` is always
-allowed, and so is `--workflow`, a named workflow being written through the
-user's surfaces; the project's own init workflows run in every create, being
-the user's setting. The webapp and CLI are the user's and have no ceiling.
+so a delegate's start with steps of its own, and steps it adds to any
+workspace, its own included, are refused unless its ceiling is `bypass`
+(docs/permission-modes.md): `prepareStart` and `addSteps` check it
+(`requireWithinCeiling`), whatever route asks, and so do `queueWorkspace`
+and `updateQueuedWorkspace` for an entry's steps, since the entry later
+launches as the server, which no ceiling holds. `yaac-mama`'s `--steps`
+and `--run` go through these. No steps is always allowed, and so is a named workflow;
+the project's own init workflows run in every create, being the user's
+setting. A person has no ceiling.
 
 ## Logs
 
