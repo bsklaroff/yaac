@@ -2,7 +2,7 @@
  * Verifies the queued-workspace UI (docs/queued-workspaces.md) in a real
  * browser, with real pointer and keyboard events, against a live workspace:
  *
- *  1. A sidebar row's hover icons are one `…` menu: New session…, Rename,
+ *  1. A sidebar row's hover icons are one `…` menu: New agent…, Rename,
  *     Move to group…, Queue workspace after this…, Stop….
  *  2. "Queue workspace after this…" opens the new-workspace pane with Start
  *     set to that workspace, the prompt focused, a Queue button, and the
@@ -19,7 +19,7 @@
  *  5. The row menu's Stop… lists the queued children ("Stop and start 1
  *     queued") and marks the chained one as waiting. Its Edit closes the stop
  *     dialog, so nothing is stopped, and opens the pane on that entry; New
- *     session then leaves the edit, unsaved, for a blank form without asking.
+ *     workspace then leaves the edit, unsaved, for a blank form without asking.
  *  6. Discard… on the top entry confirms where its child moves; confirming
  *     removes it and splices the child up under the workspace. The child is
  *     then discarded too, leaving nothing queued behind.
@@ -85,8 +85,8 @@ try {
   // The menu renders a frame after the click; read it once it has.
   await page.getByRole('menuitem').first().waitFor({ state: 'visible' })
   const items = await page.getByRole('menuitem').allTextContents()
-  check('the row menu offers new session, rename, group, queue, stop',
-    JSON.stringify(items) === JSON.stringify(['New session…', 'Rename', 'Move to group…', 'Queue workspace after this…', 'Stop…']),
+  check('the row menu offers new agent, rename, group, queue, stop',
+    JSON.stringify(items) === JSON.stringify(['New agent…', 'Rename', 'Move to group…', 'Queue workspace after this…', 'Stop…']),
     JSON.stringify(items))
   await page.keyboard.press('Escape')
 

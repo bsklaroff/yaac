@@ -4,15 +4,15 @@ import { api } from '#commands/api'
  * `yaac workspace stop <id>`: stop the workspace's processes but keep its
  * checkout, branch, and changes, less its gitignored files
  * (docs/workspace-storage.md "Ignored files at stop"); `yaac workspace
- * restart` brings its sessions back. One still being created is rolled
+ * restart` brings its agents back. One still being created is rolled
  * back, and its prompt kept as a draft.
  *
- * With `--session`, `<id>` names a session instead, and only it closes
- * (docs/sessions.md): its agent stops, its conversations stay in the
- * workspace's history, and the workspace keeps running.
+ * With `--agent`, `<id>` names an agent (a session, docs/sessions.md)
+ * instead, and only it stops: its conversations stay in the workspace's
+ * history, and the workspace keeps running.
  */
-export async function workspaceStop(idOrName: string, options: { session?: boolean } = {}): Promise<void> {
-  if (options.session === true) {
+export async function workspaceStop(idOrName: string, options: { agent?: boolean } = {}): Promise<void> {
+  if (options.agent === true) {
     await closeSession(idOrName)
     return
   }
@@ -31,14 +31,14 @@ async function closeSession(id: string): Promise<void> {
   const matches = exact.length > 0 ? exact : open.filter((o) => o.session.sessionId.startsWith(id))
   if (matches.length !== 1) {
     throw new Error(matches.length === 0
-      ? `No open session matches "${id}". Run "yaac workspace list" to see sessions.`
-      : `"${id}" matches more than one session; use a longer prefix.`)
+      ? `No running agent matches "${id}". Run "yaac workspace list" to see agents.`
+      : `"${id}" matches more than one agent; use a longer prefix.`)
   }
   const [{ workspace, session }] = matches
   await api.workspace[':id'].sessions[':sessionId'].close.$post({
     param: { id: workspace.workspaceId, sessionId: session.sessionId },
   })
   const rest = workspace.sessions.length - 1
-  console.log(`Session ${session.sessionId} closed; its conversations stay in workspace ${workspace.workspaceId}'s history. `
+  console.log(`Agent ${session.sessionId} stopped; its conversations stay in workspace ${workspace.workspaceId}'s history. `
     + (rest === 0 ? 'The workspace keeps running with no agent.' : 'The workspace keeps running.'))
 }

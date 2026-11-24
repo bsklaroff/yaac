@@ -62,15 +62,21 @@ export function PaneBarLeading(): JSX.Element | null {
 
 /** What the pane menu's actions do; `disabled` says why they can't. A
  *  running workspace can also open a session (`onNewSession`), and one with
- *  earlier conversations its History pane (`onOpenHistory`). */
+ *  earlier conversations its History pane (`history`, with how many it
+ *  holds). */
 interface PaneActions {
   onNewSession?: () => void
   onNewShell?: () => void
   onOpenFiles: () => void
   onOpenChanges: () => void
   onOpenCommits: () => void
-  onOpenHistory?: () => void
+  history?: { count: number; onOpen: () => void }
   disabled?: string
+}
+
+/** What opens the History pane, counting the conversations it holds. */
+export function stoppedConversationsLabel(count: number): string {
+  return `${String(count)} stopped ${count === 1 ? 'conversation' : 'conversations'}`
 }
 
 /** A new shell's tooltip: what it prints is kept (docs/workspace-steps.md
@@ -92,7 +98,7 @@ export function PaneMenu({
   onOpenChanges,
   onOpenCommits,
   onOpenFiles,
-  onOpenHistory,
+  history,
   disabled,
   children,
   triggerRef,
@@ -134,9 +140,14 @@ export function PaneMenu({
         }}
         finalFocus={() => !picked.current}
       >
+        {history !== undefined && (
+          <YMenuItem icon={HistoryIcon} className={ITEM} onClick={history.onOpen}>
+            {stoppedConversationsLabel(history.count)}
+          </YMenuItem>
+        )}
         {onNewSession !== undefined && (
           <YMenuItem icon={ChatIcon} className={ITEM} disabled={off} onClick={onNewSession}>
-            New session
+            New agent
           </YMenuItem>
         )}
         {onNewShell !== undefined && (
@@ -153,11 +164,6 @@ export function PaneMenu({
         <YMenuItem icon={FilesIcon} className={ITEM} disabled={off} onClick={onOpenFiles}>
           Browse files
         </YMenuItem>
-        {onOpenHistory !== undefined && (
-          <YMenuItem icon={HistoryIcon} className={ITEM} onClick={onOpenHistory}>
-            Conversation history
-          </YMenuItem>
-        )}
         {previewPorts.map((p) => (
           <YMenuItem key={p.containerPort} icon={PreviewIcon} className={ITEM} onClick={() => onOpenPreview?.(p.containerPort)}>
             {previewLabel(previewPorts.length > 1 ? p : undefined)}

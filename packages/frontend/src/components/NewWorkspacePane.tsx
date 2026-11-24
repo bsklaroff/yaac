@@ -496,7 +496,7 @@ export function NewWorkspacePane({ projectId, bar }: {
     : routineMode && titleText === '' ? 'Name the routine'
     : scheduleError ?? null
   const submitLabel = editing !== undefined || editingRoutine !== undefined ? 'Save'
-    : routineMode ? 'Create routine' : queued ? 'Queue' : unattended ? 'Run now' : inWorkspace ? 'Start session' : 'Create'
+    : routineMode ? 'Create routine' : queued ? 'Queue' : unattended ? 'Run now' : inWorkspace ? 'Start agent' : 'Create'
   // What it runs: an unattended run of the workflow, or an agent workspace
   // that starts with it in place of the project's init workflows.
   const runs = workflow === undefined ? {} : { workflow: workflow.name, ...(unattended ? { nonInteractive: true as const } : {}) }
@@ -723,7 +723,7 @@ export function NewWorkspacePane({ projectId, bar }: {
         <>
           <span className="titlebar-drag flex min-w-0 flex-1 items-center gap-0.5">
             {inTarget !== undefined ? (
-              <h2 className="min-w-0 truncate font-medium text-text">New session in “{workspaceName(inTarget)}”</h2>
+              <h2 className="min-w-0 truncate font-medium text-text">New agent in “{workspaceName(inTarget)}”</h2>
             ) : kind === 'site' ? (
               <h2 className="min-w-0 truncate font-medium text-text">New site</h2>
             ) : titleEdit.editing ? (

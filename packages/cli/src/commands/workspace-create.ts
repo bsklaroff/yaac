@@ -44,12 +44,12 @@ export interface WorkspaceCreateOptions extends SelectionOptions {
   startAt?: string
   /** Queue it to start after this long, like `30m`. */
   startIn?: string
-  /** A running workspace to open the session in, instead of a new one. */
+  /** A running workspace to start the agent in, instead of a new one. */
   workspace?: string
   /** With `workspace`: one of its earlier conversations to resume. */
   resume?: string
-  /** Start a workspace with no session (commander's `--no-session`). */
-  session?: boolean
+  /** Start a workspace with no agent (commander's `--no-agent`). */
+  agent?: boolean
   /** A volume of the project to mount (docs/workspace-volumes.md). */
   volume?: string
   /** A JSON file of the steps to start with in place of the project's init
@@ -58,7 +58,7 @@ export interface WorkspaceCreateOptions extends SelectionOptions {
   /** A workflow whose current revision it starts with instead
    *  (docs/workflows.md). */
   workflow?: string
-  /** Run `steps` untouched, with no session, and stop when they settle. */
+  /** Run `steps` untouched, with no agent, and stop when they settle. */
   nonInteractive?: boolean
   /** With `nonInteractive`: wait for the outcome, exiting non-zero unless
    *  it succeeded. */
@@ -67,9 +67,9 @@ export interface WorkspaceCreateOptions extends SelectionOptions {
 
 /**
  * `yaac workspace create`: ask the server to create the workspace, or with
- * `--workspace` to open a session in a running one (docs/sessions.md), then
- * attach the terminal to its session's window, or for an `acp` session
- * point at the web app. `--no-session` starts a workspace with no agent, and
+ * `--workspace` to start an agent (a session, docs/sessions.md) in a running
+ * one, then attach the terminal to its window, or for an `acp` agent point
+ * at the web app. `--no-agent` starts a workspace with no agent, and
  * `--non-interactive` one that runs `--steps` untouched and stops
  * (docs/workspace-steps.md), which `--wait` waits out.
  *
@@ -77,7 +77,7 @@ export interface WorkspaceCreateOptions extends SelectionOptions {
  * project last used, matching the web app's form and the prewarmed spare.
  */
 export async function workspaceCreate(project: string | undefined, options: WorkspaceCreateOptions): Promise<void> {
-  const noSession = options.session === false
+  const noAgent = options.agent === false
   const nonInteractive = options.nonInteractive === true
   if (options.workspace !== undefined) {
     if (project !== undefined) throw new Error('Give a project or --workspace, not both: the workspace names its project.')
@@ -89,26 +89,26 @@ export async function workspaceCreate(project: string | undefined, options: Work
       ['--commit', options.commit], [options.steps === false ? '--no-steps' : '--steps', options.steps],
       ['--workflow', options.workflow],
       ['--non-interactive', options.nonInteractive], ['--wait', options.wait]] as const) {
-      if (set !== undefined) throw new Error(`${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
+      if (set !== undefined) throw new Error(`${flag} is a workspace's setting, which --workspace (an agent in a running one) does not take.`)
     }
-    if (noSession) throw new Error('--no-session starts a new workspace; it does not take --workspace.')
+    if (noAgent) throw new Error('--no-agent starts a new workspace; it does not take --workspace.')
     await openSession(options.workspace, options)
     return
   }
-  if (project === undefined) throw new Error('Name the project to create the workspace in, or --workspace to open a session in a running one.')
+  if (project === undefined) throw new Error('Name the project to create the workspace in, or --workspace to start an agent in a running one.')
   if (options.resume !== undefined) throw new Error('--resume needs --workspace: a conversation resumes in the workspace that holds it.')
   const selection = selectionOf(options)
-  if (noSession && nonInteractive) throw new Error('--non-interactive already starts no session; drop --no-session.')
-  if (noSession || nonInteractive) {
-    const flag = noSession ? '--no-session' : '--non-interactive'
+  if (noAgent && nonInteractive) throw new Error('--non-interactive already starts no agent; drop --no-agent.')
+  if (noAgent || nonInteractive) {
+    const flag = noAgent ? '--no-agent' : '--non-interactive'
     const agentOptions: Array<[string, unknown]> = [['--tool', options.tool], ['--model', options.model],
       ['--effort', options.effort], ['--agent-option', options.agentOption], ['--mode', options.mode],
       ['--permission-mode', options.permissionMode],
       ['--prompt', options.prompt], ['--prompt-file', options.promptFile]]
     // A non-interactive workspace may be scheduled: it needs no prompt.
-    if (noSession) agentOptions.push(['--start-at', options.startAt], ['--start-in', options.startIn])
+    if (noAgent) agentOptions.push(['--start-at', options.startAt], ['--start-in', options.startIn])
     for (const [name, set] of agentOptions) {
-      if (set !== undefined) throw new Error(`${flag} does not take ${name}: a workspace with no session runs no agent.`)
+      if (set !== undefined) throw new Error(`${flag} does not take ${name}: a workspace with no agent runs none.`)
     }
   }
   if (options.workflow !== undefined && options.steps !== undefined) throw new Error('Give --steps or --workflow, not both.')
@@ -162,7 +162,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
   const res = await api.workspace.create.$post({ json: {
     ...settings,
     prompt,
-    ...(noSession ? { noSession: true } : {}),
+    ...(noAgent ? { noSession: true } : {}),
     ...(options.volume !== undefined ? { volume: options.volume } : {}),
   } })
   if (nonInteractive) {
@@ -221,7 +221,7 @@ async function waitForOutcome(workspaceId: string): Promise<string | undefined> 
   }
 }
 
-/** `--workspace`: open a session in a running workspace and attach to it. */
+/** `--workspace`: start an agent in a running workspace and attach to it. */
 async function openSession(workspace: string, options: WorkspaceCreateOptions): Promise<void> {
   const resolved = await api.workspace[':id'].$get({ param: { id: workspace } })
   const source = promptSource(options)
@@ -303,7 +303,7 @@ async function readStdin(): Promise<string> {
 
 /**
  * Read a create or restart NDJSON stream, then attach the terminal to the
- * session it opened, if any.
+ * agent it started, if any.
  */
 export async function attachStarted(res: Response, { attach = true } = {}): Promise<void> {
   const { workspaceId, sessionId } = await consumeNdjsonStream<{ workspaceId: string; sessionId?: string }>(res)
@@ -315,7 +315,7 @@ export async function attachStarted(res: Response, { attach = true } = {}): Prom
 }
 
 /**
- * Attach the terminal to a session's window. An `acp` session's
+ * Attach the terminal to an agent's window. An `acp` agent's
  * conversation is in the web app's chat pane (its tmux window only shows the
  * acpd supervisor's log). E2e runs have no TTY to attach, so they get the
  * attach hint, which also gives tests the new workspace's id.
@@ -324,16 +324,16 @@ async function attachSession(workspaceId: string, sessionId: string, { attach }:
   const session = await findSession(workspaceId, sessionId)
   if (session?.mode === 'acp') {
     console.log(`Workspace ${workspaceId} is running in ACP mode — open it in the web app to chat with the agent `
-      + `(session ${sessionId}).`)
+      + `(agent ${sessionId}).`)
   } else if (!attach || session === undefined || testEnv.e2eNoAttach) {
     console.log(`Workspace ${workspaceId} is running — attach with `
-      + `\`yaac workspace attach --session ${sessionId} ${workspaceId}\`.`)
+      + `\`yaac workspace attach --agent ${sessionId} ${workspaceId}\`.`)
   } else {
     await attachWorkspacePty(workspaceId, `native:${session.window}`)
   }
 }
 
-/** A running workspace's open session, by its full id. */
+/** A running workspace's open agent, by its full id. */
 async function findSession(workspaceId: string, sessionId: string): Promise<SessionEntry | undefined> {
   const { workspaces } = await api.workspace.list.$get({ query: {} })
   return workspaces.find((w) => w.workspaceId === workspaceId)?.sessions.find((s) => s.sessionId === sessionId)

@@ -368,7 +368,7 @@ describe('runMamaCommand', () => {
       const outcome = await runMamaCommand(await callerFor({ sessionId: mine.id }), { command: 'list', args: {}, body: '' })
       if (!outcome.ok || !('output' in outcome)) throw new Error('expected a listing')
 
-      expect(outcome.output).toMatch(/WORKSPACE\s+SESSION\s+AGENT\s+STATUS\s+TITLE/)
+      expect(outcome.output).toMatch(/WORKSPACE\s+AGENT\s+TOOL\s+STATUS\s+TITLE/)
       expect(outcome.output).toMatch(new RegExp(`caller-w\\s+${mine.id.slice(0, 8)} \\(you\\)\\s+claude\\b.*Lead`))
       expect(outcome.output).toMatch(new RegExp(`other-wo\\s+${theirs.id.slice(0, 8)}\\s+codex\\b.*port the lexer`))
     })
@@ -586,7 +586,7 @@ describe('runMamaCommand', () => {
         [{ nested: '1', 'no-nested': '1' }, 'give --nested or --no-nested, not both'],
         [{ repos: 'demo' }, '--repo is not a JSON list of repos'],
         [{ repos: '["nope"]' }, 'project "demo" has no repo "nope"'],
-        [{ workspace: 'caller-workspace', 'no-repos': '1' }, "--no-repos is a workspace's setting, which --workspace (a session in a running one) does not take"],
+        [{ workspace: 'caller-workspace', 'no-repos': '1' }, "--no-repos is a workspace's setting, which --workspace (an agent in a running one) does not take"],
       ] as const) expect(await spawn(args)).toEqual({ ok: false, error })
     })
 
@@ -880,7 +880,7 @@ describe('runMamaCommand', () => {
       // A workspace's own settings are not a session's.
       for (const [arg, value] of [['branch', 'main'], ['group', 'g'], ['timeout', '1h']]) {
         expect(await run('create', 'x', { workspace: 'caller', [arg]: value })).toEqual({
-          ok: false, error: `--${arg} is a workspace's setting, which --workspace (a session in a running one) does not take`,
+          ok: false, error: `--${arg} is a workspace's setting, which --workspace (an agent in a running one) does not take`,
         })
       }
     })
@@ -904,17 +904,17 @@ describe('runMamaCommand', () => {
         .toMatchObject({ ok: false, error: expect.stringMatching(/^pi /) as unknown })
     })
 
-    it('starts a workspace with no session with --no-session, which takes no prompt or agent setting', async () => {
-      const id = await output('create', '', { 'no-session': '' })
+    it('starts a workspace with no agent with --no-agent, which takes no prompt or agent setting', async () => {
+      const id = await output('create', '', { 'no-agent': '' })
       const [opts] = await createdWith()
       expect(opts).toMatchObject({ workspaceId: id })
       expect(opts).not.toHaveProperty('session')
 
-      expect(await run('create', 'x', { 'no-session': '' })).toEqual({
-        ok: false, error: '--no-session takes no prompt: a workspace with no session runs no agent',
+      expect(await run('create', 'x', { 'no-agent': '' })).toEqual({
+        ok: false, error: '--no-agent takes no prompt: a workspace with no agent runs none',
       })
       for (const [arg, value] of [['tool', 'claude'], ['permission-mode', 'plan'], ['workspace', 'caller'], ['resume', 'conv']]) {
-        expect(await run('create', '', { 'no-session': '', [arg]: value })).toEqual({ ok: false, error: `--no-session does not take --${arg}` })
+        expect(await run('create', '', { 'no-agent': '', [arg]: value })).toEqual({ ok: false, error: `--no-agent does not take --${arg}` })
       }
     })
   })
@@ -1556,38 +1556,38 @@ describe('runMamaCommand', () => {
       expect(vi.mocked(cleanupWorkspaceDetached)).not.toHaveBeenCalled()
     })
 
-    it("closes one session with --session, by default the caller's own, leaving its workspace running", async () => {
+    it('stops one agent with --agent, by default the caller, leaving its workspace running', async () => {
       exec.mockResolvedValue({ stdout: '', stderr: '' })
       const claude = { tool: 'claude', mode: 'tui', permissionMode: 'bypass', cwd: '' } as const
       const mine = await insertSession(PROJ, 'caller-workspace', claude)
       const target = await insertSession(PROJ, 'sibling-workspace', claude)
       await insertSession(PROJ, 'sibling-workspace', claude)
 
-      expect(await output('stop', '', { session: target.id.slice(0, 8) })).toBe(
-        `Closed session ${target.id.slice(0, 8)}; its conversations stay in sibling-'s history. sibling- keeps running.`,
+      expect(await output('stop', '', { agent: target.id.slice(0, 8) })).toBe(
+        `Stopped agent ${target.id.slice(0, 8)}; its conversations stay in sibling-'s history. sibling- keeps running.`,
       )
       expect((await getSessionRow(target.id))?.closedAt).toBeInstanceOf(Date)
       expect(exec.mock.calls.some(([job, cmd]) => job === 'yaac-sibling-workspace' && cmd.includes(`kill-window -t =yaac:=${target.window}`))).toBe(true)
 
       // Bare, it closes the session whose agent asks.
-      const own = await runMamaCommand(await callerFor({ sessionId: mine.id }), { command: 'stop', args: { session: '' }, body: '' })
+      const own = await runMamaCommand(await callerFor({ sessionId: mine.id }), { command: 'stop', args: { agent: '' }, body: '' })
       expect(own).toEqual({
         ok: true,
-        output: `Closed session ${mine.id.slice(0, 8)}; its conversations stay in caller-w's history. `
+        output: `Stopped agent ${mine.id.slice(0, 8)}; its conversations stay in caller-w's history. `
           + 'caller-w keeps running with no agent; stop it with yaac-mama stop caller-w.',
       })
       expect(vi.mocked(cleanupWorkspaceDetached)).not.toHaveBeenCalled()
 
-      expect(await run('stop', '', { session: '' })).toEqual({
-        ok: false, error: "stop --session needs a session id when not run by a session's agent (see: yaac-mama list)",
+      expect(await run('stop', '', { agent: '' })).toEqual({
+        ok: false, error: 'stop --agent needs an agent id when not run by an agent yaac started (see: yaac-mama list)',
       })
-      expect(await run('stop', '', { session: target.id })).toEqual({
-        ok: false, error: `no open session '${target.id}' in this project (see: yaac-mama list)`,
+      expect(await run('stop', '', { agent: target.id })).toEqual({
+        ok: false, error: `no running agent '${target.id}' in this project (see: yaac-mama list)`,
       })
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace' })
       const foreign = await insertSession(OTHER, 'foreign-workspace', claude)
       running.push(podFor('foreign-workspace', OTHER))
-      expect(await run('stop', '', { session: foreign.id })).toMatchObject({ ok: false })
+      expect(await run('stop', '', { agent: foreign.id })).toMatchObject({ ok: false })
       expect((await getSessionRow(foreign.id))?.closedAt).toBeUndefined()
     })
   })
@@ -1609,7 +1609,7 @@ describe('runMamaCommand', () => {
       expect(await run('create', '', { 'non-interactive': '1', steps: STEPS })).toEqual({
         ok: false, error: expect.stringContaining('only a caller at bypass may ask for') as string,
       })
-      expect(await run('create', '', { 'no-steps': '1', 'no-session': '1' })).toMatchObject({ ok: true })
+      expect(await run('create', '', { 'no-steps': '1', 'no-agent': '1' })).toMatchObject({ ok: true })
 
       const bypass = await callerFor({ permissionMode: 'bypass' })
       const sha = 'a'.repeat(40)
@@ -1628,7 +1628,7 @@ describe('runMamaCommand', () => {
         ['', { 'non-interactive': '1', steps: STEPS, tool: 'claude' }],
         ['', { 'non-interactive': '1', steps: '{"t":{"run":[]}}' }],
         ['', { 'non-interactive': '1', steps: 'not json' }],
-        ['', { 'no-session': '1', branch: 'main', commit: sha }],
+        ['', { 'no-agent': '1', branch: 'main', commit: sha }],
       ] as const) {
         expect(await runMamaCommand(bypass, { command: 'create', body, args }), JSON.stringify(args)).toMatchObject({ ok: false })
       }
@@ -1758,7 +1758,7 @@ describe('runMamaCommand', () => {
 
       const text = await output('restart', '', { workspace: 'sibling' })
 
-      expect(text).toContain('Restarting sibling-, resuming its 2 sessions.')
+      expect(text).toContain('Restarting sibling-, resuming its 2 agents.')
       // Registered before the reply, so the sidebar shows it at once.
       expect(listProvisioning()).toMatchObject([{ workspaceId: 'sibling-workspace', kind: 'restart', tool: 'claude' }])
       await vi.waitFor(() => { expect(vi.mocked(createWorkspace)).toHaveBeenCalledTimes(1) })
@@ -1816,15 +1816,15 @@ describe('runMamaCommand', () => {
       expect(await refusal('caller')).toBe('restart cannot restart this workspace itself')
       expect(await refusal('running')).toBe('workspace running- is not stopped')
       expect(await refusal('restarting')).toBe('workspace restarti is running; only a stopped one can be restarted')
-      expect(await refusal('bypass')).toBe("bypass-w's claude session runs in permission mode 'bypass', more than the "
+      expect(await refusal('bypass')).toBe("bypass-w's claude agent runs in permission mode 'bypass', more than the "
         + "caller's ceiling ('accept-edits'); only one at or below it can be restarted")
-      expect(await refusal('pi-work')).toBe("pi-works's pi session would come back in permission mode 'bypass', "
+      expect(await refusal('pi-work')).toBe("pi-works's pi agent would come back in permission mode 'bypass', "
         + "the nearest pi has to 'manual', more than the caller's ceiling ('accept-edits'); only one at or below it "
         + 'can be restarted')
-      expect(await refusal('handpi')).toBe("handpi-w's pi session would come back in permission mode 'bypass', "
+      expect(await refusal('handpi')).toBe("handpi-w's pi agent would come back in permission mode 'bypass', "
         + "the nearest pi has to 'manual', more than the caller's ceiling ('accept-edits'); only one at or below it "
         + 'can be restarted')
-      expect(await refusal('bare')).toBe("bare-wor's claude session runs in permission mode 'bypass', more than the "
+      expect(await refusal('bare')).toBe("bare-wor's claude agent runs in permission mode 'bypass', more than the "
         + "caller's ceiling ('accept-edits'); only one at or below it can be restarted")
       expect(await refusal('opencode')).toContain('opencode is not signed in for this project\'s owner')
       expect(await refusal('lost')).toContain('the history of Claude Code conversation lost-conv is gone')
@@ -1887,14 +1887,14 @@ describe('runMamaCommand', () => {
       expect(delivered('Sent from caller-workspace via yaac-mama:\n\nrebase onto main\nthen push')).toEqual({
         jobName: 'yaac-sibling-workspace', window: first.window, carries: true,
       })
-      expect(text).toContain(`Sent to sibling-'s claude session ${first.id.slice(0, 8)}`)
+      expect(text).toContain(`Sent to sibling-'s claude agent ${first.id.slice(0, 8)}`)
       // Each delivery checks its own conversation for a dialog first.
       expect(exec.mock.calls.at(-1)![2]?.stdin).toContain('first-conv')
 
       await output('send', 'and you', { workspace: 'sibling', conversation: 'second' })
       expect(delivered('Sent from caller-workspace via yaac-mama:\n\nand you').window).toBe(second.window)
       expect(exec.mock.calls.at(-1)![2]?.stdin).toContain('second-conv')
-      await output('send', 'and you again', { workspace: 'sibling', session: second.id.slice(0, 6) })
+      await output('send', 'and you again', { workspace: 'sibling', agent: second.id.slice(0, 6) })
       expect(delivered('Sent from caller-workspace via yaac-mama:\n\nand you again').window).toBe(second.window)
     })
 
@@ -1907,8 +1907,8 @@ describe('runMamaCommand', () => {
       expect(delivered('Sent from sibling-workspace via yaac-mama:\n\nreview this').window).toBe(second.window)
 
       exec.mockClear()
-      const self = await runMamaCommand(own, { command: 'send', args: { workspace: 'sibling', session: first.id }, body: 'hi' })
-      expect(self).toEqual({ ok: false, error: `no open session '${first.id}' in sibling- (see: yaac-mama list)` })
+      const self = await runMamaCommand(own, { command: 'send', args: { workspace: 'sibling', agent: first.id }, body: 'hi' })
+      expect(self).toEqual({ ok: false, error: `no running agent '${first.id}' in sibling- (see: yaac-mama list)` })
       expect(exec).not.toHaveBeenCalled()
     })
 
@@ -1932,7 +1932,7 @@ describe('runMamaCommand', () => {
 
       expect(outcome.ok).toBe(false)
       if (!outcome.ok) {
-        expect(outcome.error).toMatch(new RegExp(`^not delivered to sibling-'s claude session ${first.id.slice(0, 8)}: .*nothing was submitted`))
+        expect(outcome.error).toMatch(new RegExp(`^not delivered to sibling-'s claude agent ${first.id.slice(0, 8)}: .*nothing was submitted`))
       }
 
       // The paste script found a dialog up, so it typed nothing.
@@ -1999,14 +1999,14 @@ describe('runMamaCommand', () => {
         .toBe('workspace stopped- is stopped; restart it with yaac-mama restart stopped-, then send once it is running')
       expect(await refusal('go', { workspace: 'foreign-workspace' })).toContain('no workspace')
       expect(await refusal('go', { workspace: 'sibling', conversation: 'nope' })).toBe("no open conversation 'nope' in sibling- (see: yaac-mama list)")
-      expect(await refusal('go', { workspace: 'sibling', session: 'nope' })).toBe("no open session 'nope' in sibling- (see: yaac-mama list)")
+      expect(await refusal('go', { workspace: 'sibling', agent: 'nope' })).toBe("no running agent 'nope' in sibling- (see: yaac-mama list)")
       expect(await refusal('  ', { workspace: 'sibling' })).toContain('needs a message')
       // Its agent has not named a conversation yet.
-      expect(await refusal('go', { workspace: 'quiet' })).toMatch(/^quiet-wo's claude session [0-9a-f]{8} has no conversation yet/)
+      expect(await refusal('go', { workspace: 'quiet' })).toMatch(/^quiet-wo's claude agent [0-9a-f]{8} has no conversation yet/)
       // The caller's own session is never a target.
       const [mine] = await listWorkspaceSessions('caller-workspace')
       expect(await runMamaCommand(await callerFor({ sessionId: mine.id }), { command: 'send', args: { workspace: 'caller-workspace' }, body: 'go' }))
-        .toEqual({ ok: false, error: 'caller-w has no other session to send to' })
+        .toEqual({ ok: false, error: 'caller-w has no other agent to send to' })
       expect(exec).not.toHaveBeenCalled()
     })
   })

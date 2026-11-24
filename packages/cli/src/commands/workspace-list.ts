@@ -49,7 +49,7 @@ export async function workspaceList(
     console.log(`No running workspaces${suffix}. Create one with: yaac workspace create <project>`)
   } else {
     renderRunning(workspaces, new Map(groups.map((g) => [g.groupId, g.name])), names, zone)
-    renderSessions(workspaces)
+    renderAgents(workspaces)
     renderPorts(workspaces, target.baseUrl)
     renderBlockedHosts(workspaces)
   }
@@ -74,7 +74,7 @@ function renderRunning(
   printTable(
     [
       { header: 'WORKSPACE' }, { header: 'PROJECT' }, { header: 'TOOL' }, { header: 'STATUS' },
-      { header: 'SESSIONS' }, { header: 'GROUP', optional: true }, { header: `STOPS (${zone})`, optional: true },
+      { header: 'AGENTS' }, { header: 'GROUP', optional: true }, { header: `STOPS (${zone})`, optional: true },
       { header: 'TITLE', optional: true }, { header: 'CREATED' }, { header: 'PROMPT' },
     ],
     sorted.map((w) => [
@@ -97,8 +97,8 @@ function toolsOf(sessions: Array<{ tool: string }>): string {
   return [...new Set(sessions.map((s) => s.tool))].join(',') || '-'
 }
 
-/** Each running workspace's open sessions, for `--session` to name. */
-function renderSessions(workspaces: WorkspaceListEntry[]): void {
+/** Each running workspace's agents, for `--agent` to name. */
+function renderAgents(workspaces: WorkspaceListEntry[]): void {
   const rows = workspaces.flatMap((w) => w.sessions.map((s) => [
     w.workspaceId.slice(0, 8),
     s.sessionId.slice(0, 8),
@@ -110,7 +110,7 @@ function renderSessions(workspaces: WorkspaceListEntry[]): void {
   if (rows.length === 0) return
   console.log('')
   printTable(
-    [{ header: 'WORKSPACE' }, { header: 'SESSION' }, { header: 'AGENT' }, { header: 'MODE' },
+    [{ header: 'WORKSPACE' }, { header: 'AGENT' }, { header: 'TOOL' }, { header: 'MODE' },
       { header: 'STATUS' }, { header: 'TITLE' }],
     rows,
   )

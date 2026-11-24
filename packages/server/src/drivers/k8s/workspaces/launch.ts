@@ -323,7 +323,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
 
   if (spec.tree) treeJobs.add(jobName)
   else treeJobs.delete(jobName)
-  spec.onProgress?.(`Creating session job ${jobName}...`)
+  spec.onProgress?.(`Creating workspace job ${jobName}...`)
 
   // Idempotent, so a relaunch rewrites the same object.
   await applyProxyRegistration(spec.workspaceId, substrate.registration)

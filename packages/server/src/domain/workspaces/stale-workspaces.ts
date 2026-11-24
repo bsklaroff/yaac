@@ -162,7 +162,7 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<v
       // `ran`: an agent ran, so the unit went away out-of-band.
       const cause = row.ran
         ? { reason: 'orphaned' as const, detail: 'Job and pod deleted out-of-band' }
-        : { reason: 'never-started' as const, detail: 'session create did not complete' }
+        : { reason: 'never-started' as const, detail: 'workspace create did not complete' }
       serverLog(
         `[server] stale-reaper: recording workspace=${row.workspaceId} as ${cause.reason}`
         + ` (no pod for ${Math.round((nowMs - since) / 60_000)} min)`,

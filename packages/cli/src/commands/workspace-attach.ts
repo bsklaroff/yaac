@@ -7,13 +7,13 @@ import { attachWorkspacePty } from '#commands/ws-terminal'
  * chrome, `C-b d` detaches) or to a plain zsh ('shell': no tmux). The id or
  * prefix is resolved first because the socket takes only an exact id.
  *
- * `attach` opens on a session's window: the one `--session` names, else the
+ * `attach` opens on an agent's window: the one `--agent` names, else the
  * workspace's first, else whichever window tmux shows.
  */
 export async function workspaceAttach(
   workspaceId: string,
   target: 'native' | 'shell',
-  options: { session?: string } = {},
+  options: { agent?: string } = {},
 ): Promise<void> {
   const resolved = await api.workspace[':id'].$get({ param: { id: workspaceId } })
   if (target === 'shell') {
@@ -22,15 +22,15 @@ export async function workspaceAttach(
   }
   const { workspaces } = await api.workspace.list.$get({ query: {} })
   const sessions = workspaces.find((w) => w.workspaceId === resolved.workspaceId)?.sessions ?? []
-  const wanted = options.session
+  const wanted = options.agent
   let session = sessions[0]
   if (wanted !== undefined) {
     const exact = sessions.filter((s) => s.sessionId === wanted)
     const matches = exact.length > 0 ? exact : sessions.filter((s) => s.sessionId.startsWith(wanted))
     if (matches.length !== 1) {
       throw new Error(matches.length === 0
-        ? `Workspace ${resolved.workspaceId} has no open session "${wanted}".`
-        : `"${wanted}" matches more than one session of workspace ${resolved.workspaceId}; use a longer prefix.`)
+        ? `Workspace ${resolved.workspaceId} has no running agent "${wanted}".`
+        : `"${wanted}" matches more than one agent of workspace ${resolved.workspaceId}; use a longer prefix.`)
     }
     session = matches[0]
   }

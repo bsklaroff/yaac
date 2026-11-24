@@ -63,7 +63,7 @@ await page.routeWebSocket(/\/api\/events/, (client) => {
   client.onMessage((m) => server.send(m))
 })
 await page.goto(`${origin}/?project=${ws.projectId}&workspace=${ws.workspaceId}`)
-await page.getByRole('button', { name: `Close session ${title(idleX)}` }).waitFor({ timeout: 30_000 })
+await page.getByRole('button', { name: `Close agent ${title(idleX)}` }).waitFor({ timeout: 30_000 })
 
 const dialog = page.getByRole('alertdialog')
 const isOpen = async (s) => (await listed()).sessions.some((x) => x.sessionId === s.sessionId)
@@ -73,7 +73,7 @@ async function waitClosed(s) {
 }
 async function openBy(how, s) {
   if (how === '×') {
-    const tab = page.getByRole('button', { name: `Close session ${title(s)}` })
+    const tab = page.getByRole('button', { name: `Close agent ${title(s)}` })
     await tab.hover()
     await tab.click()
   } else {
@@ -94,15 +94,15 @@ for (const [s, how, midTurn] of [[idleX, '×', false], [idleKey, 'Alt+W', false]
   await dialog.getByRole('button', { name: 'Cancel' }).click()
   await page.waitForTimeout(1000)
   check(`${what}: Cancel keeps it`, await isOpen(s)
-    && await page.getByRole('button', { name: `Close session ${title(s)}` }).count() === 1)
+    && await page.getByRole('button', { name: `Close agent ${title(s)}` }).count() === 1)
   await openBy(how, s)
   await dialog.getByRole('button', { name: 'Close' }).click()
   check(`${what}: Close closes it`, await waitClosed(s))
 }
 
 // An exited session closes at once, by its tab × and by its bar.
-await page.getByRole('button', { name: `Close session ${title(exitedX)}` }).hover()
-await page.getByRole('button', { name: `Close session ${title(exitedX)}` }).click()
+await page.getByRole('button', { name: `Close agent ${title(exitedX)}` }).hover()
+await page.getByRole('button', { name: `Close agent ${title(exitedX)}` }).click()
 await page.waitForTimeout(300)
 check('exited tab ×: no dialog', !await dialog.isVisible())
 check('exited tab ×: closes at once', await waitClosed(exitedX))

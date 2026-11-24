@@ -392,7 +392,7 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     expect(progress.join('\n')).toContain('Init workflow \\"lib-init\\" skipped: this workspace has no lib')
     await vi.waitFor(async () => expect(await stepStates(one)).toEqual({ 'web-init.where': 'succeeded 0' }), { timeout: 60_000, interval: 500 })
     await yaac('workspace', 'stop', one)
-    const named = await yaac('workspace', 'create', NAME, '--no-session', '--repo', NAME, '--workflow', 'lib-init')
+    const named = await yaac('workspace', 'create', NAME, '--no-agent', '--repo', NAME, '--workflow', 'lib-init')
     expect(named.stderr).toContain('workflow "lib-init" runs in lib')
     expect((await yaac('workspace', 'step', 'add', workspaceId, '--run', 'true', '--repo', 'lib')).stderr).toContain('runs in lib')
 

@@ -13,7 +13,7 @@
  * must be a running workspace of it created with both. To make them:
  *
  *   yaac project create multi && yaac project repo add multi --hosted --dir web
- *   yaac workspace create multi --no-session
+ *   yaac workspace create multi --no-agent
  *
  * Run: WORKSPACE_ID=<id> node test-playwright-scripts/multi-repo-views.js
  */

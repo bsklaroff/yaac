@@ -120,7 +120,7 @@ export function YSidebarNewWorkspace({ kbd, active, className, ref, ...props }: 
 }
 
 /** The sidebar's foot: a link to every session, with the count. */
-export function YSidebarAll({ count, onClick, label = 'All sessions' }: { count?: number; onClick: () => void; label?: string }): JSX.Element {
+export function YSidebarAll({ count, onClick, label = 'All workspaces' }: { count?: number; onClick: () => void; label?: string }): JSX.Element {
   return (
     <div className="px-1.5 pb-2">
       <button type="button" onClick={onClick}
@@ -181,7 +181,7 @@ export interface YCmdKGroup {
  * closing it hands focus back to whatever had it (the composer, an editor,
  * a terminal).
  */
-export function YCmdK({ open, onOpenChange, groups, placeholder = 'Jump to a session or project, or type a command' }: {
+export function YCmdK({ open, onOpenChange, groups, placeholder = 'Jump to a workspace or project, or type a command' }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   groups: readonly YCmdKGroup[]

@@ -35,8 +35,8 @@ export interface ForwardOptions {
   bind?: string
 }
 
-/** Parse `-p 3000` / `-p 3000:13000` into a spec for `session`. */
-function parsePortOption(raw: string, session: string): ForwardSpec {
+/** Parse `-p 3000` / `-p 3000:13000` into a spec for workspace `workspaceId`. */
+function parsePortOption(raw: string, workspaceId: string): ForwardSpec {
   const [containerRaw, hostRaw] = raw.split(':')
   const containerPort = Number(containerRaw)
   const hostPort = hostRaw === undefined ? containerPort : Number(hostRaw)
@@ -45,7 +45,7 @@ function parsePortOption(raw: string, session: string): ForwardSpec {
       throw new Error(`--port ${raw}: ${what} port must be an integer between 1 and 65535`)
     }
   }
-  return { session, containerPort, hostPort }
+  return { session: workspaceId, containerPort, hostPort }
 }
 
 /**
@@ -83,21 +83,21 @@ async function refuseLocalContainerlessForward(baseUrl: string, bind: string | u
 }
 
 export async function forward(
-  session: string | undefined,
+  workspace: string | undefined,
   options: ForwardOptions = {},
 ): Promise<void> {
-  if (options.port?.length && session === undefined) {
-    throw new Error('--port names a session\'s port, so a session has to be named too')
+  if (options.port?.length && workspace === undefined) {
+    throw new Error('--port names a workspace\'s port, so a workspace has to be named too')
   }
   const target = await resolveServerTarget()
-  // Checked before resolving the session, so a bad id against a local
-  // containerless server gets this error rather than "session not found".
+  // Checked before resolving the workspace, so a bad id against a local
+  // containerless server gets this error rather than "workspace not found".
   await refuseLocalContainerlessForward(target.baseUrl, options.bind)
   // Resolved by the server so prefixes and names work, and an unknown
-  // session fails now instead of forwarding nothing forever.
-  const workspaceId = session === undefined
+  // workspace fails now instead of forwarding nothing forever.
+  const workspaceId = workspace === undefined
     ? undefined
-    : (await api.workspace[':id'].$get({ param: { id: session } })).workspaceId
+    : (await api.workspace[':id'].$get({ param: { id: workspace } })).workspaceId
   const explicit = options.port?.length
     ? options.port.map((raw) => parsePortOption(raw, workspaceId ?? ''))
     : undefined

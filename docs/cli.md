@@ -154,14 +154,14 @@ yaac repo                       Your git repos, whatever projects link them
     -y, --yes                   Without the confirmation prompt
 
 yaac workspace
-  create [project]              Create a workspace and attach to its session
-    -w, --workspace <id>        Open the session in this running workspace
+  create [project]              Create a workspace and attach to its agent
+    -w, --workspace <id>        Start the agent in this running workspace
                                 instead (no project, and none of the workspace
                                 options: --repo, --branch, --group, --timeout,
                                 --start-*); --cwd names one of its checkouts
     --resume <conversation>     With --workspace: on one of its conversations
-    --no-session                A workspace with no agent session
-    --non-interactive           Run --steps untouched, with no session, and
+    --no-agent                  A workspace with no agent
+    --non-interactive           Run --steps untouched, with no agent, and
                                 stop when they finish: a CI run. Only stop
                                 touches it; rerun, never restart
                                 (workspace-steps.md)
@@ -216,7 +216,7 @@ yaac workspace
     -a, --all                   With -s, show all
   rename <workspace-id> <title>
   stop <workspace-id>           Tear down the runtime; keep the checkout and diff
-    --session                   <id> names a session: close only it (sessions.md)
+    --agent                     <id> names an agent: stop only it (sessions.md)
   delete <workspace-id>         Delete a stopped workspace's checkout and history,
                                 or discard a queued one
     -y, --yes                   Without the confirmation prompt
@@ -225,7 +225,7 @@ yaac workspace
                                 it would run and asks before approving exactly
                                 that (workflows.md "Approvals")
     -y, --yes                   Approve without asking
-  restart <workspace-id>        Restart, resuming the sessions it had open
+  restart <workspace-id>        Restart, resuming the agents it had open
     --timeout <duration>        Stop it this long after the restart (a restart
                                 otherwise clears its timeout)
     --restore-newest            If its last checkpoint is unreadable or its
@@ -267,7 +267,7 @@ yaac workspace
                                 Stop a running workspace this long from now, or never
   conversations <workspace-id>  List the conversations the workspace has held
   attach <workspace-id>         Attach to the workspace's tmux session
-    -s, --session <id>          On this session's window (default: its first)
+    -a, --agent <id>            On this agent's window (default: its first)
   shell <workspace-id>          Open a shell in the workspace
 
 yaac routine                    Workspaces started on a cron schedule (routines.md)

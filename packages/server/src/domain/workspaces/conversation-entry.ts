@@ -1,6 +1,6 @@
 import { formatUtcTimestamp } from '@yaac/shared/time'
 import { modelDisplayName } from '#domain/auth'
-import type { ConversationLinkRow, SessionRow } from '#db'
+import type { ClosedSessionTitle, ConversationLinkRow, SessionRow } from '#db'
 import type { AgentLiveness } from '#drivers/contract'
 import type { ObservedWindow } from '#runtime/status'
 import type { ConversationEntry, AgentStatus, ListedAgentStatus, SessionEntry } from '@yaac/shared/types'
@@ -16,10 +16,18 @@ export function listedStatus(status: AgentStatus): { status: ListedAgentStatus; 
  * (the list, the stopped listing, the conversations route) uses this, so
  * `lastActiveAt` keeps one format; tsc cannot catch a drift since both are
  * `string`. The model goes out with its catalog display name (e.g.
- * "Opus 5.5").
+ * "Opus 5.5"). Its title is its agent's, from `sessions` (open rows and
+ * titled closed ones), while it is the conversation that agent holds or
+ * closed on, so a stopped workspace's tab keeps the name its agent's tab
+ * had; else the one the tool gave it.
  */
-export function toConversationEntry(l: ConversationLinkRow): ConversationEntry {
+export function toConversationEntry(
+  l: ConversationLinkRow,
+  sessions: Array<SessionRow | ClosedSessionTitle> = [],
+): ConversationEntry {
   const modelName = l.model !== undefined ? modelDisplayName(l.tool, l.model) : undefined
+  const agent = sessions.find((s) => s.id === l.sessionId && s.conversationId === l.conversationId)
+  const title = agent?.title ?? l.title
   return {
     conversationId: l.conversationId,
     tool: l.tool,
@@ -28,6 +36,7 @@ export function toConversationEntry(l: ConversationLinkRow): ConversationEntry {
     active: l.active,
     ...(l.sessionId !== undefined ? { sessionId: l.sessionId } : {}),
     ...(l.firstPrompt !== undefined ? { prompt: l.firstPrompt } : {}),
+    ...(title !== undefined ? { title } : {}),
     ...(l.model !== undefined ? { model: l.model } : {}),
     ...(modelName !== undefined ? { modelName } : {}),
     ...(l.lastActiveAt !== undefined

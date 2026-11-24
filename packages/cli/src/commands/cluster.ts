@@ -71,7 +71,7 @@ export async function clusterInstall(options: ClusterInstallArgs): Promise<void>
   const { ok, results } = await runClusterCheck()
   for (const r of results) console.log(formatCheckResult(r))
   if (ok) {
-    console.log('\nCluster is ready for yaac sessions.')
+    console.log('\nCluster is ready for yaac workspaces.')
     return
   }
   process.exitCode = 1
@@ -83,7 +83,7 @@ export async function clusterInstall(options: ClusterInstallArgs): Promise<void>
   if (results.some((r) => r.name === 'egress' && r.status === 'fail')) {
     console.log(
       '\nThe egress gate FAILED, and the install is already in place. Do not start '
-      + 'sessions until a re-run passes: this cluster is not enforcing the session '
+      + 'workspaces until a re-run passes: this cluster is not enforcing the workspace '
       + 'NetworkPolicy, so their egress lockdown is advisory and the proxy allowlist '
       + 'covers only the ports the redirect steers.',
     )

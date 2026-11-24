@@ -92,7 +92,7 @@ export async function sessionLaunches(
     const opening = s.mode === 'tui' && !resume && s.launchedAt === undefined ? s.firstPrompt : undefined
     if (opening !== undefined && !promptFits(opening)) {
       throw new ServerError('VALIDATION', `${PROMPT_TOO_LONG}, the most one launch argument holds; it was `
-        + 'saved by an older yaac, which allowed more. Shorten it to start this session.')
+        + 'saved by an older yaac, which allowed more. Shorten it to start this agent.')
     }
     const cwd = path.posix.join(paths.workspaceDir, s.cwd)
     const ghToken = ghRepos.get(s.cwd)

@@ -22,7 +22,7 @@ export function HomeSessionList({ rows, projects }: { rows: HomeRow[]; projects:
   const me = useWhoami()?.userId
   const project = (id: string): { id: string; name: string } => ({ id, name: projects.find((p) => p.id === id)?.name ?? id })
   if (rows.length === 0) {
-    return <YEmptyState compact className="py-12" title="Nothing running" description="Start a session in any project." />
+    return <YEmptyState compact className="py-12" title="Nothing running" description="Start an agent in any project." />
   }
   return (
     <>

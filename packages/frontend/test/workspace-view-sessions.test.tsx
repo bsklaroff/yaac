@@ -86,8 +86,8 @@ describe('WorkspaceView sessions', () => {
     })
     expect(screen.getByTestId('chat').textContent).toBe('conv-a')
     expect(screen.getByTestId('terminal').textContent).toBe('session:codex-sb')
-    expect(screen.getByRole('button', { name: 'Close session Claude' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Close session Codex' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Close agent Claude' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Close agent Codex' })).toBeTruthy()
   })
 
   // Its terminal mounts at once, so it is attached by the time it shows,
@@ -109,7 +109,7 @@ describe('WorkspaceView sessions', () => {
 
   it('asks before closing a session, warning about one mid-turn', async () => {
     show({ sessions: [sessionEntry({ sessionId: 'sa', mode: 'tui', status: 'waiting', conversationId: 'conv-a' })] })
-    fireEvent.click(screen.getByRole('button', { name: 'Close session Claude' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close agent Claude' }))
     expect(await screen.findByText(/^Its agent stops\. The conversation stays/)).toBeTruthy()
     expect(server.called(CLOSE)).toHaveLength(0)
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
@@ -118,7 +118,7 @@ describe('WorkspaceView sessions', () => {
     cleanup()
     useUiStore.setState({ layouts: {} })
     show({ sessions: [sessionEntry({ sessionId: 'sa', mode: 'tui', status: 'running' })] })
-    fireEvent.click(screen.getByRole('button', { name: 'Close session Claude' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close agent Claude' }))
     expect(await screen.findByText('Its agent stops mid-turn.')).toBeTruthy()
     expect(server.called(CLOSE)).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
@@ -133,7 +133,7 @@ describe('WorkspaceView sessions', () => {
     await waitFor(() => expect(server.called(RESUME)).toHaveLength(1))
     fireEvent.click(screen.getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(server.called(CLOSE)).toHaveLength(1))
-    fireEvent.click(screen.getByRole('button', { name: 'Close session Claude' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close agent Claude' }))
     await waitFor(() => expect(server.called(CLOSE)).toHaveLength(2))
     expect(screen.queryByRole('alertdialog')).toBeNull()
   })
@@ -174,15 +174,15 @@ describe('WorkspaceView sessions', () => {
   it('shows a workspace with no session what it can start, its history included', async () => {
     show({ conversations: [closed] })
     expect(screen.getByText('No agent is running here')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Earlier conversations' }))
+    fireEvent.click(screen.getByRole('button', { name: '1 stopped conversation' }))
     expect(await screen.findByText('the parser is fixed')).toBeTruthy()
 
-    // New session opens the create form aimed at this workspace.
+    // New agent opens the create form aimed at this workspace.
     cleanup()
     useUiStore.setState({ layouts: {} })
     show({})
-    expect(screen.queryByRole('button', { name: 'Earlier conversations' })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'New session' }))
+    expect(screen.queryByRole('button', { name: /stopped conversation/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'New agent' }))
     expect(useUiStore.getState().newWorkspace).toMatchObject({ projectId: 'proj', inWorkspace: 's1' })
   })
 
@@ -190,7 +190,7 @@ describe('WorkspaceView sessions', () => {
     const open = sessionEntry({ sessionId: 'sa', conversationId: 'conv-a' })
     const view = show({ sessions: [open], conversations: [older, closed, held] })
     fireEvent.click(screen.getByRole('button', { name: 'More pane actions' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'Conversation history' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: '2 stopped conversations' }))
     expect(await screen.findByText('the parser is fixed')).toBeTruthy()
     expect(useUiStore.getState().activeTabs.s1).toBe('history')
 

@@ -735,7 +735,7 @@ describe('write routes', () => {
     it('streams progress and a terminal result event from createWorkspace', async () => {
       mockCreateWorkspace.mockImplementation((_projectId, opts) => {
         opts.onProgress?.('Fetching latest from remote...')
-        opts.onProgress?.('Creating session job yaac-demo-sess-x...')
+        opts.onProgress?.('Creating workspace job yaac-demo-sess-x...')
         return Promise.resolve({ workspaceId: 'sess-x', jobName: 'yaac-demo-sess-x', forwardedPorts: [], sessionId: SESSION })
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
@@ -750,7 +750,7 @@ describe('write routes', () => {
       const events = text.trim().split('\n').map((line) => JSON.parse(line) as unknown)
       expect(events).toEqual([
         { type: 'progress', message: 'Fetching latest from remote...' },
-        { type: 'progress', message: 'Creating session job yaac-demo-sess-x...' },
+        { type: 'progress', message: 'Creating workspace job yaac-demo-sess-x...' },
         // The CLI attaches to the session the create opened.
         { type: 'result', result: { workspaceId: 'sess-x', jobName: 'yaac-demo-sess-x', forwardedPorts: [], sessionId: SESSION } },
       ])
@@ -883,7 +883,7 @@ describe('write routes', () => {
         const refused = await create(extra)
         expect(refused.status, JSON.stringify(extra)).toBe(400)
         expect((await refused.json() as { error: unknown }).error).toEqual({
-          code: 'VALIDATION', message: 'a workspace with no session takes no prompt or agent settings',
+          code: 'VALIDATION', message: 'a workspace with no agent takes no prompt or agent settings',
         })
       }
       expect(mockCreateWorkspace).toHaveBeenCalledTimes(1)

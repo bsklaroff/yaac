@@ -16,6 +16,11 @@ Three nouns, each with one job:
 | **Session** (`sessions`) | one agent in one window: tool, mode, model, posture, effort, agent options, the message it was opened with | open → close; survives a workspace stop and restart while open |
 | **Conversation** (`conversations`) | the tool's own history, keyed by the tool's id | forever, project-scoped |
 
+The webapp calls a session an **agent** ("New agent", "3 agents"), as
+do the CLI's and `yaac-mama`'s flags and output
+(`--agent`, `--no-agent`), since each session is one agent; the code, the
+API, the database and `YAAC_SESSION_ID` keep "session".
+
 yaac mints a session's id before anything launches. The id names the
 session's window (`<tool>-<first 8 of the id>`), and that window name is
 its **handle**: the status store's key, the acpd socket's name under `acp`
@@ -37,8 +42,8 @@ siblings.
 
 - **Open** is a row without `closedAt`. A running workspace has a window for
   each open session, and a restart brings back exactly the open ones.
-- **Closed** (the user's close, `yaac workspace stop --session`, `yaac-mama
-  stop --session`, or its window killed from inside tmux): the window is
+- **Closed** (the user's close, `yaac workspace stop --agent`, `yaac-mama
+  stop --agent`, or its window killed from inside tmux): the window is
   killed and the row keeps `closedAt`. Its conversations stay in the
   workspace's history and can be resumed into a new session.
 - **Exited**: the agent quit or crashed. Session windows are set
@@ -174,10 +179,10 @@ even while a sibling already waits.
 | | API | CLI | `yaac-mama` |
 |---|---|---|---|
 | New workspace with a session | `POST /workspace/create` | `yaac workspace create <project>` | `yaac-mama create "<prompt>"` |
-| New workspace, no session | `… { noSession: true }` | `--no-session` | `--no-session` |
+| New workspace, no session | `… { noSession: true }` | `--no-agent` | `--no-agent` |
 | Session in a running workspace | `POST /workspace/:id/sessions` | `yaac workspace create --workspace <id>` | `yaac-mama create --workspace <id>` |
 | Resume one of its conversations | `… { resume }` | `… --resume <conversation>` | `… --resume <conversation>` |
-| Close a session | `POST /workspace/:id/sessions/:sid/close` | `yaac workspace stop --session <sid>` | `yaac-mama stop --session [<sid>]` |
+| Close a session | `POST /workspace/:id/sessions/:sid/close` | `yaac workspace stop --agent <sid>` | `yaac-mama stop --agent [<sid>]` |
 | Resume an exited session | `POST /workspace/:id/sessions/:sid/resume` | | |
 | Rename a session | `POST /workspace/:id/sessions/:sid/title` | | |
 
@@ -217,23 +222,27 @@ workspace or beside it in its own.
   its agent has already exited.
   A workspace with no pane open shows what it can start (`EmptyWorkspace`).
 - **History.** Once a workspace holds a conversation no agent does (a
-  closed session's, or one an open session left with `/clear`), its bar
-  offers History: a pane, `history`, that reads those conversations as a
-  stopped workspace's are read, newest first, and resumes the one shown in
-  a new session, whose pane takes focus (`HistoryPane`).
+  closed session's, or one an open session left with `/clear`), the top of
+  its bar's ⋯ menu, and an empty workspace's pane, count them as "N stopped
+  conversations" and open History: a pane, `history`, that reads those
+  conversations as a stopped workspace's are read, newest first, and
+  resumes the one shown in a new session, whose pane takes focus
+  (`HistoryPane`). The count is the pane's tabs. A tab here, or in a stopped
+  workspace, is named for its agent's title while it is the conversation
+  that agent held last, else for the tool's own title or its first message.
 - **Sidebar.** A workspace with no session reads "No agent" with a hollow
-  ring; with one, its agent; with several, "N sessions" and a row per
+  ring; with one, its agent; with several, "N agents" and a row per
   session under it, each with its own status and unread dot, which opens
   the workspace on that session's pane. Such a row's mark shows its most
   pressing session (an ask first, then an unread one, then working,
   background work, waiting), unlike the server's aggregate, which ranks
   waiting first for alerts; on hover it turns into the caret that folds
-  the session rows away (on a phone, tapping the "N sessions" count does
+  the session rows away (on a phone, tapping the "N agents" count does
   it). While the workspace is open, the row of the session whose pane has
   focus is highlighted.
 - **Starting one.** The new-workspace pane's Where field aims it at a
   running workspace, which hides the workspace-only fields and opens a
-  session there; New session in a workspace's bar or row menu opens it
+  session there; New agent in a workspace's bar or row menu opens it
   aimed. Its Agent field's None creates a workspace with no session.
 
 ## Where things live

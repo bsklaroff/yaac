@@ -506,11 +506,11 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(attach.exitCode, attach.stderr).toBe(0)
     expect(attach.stderr).not.toMatch(/not found|error/i)
 
-    // --session lands on that session's window, whichever window tmux has
+    // --agent lands on that agent's window, whichever window tmux has
     // current: the status line marks it current (`*`) before the detach.
     const session = await firstSession(workspaceId)
     await tmux(workspaceId, 'select-window', '-t', '=yaac:=_yaac')
-    const onSession = await runYaac(serverEnv, 'workspace', 'attach', '--session', session.sessionId.slice(0, 8), prefix, {
+    const onSession = await runYaac(serverEnv, 'workspace', 'attach', '--agent', session.sessionId.slice(0, 8), prefix, {
       stdinOnPrompt: [{ when: new RegExp(`${session.window}\\*`), send: '\x02d' }],
     })
     expect(onSession.exitCode, onSession.stderr).toBe(0)
@@ -762,9 +762,14 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     const create = await runMama('create', '--tool', 'claude', '-h')
     expect(create.out).toContain('create also takes')
     expect(create.out).not.toContain('yaac-mama stop')
-    const value = await runMama('send', '--session', '-h', 'no-such-workspace', 'hi')
+    const value = await runMama('send', '--agent', '-h', 'no-such-workspace', 'hi')
     expect(value.code).toBe(1)
     expect(value.out).not.toContain('Usage:')
+    // An option the script does not know, such as a retired one, is refused
+    // before anything is sent, never taken as the prompt.
+    const retired = await runMama('create', '--no-session')
+    expect(retired.code).toBe(2)
+    expect(retired.out).toContain('yaac-mama: unknown option --no-session')
   })
 
   it('hands the workspace a yaac-mama credential and server address', async () => {

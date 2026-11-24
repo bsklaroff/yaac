@@ -48,7 +48,7 @@ export function CommandPalette({ scope, rows, projects }: {
   const groups: YCmdKGroup[] = [
     { label: 'Needs you', items: rows.filter((r) => r.section === 'need').map(session) },
     { label: 'Working', items: rows.filter((r) => r.section === 'working').map(session) },
-    { label: 'Sessions', items: rows.filter((r) => r.section === 'done').map(session) },
+    { label: 'Done', items: rows.filter((r) => r.section === 'done').map(session) },
     { label: 'Projects', items: projects.map((p) => ({ id: `p:${p.id}`, title: p.name, onSelect: () => st().setActiveProject(p.id) })) },
     { label: 'Actions', items: actions },
   ]

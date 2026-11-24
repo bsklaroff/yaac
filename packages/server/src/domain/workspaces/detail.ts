@@ -19,7 +19,7 @@ export interface WorkspaceDetail {
 
 async function findWorkspace(idOrPrefix: string): Promise<RuntimeHandle> {
   const match = await workspaceDriver().find(await resolveWorkspaceId(idOrPrefix))
-  if (!match) throw new ServerError('NOT_FOUND', `session ${idOrPrefix} not found`)
+  if (!match) throw new ServerError('NOT_FOUND', `workspace ${idOrPrefix} not found`)
   return match
 }
 

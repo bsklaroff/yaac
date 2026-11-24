@@ -555,7 +555,7 @@ export function WorkspaceView({
             icon={CloseIcon}
             onClick={() => askCloseSession(t)}
             title={`Close ${tabName(t)}`}
-            aria-label={`Close session ${tabName(t)}`}
+            aria-label={`Close agent ${tabName(t)}`}
             className={TAB_CLOSE}
           />
         ) : isSpecialPane(t) ? (
@@ -590,8 +590,8 @@ export function WorkspaceView({
   // No session or shell opens in a locked workspace (docs/workspace-steps.md,
   // docs/public-sites.md).
   const interactive = workspace !== undefined && !isLocked(workspace)
-  const hasHistory = interactive && pastConversations(workspace).length > 0
-  const onOpenHistory = sid && hasHistory ? { onOpenHistory: () => openHistory(sid) } : {}
+  const pastCount = interactive ? pastConversations(workspace).length : 0
+  const history = sid && pastCount > 0 ? { history: { count: pastCount, onOpen: () => openHistory(sid) } } : {}
   const headerClass = paneBarClass(isMobile)
 
   // The mobile key bar, only over a terminal pane: a terminal's, or a `tui`
@@ -734,7 +734,7 @@ export function WorkspaceView({
               onOpenChanges={() => openChanges(workspace.workspaceId)}
               onOpenCommits={() => openCommits(workspace.workspaceId)}
               onOpenFiles={() => openFiles(workspace.workspaceId)}
-              {...onOpenHistory}
+              {...history}
               onOpenPreview={(p) => showPreview(workspace.workspaceId, p)}
             >
               {timeout.deadline === undefined && workspace.site === undefined && <TimeoutSubmenu timeout={timeout} />}
@@ -811,7 +811,7 @@ export function WorkspaceView({
             <EmptyWorkspace
               workspace={workspace}
               {...(interactive ? { onNewSession: newSession, onNewShell: openShell } : {})}
-              {...onOpenHistory}
+              {...history}
             />
           </PaneCard>
         )}

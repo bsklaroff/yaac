@@ -618,7 +618,7 @@ describe('WorkspaceList', () => {
     ]
     const rerender = renderList(workspaces)
     expect(screen.getByText('No agent')).toBeTruthy()
-    expect(screen.getByText('2 sessions')).toBeTruthy()
+    expect(screen.getByText('2 agents')).toBeTruthy()
     // Each session row: its own name, agent and status.
     const row = rowOf('Reviewer')
     expect(row.textContent).toContain('Codex')
@@ -626,9 +626,9 @@ describe('WorkspaceList', () => {
     expect(screen.getByText('Reviewer').className).toContain('font-semibold')
     expect(within(rowOf('write the parser')).getByRole('img', { name: 'Working' })).toBeTruthy()
     // An unread session outranks the busiest; with none, the busiest shows.
-    expect(screen.getByRole('button', { name: "Finished since you looked. Hide Busy's sessions" })).toBeTruthy()
+    expect(screen.getByRole('button', { name: "Finished since you looked. Hide Busy's agents" })).toBeTruthy()
     rerender(workspaces.map((w) => ({ ...w, sessions: w.sessions.map((x) => ({ ...x, waitingSeenBy: [TEST_USER_ID] })) })))
-    expect(screen.getByRole('button', { name: "Working. Hide Busy's sessions" })).toBeTruthy()
+    expect(screen.getByRole('button', { name: "Working. Hide Busy's agents" })).toBeTruthy()
 
     // A session row opens its workspace on that session's pane, and stays
     // highlighted while that pane is the focused one.
@@ -644,9 +644,9 @@ describe('WorkspaceList', () => {
     expect(highlighted()).toEqual([])
 
     // The mark folds the session rows away and back.
-    fireEvent.click(screen.getByRole('button', { name: "Working. Hide Busy's sessions" }))
+    fireEvent.click(screen.getByRole('button', { name: "Working. Hide Busy's agents" }))
     expect(screen.queryByText('Reviewer')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: "Working. Show Busy's sessions" }))
+    fireEvent.click(screen.getByRole('button', { name: "Working. Show Busy's agents" }))
     expect(screen.getByText('Reviewer')).toBeTruthy()
 
     // On a phone the count is the toggle, and a tap on the mark opens the
@@ -655,11 +655,11 @@ describe('WorkspaceList', () => {
     vi.stubGlobal('matchMedia', (q: string) => ({ matches: true, media: q, addEventListener() {}, removeEventListener() {} }))
     renderList(workspaces)
     expect(screen.queryByRole('button', { name: /Busy's sessions/ })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '2 sessions' }))
+    fireEvent.click(screen.getByRole('button', { name: '2 agents' }))
     expect(screen.queryByText('Reviewer')).toBeNull()
     cleanup()
     renderList(workspaces.map((w) => ({ ...w, blockedHosts: ['evil.example'] })))
-    fireEvent.click(screen.getByRole('button', { name: /Show Busy's sessions/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Show Busy's agents/ }))
     expect(screen.getByText('Reviewer')).toBeTruthy()
   })
 
@@ -674,14 +674,14 @@ describe('WorkspaceList', () => {
     renderList([entry({ workspaceId: 'a', title: 'Fix parser' })])
     fireEvent.click(screen.getByRole('button', { name: 'Workspace actions' }))
     const items = (await screen.findAllByRole('menuitem')).map((i) => i.textContent)
-    expect(items).toEqual(['New session…', 'Rename', 'Move to group…', 'Queue workspace after this…', 'Stop…'])
+    expect(items).toEqual(['New agent…', 'Rename', 'Move to group…', 'Queue workspace after this…', 'Stop…'])
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move to group…' }))
     expect(await screen.findByText('Add to group')).toBeTruthy()
 
-    // New session opens the create form aimed at this workspace.
+    // New agent opens the create form aimed at this workspace.
     fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
     fireEvent.click(screen.getByRole('button', { name: 'Workspace actions' }))
-    fireEvent.click(await screen.findByRole('menuitem', { name: 'New session…' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'New agent…' }))
     expect(useUiStore.getState().newWorkspace).toMatchObject({ projectId: 'proj', inWorkspace: 'a' })
   })
 

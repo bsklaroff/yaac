@@ -684,7 +684,7 @@ describe('with seeded projects', () => {
       // Resolved from rows, since a stopped workspace has no pod.
       const { stdout, exitCode } = await runYaac(testEnv.env, 'workspace', 'conversations', stoppedId)
       expect(exitCode).toBe(0)
-      expect(stdout).toMatch(/CONVERSATION\s+TOOL\s+STATE\s+SESSION\s+FIRST MESSAGE/)
+      expect(stdout).toMatch(/CONVERSATION\s+TOOL\s+STATE\s+AGENT\s+FIRST MESSAGE/)
       expect(stdout).toContain(convA)
       expect(stdout).toContain(convB)
       expect(stdout).toContain('the original ask')
@@ -741,14 +741,14 @@ describe('with seeded projects', () => {
     // Refused by the CLI before it asks the server for anything, so they
     // need no project or workspace. One of each kind of refusal, to show
     // the flags reach the check; every combination is in
-    // packages/cli/test/workspace-create.test.ts. The paths that open
-    // sessions are in workspace-create-suite.test.ts ("sessions").
-    it('refuses session flags that cannot go together', async () => {
+    // packages/cli/test/workspace-create.test.ts. The paths that start
+    // agents are in workspace-create-suite.test.ts ("sessions").
+    it('refuses agent flags that cannot go together', async () => {
       const refusals: Array<[string[], string]> = [
-        [[], 'Name the project to create the workspace in, or --workspace to open a session in a running one.'],
+        [[], 'Name the project to create the workspace in, or --workspace to start an agent in a running one.'],
         [['some-project', '--workspace', 'abc123'], 'Give a project or --workspace, not both'],
-        [['some-project', '--no-session', '--permission-mode', 'plan'], '--no-session does not take --permission-mode: a workspace with no session runs no agent.'],
-        [['--workspace', 'abc123', '--no-nested'], '--no-nested is a workspace\'s setting, which --workspace (a session in a running one) does not take.'],
+        [['some-project', '--no-agent', '--permission-mode', 'plan'], '--no-agent does not take --permission-mode: a workspace with no agent runs none.'],
+        [['--workspace', 'abc123', '--no-nested'], '--no-nested is a workspace\'s setting, which --workspace (an agent in a running one) does not take.'],
         [['some-project', '--no-repos', '--repo', 'lib'], '--no-repos starts with no checkout, so it does not take --repo.'],
         [['some-project', '--repo', '@main'], 'expected <dir> or <dir>@<branch>'],
         [['some-project', '--resume', 'conv-1'], '--resume needs --workspace: a conversation resumes in the workspace that holds it.'],

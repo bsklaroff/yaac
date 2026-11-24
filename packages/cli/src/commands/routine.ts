@@ -135,7 +135,7 @@ async function promptOf(opts: RoutineOptions): Promise<string | undefined> {
 /** The settings the options name, in the shape the routes take. */
 function settingsOf(opts: RoutineOptions): Partial<RoutineSettings> {
   if (opts.nonInteractive === true && (opts.prompt !== undefined || opts.promptFile !== undefined)) {
-    throw new Error('--non-interactive runs take no prompt: they open no session.')
+    throw new Error('--non-interactive runs take no prompt: they start no agent.')
   }
   const timeout = opts.timeout === undefined ? undefined
     : opts.timeout.trim().toLowerCase() === 'next' ? null

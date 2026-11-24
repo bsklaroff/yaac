@@ -6,7 +6,7 @@ description: Generate yaac config for the current repo — init steps that insta
 You are running **inside a yaac workspace** — a sandboxed container holding a
 checkout of some project. This skill writes a template into that repo,
 `.yaac/init-steps.json`, and works out which ports to forward; **once the
-user applies both to their project**, *future* sessions boot with the app
+user applies both to their project**, *future* workspaces boot with the app
 already built, running, and reachable from the host browser.
 
 The job has three parts:
@@ -30,17 +30,17 @@ The job has three parts:
   `yaac workflow create <project> <name> --file <file> --init`, forwarded
   ports with
   `yaac config port-forwards <project> <port>...`. The file you write in the
-  repo is **never read automatically** by session create. It's the handoff:
+  repo is **never read automatically** by workspace create. It's the handoff:
   you can't apply it from in here, so it carries the steps you proved to the
   user, and once committed it records them for anyone else setting the
   project up. Nothing
   you write takes effect until it's applied there.
-- **Applying it is a host-side step you can't do from in here.** This session is
+- **Applying it is a host-side step you can't do from in here.** This workspace is
   a sandbox; the host's `~/.yaac` and the `yaac` CLI/daemon aren't reachable
   from inside it. So you produce the template and hand the apply step to the
   user (part 3 / step 5). You also can't "test port forwarding" from inside this
-  session — validate the *commands and port* here; forwarding takes effect once
-  the config is applied and a new session boots.
+  workspace — validate the *commands and port* here; forwarding takes effect once
+  the config is applied and a new workspace boots.
 - **Init steps run on every start and restart, not just the first.** Keep them
   idempotent and cache-friendly (`npm ci` / `pnpm install` against the warm
   shared package cache is fine; a destructive one-time migration is not).
@@ -88,7 +88,7 @@ keep probing:
   the user adds it to the project's egress allowlist (not the config file).
 - **Missing system tooling**: if the build needs a compiler, runtime, or system
   package the image lacks, that belongs in the project's **`Dockerfile.yaac`**
-  (`yaac config dockerfile <project> --file <path>`), **not** an init step — sessions
+  (`yaac config dockerfile <project> --file <path>`), **not** an init step — workspaces
   aren't root and init steps shouldn't try to `apt-get`. Call this out to
   the user; it's a separate step from writing the template.
 
@@ -149,7 +149,7 @@ Tell the user:
   port-forwards <project> <port>...` (plus `yaac config cache-volumes <project>
   <name>=<path>` if the project needs it), or use the web app (its Workflows,
   and Settings → Project → Network for ports).
-- that it then takes effect on the **next** session created for this project
+- that it then takes effect on the **next** workspace created for this project
   (not the current one),
 - how they'll reach the app: the Preview button in the desktop or iPhone app
   (or `yaac forward`, then `http://localhost:<hostPort>` in a browser), where
@@ -205,7 +205,7 @@ needs.
 | Command | Purpose |
 |---|---|
 | `port-forwards <project> <port>[:<host>]...` | Forward an in-container port to the host. The host port is the preferred one; yaac scans upward if it's busy. |
-| `cache-volumes <project> <name>=<path>...` | Per-project persistent caches that survive across sessions, each mounted at an absolute container path. (pnpm's store is already shared at `~/.cached-packages` — no entry needed.) |
+| `cache-volumes <project> <name>=<path>...` | Per-project persistent caches that survive across workspaces, each mounted at an absolute container path. (pnpm's store is already shared at `~/.cached-packages` — no entry needed.) |
 
 Dependency and build-output dirs each workspace keeps off its checkout
 (`node_modules` and `target` by default) are a project setting, not a config
@@ -215,7 +215,7 @@ key: Settings → Project → Storage, or `yaac config scratch-dirs`.
 
 - **The template is just a file — yaac never auto-loads it.** It only
   takes effect once applied (`yaac workflow create … --init`, or the web
-  app). Even then they apply to the *next* session, not the current one —
+  app). Even then they apply to the *next* workspace, not the current one —
   validate commands/port here; forwarding happens at the next boot.
 - **Init steps run on every start** — make them idempotent.
 - **A step's commands stop at the first non-zero exit.** Put a service's
@@ -230,7 +230,7 @@ key: Settings → Project → Storage, or `yaac config scratch-dirs`.
   project needs any, say which in your summary rather than writing a config key
   for them — there is none.
 - **There is no way to mount a host directory.** Use `cacheVolumes` for a
-  directory that should persist across sessions, or bake the contents into the
+  directory that should persist across workspaces, or bake the contents into the
   project image.
 - **There is no `docker` or `docker compose` inside a k8s workspace.** A
   project that runs its services with docker-compose has to run them some

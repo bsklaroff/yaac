@@ -32,7 +32,7 @@ export async function resolveWorkspaceContainer(
   if (opts.owner && row) await authorizeProject(opts.owner, row.projectId)
   const match: RuntimeHandle | undefined =
     await workspaceDriver().find(id, { preferCache: true })
-  if (!match) throw new ServerError('NOT_FOUND', `session ${idOrPrefix} not found`)
+  if (!match) throw new ServerError('NOT_FOUND', `workspace ${idOrPrefix} not found`)
   if (opts.owner && !row) await authorizeProject(opts.owner, match.projectId)
 
   if (opts.requireRunning && match.state !== 'running') {

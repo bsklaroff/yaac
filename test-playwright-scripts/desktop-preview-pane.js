@@ -18,7 +18,7 @@
  * else the first such workspace is used. For example, against a
  * containerless server:
  *   yaac config port-forwards <project> 3000
- *   yaac workspace create <project> --no-session --steps steps.json
+ *   yaac workspace create <project> --no-agent --steps steps.json
  * with a `steps.json` whose one service step serves `$YAAC_PORT_3000`. The
  * server serves the SPA it started with, so `pnpm build` and `yaac server
  * restart` first. Also needs the desktop bundle

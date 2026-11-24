@@ -106,11 +106,13 @@ describe('ReadOnlyTranscript', () => {
     renderPane({
       conversations: [
         session({ conversationId: 'c1', ordinal: 0, active: false, prompt: 'first ask' }),
-        session({ conversationId: 'c2', ordinal: 1, active: true, prompt: 'second ask' }),
+        session({ conversationId: 'c2', ordinal: 1, active: true, prompt: 'second ask', title: 'Second task' }),
       ],
     })
 
     expect(await screen.findByText('the second answer')).toBeTruthy()
+    // A tab is named for its title (its agent's), else its first message.
+    expect(screen.getByRole('tab', { name: 'Second task' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('tab', { name: 'first ask' }))
     expect(await screen.findByText('the first answer')).toBeTruthy()

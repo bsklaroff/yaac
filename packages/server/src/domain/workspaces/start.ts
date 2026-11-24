@@ -387,6 +387,6 @@ export function checkStartSteps(
   if (steps === undefined || steps === null || !graphHasTask(steps)) {
     throw new ServerError('VALIDATION', 'a non-interactive workspace needs its own steps, at least one of them not a service')
   }
-  if (request.noSession !== true) throw new ServerError('VALIDATION', 'a non-interactive workspace opens no session')
+  if (request.noSession !== true) throw new ServerError('VALIDATION', 'a non-interactive workspace starts no agent')
   return steps
 }

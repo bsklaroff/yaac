@@ -22,7 +22,7 @@ export async function markWaitingSeen(
   waitingSinceMs: number,
 ): Promise<boolean> {
   const session = await getSessionRow(sessionId)
-  if (session === undefined) throw new ServerError('NOT_FOUND', `no session ${sessionId}`)
+  if (session === undefined) throw new ServerError('NOT_FOUND', `no agent ${sessionId}`)
   const window = readWorkspaceWindows(session.projectId, session.workspaceId)?.find((w) => w.name === session.window)
   const agent = readAgentStatus(session.projectId, session.workspaceId, session.window)
   // An exited agent's spell began when it was first seen dead.

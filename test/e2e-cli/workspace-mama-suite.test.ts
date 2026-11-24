@@ -438,7 +438,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
 
     const listed = await runMama('list')
-    expect(listed.output).toMatch(/WORKSPACE\s+SESSION\s+AGENT\s+STATUS\s+TITLE/)
+    expect(listed.output).toMatch(/WORKSPACE\s+AGENT\s+TOOL\s+STATUS\s+TITLE/)
     expect(listed.output).toContain(sessionId.slice(0, 8))
     // As that session, it is marked as the caller.
     expect((await runMama('list', sessionId)).output).toContain(`${sessionId.slice(0, 8)} (you)`)
@@ -462,20 +462,20 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(sessions().find((s) => s.sessionId === sessionId)?.conversationId).toBe(sessionId)
 
     // A session never messages itself, but may message its sibling.
-    const self = await runMama(`send --session ${sessionId} "$YAAC_WORKSPACE_ID" "hello me"`, sessionId)
+    const self = await runMama(`send --agent ${sessionId} "$YAAC_WORKSPACE_ID" "hello me"`, sessionId)
     expect(self.exitCode).toBe(1)
-    expect(self.output).toContain(`no open session '${sessionId}'`)
+    expect(self.output).toContain(`no running agent '${sessionId}'`)
     const sent = await onceUp(
-      () => runMama(`send --session ${lead!.slice(0, 8)} "$YAAC_WORKSPACE_ID" "from your sibling"`, sessionId),
+      () => runMama(`send --agent ${lead!.slice(0, 8)} "$YAAC_WORKSPACE_ID" "from your sibling"`, sessionId),
       'has no conversation yet',
     )
     expect(sent.exitCode, sent.output).toBe(0)
-    expect(sent.output).toContain(`Sent to ${callerWorkspaceId.slice(0, 8)}'s claude session ${lead!.slice(0, 8)}`)
+    expect(sent.output).toContain(`Sent to ${callerWorkspaceId.slice(0, 8)}'s claude agent ${lead!.slice(0, 8)}`)
 
-    // Bare, stop --session closes the asking session; the workspace runs on.
-    const closed = await runMama('stop --session', sessionId)
+    // Bare, stop --agent stops the asking agent; the workspace runs on.
+    const closed = await runMama('stop --agent', sessionId)
     expect(closed.exitCode, closed.output).toBe(0)
-    expect(closed.output).toContain(`Closed session ${sessionId.slice(0, 8)}; its conversations stay in `)
+    expect(closed.output).toContain(`Stopped agent ${sessionId.slice(0, 8)}; its conversations stay in `)
     expect(closed.output).toContain('keeps running.')
     expect((await listWorkspacePods(PROJECT_ID)).find((p) => p.jobName === jobA)?.running).toBe(true)
 
@@ -491,12 +491,12 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(refused.output).toContain('--resume needs --workspace')
   }, 300_000)
 
-  it('starts a workspace with no session, which takes no prompt', async () => {
-    const refused = await runMama('create --no-session "do something"')
+  it('starts a workspace with no agent, which takes no prompt', async () => {
+    const refused = await runMama('create --no-agent "do something"')
     expect(refused.exitCode).toBe(1)
-    expect(refused.output).toContain('--no-session takes no prompt')
+    expect(refused.output).toContain('--no-agent takes no prompt')
 
-    const created = await runMama('create --no-session --title "No agent"')
+    const created = await runMama('create --no-agent --title "No agent"')
     expect(created.exitCode, created.output).toBe(0)
     const workspaceId = created.output.trim()
     let pod: PodInfo | undefined

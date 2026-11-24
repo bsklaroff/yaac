@@ -3,6 +3,7 @@ import {
   getProjectRow,
   getProjectWorkspaceRows,
   conversationTitle,
+  listClosedSessionTitlesFor,
   listOpenSessionsFor,
   listStepsFor,
   listWorkspaceReposFor,
@@ -126,14 +127,15 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       ? agentsByProject.get(w.projectId)?.get(w.workspaceId)
       : undefined) ?? []
   const ids = report.workspaces.map((w) => w.workspaceId).filter((v) => !!v)
-  const [sessionsByWorkspace, stepsByWorkspace, reposByWorkspace] = await Promise.all([
-    listOpenSessionsFor(ids), listStepsFor(ids), listWorkspaceReposFor(ids),
+  const [sessionsByWorkspace, closedByWorkspace, stepsByWorkspace, reposByWorkspace] = await Promise.all([
+    listOpenSessionsFor(ids), listClosedSessionTitlesFor(ids), listStepsFor(ids), listWorkspaceReposFor(ids),
   ])
 
   const workspaces = report.workspaces.map((w): WorkspaceListEntry => {
     const row = rowFor(w)
     const links = agentsFor(w)
     const sessions = sessionsByWorkspace.get(w.workspaceId) ?? []
+    const named = [...sessions, ...closedByWorkspace.get(w.workspaceId) ?? []]
     const steps = stepsByWorkspace.get(w.workspaceId) ?? []
     const base = {
       workspaceId: w.workspaceId,
@@ -143,7 +145,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       prompt: openingPrompt(links) ?? sessions[0]?.firstPrompt,
       title: row?.title ?? conversationTitle(links) ?? row?.generatedTitle,
       groupId: row?.groupId,
-      conversations: links.map(toConversationEntry),
+      conversations: links.map((l) => toConversationEntry(l, named)),
       ...(row?.deadline !== undefined ? { deadline: row.deadline.toISOString() } : {}),
       ...(routineRuns.has(w.workspaceId) ? { routineId: routineRuns.get(w.workspaceId) } : {}),
       ...(row?.nonInteractive === true ? { nonInteractive: true as const } : {}),
