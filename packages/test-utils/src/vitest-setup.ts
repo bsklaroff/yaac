@@ -23,12 +23,14 @@ delete process.env.GIT_WORK_TREE
 //   test running it from a workspace under test would be refused.
 // - GH_TOKEN is the token `auth fake github` copies into the credential it
 //   seeds, in place of the placeholder tests expect.
+// - YAAC_OPENCODE_STATE, a containerless workspace's opencode state dir,
+//   would point the message scripts under test at the outer opencode's.
 // Stripped for every project, since e2e/api servers inherit process.env.
 // Tests that exercise these stub them per case.
 for (const key of [
   'YAAC_ALLOWED_HOSTS', 'YAAC_ACCESS_MODE', 'YAAC_ACCESS_ADMINS', 'YAAC_WORKSPACE_ID',
   'YAAC_SECRET', 'YAAC_SECRETS', 'TS_OAUTH_CLIENT_ID', 'TS_OAUTH_CLIENT_SECRET', 'YAAC_NO_PANE_REPORT',
-  'YAAC_WORKSPACE_DIR', 'GH_TOKEN',
+  'YAAC_WORKSPACE_DIR', 'GH_TOKEN', 'YAAC_OPENCODE_STATE',
 ] as const) {
   delete process.env[key]
 }

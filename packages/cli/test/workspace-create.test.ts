@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest'
+import fs from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { Readable } from 'node:stream'
 import { agentOptionArg, workspaceCreate, type WorkspaceCreateOptions } from '#commands/workspace-create'
-import { startFakeApi, type FakeApi } from './fake-api'
+import { serveProjects, startFakeApi, type FakeApi } from './fake-api'
 
 /*
  * What `yaac workspace create` refuses by itself, before it asks the server
@@ -82,6 +86,35 @@ describe('workspaceCreate', () => {
     }
 
     expect(api.requests).toEqual([])
+  })
+
+  // These come after the project or workspace is resolved, but before
+  // anything is created, for a new workspace and an agent in a running one.
+  it('refuses a prompt given twice, or one that is empty or unreadable, creating nothing', async () => {
+    api.reset()
+    serveProjects(api, [['id-p', 'p']])
+    api.on('GET /api/workspace/w1', { json: { workspaceId: 'w1' } })
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-prompt-'))
+    const empty = path.join(dir, 'empty.md')
+    await fs.writeFile(empty, '')
+    const stdin = vi.spyOn(process, 'stdin', 'get').mockImplementation(() => Readable.from([]) as typeof process.stdin)
+    try {
+      const refusals: Array<[WorkspaceCreateOptions, string]> = [
+        [{ prompt: 'x', promptFile: empty }, 'Give the prompt with --prompt or --prompt-file, not both.'],
+        [{ promptFile: empty }, `The prompt from ${empty} is empty.`],
+        [{ promptFile: `${empty}.missing` }, `Cannot read the prompt from ${empty}.missing: `],
+        [{ prompt: '-' }, 'The prompt from stdin is empty.'],
+      ]
+      for (const [options, message] of refusals) {
+        await expect(workspaceCreate('p', options), message).rejects.toThrow(message)
+        await expect(workspaceCreate(undefined, { workspace: 'w1', ...options }), message).rejects.toThrow(message)
+      }
+    } finally {
+      stdin.mockRestore()
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+    expect(api.requests.map((r) => r.route)).not.toContain('POST /api/workspace/create')
+    expect(api.requests.map((r) => r.route)).not.toContain('POST /api/workspace/w1/sessions')
   })
 })
 

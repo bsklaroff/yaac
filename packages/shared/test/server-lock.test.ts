@@ -3,6 +3,7 @@ import fs from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { UNUSED_PID } from '@yaac/test-utils/pid-file'
 import {
   acquireLock,
   keepLease,
@@ -457,7 +458,7 @@ describe('server lock', () => {
     })
 
     it('reclaims a stale lock (dead pid) and acquires', async () => {
-      await writeLock(mkLock({ pid: 999_999, heartbeatAt: 0 }))
+      await writeLock(mkLock({ pid: UNUSED_PID, heartbeatAt: 0 }))
       const fresh = mkLock()
       const result = await acquireLock(fresh)
       expect(result).toEqual({ acquired: true })

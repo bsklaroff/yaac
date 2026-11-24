@@ -1,4 +1,5 @@
 import { configDefaults, defineConfig } from 'vitest/config'
+import E2eSequencer from './test/support/e2e-sequencer'
 
 // Every project is inline (`extends: true`) so shared test policy
 // (timeouts, setupFiles, ordering) lives in this one file. Separate
@@ -15,20 +16,23 @@ const SETUP = ['./packages/test-utils/src/vitest-setup.ts']
 const UNIT_SETUP = [...SETUP, './packages/test-utils/src/unit-setup.ts']
 // Stubs @kubernetes/client-node, which takes ~2.8s to load in each test file
 // that reaches #drivers/k8s/substrate. Not used for k8s/proxy and k8s/netd,
-// which build real KubeConfigs and informers, or for api/e2e.
+// which build real KubeConfigs and informers, or for e2e.
 const K8S_STUB_SETUP = './packages/test-utils/src/k8s-stub-setup.ts'
 // Builds the migrated-database dump that new databases load instead of
 // replaying every migration, for the projects whose tests open one.
 const DB_SNAPSHOT_SETUP = './packages/test-utils/src/db-snapshot.ts'
-// api/e2e only: deletes each file's test namespace when the file finishes,
-// so finished files' netd DaemonSets don't pile up on the single node.
+// e2e only: deletes each file's test namespace when the file finishes, so
+// finished files' netd DaemonSets don't pile up on the single node.
 const CLUSTER_SETUP = [...SETUP, './test/support/cluster-setup.ts']
+// api-k8s only: the real k8s driver over the stubbed client, in place of
+// the composition root. The stub must load first.
+const API_K8S_SETUP = [...UNIT_SETUP, K8S_STUB_SETUP, './test/support/api-k8s-setup.ts']
 // api-containerless only: registers the real containerless driver in place
 // of the composition root.
 const CONTAINERLESS_SETUP = [...SETUP, './test/support/containerless-setup.ts']
 /**
- * The api files that need no cluster: the containerless column of the route
- * matrix, plus files that drive the Hono app in process over routes no
+ * The api files that run under the containerless driver: its column of the
+ * route matrix, plus files that drive the Hono app in process over routes no
  * driver feature gates. The rest need the k8s driver (`routes-k8s`) or hit
  * routes that answer `NOT_SUPPORTED` without it (`write-routes`, the image
  * routes).
@@ -80,6 +84,8 @@ export default defineConfig({
     // E2e hooks start containers on cold caches and wait on the cross-worker
     // server mutex, which can take far longer than vitest's 10s default.
     hookTimeout: 600_000,
+    // Orders the e2e project's files for its two workers.
+    sequence: { sequencer: E2eSequencer },
     // Also write results to a file so failures can be recovered after the
     // console output is truncated, without re-running. Overwritten per run,
     // gitignored.
@@ -123,8 +129,10 @@ export default defineConfig({
       unitProject('dockerfiles/acpd'),
       unitProject('dockerfiles/agent-patches'),
       // api + e2e live in the root test/ tree. The api tier has one project
-      // per driver, matching the route matrix's two columns, so the
-      // containerless half can run where there is no cluster.
+      // per driver, matching the route matrix's two columns. Neither needs
+      // a cluster: the api files build the app in process, and api-k8s runs
+      // the k8s driver over the client stub the unit projects use, whose
+      // calls the apiserver project checks against a real API server.
       {
         extends: true,
         test: {
@@ -132,11 +140,10 @@ export default defineConfig({
           include: ['test/api/**/*.test.ts'],
           // `exclude` replaces the defaults, so spread them back in.
           exclude: [...configDefaults.exclude, ...CONTAINERLESS_API],
-          setupFiles: CLUSTER_SETUP,
-          // Image pre-builds are set per project, not at the root: with
-          // `extends: true` a root globalSetup would also run for every unit
-          // project, and unit tests must never touch podman.
-          globalSetup: ['test/global-setup.ts'],
+          setupFiles: API_K8S_SETUP,
+          // A fresh data dir per test, as write-routes makes, would replay
+          // every migration without the dump and the shared database.
+          globalSetup: [DB_SNAPSHOT_SETUP],
           sequence: { groupOrder: 0 },
         },
       },
@@ -197,10 +204,15 @@ export default defineConfig({
           include: E2E_FILES,
           setupFiles: CLUSTER_SETUP,
           globalSetup: ['test/global-setup.ts'],
-          // The server mutex already serializes server-backed work, so more
-          // workers only queue on the shared podman socket and cause
-          // load-induced timeouts.
-          maxWorkers: 1,
+          // The server mutex keeps server-backed files one at a time, so a
+          // second worker runs the files that need no server beside them
+          // (E2eSequencer orders the files for that). A third would only
+          // queue on the mutex.
+          maxWorkers: 2,
+          // A server-backed file's beforeAll waits on the mutex while the
+          // other worker's server-backed file runs, up to the longest of
+          // them, so a hook that spawns a server sets no timeout of its own.
+          hookTimeout: 1_800_000,
           sequence: { groupOrder: 1 },
         },
       },

@@ -102,6 +102,18 @@ async function launchedWith(prompt: string): Promise<string | undefined> {
   return undefined
 }
 
+/** Whether this host lets an unprivileged process make a user and mount
+ *  namespace, as `unshare -rm` does. */
+function userNamespaces(): boolean {
+  if (process.platform !== 'linux') return false
+  try {
+    execFileSync('unshare', ['-rm', 'true'], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
 describe('stopWorkspace', () => {
   // A stop never asks the driver for spares, so even a spare's exact id is
   // not found.
@@ -346,8 +358,10 @@ describe('stopWorkspace', () => {
 
     // A pod's scratch dirs and cache volumes are mounts into the checkout; a
     // cache volume's contents are shared with other workspaces. The clean
-    // finds them from the kernel, so a user namespace stands in for the pod.
-    it.runIf(process.platform === 'linux')('keeps everything mounted under the checkout, whatever the project config says', async () => {
+    // finds them from the kernel, so a user namespace stands in for the pod,
+    // where the host allows an unprivileged one (Ubuntu's AppArmor default
+    // does not).
+    it.runIf(userNamespaces())('keeps everything mounted under the checkout, whatever the project config says', async () => {
       const checkout = workspaceDir(PROJ, 'parent')
       const shared = path.join(tmpDir, 'shared-cache')
       await fs.mkdir(path.join(checkout, 'cache'), { recursive: true })

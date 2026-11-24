@@ -24,6 +24,9 @@ import { errorText, serverLog } from '#lib/log'
  *   often, counted from its last successful run, so a failed one retries on
  *   the next resync.
  *
+ * A step can also ask to run again at a time of its choosing (`wakeAt`),
+ * which marks its own triggers dirty then.
+ *
  * Passes never overlap (steps share module state) and run steps in order,
  * isolating each step's errors. Steps in a pass share one point-in-time
  * `RuntimeSnapshot`, created lazily by the first step that asks for it.
@@ -60,6 +63,21 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
   }
   ;(deps.onDelta ?? onConvergenceChange)(mark)
   const resyncTimer = setInterval(() => mark('resync'), resyncIntervalMs)
+  /** Each step's pending `wakeAt`, by name. */
+  const wakes = new Map<string, { atMs: number; timer: NodeJS.Timeout }>()
+  const wakeAt = (step: ReconcileStep) => (atMs: number): void => {
+    const pending = wakes.get(step.name)
+    if (pending && pending.atMs <= atMs) return
+    if (pending) clearTimeout(pending.timer)
+    wakes.set(step.name, {
+      atMs,
+      timer: setTimeout(() => {
+        wakes.delete(step.name)
+        if (step.triggers.length === 0) mark('resync')
+        for (const trigger of step.triggers) mark(trigger)
+      }, Math.max(0, atMs - Date.now())),
+    })
+  }
   const onAbort = (): void => wake?.()
   signal.addEventListener('abort', onAbort, { once: true })
   mark('resync') // immediate first pass covers every step
@@ -83,7 +101,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
       let snapshot: RuntimeSnapshot | null = null
       let projectRows: ReturnType<typeof listProjectRows> | null = null
       const rows = (): ReturnType<typeof listProjectRows> => (projectRows ??= listProjectRows())
-      const ctx: PassContext = {
+      const ctx: Omit<PassContext, 'wakeAt'> = {
         triggers,
         resync,
         signal,
@@ -108,7 +126,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         if (step.every !== undefined && last !== undefined
           && startedAt - last < step.every - resyncIntervalMs / 2) continue
         try {
-          await step.run(ctx)
+          await step.run({ ...ctx, wakeAt: wakeAt(step) })
           if (step.every !== undefined) lastRun.set(step.name, startedAt)
         } catch (err) {
           serverLog(`[server] reconcile step ${step.name} failed: ${errorText(err)}`)
@@ -117,6 +135,7 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
     }
   } finally {
     clearInterval(resyncTimer)
+    for (const { timer } of wakes.values()) clearTimeout(timer)
     signal.removeEventListener('abort', onAbort)
   }
 }

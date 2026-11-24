@@ -200,10 +200,15 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   }
   // A signal during startup, or to a start that was refused, still removes
   // the lock: Node's default action would exit and leave it for the next
-  // start to wait out. The full shutdown takes over once it is defined.
-  const quit = (): void => { void removeLock(lease.instance).finally(() => process.exit(1)) }
-  process.once('SIGTERM', quit)
-  process.once('SIGINT', quit)
+  // start to wait out. The full shutdown takes over once it is defined, by
+  // assignment rather than by swapping listeners: Node drops a signal that
+  // has arrived but not yet reached JavaScript when its last listener is
+  // removed, even if another is added in the same tick.
+  let onSignal: (signal: string) => void = () => {
+    void removeLock(lease.instance).finally(() => process.exit(1))
+  }
+  process.on('SIGTERM', () => onSignal('SIGTERM'))
+  process.on('SIGINT', () => onSignal('SIGINT'))
   // Under the lock, so a losing start never overwrites the record, and
   // before any route but `/health` is served.
   await rememberFeedbackUrl()
@@ -363,8 +368,7 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     await removeLock(lease.instance)
     process.exit(0)
   }
-  process.off('SIGTERM', quit).on('SIGTERM', () => void shutdown('SIGTERM'))
-  process.off('SIGINT', quit).on('SIGINT', () => void shutdown('SIGINT'))
+  onSignal = (signal) => void shutdown(signal)
 
   // Attach to the substrate (informers, status watchers, port detector).
   // The reconcile loop starts from `onAttached`, since a driver may defer

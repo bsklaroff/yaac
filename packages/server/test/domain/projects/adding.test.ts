@@ -51,9 +51,10 @@ afterEach(async () => {
 function heldAdd(): { done: Promise<unknown>; progress: (p: GitProgress) => void; finish: () => void } {
   const held = { progress: (_p: GitProgress): void => {}, finish: (): void => {} }
   mockClone.mockImplementationOnce(async (_url, dest, _cred, onProgress) => {
-    await fs.mkdir(path.join(dest, '.git'), { recursive: true })
     held.progress = (p) => onProgress?.(p)
-    await new Promise<void>((resolve) => { held.finish = resolve })
+    const finished = new Promise<void>((resolve) => { held.finish = resolve })
+    await fs.mkdir(path.join(dest, '.git'), { recursive: true })
+    await finished
   })
   const done = addProject({ remoteUrl: URL, credentialId: token }, BUILT_IN_USER_ID, ADDING)
   return { done, progress: (p) => held.progress(p), finish: () => held.finish() }

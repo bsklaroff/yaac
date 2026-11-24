@@ -67,12 +67,12 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // The stale reaper runs first, so the prewarm pool sees counts after
     // reaping. `status-streams` is a trigger because tmux dying in a pod is
     // not a substrate event; a lost driver connection means liveness must be
-    // probed. Slower sweeps wait for the resync, which is fine given their
-    // grace periods (30 minutes for podless rows, 60s for the rest). A
+    // probed. A unit skipped in its 60s startup grace wakes the step when it
+    // leaves it; podless rows (30 minutes' grace) wait for the resync. A
     // flapping stream can't cause a reaping loop: reaping needs a conclusive
     // in-pod verdict, and a failed probe keeps the workspace.
     { name: 'stale-workspaces', triggers: ['workspaces', 'units', 'status-streams'],
-      run: (ctx) => reconcileStaleWorkspaces(ctx.snapshot()) },
+      run: (ctx) => reconcileStaleWorkspaces(ctx.snapshot(), ctx.wakeAt) },
     // A repo whose share ended runs in none of that user's workspaces
     // (docs/hosted-projects.md "Sharing"): ending it stops them, and this
     // stops any that a failed stop or a create already past its check left

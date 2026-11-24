@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import crypto from 'node:crypto'
 import { requireCluster, useTestNamespace, createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { requirePodman, TEST_PROXY_CONFIG } from '#support/cluster'
+import { acquireNodeExclusive } from '#support/node-lock'
 import { resolveTestBaseImageRef } from '#support/test-pods'
 import { startWorkspacePod, waitForPod } from '#support/test-pods'
 import { ProxyClient } from '@yaac/server/drivers/k8s/egress/proxy-client'
@@ -362,17 +363,6 @@ describe('netd datapath gates', () => {
     expect(mineAt).toBeGreaterThan(kubeAt)
   }, 300_000)
 
-  it('never competes with Calico for chain position (survives a Felix restart)', async () => {
-    // Felix re-inserts its jumps at the top of every chain it manages.
-    // netd's jump is appended, so a Felix restart must change nothing.
-    expect(await egressWorks(podA)).toBe(true)
-    await deleteObjects('v1', 'Pod', { namespace: 'kube-system', labelSelector: 'k8s-app=calico-node' })
-    await kubectl([
-      'rollout', 'status', 'daemonset/calico-node', '-n', 'kube-system', '--timeout=240s',
-    ], { timeout: 250_000 })
-    expect(await egressWorks(podA)).toBe(true)
-  }, 600_000)
-
   it('fails CLOSED when netd is absent — a pod born without a redirect has no egress', async () => {
     // netd only redirects, so losing it must remove egress, never grant
     // it. A pod created while netd is gone reaches nothing until it returns.
@@ -519,4 +509,24 @@ describe('netd datapath gates', () => {
     expect(spoofed.exit, 'a pod reached a host only the VICTIM session is allowed — '
       + `source-IP attribution was forged (out: ${spoofed.out.slice(0, 200)})`).not.toBe(0)
   }, 900_000)
+
+  // Last, and under the node lock held exclusive: restarting the CNI leaves
+  // pods anywhere on the node without a network for a while, and the other
+  // e2e worker may be running any file. E2eSequencer runs this file after
+  // the other server-less ones, so the wait costs no parallel work.
+  it('never competes with Calico for chain position (survives a Felix restart)', async () => {
+    // Felix re-inserts its jumps at the top of every chain it manages.
+    // netd's jump is appended, so a Felix restart must change nothing.
+    expect(await egressWorks(podA)).toBe(true)
+    const release = await acquireNodeExclusive()
+    try {
+      await deleteObjects('v1', 'Pod', { namespace: 'kube-system', labelSelector: 'k8s-app=calico-node' })
+      await kubectl([
+        'rollout', 'status', 'daemonset/calico-node', '-n', 'kube-system', '--timeout=240s',
+      ], { timeout: 250_000 })
+    } finally {
+      await release()
+    }
+    expect(await egressWorks(podA)).toBe(true)
+  }, 1_800_000)
 })

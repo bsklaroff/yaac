@@ -241,6 +241,47 @@ describe('startReconciler', () => {
     await h.done
   })
 
+  // A step that skipped work only time makes due asks to run again then,
+  // rather than wait out the resync.
+  it('runs a step again when it asks to, on its own triggers, the earliest request standing', async () => {
+    const runs: StepRuns = []
+    let asked = false
+    const h = start([
+      makeStep(runs, 'waker', ['workspace-pods'], (ctx) => {
+        if (asked) return
+        asked = true
+        ctx.wakeAt(Date.now() + 50_000)
+        ctx.wakeAt(Date.now() + 30_000)
+        ctx.wakeAt(Date.now() + 40_000)
+      }),
+      makeStep(runs, 'other', ['status-streams']),
+      // A step with no triggers of its own is woken by a resync pass.
+      makeStep(runs, 'untriggered', [], (ctx) => {
+        if (ctx.resync && runs.filter((r) => r.name === 'untriggered').length === 1) ctx.wakeAt(Date.now() + 70_000)
+      }),
+    ])
+    await flush()
+    runs.length = 0
+
+    await vi.advanceTimersByTimeAsync(28_000)
+    expect(runs).toEqual([])
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(runs).toEqual([{ name: 'waker', resync: false }])
+
+    // The later requests were superseded, so nothing runs until the next.
+    runs.length = 0
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(runs).toEqual([])
+    await vi.advanceTimersByTimeAsync(11_000)
+    expect(runs).toEqual([
+      { name: 'waker', resync: true },
+      { name: 'other', resync: true },
+      { name: 'untriggered', resync: true },
+    ])
+    h.abort()
+    await h.done
+  })
+
   it('isolates step failures and still runs the steps after them', async () => {
     const runs: StepRuns = []
     const h = start([
@@ -290,7 +331,8 @@ async function runPass(
     projectIds: () => Promise.resolve([]),
     keptImageTags: () => Promise.resolve([]),
     pinnedImages: () => Promise.resolve([]),
-        terminating: () => false,
+    terminating: () => false,
+    wakeAt: () => {},
   }
   for (const step of defaultReconcileSteps()) {
     if (!resync && !step.triggers.some((t) => ctx.triggers.has(t))) continue

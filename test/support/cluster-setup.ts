@@ -6,27 +6,25 @@ import { deleteTestServerClusterRbac } from '#support/deployed-server'
 import { deleteStorageVolumes } from '@yaac/server/drivers/k8s/install/storage'
 import { setWorkspaceDriver } from '@yaac/server/drivers/driver'
 import { createK8sDriver } from '@yaac/server/drivers/k8s'
+import { acquireNodeShared } from '#support/node-lock'
 
 const execFileAsync = promisify(execFile)
 
 /**
  * Register the real k8s driver. e2e servers register their own at startup,
- * but api tests build the app in-process (`buildApp`), skipping the
- * composition root, so nothing else would.
+ * but a file that calls domain code in process (the prewarm suite lists
+ * projects) reaches the driver without one.
  */
 setWorkspaceDriver(createK8sDriver())
 
 /**
- * Create the install namespace, which the composition root would otherwise
- * ensure. Routes that apply objects (e.g. a project's secrets) need it.
+ * Hold the node lock shared for the whole file, so a case that disturbs the
+ * whole node (it takes the lock exclusive) never runs beside this file's
+ * pods. Registered before the file's own hooks, so it is held across them.
  */
+let releaseNode: (() => Promise<void>) | null = null
 beforeAll(async () => {
-  try {
-    await execFileAsync('kubectl', ['create', 'namespace', TEST_NAMESPACE], { timeout: 30_000 })
-  } catch (err) {
-    // Already exists, or there is no cluster.
-    if (!/AlreadyExists|already exists/.test(String(err))) return
-  }
+  releaseNode = await acquireNodeShared()
 })
 
 /**
@@ -50,4 +48,5 @@ afterAll(async () => {
       { timeout: 30_000 },
     )
   } catch { /* kubectl or cluster absent */ }
+  await releaseNode?.()
 })

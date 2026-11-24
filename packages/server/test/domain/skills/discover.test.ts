@@ -44,7 +44,9 @@ async function commitRepoBranch(s: string, branch: string, files: Record<string,
     }
     paths.push(rel)
   }
-  await git(repo, ['add', '-A', '--', ...paths])
+  // Forced: these paths are named, and a user's global git excludes often
+  // list Claude Code's own `.claude/settings.local.json`.
+  await git(repo, ['add', '-A', '-f', '--', ...paths])
   await git(repo, ['commit', '-q', '--allow-empty', '-m', `skills on ${branch}`])
   const sha = (await git(repo, ['rev-parse', 'HEAD'])).trim()
   await git(repo, ['update-ref', `refs/remotes/origin/${branch}`, sha])

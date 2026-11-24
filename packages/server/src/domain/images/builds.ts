@@ -78,7 +78,6 @@ interface Job {
   priority: number
   noCache: boolean
   abort: AbortController
-  running: boolean
   /** Resolves once its rows are written and it is queued (or settled). */
   formed: Promise<void>
   /** Once it has run: resolves when it has ended and the queue has moved
@@ -101,13 +100,17 @@ interface Progress {
 }
 
 /**
- * Jobs by `jobKey`, from the moment a request decides to start one, so a
- * second request for the same key joins it rather than racing it. The key
- * names the image too: two images with the same content build apart, so
- * deleting one never cancels the other's create. A no-cache rebuild has
- * its own key, since it must not join a build that reuses the cache.
+ * Jobs by `jobKey`, from the moment a request decides to start one until
+ * its build has ended (`finishJob`), so a second request for the same key
+ * joins it rather than racing it. The key names the image too: two images
+ * with the same content build apart, so deleting one never cancels the
+ * other's create. A no-cache rebuild has its own key, since it must not
+ * join a build that reuses the cache.
  */
 const jobs = new Map<string, Job>()
+/** Jobs holding a build slot: from `pump` starting one until it has
+ *  recorded how it ended. */
+const running = new Set<Job>()
 
 function jobKey(target: ChainTarget, finalTag: string, noCache: boolean): string {
   return `${target.image?.id ?? 'stock'} ${finalTag}${noCache ? ' no-cache' : ''}`
@@ -239,7 +242,6 @@ export async function queueChain(
     priority: PRIORITY[opts.reason],
     noCache,
     abort: new AbortController(),
-    running: false,
     formed: new Promise((resolve) => { formed = resolve }),
     done: new Promise((resolve) => { settle = resolve }),
     settle: (o) => settle(o),
@@ -276,7 +278,6 @@ export async function queueChain(
     }
     // Cancelled while its rows were being written: it never queues.
     if (job.abort.signal.aborted) {
-      forget(job)
       await finishJob(job, { ok: false, error: 'cancelled' }, undefined, [])
     } else {
       pending.push(job)
@@ -284,7 +285,6 @@ export async function queueChain(
     }
     return { buildIds: [...job.rows.values()], done: job.done }
   } catch (err) {
-    forget(job)
     await finishJob(job, { ok: false, error: err instanceof Error ? err.message : String(err) }, undefined, [])
       .catch((e: unknown) => serverLog(`[image-builds] ${job.finalTag}: ${String(e)}`))
     throw err
@@ -301,16 +301,14 @@ function forget(job: Job): void {
 /** Start queued jobs while there are free slots, highest priority first. */
 async function pump(): Promise<void> {
   const limit = await buildConcurrency()
-  let running = [...jobs.values()].filter((j) => j.running).length
-  while (running < limit && pending.length > 0) {
+  while (running.size < limit && pending.length > 0) {
     pending.sort((a, b) => a.priority - b.priority)
     const job = pending.shift()!
-    job.running = true
-    running++
+    running.add(job)
     job.ended = runJob(job)
       .catch((err: unknown) => serverLog(`[image-builds] ${job.finalTag}: ${String(err)}`))
       .finally(() => {
-        forget(job)
+        running.delete(job)
         return pump()
       })
   }
@@ -398,12 +396,18 @@ function ingestLine(id: string, line: string): void {
   }
 }
 
+/**
+ * Record how a job ended. It leaves `jobs` before its rows say so: a
+ * request made once a row reads as ended must start a build of its own,
+ * not join this one.
+ */
 async function finishJob(
   job: Job,
   outcome: ChainOutcome,
   failedLayer: ImageLayerName | undefined,
   blockedHosts: string[],
 ): Promise<void> {
+  forget(job)
   const cancelled = job.abort.signal.aborted
   let failedSeen = false
   try {
@@ -463,9 +467,8 @@ export async function cancelBuildJob(buildId: string): Promise<boolean> {
     // Running, or still being formed (queueChain finishes it): the abort
     // is enough.
     const queued = pending.indexOf(job)
-    if (job.running || queued < 0) return true
+    if (queued < 0) return true
     pending.splice(queued, 1)
-    forget(job)
     await finishJob(job, { ok: false, error: 'cancelled' }, undefined, [])
     return true
   }
@@ -569,11 +572,10 @@ export async function readBuildLog(row: ImageBuildRow, offset: number): Promise<
  *  record how it ended, so none writes after a test closes its database. */
 export async function _imageBuildsSettledForTests(): Promise<void> {
   for (const job of pending.splice(0)) {
-    forget(job)
     job.abort.abort()
     await finishJob(job, { ok: false, error: 'cancelled' }, undefined, [])
   }
-  const held = [...jobs.values()]
+  const held = [...new Set([...jobs.values(), ...running])]
   for (const job of held) job.abort.abort()
   await Promise.allSettled(held.map((j) => j.ended ?? j.done))
 }
@@ -581,6 +583,7 @@ export async function _imageBuildsSettledForTests(): Promise<void> {
 /** Test hook: forget every job and its progress. */
 export function _resetImageBuildsForTests(): void {
   jobs.clear()
+  running.clear()
   pending.length = 0
   for (const p of progress.values()) p.log.end()
   progress.clear()

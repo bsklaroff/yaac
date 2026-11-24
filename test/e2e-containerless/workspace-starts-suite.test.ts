@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import WebSocket from 'ws'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { setTestGitIdentity, runYaac } from '#support/cli'
+import { setTestGitIdentity, runYaac, type RunYaacOptions } from '#support/cli'
+import { KEEPER_WINDOW } from '@yaac/server/drivers/contract'
 import { assignTestGitCredential } from '@yaac/test-utils/api'
 import { createTestRepo } from '@yaac/test-utils/setup'
 import { addTestProject } from '#support/cluster'
@@ -28,6 +29,7 @@ import type {
 const execFileAsync = promisify(execFile)
 import {
   ACP_ADAPTER_DIES,
+  agentEnvDir,
   CAN_RUN,
   CAN_RUN_ACP,
   ENTER_PLAN_MODE,
@@ -562,6 +564,14 @@ describe.skipIf(!CAN_RUN)('yaac forward against a containerless server on this m
     expect(stderr).toMatch(/containerless driver/)
     expect(stderr).toMatch(/nothing to tunnel/)
   })
+
+  // Past the refusal (`--bind`), a workspace it cannot resolve fails now,
+  // rather than forwarding nothing forever.
+  it('refuses a workspace it cannot resolve', async () => {
+    const { exitCode, stderr } = await runYaac(serverEnv, 'forward', 'no-such-session', '--bind', '127.0.0.1')
+    expect(exitCode).toBe(1)
+    expect(stderr).toContain('workspace no-such-session not found')
+  })
 })
 
 /**
@@ -678,6 +688,203 @@ describe.skipIf(!CAN_RUN)('a create that fails', () => {
       watch.ws.close()
     }
   }, 180_000)
+})
+
+/**
+ * A workspace's agents (docs/sessions.md), on one workspace that a create
+ * made as the webapp makes one starts with none: agents opened in it with
+ * `--workspace`, listed, stopped one at a time and resumed, by a person
+ * through the CLI and by an agent of its own through yaac-mama. The cases
+ * run in order on it.
+ */
+describe.skipIf(!CAN_RUN)('agents opened in a running workspace', () => {
+  const workspaceId = randomUUID()
+  const id8 = workspaceId.slice(0, 8)
+
+  /** The workspace's open agents, oldest first. */
+  const sessions = async (): Promise<SessionEntry[]> =>
+    (await listWorkspaces()).find((w) => w.workspaceId === workspaceId)?.sessions ?? []
+  const windows = async (): Promise<string[]> =>
+    (await tmux(workspaceId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')).trim().split('\n')
+  const windowsSettle = (check: (names: string[]) => void): Promise<void> =>
+    vi.waitFor(async () => check(await windows()), { timeout: 30_000, interval: 250 })
+  /** The CLI's stdout, failing on a non-zero exit. */
+  const yaac = async (...args: Array<string | RunYaacOptions>): Promise<string> => {
+    const { stdout, stderr, exitCode } = await runYaac(cliEnv(), ...args)
+    if (exitCode !== 0) throw new Error(`yaac ${args.filter((a) => typeof a === 'string').join(' ')} failed (exit ${String(exitCode)}):\n${stderr}`)
+    return stdout
+  }
+
+  /** `yaac-mama` as agent `session` runs it, in the environment that agent
+   *  started with; its output and exit code. */
+  async function mamaAs(session: SessionEntry, ...args: string[]): Promise<{ code: number; out: string }> {
+    const env = await vi.waitFor(async () => {
+      const pid = (await tmux(workspaceId, 'display-message', '-p', '-t', `yaac:${session.window}`, '#{pane_pid}')).trim()
+      const dumped = await processEnv(pid)
+      expect(dumped.YAAC_SESSION_ID).toBe(session.sessionId)
+      return dumped
+    }, { timeout: 30_000, interval: 250 })
+    const quoted = args.map((a) => `'${a.replace(/'/g, "'\\''")}'`).join(' ')
+    const { stdout } = await execFileAsync('sh', ['-c',
+      `${path.join(process.cwd(), 'workspace-bin', 'yaac-mama')} ${quoted} 2>&1 </dev/null; echo "EXIT:$?"`,
+    ], {
+      env: {
+        ...process.env,
+        YAAC_MAMA_URL: env.YAAC_MAMA_URL,
+        YAAC_MAMA_TOKEN: env.YAAC_MAMA_TOKEN,
+        YAAC_SESSION_ID: env.YAAC_SESSION_ID,
+        YAAC_WORKSPACE_ID: workspaceId,
+      },
+    })
+    const m = /EXIT:(\d+)\s*$/.exec(stdout)
+    if (!m) throw new Error(`no exit marker:\n${stdout}`)
+    return { code: Number(m[1]), out: stdout.slice(0, m.index) }
+  }
+
+  afterAll(() => runYaac(serverEnv, 'workspace', 'stop', workspaceId))
+
+  // The webapp picks the id, so its provisioning row and then the workspace
+  // carry it; no snapshot shows both.
+  it('hands a create with a client-supplied id over to a running workspace of that id, with no agent', async () => {
+    const watch = collectSnapshots(server.lock.port)
+    const frames: Array<{ provisioning: boolean; listed: boolean }> = []
+    watch.ws.on('message', (data, isBinary) => {
+      if (isBinary) return
+      const msg = JSON.parse((data as Buffer).toString('utf8')) as { type: string; data: ServerSnapshot }
+      if (msg.type !== 'snapshot') return
+      frames.push({
+        provisioning: msg.data.provisioning.some((p) => p.workspaceId === workspaceId && p.kind === 'create' && p.projectId === projectId),
+        listed: msg.data.workspaces.some((w) => w.workspaceId === workspaceId),
+      })
+    })
+    try {
+      await watch.opened
+      const res = await fetch(`${origin()}/api/workspace/create`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ project: NAME, noSession: true, workspaceId }),
+      })
+      expect((await consumeNdjsonStream<{ workspaceId: string }>(res, () => {})).workspaceId).toBe(workspaceId)
+      await vi.waitFor(() => expect(frames.at(-1)).toEqual({ provisioning: false, listed: true }), { timeout: 20_000, interval: 100 })
+      expect(frames.some((f) => f.provisioning)).toBe(true)
+      expect(frames.filter((f) => f.provisioning && f.listed)).toEqual([])
+    } finally {
+      watch.ws.close()
+    }
+    expect(await windows()).toEqual([KEEPER_WINDOW])
+    // No tool, and an agent count of 0.
+    expect(await yaac('workspace', 'list', NAME)).toMatch(new RegExp(`^${id8}\\s+${NAME}\\s+-\\s+\\S+\\s+0\\b`, 'm'))
+  }, 120_000)
+
+  it('opens agents in it with --workspace, each in a window of its own, counted and listed under AGENT', async () => {
+    // Read whole from stdin: longer than a pipe holds at once.
+    const prompt = `review "this" ✓\n${'a line of the brief, read from stdin\n'.repeat(2_000)}the end`
+    expect(Buffer.byteLength(prompt)).toBeGreaterThan(64 * 1024)
+    expect(await yaac('workspace', 'create', '--workspace', id8, '--tool', 'claude', '--mode', 'tui', '--prompt', '-', { stdin: prompt }))
+      .toMatch(/attach with `yaac workspace attach --agent [0-9a-f-]{36} [0-9a-f-]{36}`/)
+    // Prompted, codex reports its conversation, which a message to it needs.
+    // The model is named, since the project remembers the one an earlier
+    // case made the fake codex fail on.
+    await yaac('workspace', 'create', '--workspace', workspaceId, '--tool', 'codex', '--mode', 'tui', '--model', FALLBACK_MODELS.codex,
+      '--prompt', 'say hi')
+    const [claude, codex] = await sessions()
+    expect([claude, codex]).toMatchObject([{ tool: 'claude', mode: 'tui' }, { tool: 'codex', mode: 'tui', prompt: 'say hi' }])
+    await windowsSettle((names) => expect(names).toEqual(expect.arrayContaining([claude.window, codex.window])))
+    // The agent is launched with the whole prompt, plus the trailing space
+    // claude's gets (`openingArg`).
+    await vi.waitFor(async () => {
+      const argv = (await fs.readFile(path.join(agentEnvDir(), `${claude.sessionId}.argv`), 'utf8').catch(() => '')).split('\0')
+      expect(argv.includes(`${prompt} `)).toBe(true)
+    }, { timeout: 30_000, interval: 250 })
+
+    const listed = await yaac('workspace', 'list', NAME)
+    expect(listed).toMatch(new RegExp(`^${id8}\\s+${NAME}\\s+claude,codex\\s+\\S+\\s+2\\b`, 'm'))
+    expect(listed).toMatch(/WORKSPACE\s+AGENT\s+TOOL\s+MODE\s+STATUS\s+TITLE/)
+    for (const s of [claude, codex]) {
+      expect(listed).toMatch(new RegExp(`^${id8}\\s+${s.sessionId.slice(0, 8)}\\s+${s.tool}`, 'm'))
+    }
+  }, 120_000)
+
+  /**
+   * Name a claude agent's conversation on its pane, as claude's SessionStart
+   * hook would (the fake claude names none), and wait for the server to
+   * link it. A fresh claude agent's conversation is its own id.
+   */
+  async function reportConversation(session: SessionEntry): Promise<void> {
+    await tmux(workspaceId, 'set-option', '-p', '-t', `yaac:${session.window}`, '@yaac-session', `claude|${session.sessionId}|`)
+    await vi.waitFor(async () => {
+      expect((await sessions()).find((s) => s.sessionId === session.sessionId)?.conversationId).toBe(session.sessionId)
+    }, { timeout: 30_000, interval: 250 })
+  }
+
+  // Stopped, an agent's conversation comes back as a new agent with
+  // --resume.
+  it('stops one agent with stop --agent, leaving the workspace running, and resumes its conversation with --resume', async () => {
+    const [claude, codex] = await sessions()
+    await reportConversation(claude)
+    expect(await yaac('workspace', 'stop', '--agent', claude.sessionId.slice(0, 8))).toContain(
+      `Agent ${claude.sessionId} stopped; its conversations stay in workspace ${workspaceId}'s history. The workspace keeps running.`,
+    )
+    expect((await sessions()).map((s) => s.sessionId)).toEqual([codex.sessionId])
+    await windowsSettle((names) => expect(names).not.toContain(claude.window))
+    expect(await windows()).toContain(KEEPER_WINDOW)
+    expect(await yaac('workspace', 'conversations', workspaceId)).toMatch(new RegExp(`${claude.sessionId}\\s+claude\\s+ended`))
+
+    await yaac('workspace', 'create', '--workspace', workspaceId, '--resume', claude.sessionId)
+    const resumed = (await sessions()).find((s) => s.tool === 'claude')
+    expect(resumed).toMatchObject({ tool: 'claude', conversationId: claude.sessionId })
+    expect(resumed?.sessionId).not.toBe(claude.sessionId)
+    await windowsSettle((names) => expect(names).toContain(resumed?.window))
+  }, 90_000)
+
+  // An agent may open only a tool its owner is signed in to, which here is
+  // claude alone. The message goes to the codex a person opened, since only
+  // the fake codex reads what it is sent.
+  it('lets its agents open, list, message, stop and resume each other through yaac-mama, never messaging themselves', async () => {
+    const [codex, caller] = await sessions()
+    const opened = await mamaAs(caller, 'create', '--workspace', workspaceId, '--tool', 'claude', '--ui-mode', 'tui', 'review the README')
+    expect(opened.code, opened.out).toBe(0)
+    const openedId = opened.out.trim()
+    expect(openedId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+    const agent = (await sessions()).find((s) => s.sessionId === openedId)!
+    expect(agent).toMatchObject({ tool: 'claude', mode: 'tui', prompt: 'review the README' })
+
+    const listed = await mamaAs(caller, 'list')
+    expect(listed.out).toMatch(/WORKSPACE\s+AGENT\s+TOOL\s+STATUS\s+TITLE/)
+    expect(listed.out).toContain(openedId.slice(0, 8))
+    // As that agent, it is marked as the caller.
+    expect((await mamaAs(agent, 'list')).out).toContain(`${openedId.slice(0, 8)} (you)`)
+
+    // An agent never messages itself, but may message its sibling.
+    const self = await mamaAs(agent, 'send', '--agent', openedId, workspaceId, 'hello me')
+    expect(self.code).toBe(1)
+    expect(self.out).toContain(`no running agent '${openedId}'`)
+    await vi.waitFor(async () => {
+      expect((await sessions()).find((s) => s.sessionId === codex.sessionId)?.conversationId).toBeDefined()
+    }, { timeout: 30_000, interval: 250 })
+    const sent = await mamaAs(agent, 'send', '--agent', codex.sessionId.slice(0, 8), workspaceId, 'from your sibling')
+    expect(sent.code, sent.out).toBe(0)
+    expect(sent.out).toContain(`Sent to ${id8}'s codex agent ${codex.sessionId.slice(0, 8)}`)
+    const inbox = path.join(testEnv.dataDir, 'global', 'projects', projectId, 'codex', `sent-${workspaceId}`)
+    await vi.waitFor(async () => expect(await fs.readFile(inbox, 'utf8').catch(() => '')).toContain('from your sibling'),
+      { timeout: 30_000, interval: 500 })
+
+    // Bare, stop --agent stops the asking agent; the workspace runs on.
+    await reportConversation(agent)
+    const closed = await mamaAs(agent, 'stop', '--agent')
+    expect(closed.code, closed.out).toBe(0)
+    expect(closed.out).toContain(`Stopped agent ${openedId.slice(0, 8)}; its conversations stay in `)
+    expect(closed.out).toContain('keeps running.')
+    expect((await sessions()).map((s) => s.sessionId)).toEqual([codex.sessionId, caller.sessionId])
+
+    const resumed = await mamaAs(caller, 'create', '--workspace', workspaceId, '--resume', openedId)
+    expect(resumed.code, resumed.out).toBe(0)
+    expect(resumed.out.trim()).not.toBe(openedId)
+    expect((await sessions()).find((s) => s.sessionId === resumed.out.trim())).toMatchObject({ tool: 'claude', conversationId: openedId })
+    const refused = await mamaAs(caller, 'create', '--resume', openedId)
+    expect(refused.code).toBe(1)
+    expect(refused.out).toContain('--resume needs --workspace')
+  }, 120_000)
 })
 
 /**

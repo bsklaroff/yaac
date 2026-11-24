@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { git } from '@yaac/test-utils/git'
@@ -19,7 +19,7 @@ import {
   type MockLLM,
   type MockGit,
 } from '#support/mock-remotes'
-import { CONTAINER_TMUX_SOCK, serverLogPath } from '@yaac/shared/paths'
+import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 
 /**
  * Prewarmed workspaces: with the pool enabled, a project with an open
@@ -41,12 +41,8 @@ describe('yaac prewarmed sessions', () => {
   beforeAll(async () => {
     await requirePodman()
     await requireCluster()
-  })
-
-  beforeEach(async () => {
     testEnv = await createYaacTestEnv()
-    mockLLM = await startMockLLM()
-    mockGit = await startMockGit()
+    ;[mockLLM, mockGit] = await Promise.all([startMockLLM(), startMockGit()])
     await seedMockGitRepo(mockGit, 'repo-demo', {
       files: { 'README.md': '# demo\n' },
       // A second branch for the claim to switch to.
@@ -54,7 +50,7 @@ describe('yaac prewarmed sessions', () => {
     })
   })
 
-  afterEach(async () => {
+  afterAll(async () => {
     if (server) await server.stop()
     server = null
     await cleanupWorkspaceJobs()
@@ -141,7 +137,6 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     }).workspaces
     const startCommit = async (workspaceId: string): Promise<string | undefined> =>
       (await listed()).find((w) => w.workspaceId === workspaceId)?.repos[0]?.startCommit
-    const serverLog = (): Promise<string> => fs.readFile(serverLogPath(), 'utf8').catch(() => '')
 
     /** Spares already claimed, by job name. */
     const claimed = new Set<string>()
@@ -155,7 +150,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
       if (!s || !await tmuxAliveInPod(s.jobName)) throw new Error('no claimable spare yet')
       if (await rev(s.jobName) !== at) throw new Error(`the spare is not at ${at} yet`)
       return s
-    }, { timeout: 240_000, interval: 2_000 })
+    }, { timeout: 240_000, interval: 500 })
     /** Claim `spare` with a create, which must take it. */
     const claim = async (spare: { jobName: string }, ...args: string[]): Promise<string> => {
       const made = await create(...args)
@@ -183,7 +178,7 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     if (first.exitCode !== 0) console.error(first.stdout, first.stderr)
     expect(first.exitCode).toBe(0)
     const [cold] = (await listWorkspacePods(PROJECT_ID)).filter((p) => !isPrewarmed(p))
-    await vi.waitFor(async () => { expect(await rev(cold.jobName)).toBe(tip) }, { timeout: 30_000, interval: 1_000 })
+    await vi.waitFor(async () => { expect(await rev(cold.jobName)).toBe(tip) }, { timeout: 30_000, interval: 250 })
     expect(await rev(cold.jobName, 'origin/main')).toBe(tip)
     expect(await fileIn(cold.jobName, 'cold.txt')).toBe('pushed before the cold create\n')
     expect((await execInJob(cold.jobName, ['git', '-C', '/workspace', 'status', '--porcelain'])).stdout).toBe('')
@@ -233,86 +228,26 @@ async function tmuxAliveInPod(jobName: string): Promise<boolean> {
     //    fetch lands, a few seconds later.
     spare = await spareAt(tip)
     await mockGit!.delayFetches(3_000)
-    let was = tip
     tip = await push('main', { 'late.txt': 'pushed before the claim\n' })
     await claim(spare, '--tool', 'claude')
-    await vi.waitFor(async () => { expect(await rev(spare.jobName)).toBe(tip) }, { timeout: 60_000, interval: 1_000 })
+    await vi.waitFor(async () => { expect(await rev(spare.jobName)).toBe(tip) }, { timeout: 60_000, interval: 250 })
     expect(await fileIn(spare.jobName, 'late.txt')).toBe('pushed before the claim\n')
     await vi.waitFor(async () => { expect(await startCommit(spare.workspaceId)).toBe(tip) }, { timeout: 30_000 })
     stop(spare.workspaceId)
 
-    // 6. A checkout with a change of its own where origin's commits change
-    //    the same file is left as it is, behind origin.
-    spare = await spareAt(tip)
-    await execInJob(spare.jobName, ['sh', '-c', 'echo mine > /workspace/README.md'])
-    was = tip
-    tip = await push('main', { 'README.md': '# changed on origin\n' })
-    await claim(spare, '--tool', 'claude')
-    await vi.waitFor(async () => {
-      expect(await serverLog()).toMatch(new RegExp(`${spare.workspaceId}: the checkout is left at ${was.slice(0, 12)}, behind origin/main`))
-    }, { timeout: 60_000, interval: 1_000 })
-    expect(await rev(spare.jobName)).toBe(was)
-    expect(await rev(spare.jobName, 'origin/main')).toBe(tip)
-    expect(await fileIn(spare.jobName, 'README.md')).toBe('mine\n')
-    expect(await startCommit(spare.workspaceId)).toBe(was)
-    stop(spare.workspaceId)
+    // How a claim's catch-up leaves a checkout it cannot safely move (work
+    // of its own, a rewritten origin, a fetch that outlasts the wait) and a
+    // claim onto a branch the main clone has not fetched are unit-tested in
+    // start.test, over real git.
 
-    // 7. Origin's branch is rewritten again, and the fetch lands after the
-    //    launch. A reset could lose what the agent writes meanwhile, so the
-    //    checkout stays where it is, behind origin.
-    spare = await spareAt(tip)
-    was = tip
-    tip = await push('main', { 'rewritten.txt': 'in place of the last commit\n' }, { rewrite: true })
-    await claim(spare, '--tool', 'claude')
-    await vi.waitFor(async () => {
-      expect(await serverLog()).toMatch(new RegExp(`${spare.workspaceId}: the checkout is left at ${was.slice(0, 12)}, behind origin/main`))
-    }, { timeout: 60_000, interval: 1_000 })
-    expect(await rev(spare.jobName)).toBe(was)
-    expect(await rev(spare.jobName, 'origin/main')).toBe(tip)
-    expect(await startCommit(spare.workspaceId)).toBe(was)
-    stop(spare.workspaceId)
-
-    // 8. A fetch slower than the wait after launch leaves the workspace
-    //    behind origin, which the server logs.
-    spare = await spareAt(tip)
-    await mockGit!.delayFetches(20_000)
-    was = tip
-    tip = await push('main', { 'too-late.txt': 'pushed before the claim\n' })
-    await claim(spare, '--tool', 'claude')
-    await vi.waitFor(async () => {
-      expect(await serverLog()).toMatch(new RegExp(`${spare.workspaceId}: the checkout is left behind origin/main: the fetch took longer than 5s`))
-    }, { timeout: 60_000, interval: 1_000 })
-    // The fetch lands, and the fan-out brings its `origin/main` along,
-    // but the checkout stays where the agent started.
-    await vi.waitFor(async () => { expect(await rev(spare.jobName, 'origin/main')).toBe(tip) }, { timeout: 90_000, interval: 2_000 })
-    expect(await rev(spare.jobName)).toBe(was)
-    expect(await startCommit(spare.workspaceId)).toBe(was)
-    stop(spare.workspaceId)
-
-    // 9. A branch the main clone has never fetched is waited for: the claim
-    //    holds until the fetch brings it, then moves the spare onto it. One
-    //    origin lacks as well is refused.
-    spare = await spareAt(tip)
-    await mockGit!.delayFetches(3_000)
-    const fresh = await push('fresh', { 'fresh.txt': 'on a new branch\n' }, { from: 'main' })
-    await claim(spare, '--tool', 'claude', '--branch', 'fresh')
-    expect(await rev(spare.jobName)).toBe(fresh)
-    expect((await execInJob(spare.jobName, ['git', '-C', '/workspace', 'rev-parse', '--abbrev-ref', '@{u}'])).stdout.trim()).toBe('origin/fresh')
-    expect((await listed()).find((w) => w.workspaceId === spare.workspaceId)?.repos[0]).toMatchObject({ baseBranch: 'fresh', startCommit: fresh })
-    stop(spare.workspaceId)
-    await mockGit!.delayFetches(0)
-    const ghost = await create('--tool', 'claude', '--branch', 'ghost')
-    expect(ghost.exitCode).not.toBe(0)
-    expect(ghost.stdout + ghost.stderr).toContain('branch "ghost" not found on origin')
-
-    // 10. A replacement spare is warmed. Nothing claims it, so running is
-    //     enough.
+    // 6. A replacement spare is warmed. Nothing claims it, so running is
+    //    enough.
     const refilled = await vi.waitFor(async () => {
       const pods = await listWorkspacePods(PROJECT_ID)
       const s = pods.find((p) => isPrewarmed(p) && p.running && !claimed.has(p.jobName))
       if (!s) throw new Error('no replacement spare yet')
       return s
-    }, { timeout: 240_000, interval: 2_000 })
+    }, { timeout: 240_000, interval: 500 })
     expect(refilled.running).toBe(true)
   }, 1_800_000)
 })

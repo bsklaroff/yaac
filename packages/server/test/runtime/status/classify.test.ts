@@ -111,12 +111,15 @@ describe('classifyWorkspaces', () => {
     expect(result.stale).toEqual([])
   })
 
-  it('skips young non-running pods so a retry can recreate them safely', async () => {
+  it('skips young non-running pods so a retry can recreate them safely, saying when the first leaves its grace', async () => {
     // A failed create attempt whose retry will recreate the Job.
     const p = pod({ running: false, ageMs: GRACE_MS - 1_000 })
-    const result = await classifyWorkspaces([p], now(), probe('alive'), GRACE_MS)
+    const younger = pod({ jobName: 'yaac-proj-s2', workspaceId: 's2', running: false, ageMs: 5_000 })
+    const result = await classifyWorkspaces([younger, p], now(), probe('alive'), GRACE_MS)
     expect(result.running).toEqual([])
     expect(result.stale).toEqual([])
+    expect(result.graceEndsAtMs).toBe(NOW + 1_000)
+    expect((await classifyWorkspaces([pod({})], now(), probe('alive'), GRACE_MS)).graceEndsAtMs).toBeNull()
   })
 
   it('reaps a pod that has been running with a dead tmux past the grace window', async () => {

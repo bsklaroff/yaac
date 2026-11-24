@@ -736,13 +736,22 @@ describe('with seeded projects', () => {
       expect(await create('repo-demo', '--tool', 'claude')).toMatch(/has no git credential/)
       expect(await create(id, '--tool', 'opencode')).toMatch(/has no git credential/)
       expect(await create(id.slice(0, 8), '--tool', 'codex', '--model', 'gpt-5.2-codex')).toMatch(/has no git credential/)
+
+      // A prompt is read once the project resolves, and refused before the
+      // create: one of each kind, the rest in
+      // packages/cli/test/workspace-create.test.ts.
+      expect(await create('repo-demo', '--prompt', 'x', '--prompt-file', 'brief.md')).toContain('not both')
+      const empty = await runYaac(testEnv.env, 'workspace', 'create', 'repo-demo', '--prompt', '-', { stdin: '' })
+      expect(empty.exitCode).not.toBe(0)
+      expect(empty.stderr).toContain('The prompt from stdin is empty.')
     })
 
     // Refused by the CLI before it asks the server for anything, so they
     // need no project or workspace. One of each kind of refusal, to show
     // the flags reach the check; every combination is in
     // packages/cli/test/workspace-create.test.ts. The paths that start
-    // agents are in workspace-create-suite.test.ts ("sessions").
+    // agents are in workspace-starts-suite.test.ts ("agents opened in a
+    // running workspace").
     it('refuses agent flags that cannot go together', async () => {
       const refusals: Array<[string[], string]> = [
         [[], 'Name the project to create the workspace in, or --workspace to start an agent in a running one.'],
@@ -753,6 +762,7 @@ describe('with seeded projects', () => {
         [['some-project', '--repo', '@main'], 'expected <dir> or <dir>@<branch>'],
         [['some-project', '--resume', 'conv-1'], '--resume needs --workspace: a conversation resumes in the workspace that holds it.'],
         [['some-project', '--agent-option', 'idle-compaction'], 'expected <name>=<on|off>, with a name of idle-compaction, idle-cache-warming'],
+        [['some-project', '--permission-mode', 'yolo'], 'Allowed choices are bypass, auto, accept-edits'],
       ]
       for (const [args, message] of refusals) {
         const { stderr, exitCode } = await runYaac(testEnv.env, 'workspace', 'create', ...args)

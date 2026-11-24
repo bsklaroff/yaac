@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, onTestFinished, vi } from 'vitest'
 import { execFile, spawn } from 'node:child_process'
 import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { promisify } from 'node:util'
 import WebSocket from 'ws'
 import fs from 'node:fs/promises'
@@ -188,8 +189,15 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect((await run('node_modules', 'target')).exitCode).toBe(0)
   })
 
-  it('creates a workspace as a tmux session on this host', async () => {
+  it('creates a workspace as a tmux session on this host, with the project\'s plain variables in its environment', async () => {
+    const env = await fetch(`${origin()}/api/project/${NAME}/env`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'YAAC_TEST_VAR', value: 'hello-from-host' }),
+    })
+    expect(env.status, await env.text()).toBe(200)
     workspaceId = await createWorkspace('--effort', 'high', '--agent-option', 'idle-compaction=on')
+    expect((await paneEnv(workspaceId)).YAAC_TEST_VAR).toBe('hello-from-host')
     // A tmux server of its own on this host.
     const windows = await tmux(workspaceId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')
     expect(windows).toContain('claude')
@@ -540,31 +548,30 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
 
     // Against a local server the CLI refuses without `--bind` (see the last
     // case in the file), since the same host port would clash with the dev
-    // server. Use a different host port.
-    const hostPort = await freeLocalPort()
-    const forwarder = startForwardCli(
-      workspaceId, '--bind', '127.0.0.1', '--port', `${String(devPort)}:${String(hostPort)}`,
-    )
+    // server. A bare `-p <n>` binds the same port on both sides, so it goes
+    // on another loopback address.
+    const host = OTHER_LOOPBACK.includes(':') ? `[${OTHER_LOOPBACK}]` : OTHER_LOOPBACK
+    const forwarder = startForwardCli(workspaceId, '--bind', OTHER_LOOPBACK, '-p', String(devPort))
     try {
       await forwarder.ready()
-      const res = await fetch(`http://127.0.0.1:${String(hostPort)}/`)
+      expect(forwarder.output()).toContain(`forwarding ${OTHER_LOOPBACK}:${String(devPort)} -> ${workspaceId.slice(0, 8)}:${String(devPort)}\n`)
+      const res = await fetch(`http://${host}:${String(devPort)}/`)
       expect(await res.text()).toBe('hello from the workspace')
     } finally {
       await forwarder.stop()
     }
-    // Without --port the ports come from the server's `/events` snapshots,
-    // bound on another loopback address so they miss the dev server's.
-    // Something else already answers there, so the forwarder moves to the
-    // next free port and says which.
+    // With no workspace named, every running workspace's ports, as the
+    // server's `/events` snapshots offer them. Something else already
+    // answers there, so the forwarder moves to the next free port and says
+    // which.
     const squatter = http.createServer((_req, res) => res.end('some other app'))
     await new Promise<void>((resolve) => squatter.listen(devPort, OTHER_LOOPBACK, resolve))
-    const offered = startForwardCli(workspaceId, '--bind', OTHER_LOOPBACK)
+    const offered = startForwardCli('--bind', OTHER_LOOPBACK)
     try {
       await offered.ready()
-      const moved = new RegExp(`forwarding \\S+:(\\d+) -> \\w+:${String(devPort)} \\(port ${String(devPort)} is in use here\\)`)
+      const moved = new RegExp(`forwarding \\S+:(\\d+) -> ${workspaceId.slice(0, 8)}:${String(devPort)} \\(port ${String(devPort)} is in use here\\)`)
       const localPort = Number(moved.exec(offered.output())?.[1])
       expect(localPort, offered.output()).toBeGreaterThan(devPort)
-      const host = OTHER_LOOPBACK.includes(':') ? `[${OTHER_LOOPBACK}]` : OTHER_LOOPBACK
       const res = await fetch(`http://${host}:${String(localPort)}/`)
       expect(await res.text()).toBe('hello from the workspace')
     } finally {
@@ -574,6 +581,7 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     // A port the workspace is not listening on is refused, not relayed to
     // whatever else on this host holds it.
+    const hostPort = await freeLocalPort()
     const stray = startForwardCli(
       workspaceId, '--bind', '127.0.0.1', '--port', `${String(server.lock.port)}:${String(hostPort)}`,
     )
@@ -1872,8 +1880,9 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
  * the cases above make. The built-in user, owner of everything above,
  * becomes alice; bob arrives through serve with nothing of his own.
  * Containerless separates no credentials from the other workspaces, so what
- * is checked is ownership: who may read, attach and write, and that each
- * project's tool home is seeded from its own owner's sign-in.
+ * is checked is ownership: who may read, attach and write, that each
+ * project's tool home is seeded from its own owner's sign-in, and whose
+ * projects the CLI acts on.
  */
 describe.skipIf(!CAN_RUN)('two users on a tailnet install', () => {
   const HOST = 'srv.tailnet.ts.net'
@@ -2025,4 +2034,104 @@ describe.skipIf(!CAN_RUN)('two users on a tailnet install', () => {
       ws.close()
     }
   }, 60_000)
+
+  /**
+   * The CLI's environment as `who`: a loopback proxy that plays tailscale
+   * serve, adding `who`'s identity to every request. Closed when the test
+   * ends.
+   */
+  async function cliAs(who: Record<string, string>): Promise<NodeJS.ProcessEnv> {
+    const proxy = http.createServer((req, res) => {
+      const upstream = http.request({
+        host: '127.0.0.1', port: server.lock.port, path: req.url, method: req.method,
+        headers: { ...req.headers, ...who },
+      }, (up) => {
+        res.writeHead(up.statusCode ?? 502, up.headers)
+        up.pipe(res)
+      })
+      req.pipe(upstream)
+    })
+    await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve))
+    onTestFinished(() => new Promise<void>((resolve) => { proxy.close(() => resolve()) }))
+    return { ...cliEnv(), YAAC_SERVER_URL: `http://127.0.0.1:${String((proxy.address() as AddressInfo).port)}` }
+  }
+
+  // Last in the file: it stops bob's workspace.
+  it('scopes the CLI to the caller\'s projects, and to a teammate\'s with --user, and shares a hosted repo between them', async () => {
+    const [alice, bob] = await Promise.all([cliAs(ALICE), cliAs(BOB)])
+
+    // Alice's hosted project, whose repo she shares with bob, who links it
+    // into a project of his own under the same name.
+    expect((await runYaac(alice, 'project', 'create', 'shared-app')).exitCode).toBe(0)
+    const projects = await (await as(ALICE, '/project/list')).json() as Array<{ name: string; repos: Array<{ id: string }> }>
+    const repoId = projects.find((p) => p.name === 'shared-app')!.repos[0].id
+    const shared = await runYaac(alice, 'repo', 'share', 'shared-app/shared-app', 'bob@example.com')
+    expect(shared.exitCode, shared.stderr).toBe(0)
+    expect(shared.stdout).toContain(`Repo ${repoId.slice(0, 8)} is now shared with bob@example.com`)
+    // The table cuts its last column to the terminal's width, so only the
+    // start of the login is sure to show.
+    expect((await runYaac(alice, 'repo', 'list')).stdout).toMatch(new RegExp(`${repoId.slice(0, 8)}.*with bob@`))
+    expect((await runYaac(bob, 'repo', 'list')).stdout).toMatch(new RegExp(`${repoId.slice(0, 8)}.*by alice@`))
+    // Only its owner shares it on.
+    expect((await runYaac(bob, 'repo', 'share', repoId, 'alice@example.com')).exitCode).not.toBe(0)
+    expect((await runYaac(bob, 'project', 'create', 'shared-app')).exitCode).toBe(0)
+    const linked = await runYaac(bob, 'project', 'repo', 'add', 'shared-app', '--repo-id', repoId, '--dir', 'upstream')
+    expect(linked.exitCode, linked.stderr).toBe(0)
+    expect(linked.stdout).toContain(`Project "shared-app" now links repo ${repoId} in the folder upstream.`)
+
+    const own = await runYaac(alice, 'project', 'list')
+    expect(own.stdout).toContain(NAME)
+    expect(own.stdout).not.toContain(BOB_PROJECT)
+    // Before or after the command, by login or display name.
+    for (const args of [['--user', 'bob@example.com', 'project', 'list'], ['project', 'list', '--user', 'bob']]) {
+      const bobs = await runYaac(alice, ...args)
+      expect(bobs.stdout).toContain(BOB_PROJECT)
+      expect(bobs.stdout).toContain('shared-app')
+      expect(bobs.stdout).not.toContain(NAME)
+    }
+
+    // The name picks each caller's own project; in bob's, --repo names
+    // alice's repo beside his own.
+    for (const [env, who, repo] of [[alice, 'alice', []], [bob, 'bob', ['--repo', 'upstream']]] as const) {
+      const dir = path.join(testEnv.scratchDir, `shared-app-${who}`)
+      const cloned = await runYaac(env, 'project', 'clone', 'shared-app', dir, ...repo)
+      expect(cloned.exitCode, cloned.stderr).toBe(0)
+      expect((await execFileAsync('git', ['-C', dir, 'remote', 'get-url', 'origin'])).stdout.trim()).toContain(`/api/repo/${repoId}/git`)
+    }
+
+    // Unsharing ends bob's use of the repo; his project keeps its link.
+    const unshared = await runYaac(alice, 'repo', 'unshare', repoId, 'bob')
+    expect(unshared.exitCode, unshared.stderr).toBe(0)
+    expect(unshared.stdout).toContain(`Repo ${repoId.slice(0, 8)} is no longer shared with bob`)
+    expect((await runYaac(bob, 'repo', 'list')).stdout).not.toContain(repoId.slice(0, 8))
+    expect((await runYaac(bob, 'project', 'repo', 'list', 'shared-app')).stdout).toMatch(/upstream\s+\S+\s+\(none needed\)/)
+
+    const group = await as(BOB, '/workspace/group/create', {
+      method: 'POST', body: JSON.stringify({ projectId: bobProjectId, name: 'bob-group' }),
+    })
+    expect(group.status).toBe(200)
+    expect((await runYaac(alice, 'group', 'list')).stdout).not.toContain('bob-group')
+    expect((await runYaac(alice, 'group', 'list', '--user', 'bob@example.com')).stdout).toContain('bob-group')
+
+    const id8 = bobWorkspace.slice(0, 8)
+    expect((await runYaac(alice, 'workspace', 'list')).stdout).not.toContain(id8)
+    expect((await runYaac(alice, 'workspace', 'list', BOB_PROJECT, '--user', 'bob@example.com')).stdout).toContain(id8)
+    const notMine = await runYaac(alice, 'workspace', 'list', BOB_PROJECT)
+    expect(notMine.exitCode).toBe(1)
+    expect(notMine.stderr).toContain(`You have no project ${BOB_PROJECT}; pass --user <user> for a teammate's.`)
+    // A full id names anyone's project.
+    expect((await runYaac(alice, 'workspace', 'list', bobProjectId)).stdout).toContain(id8)
+
+    const nobody = await runYaac(alice, '--user', 'carol@example.com', 'project', 'list')
+    expect(nobody.exitCode).toBe(1)
+    expect(nobody.stderr).toContain('No user "carol@example.com" on this server')
+
+    // The stopped listing pages through the scoped user's projects alone.
+    expect((await as(BOB, '/workspace/stop', { method: 'POST', body: JSON.stringify({ workspaceId: bobWorkspace }) })).status)
+      .toBe(200)
+    await vi.waitFor(async () => {
+      expect((await runYaac(alice, 'workspace', 'list', '-s', '--user', 'bob@example.com')).stdout).toContain(id8)
+    }, { timeout: 60_000, interval: 2000 })
+    expect((await runYaac(alice, 'workspace', 'list', '-s')).stdout).not.toContain(id8)
+  }, 180_000)
 })

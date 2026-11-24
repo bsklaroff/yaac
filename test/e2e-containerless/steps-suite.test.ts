@@ -9,6 +9,7 @@ import { createTestRepo } from '@yaac/test-utils/setup'
 import { addTestProject } from '#support/cluster'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { containerlessJobName, containerlessWorkspacePaths } from '@yaac/server/drivers/containerless/paths'
+import { KEEPER_WINDOW } from '@yaac/server/drivers/contract'
 import type { StoppedWorkspaceEntry, WorkspaceListEntry } from '@yaac/shared/types'
 
 const execFileAsync = promisify(execFile)
@@ -65,13 +66,6 @@ async function stopped(id: string): Promise<StoppedWorkspaceEntry | undefined> {
 /** Create a workspace through the API, answering its id once it runs. */
 async function create(body: Record<string, unknown>): Promise<string> {
   const res = await api('/workspace/create', { method: 'POST', body: JSON.stringify({ project: projectId, ...body }) })
-  expect(res.status, await res.clone().text()).toBe(200)
-  return (await consumeNdjsonStream<{ workspaceId: string }>(res, () => {})).workspaceId
-}
-
-/** A provisioned stream's workspace id (a rerun's). */
-async function provisioned(p: string, body: Record<string, unknown>): Promise<string> {
-  const res = await api(p, { method: 'POST', body: JSON.stringify(body) })
   expect(res.status, await res.clone().text()).toBe(200)
   return (await consumeNdjsonStream<{ workspaceId: string }>(res, () => {})).workspaceId
 }
@@ -186,7 +180,7 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     expect((await yaac('workspace', 'logs', workspaceId, 'gated')).stdout).toContain('ok gated-ran')
   }, 90_000)
 
-  it('logs a terminal opened in the workspace, and runs a step added to it once its needs are met', async () => {
+  it('logs a terminal opened in the workspace, runs a step added to it once its needs are met, and cancels a service added gated on --ready', async () => {
     const term = await (await api(`/workspace/${workspaceId}/terminals`, { method: 'POST' })).json() as { name: string }
     terminalName = term.name
     await tmux(workspaceId, 'send-keys', '-t', `=yaac:=${term.name}`, 'echo hello-from-a-terminal', 'Enter')
@@ -205,7 +199,21 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     expect((await yaac('workspace', 'logs', workspaceId, after)).stdout).toContain('after-added')
     const missing = await yaac('workspace', 'step', 'add', workspaceId, '--run', 'true', '--needs', 'nope.step')
     expect(missing.stderr).toContain('not a step of this workspace')
-  }, 60_000)
+
+    // A service is ready once its check passes, and runs until cancelled.
+    const state = async (name: string): Promise<string | undefined> =>
+      (await listed(workspaceId))?.steps?.find((s) => s.name === name)?.state
+    const served = await yaac('workspace', 'step', 'add', workspaceId, '--run', 'exec sleep 600', '--service', '--ready', 'true', '--name', 'served')
+    expect(served.stdout.trim()).toBe('_added-3.served')
+    await vi.waitFor(async () => expect(await state('_added-3.served')).toBe('ready'), { timeout: 30_000, interval: 500 })
+    const cancelled = await yaac('workspace', 'step', 'cancel', workspaceId, 'served')
+    expect(cancelled.stdout).toContain('Cancelled step served.')
+    await vi.waitFor(async () => expect(await state('_added-3.served')).toBe('cancelled'), { timeout: 30_000, interval: 500 })
+    // Refused by the CLI; the rest of what it refuses by itself is in
+    // packages/cli/test/workspace-steps.test.ts.
+    expect((await yaac('workspace', 'step', 'add', workspaceId, '--run', 'true', '--ready', 'true')).stderr)
+      .toContain('--ready goes with --service')
+  }, 90_000)
 
   it('reads its steps\' logs through yaac-mama, but not a terminal\'s', async () => {
     const out = await mamaStep(workspaceId, 'mama-logs',
@@ -293,6 +301,7 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     expect(twoRefused).toContain('refused=1')
     const byHand = await yaac('workspace', 'create', NAME, '--non-interactive', '--workflow', 'relay', ...both, '--wait')
     expect(byHand.exitCode, byHand.stderr).toBe(0)
+    expect(byHand.stdout).toContain('Its steps succeeded.')
     const twoAllowed = await mamaStep(workspaceId, 'mama-two-2',
       `yaac-mama create --non-interactive --workflow relay ${both.join(' ')} --wait; echo "exit=$?"`)
     expect(twoAllowed).toContain('exit=0')
@@ -404,6 +413,18 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     expect((await yaac('config', 'init-workflows', NAME)).stdout).toContain('has no init workflows')
     expect((await yaac('config', 'init-workflows', NAME, 'init')).stdout).toContain('are now: init')
     for (const name of ['web-init', 'lib-init']) expect((await yaac('workflow', 'delete', NAME, name)).exitCode).toBe(0)
+
+    // --no-steps starts none of them. A create records the steps it starts
+    // before it returns, so none is ever listed, and only the keeper window
+    // is open.
+    const bare = await yaac('workspace', 'create', NAME, '--no-agent', '--no-steps')
+    expect(bare.exitCode, bare.stderr).toBe(0)
+    const bareId = /Workspace (\S+) is running/.exec(bare.stdout)?.[1] ?? ''
+    const entry = await listed(bareId)
+    expect(entry).toBeDefined()
+    expect(entry?.steps ?? []).toEqual([])
+    expect((await tmux(bareId, 'list-windows', '-t', 'yaac', '-F', '#{window_name}')).trim()).toBe(KEEPER_WINDOW)
+    await yaac('workspace', 'stop', bareId)
   }, 240_000)
 
   it('keeps every log after the workspace stops', async () => {
@@ -411,6 +432,7 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     expect(stop.exitCode, stop.stderr).toBe(0)
     await vi.waitFor(async () => expect(await stopped(workspaceId)).toBeDefined(), { timeout: 30_000, interval: 500 })
     expect((await yaac('workspace', 'logs', workspaceId, 'init.prep')).stdout).toContain('prep-out')
+    expect((await yaac('workspace', 'logs', workspaceId, 'init.prep', '--raw', '--life', '1')).stdout).toContain('prep-out')
     expect((await yaac('workspace', 'logs', workspaceId, 'init.after-flaky')).stdout).toContain('after-flaky-ran')
   }, 60_000)
 
@@ -420,10 +442,18 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
       nonInteractive: true,
       repos: [{ repo: NAME, commit: head }],
       nested: false,
-      steps: { test: { run: ['sleep 3', 'echo ci-out', 'exit 1'] } },
+      steps: { test: { run: ['sleep 5', 'echo ci-out', 'exit 1'] } },
     })
     // Nothing may change it while it runs: no terminal, no step, no session,
-    // and no restart.
+    // and no restart. The CLI passes the refusals on.
+    const [addedByCli, cancelledByCli] = await Promise.all([
+      yaac('workspace', 'step', 'add', id, '--run', 'true'),
+      yaac('workspace', 'step', 'cancel', id, 'test'),
+    ])
+    for (const refused of [addedByCli, cancelledByCli]) {
+      expect(refused.exitCode).not.toBe(0)
+      expect(refused.stderr).toContain('is non-interactive: nothing can change it while it runs')
+    }
     expect((await api(`/workspace/${id}/terminals`, { method: 'POST' })).status).toBe(409)
     expect((await api(`/workspace/${id}/steps`, { method: 'POST', body: JSON.stringify({ steps: { x: { run: 'true' } } }) })).status).toBe(409)
     expect((await api(`/workspace/${id}/sessions`, { method: 'POST', body: JSON.stringify({ tool: 'claude' }) })).status).toBe(409)
@@ -439,17 +469,24 @@ describe.skipIf(!CAN_RUN)('workspace steps (containerless)', () => {
     const test = await logged(id, 'test')
     expect(test).toBe('_steps.test')
     expect((await yaac('workspace', 'logs', id, test)).stdout).toContain('ci-out')
-    expect((await api('/workspace/restart', { method: 'POST', body: JSON.stringify({ workspaceId: id }) })).status).toBe(409)
+    const restart = await yaac('workspace', 'restart', id)
+    expect(restart.exitCode).not.toBe(0)
+    expect(restart.stderr).toContain('rerun in a new workspace rather than restarted')
 
-    // A rerun is a new workspace at the same commit, linked to the first.
-    const again = await provisioned('/workspace/rerun', { workspaceId: id })
+    // A rerun is a new workspace at the same commit, linked to the first;
+    // --wait exits as its steps ended.
+    const rerun = await yaac('workspace', 'rerun', id.slice(0, 8), '--wait')
+    expect(rerun.exitCode).not.toBe(0)
+    expect(rerun.stdout).toContain('Its steps failed')
+    const again = /Non-interactive workspace (\S+) is running/.exec(rerun.stdout)?.[1] ?? ''
     expect(again).not.toBe(id)
-    await vi.waitFor(async () => expect((await stopped(again))?.stepsOutcome).toBe('failed'), { timeout: 60_000, interval: 500 })
-    expect((await stopped(again))?.rerunOf).toBe(id)
+    expect((await stopped(again))).toMatchObject({ stepsOutcome: 'failed', rerunOf: id })
 
     // An interactive rerun runs the same graph, under the same name, in a
     // workspace that stays up.
-    const debug = await provisioned('/workspace/rerun', { workspaceId: id, interactive: true })
+    const interactive = await yaac('workspace', 'rerun', id, '--interactive')
+    expect(interactive.exitCode, interactive.stderr).toBe(0)
+    const debug = /Workspace (\S+) is running/.exec(interactive.stdout)?.[1] ?? ''
     await vi.waitFor(async () => {
       expect(await stepStates(debug)).toEqual({ [test]: 'failed 1' })
     }, { timeout: 60_000, interval: 500 })

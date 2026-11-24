@@ -1,10 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import crypto from 'node:crypto'
-import path from 'node:path'
-import { requireCluster, useTestNamespace, createTestRepo, TEST_IMAGE_PREFIX } from '@yaac/test-utils/setup'
-import { addTestProject, requirePodman } from '#support/cluster'
-import { createYaacTestEnv, spawnYaacServer, type YaacTestEnv } from '#support/cli'
-import type { SpawnedServer } from '@yaac/test-utils/api'
+import { requireCluster, useTestNamespace, TEST_IMAGE_PREFIX } from '@yaac/test-utils/setup'
+import { requirePodman } from '#support/cluster'
 import { ensureBuilderRoleGuard, ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import {
   BUILDER_ROLE_GUARD_NAME,
@@ -33,16 +30,14 @@ import {
   buildServerClusterRoleManifest,
   buildServerServiceAccountManifest,
 } from '@yaac/server/drivers/k8s/install/server-deploy'
-import type { ImageBuild, ImageSummary } from '@yaac/shared/types'
 
 /**
  * Image builds on the cluster (docs/image-builds.md): the main registry and
- * its two gated listeners, the guard that reserves the builder role, and
- * builds of project images in gVisor builder pods through a real server's
- * image API (step cache across pods, the source policy, refused hosts).
- *
- * The registry and guard cases run in-process against this run's
- * namespace; the build cases share one spawned server and project, last.
+ * its two gated listeners, and the guard that reserves the builder role,
+ * in-process against this run's namespace. No server runs here, so the
+ * file runs beside a server-backed one. The builds themselves, in gVisor
+ * builder pods (the step cache across pods, the source policy, refused
+ * hosts), run in image-cli.test.ts, on builds its commands start anyway.
  */
 
 let restoreNamespace: (() => void) | null = null
@@ -294,91 +289,4 @@ describe('image builds', () => {
 
     await deleteObject({ apiVersion: 'v1', kind: 'Pod', name: 'faker-control', namespace: ns }, { wait: true })
   }, 120_000)
-
-
-  describe('through the image API', () => {
-    // Per-run nonce in every RUN step. The registry outlives a run, so
-    // without it a tag would already exist and nothing would build.
-    const NONCE = crypto.randomBytes(4).toString('hex')
-    const layer = (...steps: string[]): string => ['ARG BASE_IMAGE', 'FROM ${BASE_IMAGE}', ...steps, ''].join('\n')
-    const STEPS = [`RUN echo step-one-${NONCE} > /tmp/marker-one`, `RUN echo step-two-${NONCE} > /tmp/marker-two`]
-
-    let testEnv: YaacTestEnv
-    let server: SpawnedServer
-    let projectId: string
-
-    async function api<T>(method: string, route: string, body?: unknown): Promise<T> {
-      const res = await fetch(`http://127.0.0.1:${String(server.lock.port)}/api${route}`, {
-        method,
-        ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
-      })
-      expect(res.ok, `${method} ${route}: ${res.status}`).toBe(true)
-      return await res.json() as T
-    }
-
-    /** A build once it has ended, and its log. */
-    async function settled(build: ImageBuild): Promise<{ build: ImageBuild; log: string }> {
-      let current = build
-      await vi.waitFor(async () => {
-        current = await api<ImageBuild>('GET', `/image/builds/${build.id}`)
-        expect(current.status).not.toMatch(/^(queued|running)$/)
-      }, { timeout: 600_000, interval: 2_000 })
-      const { text } = await api<{ text: string }>('GET', `/image/builds/${build.id}/log?offset=0`)
-      return { build: current, log: text }
-    }
-
-    /** Create a project image and settle the build it starts. */
-    async function created(name: string, dockerfile: string): Promise<{ id: string; build: ImageBuild; log: string }> {
-      const image = await api<ImageSummary & { builds: ImageBuild[] }>('POST', `/image/project/${projectId}`, { name, dockerfile })
-      expect(image.builds.map((b) => b.layer)).toEqual(['project'])
-      return { id: image.id, ...await settled(image.builds[0]) }
-    }
-
-    beforeAll(async () => {
-      testEnv = await createYaacTestEnv()
-      server = await spawnYaacServer(testEnv.env)
-      const repo = path.join(testEnv.scratchDir, 'demo')
-      await createTestRepo(repo)
-      projectId = await addTestProject(server, repo)
-    }, 600_000)
-
-    afterAll(async () => {
-      await server.stop()
-      await testEnv.cleanup()
-    })
-
-    it('builds a project image in a builder pod, and reuses its steps from the registry cache in the next pod', async () => {
-      const first = await created('cached', layer(...STEPS))
-      expect(first.build, `${first.build.error}\n${first.log}`).toMatchObject({ status: 'succeeded', reason: 'save' })
-      // Pushed to the project's repo on the registry.
-      expect(first.build.tag).toMatch(new RegExp(`^${TEST_IMAGE_PREFIX}-proj-${projectId}:`))
-      await expect(registryTagState(first.build.tag)).resolves.toBe('present')
-
-      // One step appended: a new builder pod reads the unchanged two from
-      // the project's cache.
-      const saved = await api<{ revision: { number: number }; builds: ImageBuild[] }>('PUT', `/image/${first.id}`, {
-        dockerfile: layer(...STEPS, `RUN echo step-three-${NONCE} > /tmp/marker-three`),
-      })
-      expect(saved.revision.number).toBe(2)
-      const second = await settled(saved.builds[0])
-      expect(second.build, `${second.build.error}\n${second.log}`).toMatchObject({ status: 'succeeded' })
-      expect(second.build.cachedSteps).toBeGreaterThanOrEqual(2)
-      expect(second.log).toContain('CACHED')
-      expect(second.build.tag).not.toBe(first.build.tag)
-    }, 900_000)
-
-    it('records the hosts the allowlist refused a build, and refuses another repo\'s image as a parent', async () => {
-      // A fetch the project does not allow fails inside the step, which
-      // carries on; the build says which host it was refused.
-      const reach = await created('reach', layer(`RUN curl -sS -m 20 -o /dev/null https://example.org/ || echo refused-${NONCE}`))
-      expect(reach.build, `${reach.build.error}\n${reach.log}`).toMatchObject({ status: 'succeeded' })
-      expect(reach.build.blockedHosts).toContain('example.org')
-
-      // The source policy admits only the build's own parent from the
-      // registry, so another project's image cannot be read through FROM.
-      const stolen = await created('stolen', `FROM ${registryPodHost()}/${TEST_IMAGE_PREFIX}-proj-${crypto.randomUUID()}:0000000000000000\nRUN echo ${NONCE}\n`)
-      expect(stolen.build.status).toBe('failed')
-      expect(`${stolen.build.error ?? ''}\n${stolen.log}`).toMatch(/denied/i)
-    }, 900_000)
-  })
 })

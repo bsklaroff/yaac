@@ -70,9 +70,10 @@ ten builder pods. Each running build takes about 10GB of node disk for its
 parent chain (see "Builder pods"), so the limit is also what bounds a
 burst of builds' disk. A create someone waits on goes first, then a person's
 save or manual build, then the sweep's. Two requests for the same final tag
-share one job, unless only one of them skips the cache: a rebuild without
-cache never joins a build that reuses it. A build in progress when the server stops is marked failed
-at the next start; its builder pod is deleted then too.
+share one job until its build ends, unless only one of them skips the
+cache: a rebuild without cache never joins a build that reuses it. A build
+in progress when the server stops is marked failed at the next start; its
+builder pod is deleted then too.
 
 A row's log is a file under server-local `image-builds/`, BuildKit's plain
 progress as it printed; the build page polls it by byte offset and groups

@@ -296,6 +296,7 @@ describe('reconcileRegistrationGc', () => {
       keptImageTags: () => Promise.resolve([]),
       pinnedImages: () => Promise.resolve([]),
       terminating: (id) => terminating.includes(id),
+      wakeAt: () => {},
     }
   }
 

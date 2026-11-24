@@ -12,6 +12,7 @@ import path from 'node:path'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { UNUSED_PID } from '@yaac/test-utils/pid-file'
 import { newLeaseFields, readLock, writeLock } from '@yaac/shared/lock'
 import { readInstallRecord, recordInstall } from '@yaac/shared/install-record'
 import { readServerConfig, writeServerConfig } from '@yaac/shared/server-config'
@@ -44,7 +45,7 @@ async function podLock(overrides: Record<string, unknown> = {}): Promise<void> {
  * namespace (another machine, a container) when `heartbeatAt` keeps it fresh.
  */
 async function unseenHostLock(heartbeatAt = Date.now()): Promise<void> {
-  await podLock({ pid: 999_999, pod: undefined, heartbeatAt })
+  await podLock({ pid: UNUSED_PID, pod: undefined, heartbeatAt })
 }
 
 /** Run `run` on fake time, advanced until it settles, so a lease lapses at once. */

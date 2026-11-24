@@ -44,14 +44,18 @@ import {
   applyObject,
   createObject,
   deleteObject,
+  isAbsent,
+  k8sErrorSummary,
   k8sNamespace,
   listObjects,
+  patchObject,
   readObject,
   siteServiceName,
   waitForRollout,
   type ObjectRef,
 } from '#drivers/k8s/substrate'
 import type { SiteRoute } from '#drivers/contract'
+import { serverLog } from '#lib/log'
 import { testEnv } from '@yaac/shared/env'
 import { TAILGATE_DIR } from '@yaac/shared/project-paths'
 import type { SiteTailnetState } from '@yaac/shared/types'
@@ -147,6 +151,13 @@ const SITE_OBJECT_APP = 'yaac-site'
  * policies without the router Service sending public traffic to it.
  */
 const LABEL_EDGE_REPLICA = 'yaac.site-edge-replica'
+
+/**
+ * On each router replica: a hash of the route table it should be serving.
+ * Writing it is what makes the replica load a new table at once (see
+ * `refreshRouterRoutes`).
+ */
+const ANNOTATION_ROUTES_HASH = 'yaac.site-routes-hash'
 
 const BOOTSTRAP_CONFIGMAP_NAME = `${SITE_ROUTER_APP_NAME}-bootstrap`
 const BOOTSTRAP_DIR = '/etc/yaac-site-router'
@@ -438,12 +449,14 @@ function buildSiteManifests(site: SiteRoute): Array<Record<string, unknown>> {
 /**
  * Converge the per-site objects and the route table to exactly `sites`
  * (the k8s `syncSites` verb). Services go first, so a new cluster's name
- * exists when Envoy loads it, and pruning goes last, once the route table
- * no longer names what it deletes.
+ * exists when Envoy loads it, and pruning comes after the route table, once
+ * it no longer names what it deletes. Stamping the router replicas, which
+ * only hurries the table along, is last.
  */
 export async function syncSiteObjects(sites: SiteRoute[]): Promise<void> {
   await Promise.all(sites.flatMap(buildSiteManifests).map((m) => applyObject(m)))
-  await applyObject(routesConfigMap(sites))
+  const routes = routesConfigMap(sites)
+  await applyObject(routes)
   const wanted = new Set(sites.map((s) => siteServiceName(s.siteId)))
   for (const [apiVersion, kind] of [['v1', 'Service'], ['networking.k8s.io/v1', 'NetworkPolicy']] as const) {
     const live = await listObjects(apiVersion, kind, {
@@ -453,6 +466,39 @@ export async function syncSiteObjects(sites: SiteRoute[]): Promise<void> {
       .map((o) => o.metadata?.name ?? '')
       .filter((name) => name && !wanted.has(name))
       .map((name) => deleteObject({ apiVersion, kind, name, namespace: k8sNamespace() })))
+  }
+  await refreshRouterRoutes(routes.data as Record<string, string>)
+}
+
+/**
+ * Stamp each router replica with the hash of the route table just written.
+ * The kubelet rewrites a mounted ConfigMap on its periodic sync, about a
+ * minute, unless the pod itself changes, which makes it sync that pod at
+ * once. Without this a site's hostname would start or stop being served a
+ * minute after the server decided it. Best-effort: the table is already
+ * written, and a stamp that fails costs only that minute, so a failure is
+ * logged rather than failing the sync. A replica that has just gone is
+ * skipped: its successor mounts the new table from the start.
+ */
+async function refreshRouterRoutes(data: Record<string, string>): Promise<void> {
+  const hash = crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex').slice(0, 16)
+  try {
+    const replicas = await listObjects('v1', 'Pod', {
+      namespace: k8sNamespace(),
+      labelSelector: `app=${SITE_ROUTER_APP_NAME},${LABEL_EDGE_REPLICA}=true`,
+    })
+    await Promise.all(replicas.flatMap((pod) => {
+      const name = pod.metadata?.name
+      if (!name || pod.metadata?.annotations?.[ANNOTATION_ROUTES_HASH] === hash) return []
+      return [patchObject(
+        { apiVersion: 'v1', kind: 'Pod', name, namespace: k8sNamespace() },
+        { metadata: { annotations: { [ANNOTATION_ROUTES_HASH]: hash } } },
+      ).catch((err: unknown) => {
+        if (!isAbsent(err)) throw err
+      })]
+    }))
+  } catch (err) {
+    serverLog(`[sites] the router will load the new route table on its next sync: stamping its replicas failed: ${k8sErrorSummary(err)}`)
   }
 }
 

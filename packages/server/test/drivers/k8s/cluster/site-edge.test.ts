@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcess from 'node:child_process'
-import { fakeCluster } from '@yaac/test-utils/k8s-stub'
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { fakeRegistry } from '#test/support/fake-registry'
 import { SERVER_POD_PORT } from '#drivers/k8s/substrate'
 
@@ -108,7 +108,17 @@ describe('syncSiteObjects', () => {
       { apiVersion: 'v1', kind: 'Service', metadata: { name: 'yaac-site-gone', namespace: 'test-ns', labels: { app: 'yaac-site' } } },
       { apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name: 'yaac-site-gone', namespace: 'test-ns', labels: { app: 'yaac-site' } } },
       { apiVersion: 'v1', kind: 'Service', metadata: { name: 'yaac-proxy', namespace: 'test-ns', labels: { app: 'yaac-proxy' } } },
+      // Two router replicas, and a `cluster check` probe that only shares
+      // their policies' label.
+      ...['yaac-site-router-a', 'yaac-site-router-b'].map((name) => ({
+        apiVersion: 'v1', kind: 'Pod',
+        metadata: { name, namespace: 'test-ns', labels: { app: 'yaac-site-router', 'yaac.site-edge-replica': 'true' } },
+      })),
+      { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'yaac-site-router-probe', namespace: 'test-ns', labels: { app: 'yaac-site-router' } } },
     )
+    const routesHash = (pod: string): string | undefined =>
+      fakeCluster.get<{ metadata: { annotations?: Record<string, string> } }>('Pod', pod, 'test-ns')
+        ?.metadata.annotations?.['yaac.site-routes-hash']
     await syncSiteObjects([
       { siteId: 'blog', hostname: 'blog.example.com', edge: 'public', port: 3000, liveWorkspaceId: 'ws-1' },
       { siteId: 'shop', hostname: 'shop.example.com', edge: 'public', port: 8000 },
@@ -181,8 +191,18 @@ describe('syncSiteObjects', () => {
     expect(stored('NetworkPolicy', 'yaac-site-gone')).toBeUndefined()
     expect(stored('Service', 'yaac-proxy')).toBeDefined()
 
-    // A deploy's flip changes the selector and nothing in the route table.
+    // Each replica is stamped with the table, which makes its kubelet
+    // rewrite the mounted ConfigMap at once rather than on its next sync.
+    const stamped = routesHash('yaac-site-router-a')
+    expect(stamped).toMatch(/^[0-9a-f]{16}$/)
+    expect(routesHash('yaac-site-router-b')).toBe(stamped)
+    expect(routesHash('yaac-site-router-probe')).toBeUndefined()
+    const podPatches = (): number => fakeCluster.callsOf('patch', 'Pod').length
+
+    // A deploy's flip changes the selector and nothing in the route table,
+    // so no replica is touched.
     const before = stored('ConfigMap', 'yaac-site-routes')?.data
+    const patchesBefore = podPatches()
     await syncSiteObjects([
       { siteId: 'blog', hostname: 'blog.example.com', edge: 'public', port: 3000, liveWorkspaceId: 'ws-2' },
       { siteId: 'shop', hostname: 'shop.example.com', edge: 'public', port: 8000 },
@@ -190,10 +210,17 @@ describe('syncSiteObjects', () => {
     ])
     expect(stored('Service', 'yaac-site-blog')?.spec.selector).toEqual({ 'yaac.site-id': 'blog', 'yaac.workspace-id': 'ws-2' })
     expect(stored('ConfigMap', 'yaac-site-routes')?.data).toEqual(before)
+    expect(podPatches()).toBe(patchesBefore)
 
-    // No sites: every Host is a 404.
+    // No sites: every Host is a 404. A replica the stamp cannot reach is no
+    // reason to fail the sync, which has already written the table and
+    // pruned what it no longer lists.
+    fakeCluster.intercept((call) => {
+      if (call.verb === 'patch' && call.name === 'yaac-site-router-b') throw apiError(500)
+    })
     await syncSiteObjects([])
     expect(routes()).toEqual({ hosts: [expect.objectContaining({ domains: ['*'] })], clusters: [] })
+    expect(routesHash('yaac-site-router-a')).not.toBe(stamped)
     expect(fakeCluster.objects<Manifest>('Service').map((s) => s.metadata.name)).toEqual(['yaac-proxy'])
     expect(fakeCluster.objects('NetworkPolicy')).toEqual([])
   })

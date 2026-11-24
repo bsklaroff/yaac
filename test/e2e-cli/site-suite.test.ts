@@ -169,7 +169,7 @@ describe('yaac site (real CLI + real server)', () => {
     docsSha = (await git(docsPath, ['rev-parse', 'HEAD'])).trim()
 
     await yaac('volume', 'create', NAME, 'data', '--size', '1Gi')
-  }, 300_000)
+  })
 
   afterAll(async () => {
     if (server) await server.stop()
