@@ -36,6 +36,7 @@ export {
   removeLabelIf,
 } from './api'
 export type { ObjectRef } from './api'
+export { buildContextFiles, streamBuildContext } from './build-context-tar'
 export { bindInstall, installId, installNameKey, legacyDataDirHash, legacyNameKey } from './install-id'
 export type { LegacyKeys } from './install-id'
 export { legacyHashOf, relabelLegacyObjects } from './legacy-labels'
@@ -91,6 +92,7 @@ export {
 export {
   JOB_NAME_LABEL,
   LABEL_PREWARMED,
+  LABEL_BUILD_ID,
   LABEL_PROJECT_ID,
   LABEL_WORKSPACE_ID,
   findWorkspacePod,

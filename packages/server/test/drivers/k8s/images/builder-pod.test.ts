@@ -1,6 +1,6 @@
 /**
- * builder-pod's barrel function: the leaked-pod reaper (a reconcile step).
- * The rest of the module is covered through `ensureImage` in
+ * builder-pod's barrel function: the leaked-pod reaper, run at driver
+ * start. The rest of the module is covered through `buildImageLayers` in
  * build-coordinator.test.ts.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -31,15 +31,25 @@ beforeEach(() => {
 })
 
 describe('deleteLeakedBuilderPods', () => {
-  it('deletes every builder pod of this install and nothing else', async () => {
-    const pod = (name: string, labels: Record<string, string>) =>
-      ({ apiVersion: 'v1', kind: 'Pod', metadata: { name, namespace: k8sNamespace(), labels } })
+  it('deletes the builder pods and build registrations of this install older than this server, and nothing else', async () => {
+    const before = '2026-01-01T00:00:00Z'
+    const obj = (kind: string, name: string, labels: Record<string, string>, creationTimestamp?: string) =>
+      ({ apiVersion: 'v1', kind, metadata: { name, namespace: k8sNamespace(), labels, ...(creationTimestamp ? { creationTimestamp } : {}) } })
+    const builder = { 'yaac.role': 'builder', 'yaac.install-id': installId() }
+    const registration = { 'yaac.proxy-input': 'registration', 'yaac.build-id': 'b1' }
     fakeCluster.seed(
-      pod('leaked', { 'yaac.role': 'builder', 'yaac.install-id': installId() }),
-      pod('other-install', { 'yaac.role': 'builder', 'yaac.install-id': 'x' }),
-      pod('workspace', { 'yaac.install-id': installId() }),
+      obj('Pod', 'leaked', builder, before),
+      // A build this server started before the reaper ran.
+      obj('Pod', 'this-server', builder),
+      obj('Pod', 'other-install', { 'yaac.role': 'builder', 'yaac.install-id': 'x' }, before),
+      obj('Pod', 'workspace', { 'yaac.install-id': installId() }, before),
+      obj('ConfigMap', 'leaked-registration', registration, before),
+      obj('ConfigMap', 'this-server-registration', registration),
+      obj('ConfigMap', 'workspace-registration', { 'yaac.proxy-input': 'registration', 'yaac.workspace-id': 'w' }, before),
     )
     await deleteLeakedBuilderPods()
-    expect(fakeCluster.objects('Pod').map((p) => p.metadata.name).sort()).toEqual(['other-install', 'workspace'])
+    expect(fakeCluster.objects('Pod').map((p) => p.metadata.name).sort()).toEqual(['other-install', 'this-server', 'workspace'])
+    expect(fakeCluster.objects('ConfigMap').map((c) => c.metadata.name).sort())
+      .toEqual(['this-server-registration', 'workspace-registration'])
   })
 })

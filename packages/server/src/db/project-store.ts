@@ -39,6 +39,12 @@ export interface ProjectRow extends ProjectMeta, ProjectConfig {
   /** Gitignored checkout paths a stop keeps. */
   keptIgnoredPaths: string[]
   scratchDirs: ScratchDirSettings
+  /** The image a create naming none launches; absent is the stock image. */
+  defaultImageId?: string
+  /** The image the last create chose (`projects.lastImageId`). */
+  lastImageId?: string
+  /** Days a build cache is read; absent is the default. */
+  imageCacheDays?: number
 }
 
 function toProjectRow(

@@ -4,7 +4,7 @@ import { claimDraft, discardDraftWorkspace, listDraftWorkspaces, saveDraftWorksp
 import { BUILT_IN_USER_ID, setDraftWorkspaceTitle } from '#db'
 import { closeDb } from '#db/client'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import type { DraftWorkspaceSettings } from '@yaac/shared/types'
+import { STOCK_IMAGE_ID, type DraftWorkspaceSettings } from '@yaac/shared/types'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -35,9 +35,11 @@ describe('saveDraftWorkspace', () => {
 
     const replaced = await saveDraftWorkspace(local, PROJ, {
       ...SETTINGS, prompt: 'a better idea', repos: [{ repo: 'api', branch: 'dev' }], nested: true, cwd: 'api', title: '  My   idea ', groupId: 'g1',
+      imageId: STOCK_IMAGE_ID,
     }, saved.id)
     expect(replaced).toMatchObject({
       id: saved.id, prompt: 'a better idea', repos: [{ repo: 'api', branch: 'dev' }], nested: true, cwd: 'api', title: 'My idea', groupId: 'g1',
+      imageId: STOCK_IMAGE_ID,
     })
     // A blank title is none, leaving the draft to be auto-titled.
     expect(await saveDraftWorkspace(local, PROJ, { ...SETTINGS, title: ' ' }, saved.id)).not.toHaveProperty('title')

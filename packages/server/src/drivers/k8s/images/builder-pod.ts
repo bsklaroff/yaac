@@ -1,86 +1,110 @@
 /**
- * Ephemeral runsc builder pods for untrusted layers (`Dockerfile.yaac`,
- * `Dockerfile.user`), which never run on the host podman engine
- * (docs/trust-split-builds.md). Each `ensureImage` call gets one gVisor pod
- * running podman, shared by its untrusted layers through a
- * `BuilderPodLease`. Per layer:
+ * Ephemeral gVisor builder pods for untrusted layers (project images and
+ * `Dockerfile.user`), each running its own buildkitd (docs/image-builds.md).
+ * Each `buildImageLayers` call gets one pod, shared by its untrusted layers
+ * through a `BuilderPodLease`, so the second layer's parent is already
+ * local. Per layer:
  *
- *   1. on pod creation, write a storage.conf using native overlay (the
- *      stock image's fuse-overlayfs does not work under runsc),
- *   2. pull the parent from the registry and retag it to the bare tag so
- *      `--build-arg BASE_IMAGE=P` resolves,
- *   3. stream the build context in as a tar over `kubectl exec -i`,
- *      honoring `.containerignore` like `contextHash()`,
- *   4. give the pod a registry write grant for only this layer's repo and
- *      the project's step-cache repo,
- *   5. `podman build --isolation chroot` with the registry step cache,
- *   6. push the product (parent blobs are cross-repo mounted, not
- *      re-uploaded),
- *   7. delete the pod (the next server's start deletes a leaked one).
+ *   1. stream the build context (the revision's support files) in as a tar
+ *      over `kubectl exec -i`, and the Dockerfile with the normalize step
+ *      appended;
+ *   2. hand the pod a registry grant for only this layer's repo, its parent
+ *      and the project's build-cache repo, and a source policy;
+ *   3. run one `buildctl build` that pulls the parent lazily, imports and
+ *      exports the layer's registry cache, and pushes the product.
  *
- * Parents, products and step-cache images all live in the registry; the
- * host store never sees these tags.
+ * buildkitd listens on a socket in its own container, which a `RUN` step's
+ * container does not see, and the grant is read only by `buildctl`.
  */
 import crypto from 'node:crypto'
-import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
 import { Readable } from 'node:stream'
-import { BUILDER_CONTEXT_MAX_BYTES, collectContextFiles, parseContainerIgnore } from '#lib/build-context'
 import {
+  LABEL_BUILD_ID,
   LABEL_INSTALL_ID,
+  LABEL_PROJECT_ID,
+  LABEL_PROXY_INPUT,
   LABEL_ROLE,
   PRIORITY_CLASS_BUILDER,
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
   applyObject,
+  buildContextFiles,
   installId,
   deleteObject,
-  deleteObjects,
+  listObjects,
   ensureKubernetes,
   execFileAsync,
   sentryTmpfsAnnotations,
   k8sNamespace,
   readObject,
   runStreamingProcess,
+  streamBuildContext,
 } from '#drivers/k8s/substrate'
 import {
+  BUILDKITD_ENV,
+  NORMALIZE_STEP,
+  buildBuildRegistrationConfigMapManifest,
   buildBuilderEgressNpManifest,
-  clusterDnsCidrs,
+  buildkitdConfig,
   ensureBuilderImage,
   ensureBuilderRoleGuard,
   ensureMainRegistry,
-  nodeAddressBlocks,
+  nodeIpBlocks,
+  proxyRegistrationName,
+  proxyServiceClusterIp,
   registryAuthFile,
   registryHost,
+  registryPodHost,
+  registryRepoIsProtected,
   stringHash,
   type ImageLayer,
 } from '#drivers/k8s/cluster'
-import { serverLog, pipeToServerLog } from '#lib/log'
+import { proxyClient } from '#drivers/k8s/egress'
+import { serverLog } from '#lib/log'
 
 interface EngineBuildContext {
-  /** Project whose chain is being built (its id keys the step-cache repo). */
+  /** Project whose chain is being built (its id keys the cache repo). */
   projectId: string
+  /** The id the builder's egress is registered under. */
+  egressId: string
+  /** The project's allowed hosts (`BuilderPodIdentity`). */
+  allowedHosts: string[]
   onLog?: (line: string) => void
   /** Builder pod shared by adjacent untrusted layers of one request, owned
    *  and released by the coordinator. */
   lease: BuilderPodLease
+  /** Import no cache and start a new one (a rebuild without cache). */
+  noCache?: boolean
+  /** The cache's maximum age in days (`cacheBucket`). */
+  cacheMaxDays?: number
 }
 
-/**
- * In-container directory of podman's graphroot, and its volume (the gVisor
- * mount annotations key on the name). It must be a sentry-internal tmpfs:
- * gVisor's gofer filesystem rejects `security.*` xattr writes, so a
- * `setcap` build step fails on a plain emptyDir.
- */
-const BUILDER_GRAPHROOT_PATH = '/var/lib/containers'
-const BUILDER_GRAPHROOT_VOLUME = 'podman-graphroot'
+interface BuilderPodIdentity {
+  projectId: string
+  /** The first build the pod runs, which the proxy knows its egress by. */
+  buildId: string
+  /** The project's allowed hosts: all a build may reach, through the proxy. */
+  allowedHosts: string[]
+}
+
+/** When this server process started: builder objects older than it are
+ *  leaks from the last one (`deleteLeakedBuilderPods`). */
+const PROCESS_STARTED_AT = Date.now()
 
 /**
- * In-sandbox capabilities podman needs to build. Under gVisor they grant no
- * host authority:
- *  - SYS_ADMIN, SYS_CHROOT: mounts and the chroot RUN steps run in.
+ * In-container directory of buildkitd's state, and its volume (the gVisor
+ * mount annotations key on the name). It must be a sentry-internal tmpfs:
+ * gVisor's gofer filesystem rejects the overlay upper dirs and `security.*`
+ * xattrs a build writes.
+ */
+const BUILDER_STATE_PATH = '/var/lib/buildkit'
+const BUILDER_STATE_VOLUME = 'buildkit-state'
+
+/**
+ * In-sandbox capabilities buildkitd and runc need. Under gVisor they grant
+ * no host authority:
+ *  - SYS_ADMIN, SYS_CHROOT: the snapshot mounts and each step's container.
  *  - MKNOD: device nodes in image layers.
  *  - SETFCAP: `setcap` in build steps.
  *  - NET_RAW, NET_ADMIN: raw sockets and route config in RUN steps.
@@ -92,14 +116,15 @@ const BUILDER_ENGINE_CAPS = [
 ]
 
 /**
- * Sentry tmpfs cap for the builder graphroot. A build holds the parent
- * chain (~5GB), its product and step-cache images at once.
+ * Sentry tmpfs cap for buildkitd's state. A build holds the parent chain
+ * twice (its compressed blobs and their unpacked snapshots, ~10GB for the
+ * stock tools image), its own layers and the cache it exports.
  */
-export const BUILDER_GRAPHROOT_TMPFS_BYTES = 16 * 1024 ** 3
+export const BUILDER_STATE_TMPFS_BYTES = 24 * 1024 ** 3
 
 /** emptyDir sizeLimit, above the tmpfs cap so the sentry hits ENOSPC
  *  before kubelet evicts the pod. */
-export const BUILDER_GRAPHROOT_SIZELIMIT_BYTES = BUILDER_GRAPHROOT_TMPFS_BYTES + 1024 ** 3
+export const BUILDER_STATE_SIZELIMIT_BYTES = BUILDER_STATE_TMPFS_BYTES + 1024 ** 3
 
 /** Pod memory limit for build processes (layer data is disk-backed). */
 export const BUILDER_MEMORY_LIMIT_BYTES = 8 * 1024 ** 3
@@ -128,25 +153,25 @@ export const BUILDER_ACTIVE_DEADLINE_SECONDS = 4 * 3600
  * which is a total.
  */
 const BUILDER_READY_TIMEOUT_MS = 60_000
-const BUILDER_PULL_IDLE_TIMEOUT_MS = 180_000
 export const BUILDER_BUILD_IDLE_TIMEOUT_MS = 600_000
-const BUILDER_PUSH_IDLE_TIMEOUT_MS = 120_000
 const BUILDER_CONTEXT_IDLE_TIMEOUT_MS = 120_000
 
 /** Hard cap on any one exec: past the pod's own deadline. */
 const BUILDER_EXEC_TOTAL_TIMEOUT_MS = (BUILDER_ACTIVE_DEADLINE_SECONDS + 300) * 1000
 
-/**
- * `--cache-ttl` for step-cache reads. Older entries are misses, so stale or
- * poisoned cache ages out and GC knows how long entries matter.
- */
-export const BUILD_CACHE_TTL = '168h'
+/** A cache's default maximum age, in days. */
+export const BUILD_CACHE_MAX_DAYS = 28
 
-/** In-pod path the build context is extracted to. */
+/** In-pod paths: the context, the Dockerfile as built, and the policy. */
 export const BUILDER_CONTEXT_DIR = '/tmp/yaac-build-ctx'
+export const BUILDER_DOCKERFILE_DIR = '/tmp/yaac-build-dockerfile'
+const BUILDER_POLICY_FILE = '/tmp/yaac-source-policy.json'
+
+/** Where buildctl reads registry credentials (`$DOCKER_CONFIG`, default). */
+export const BUILDER_AUTHFILE = '/root/.docker/config.json'
 
 /**
- * Per-project registry repo for step-cache images. Cache entries are used
+ * Per-project registry repo for build caches. Cache entries are used
  * without a provenance check, so a hostile build could poison later hits;
  * a per-project repo limits that to the project the attacker already
  * controls. Named by project id, so a new project starts with an empty
@@ -156,16 +181,59 @@ function buildCacheRepo(projectId: string): string {
   return `yaac-buildcache-${projectId}`
 }
 
-/** In-pod path of the build's registry authfile (`--authfile`). */
-export const BUILDER_AUTHFILE = '/run/yaac-registry-auth.json'
+/** `repo` of a `repo:tag`. */
+function registryRepoOf(tag: string): string {
+  const colon = tag.lastIndexOf(':')
+  return colon < 0 ? tag : tag.slice(0, colon)
+}
 
 /**
- * The repos a layer's build may write: its own product repo and the
- * project's step-cache repo. A hostile `RUN` step that reads the grant can
- * write nothing another project or the trusted chain uses.
+ * Which cache a build of `layer` uses: `<repo>:<layer>-<bucket>`. Time is
+ * cut into windows of `maxDays`, offset per project so projects do not all
+ * start a new cache on one day, and a window's cache is never read after it
+ * ends. That bounds how long a poisoned entry can outlive the Dockerfile
+ * that planted it, with no stored start date. The registry GC keeps only
+ * each layer's newest window.
+ */
+export function cacheBucket(projectId: string, maxDays: number, now = Date.now()): number {
+  const offset = Number.parseInt(stringHash(projectId).slice(0, 8), 16) % maxDays
+  return Math.floor((Math.floor(now / 86_400_000) + offset) / maxDays)
+}
+
+/**
+ * The repos a layer's build may use: its own product repo, the project's
+ * cache repo, and its parent's repo when that is protected (a user layer
+ * over its project's). A hostile `RUN` step that reads the grant can reach
+ * nothing another project or the trusted chain owns.
  */
 function builderGrantRepos(layer: ImageLayer, projectId: string): string[] {
-  return [layer.tag.slice(0, layer.tag.lastIndexOf(':')), buildCacheRepo(projectId)]
+  const parent = layer.buildArgs?.BASE_IMAGE
+  return [
+    registryRepoOf(layer.tag),
+    buildCacheRepo(projectId),
+    ...(parent && registryRepoIsProtected(registryRepoOf(parent)) ? [registryRepoOf(parent)] : []),
+  ]
+}
+
+/**
+ * The source policy for one build: every image on the main registry is
+ * denied, at either port, except the layer's own parent. So a Dockerfile
+ * cannot `FROM` or `COPY --from` another project's image through the
+ * daemon. The gate's read check is what holds; this makes a hostile
+ * Dockerfile fail early and clearly. Later rules win in BuildKit.
+ */
+export function builderSourcePolicy(parentTag: string | undefined): string {
+  const deny = [registryHost(), registryPodHost()].map((host) => ({
+    action: 'DENY',
+    selector: { identifier: `docker-image://${host}/*`, matchType: 'WILDCARD' },
+  }))
+  const allow = parentTag
+    ? [{
+      action: 'ALLOW',
+      selector: { identifier: `docker-image://${registryPodHost()}/${parentTag}*`, matchType: 'WILDCARD' },
+    }]
+    : []
+  return JSON.stringify({ rules: [...deny, ...allow] })
 }
 
 /** Builder pod name: a hash of the first layer tag plus random bytes. */
@@ -174,12 +242,18 @@ function builderPodName(seedTag: string): string {
 }
 
 /**
- * Builder pod manifest: plain `gvisor` runtime (chroot builds need no raw
- * sockets), the engine capabilities, no service account token, and
- * the graphroot on a sentry-internal tmpfs. The container just sleeps; the
- * server drives it with `kubectl exec` and streams the build logs.
+ * Builder pod manifest: the `gvisor` runtime, the engine capabilities, no
+ * service account token, and buildkitd's state on a sentry-internal tmpfs.
+ * buildkitd is the entrypoint, with its config written from the env at
+ * start; the server drives it with `kubectl exec … buildctl`.
  */
-function buildBuilderPodManifest(name: string, imageRef: string): Record<string, unknown> {
+function buildBuilderPodManifest(
+  name: string,
+  imageRef: string,
+  identity: BuilderPodIdentity,
+  proxyIp: string,
+): Record<string, unknown> {
+  const config = buildkitdConfig({ plainHttp: [registryPodHost()] })
   return {
     apiVersion: 'v1',
     kind: 'Pod',
@@ -189,8 +263,10 @@ function buildBuilderPodManifest(name: string, imageRef: string): Record<string,
       labels: {
         [LABEL_INSTALL_ID]: installId(),
         [LABEL_ROLE]: ROLE_BUILDER,
+        [LABEL_PROJECT_ID]: identity.projectId,
+        [LABEL_BUILD_ID]: identity.buildId,
       },
-      annotations: sentryTmpfsAnnotations(BUILDER_GRAPHROOT_VOLUME, BUILDER_GRAPHROOT_TMPFS_BYTES),
+      annotations: sentryTmpfsAnnotations(BUILDER_STATE_VOLUME, BUILDER_STATE_TMPFS_BYTES),
     },
     spec: {
       restartPolicy: 'Never',
@@ -200,6 +276,11 @@ function buildBuilderPodManifest(name: string, imageRef: string): Record<string,
       runtimeClassName: RUNTIME_CLASS_GVISOR,
       // Outranks workspaces but never preempts one (see priority-classes.ts).
       priorityClassName: PRIORITY_CLASS_BUILDER,
+      // The proxy's DNS stub, as a workspace's: it resolves the registry
+      // and sinkholes every other name, since netd redirects the build's
+      // egress and the proxy routes by SNI/Host.
+      dnsPolicy: 'None',
+      dnsConfig: { nameservers: [proxyIp] },
       securityContext: {
         seccompProfile: { type: 'RuntimeDefault' },
       },
@@ -207,7 +288,15 @@ function buildBuilderPodManifest(name: string, imageRef: string): Record<string,
         name: 'builder',
         image: imageRef,
         imagePullPolicy: 'IfNotPresent',
-        command: ['sleep', 'infinity'],
+        command: [
+          'sh', '-c',
+          'printf %s "$BUILDKITD_CONFIG" > /etc/buildkit/buildkitd.toml '
+          + '&& exec buildkitd --config /etc/buildkit/buildkitd.toml --oci-worker-net=host',
+        ],
+        env: [
+          { name: 'BUILDKITD_CONFIG', value: config },
+          ...Object.entries(BUILDKITD_ENV).map(([key, value]) => ({ name: key, value })),
+        ],
         securityContext: {
           capabilities: { add: BUILDER_ENGINE_CAPS },
         },
@@ -219,137 +308,50 @@ function buildBuilderPodManifest(name: string, imageRef: string): Record<string,
           limits: { memory: String(BUILDER_MEMORY_LIMIT_BYTES) },
         },
         volumeMounts: [{
-          name: BUILDER_GRAPHROOT_VOLUME,
-          mountPath: BUILDER_GRAPHROOT_PATH,
+          name: BUILDER_STATE_VOLUME,
+          mountPath: BUILDER_STATE_PATH,
         }],
       }],
       volumes: [{
-        name: BUILDER_GRAPHROOT_VOLUME,
-        emptyDir: { sizeLimit: String(BUILDER_GRAPHROOT_SIZELIMIT_BYTES) },
+        name: BUILDER_STATE_VOLUME,
+        emptyDir: { sizeLimit: String(BUILDER_STATE_SIZELIMIT_BYTES) },
       }],
     },
   }
 }
 
-/**
- * Replace the stock storage.conf, which forces fuse-overlayfs (broken under
- * runsc), with native overlay. `pull_options` keeps zstd:chunked partial
- * pulls enabled, as in the stock file.
- */
-function builderStorageConfScript(): string {
-  return [
-    'set -eu',
-    'mkdir -p /etc/containers',
-    "cat > /etc/containers/storage.conf <<'EOF'",
-    '[storage]',
-    'driver = "overlay"',
-    'runroot = "/run/containers/storage"',
-    'graphroot = "/var/lib/containers/storage"',
-    '',
-    '[storage.options]',
-    'pull_options = {enable_partial_images = "true", use_hard_links = "false", ostree_repos = ""}',
-    'EOF',
-  ].join('\n')
-}
+/** Wait for buildkitd to answer on its socket; the pod is Ready before it is. */
+const WAIT_FOR_BUILDKITD = 'for i in $(seq 120); do buildctl debug workers >/dev/null 2>&1 && exit 0; sleep 0.5; done; '
+  + 'echo "buildkitd did not start" >&2; exit 1'
 
 /**
- * Pull the parent image into the pod and retag it to the bare tag, since
- * `FROM ${BASE_IMAGE}` resolves locally. Skipped when the pod already has
- * it (a reused pod just built the previous layer).
- */
-function builderParentPullScript(parentTag: string, clusterHost: string): string {
-  const remote = `${clusterHost}/${parentTag}`
-  return [
-    'set -eu',
-    `if podman image exists ${parentTag}; then exit 0; fi`,
-    `podman pull --tls-verify=false ${remote}`,
-    `podman tag ${remote} ${parentTag}`,
-  ].join('\n')
-}
-
-/**
- * `podman build` argv (everything after `podman`). There is no `--no-cache`
- * option: a layer only builds when its content-hash tag is missing, and the
- * step cache only matches unchanged steps.
+ * `buildctl build` argv for one layer. `BASE_IMAGE` is the parent's pod-port
+ * ref, so BuildKit pulls it only if a step has to run. The output is one
+ * zstd image manifest with no attestations, which the registry GC requires
+ * (docs/image-gc.md), and so is the cache export.
  */
 function builderBuildArgs(
   layer: ImageLayer,
-  opts: {
-    dockerfileRel: string
-    clusterHost: string
-    cacheRepo: string
-  },
+  opts: { cacheRef: string; noCache: boolean },
 ): string[] {
-  // With the registry step cache, an edited Dockerfile reruns only its
-  // changed steps, even in a fresh pod.
-  const cacheRef = `${opts.clusterHost}/${opts.cacheRepo}`
+  const host = registryPodHost()
   const args = [
     'build',
-    // RUN steps run in a chroot rather than an OCI runtime.
-    '--isolation', 'chroot',
-    '--tls-verify=false',
-    '--authfile', BUILDER_AUTHFILE,
-    '-t', layer.tag,
-    '-f', `${BUILDER_CONTEXT_DIR}/${opts.dockerfileRel}`,
-    '--cache-from', cacheRef,
-    '--cache-to', cacheRef,
-    '--cache-ttl', BUILD_CACHE_TTL,
+    '--frontend', 'dockerfile.v0',
+    '--local', `context=${BUILDER_CONTEXT_DIR}`,
+    '--local', `dockerfile=${BUILDER_DOCKERFILE_DIR}`,
+    // Parse with the built-in frontend even if the file names another.
+    '--opt', 'cmdline=dockerfile.v0',
+    '--source-policy-file', BUILDER_POLICY_FILE,
+    '--export-cache', `type=registry,ref=${opts.cacheRef},mode=max,image-manifest=true,oci-mediatypes=true`,
+    ...(opts.noCache ? ['--no-cache'] : ['--import-cache', `type=registry,ref=${opts.cacheRef}`]),
+    '--output', `type=image,name=${host}/${layer.tag},push=true,compression=zstd,oci-mediatypes=true`,
+    '--progress', 'plain',
   ]
   for (const [key, value] of Object.entries(layer.buildArgs ?? {})) {
-    args.push('--build-arg', `${key}=${value}`)
+    args.push('--opt', `build-arg:${key}=${key === 'BASE_IMAGE' ? `${host}/${value}` : value}`)
   }
-  args.push(BUILDER_CONTEXT_DIR)
   return args
-}
-
-interface BuildContextPlan {
-  /** Context-relative file paths, sorted; the exact `contextHash()` set. */
-  files: string[]
-  /** Dockerfile path relative to the context root. */
-  dockerfileRel: string
-  totalBytes: number
-}
-
-/**
- * Enumerate the files to stream into the pod: the same set `contextHash()`
- * covers (honoring `.containerignore`, no symlinks), plus the Dockerfile
- * itself even when ignored (podman reads `-f` outside the ignore rules).
- * Enforces BUILDER_CONTEXT_MAX_BYTES.
- */
-async function planBuildContext(
-  contextDir: string,
-  dockerfilePath: string,
-): Promise<BuildContextPlan> {
-  let ignore = new Set<string>()
-  try {
-    ignore = parseContainerIgnore(
-      await fs.readFile(path.join(contextDir, '.containerignore'), 'utf8'),
-    )
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
-  }
-  const files = (await collectContextFiles(contextDir, '', ignore)).sort()
-
-  const dockerfileRel = path.relative(contextDir, dockerfilePath)
-  if (dockerfileRel.startsWith('..') || path.isAbsolute(dockerfileRel)) {
-    throw new Error(
-      `dockerfile ${dockerfilePath} is outside its build context ${contextDir}`,
-    )
-  }
-  if (!files.includes(dockerfileRel)) files.push(dockerfileRel)
-
-  let totalBytes = 0
-  for (const rel of files) {
-    totalBytes += (await fs.stat(path.join(contextDir, rel))).size
-  }
-  if (totalBytes > BUILDER_CONTEXT_MAX_BYTES) {
-    throw new Error(
-      `build context ${contextDir} is ${Math.round(totalBytes / 1024 ** 2)}MB `
-      + `(limit ${BUILDER_CONTEXT_MAX_BYTES / 1024 ** 2}MB). Add a `
-      + '.containerignore excluding large dirs the Dockerfile does not COPY.',
-    )
-  }
-  return { files, dockerfileRel, totalBytes }
 }
 
 interface PodExecOptions {
@@ -382,70 +384,59 @@ async function execInBuilderPod(
   })
 }
 
+/** Write `content` to `file` in the pod, over stdin, private to root. */
+async function writePodFile(
+  podName: string,
+  file: string,
+  content: string,
+  opts: { onLog?: (line: string) => void; logPrefix: string },
+): Promise<void> {
+  await execInBuilderPod(
+    podName,
+    ['sh', '-c', `umask 077 && mkdir -p ${path.posix.dirname(file)} && cat > ${file}`],
+    { ...opts, input: Readable.from([content]), idleTimeoutMs: BUILDER_CONTEXT_IDLE_TIMEOUT_MS },
+  )
+}
+
 /**
- * Stream the context files into the pod as a tar over exec stdin, into a
- * freshly wiped BUILDER_CONTEXT_DIR (a reused pod still has the previous
- * layer's context).
+ * Stream the context into a freshly wiped BUILDER_CONTEXT_DIR (a reused pod
+ * still has the previous layer's context).
  */
 async function streamContextToPod(
   podName: string,
   contextDir: string,
-  files: string[],
   opts: { onLog?: (line: string) => void; logPrefix: string },
 ): Promise<void> {
-  // The file list goes in a temp file: it can exceed argv limits, and
-  // stdin carries the archive.
-  const listDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-build-ctx-'))
-  const listFile = path.join(listDir, 'files.txt')
-  await fs.writeFile(listFile, files.map((f) => `${f}\n`).join(''))
-  try {
-    const tar = spawn('tar', ['-cf', '-', '-T', listFile], {
-      cwd: contextDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    const tarStderr: string[] = []
-    pipeToServerLog(tar.stderr, opts.logPrefix, (l) => tarStderr.push(l))
-    tar.stdout.on('error', () => {}) // EPIPE when the exec side dies first
-    const tarExit = new Promise<void>((resolve, reject) => {
-      tar.on('close', (code) => {
-        if (code === 0) resolve()
-        else reject(new Error(`tar exited with code ${code}: ${tarStderr.join('\n')}`))
-      })
-      tar.on('error', reject)
-    })
-    const extract = `rm -rf ${BUILDER_CONTEXT_DIR} && mkdir -p ${BUILDER_CONTEXT_DIR} `
-      + `&& tar -xf - -C ${BUILDER_CONTEXT_DIR}`
-    await Promise.all([
-      execInBuilderPod(podName, ['sh', '-c', extract], {
-        input: tar.stdout,
-        onLog: opts.onLog,
-        logPrefix: opts.logPrefix,
-        idleTimeoutMs: BUILDER_CONTEXT_IDLE_TIMEOUT_MS,
-      }),
-      tarExit,
-    ])
-  } finally {
-    await fs.rm(listDir, { recursive: true, force: true })
-  }
+  const extract = `rm -rf ${BUILDER_CONTEXT_DIR} && mkdir -p ${BUILDER_CONTEXT_DIR} `
+    + `&& tar -xf - -C ${BUILDER_CONTEXT_DIR}`
+  await streamBuildContext(contextDir, await buildContextFiles(contextDir), opts.logPrefix, (tar) =>
+    execInBuilderPod(podName, ['sh', '-c', extract], {
+      ...opts, input: tar, idleTimeoutMs: BUILDER_CONTEXT_IDLE_TIMEOUT_MS,
+    }))
 }
 
 /** Apply the builder-role admission guard and egress policy. */
 async function ensureBuilderNetworkPolicies(): Promise<void> {
   await ensureBuilderRoleGuard()
-  await applyObject(buildBuilderEgressNpManifest(await nodeAddressBlocks(), await clusterDnsCidrs()))
+  await applyObject(buildBuilderEgressNpManifest(await nodeIpBlocks()))
 }
 
 /**
  * One builder pod, created on first `acquire` and shared by the untrusted
- * layers of one `ensureImage` call, which calls `release` to delete it.
+ * layers of one `buildImageLayers` call, which calls `release` to delete it.
  */
 export class BuilderPodLease {
   private podName: string | null = null
   private acquiring: Promise<string> | null = null
+  private buildId: string | null = null
+  /** Once released, it provisions nothing more. */
+  private released = false
 
-  async acquire(seedTag: string): Promise<string> {
+
+  async acquire(seedTag: string, identity: BuilderPodIdentity): Promise<string> {
+    if (this.released) throw new Error('cancelled')
     if (!this.acquiring) {
-      this.acquiring = this.provision(seedTag).catch((err: unknown) => {
+      this.acquiring = this.provision(seedTag, identity).catch((err: unknown) => {
         this.acquiring = null // a later layer may retry provisioning
         throw err
       })
@@ -453,34 +444,40 @@ export class BuilderPodLease {
     return this.acquiring
   }
 
-  private async provision(seedTag: string): Promise<string> {
+  private async provision(seedTag: string, identity: BuilderPodIdentity): Promise<string> {
     try {
       await ensureKubernetes()
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err)
       throw new Error(
-        'Dockerfile.yaac / Dockerfile.user layers build in sandboxed cluster '
+        'Project images and Dockerfile.user build in sandboxed cluster '
         + 'pods, which needs a healthy cluster. '
         + `Run \`yaac cluster check\`.\n${detail}`,
       )
     }
-    // Fail here, not inside the pod, if the registry is not up.
+    // Fail here, not inside the pod, if the registry is not up. The pod
+    // resolves names and reaches the network through the proxy, which a
+    // server that has launched no workspace yet has not deployed.
     await ensureMainRegistry()
+    await proxyClient.ensureRunning()
     const imageRef = await ensureBuilderImage()
     await ensureBuilderNetworkPolicies()
 
     const name = builderPodName(seedTag)
     serverLog(`[builder] creating builder pod ${name}`)
-    await applyObject(buildBuilderPodManifest(name, imageRef))
+    // Before the pod, so its first dial finds it (the proxy fails closed).
+    await applyObject(buildBuildRegistrationConfigMapManifest(identity.buildId, identity.projectId, identity.allowedHosts))
+    this.buildId = identity.buildId
+    await applyObject(buildBuilderPodManifest(name, imageRef, identity, await proxyServiceClusterIp()))
     try {
       // `kubectl wait`: the substrate's watch-based wait is for Job pods.
       await execFileAsync('kubectl', [
         'wait', '--for=condition=Ready', `pod/${name}`, '-n', k8sNamespace(),
         `--timeout=${Math.floor(BUILDER_READY_TIMEOUT_MS / 1000)}s`,
       ], { timeout: BUILDER_READY_TIMEOUT_MS + 15_000 })
-      await execInBuilderPod(name, ['sh', '-c', builderStorageConfScript()], {
+      await execInBuilderPod(name, ['sh', '-c', WAIT_FOR_BUILDKITD], {
         logPrefix: `[builder ${name}] `,
-        idleTimeoutMs: 30_000,
+        idleTimeoutMs: 90_000,
       })
     } catch (err) {
       const blocked = await builderPodBlockDetail(name)
@@ -492,14 +489,16 @@ export class BuilderPodLease {
     return name
   }
 
-  /** Delete the pod. Best-effort: activeDeadlineSeconds bounds a leak, and
-   *  the next server's start deletes it. */
+  /** Delete the pod and its registration. Best-effort: activeDeadlineSeconds
+   *  bounds a leaked pod, and the next server's start deletes both. */
   async release(): Promise<void> {
+    this.released = true
     const pending = this.acquiring
     this.acquiring = null
     const name = this.podName ?? (pending ? await pending.catch(() => null) : null)
     this.podName = null
     if (name) await deleteBuilderPod(name)
+    if (this.buildId) await deleteBuildRegistration(this.buildId)
   }
 }
 
@@ -549,6 +548,14 @@ async function builderPodBlockDetail(name: string): Promise<string | null> {
   return reason ? `builder pod ${name}: ${reason}` : null
 }
 
+async function deleteBuildRegistration(buildId: string): Promise<void> {
+  await deleteObject({
+    apiVersion: 'v1', kind: 'ConfigMap', name: proxyRegistrationName(buildId), namespace: k8sNamespace(),
+  }).catch((err: unknown) => {
+    serverLog(`[builder] failed to delete the egress registration of build ${buildId}: ${String(err)}`)
+  })
+}
+
 async function deleteBuilderPod(name: string): Promise<void> {
   await deleteObject({ apiVersion: 'v1', kind: 'Pod', name, namespace: k8sNamespace() }).catch((err: unknown) => {
     serverLog(`[builder] failed to delete pod ${name}: ${String(err)}`)
@@ -563,12 +570,12 @@ export async function buildLayerInPod(
   layer: ImageLayer,
   ctx: EngineBuildContext,
 ): Promise<void> {
-  const pod = await ctx.lease.acquire(layer.tag)
-  const clusterHost = registryHost()
-  const logPrefix = `[build ${layer.tag}] `
-  const execOpts = { onLog: ctx.onLog, logPrefix }
+  const pod = await ctx.lease.acquire(layer.tag, {
+    projectId: ctx.projectId, buildId: ctx.egressId, allowedHosts: ctx.allowedHosts,
+  })
+  const execOpts = { onLog: ctx.onLog, logPrefix: `[build ${layer.tag}] ` }
   try {
-    await runLayerBuild(pod, layer, ctx, clusterHost, execOpts)
+    await runLayerBuild(pod, layer, ctx, execOpts)
   } catch (err) {
     // If the pod died (e.g. its deadline), kubectl only reports a signal,
     // so ask the pod why.
@@ -582,59 +589,32 @@ async function runLayerBuild(
   pod: string,
   layer: ImageLayer,
   ctx: EngineBuildContext,
-  clusterHost: string,
   execOpts: { onLog?: (line: string) => void; logPrefix: string },
 ): Promise<void> {
-  const parentTag = layer.buildArgs?.BASE_IMAGE
-  if (parentTag) {
-    await execInBuilderPod(
-      pod,
-      ['sh', '-c', builderParentPullScript(parentTag, clusterHost)],
-      { ...execOpts, idleTimeoutMs: BUILDER_PULL_IDLE_TIMEOUT_MS },
-    )
-  }
-
-  const plan = await planBuildContext(layer.context, layer.dockerfile)
-  await streamContextToPod(pod, layer.context, plan.files, execOpts)
-
-  // Sent over stdin, not argv. Each layer gets a fresh grant, valid for
-  // the pod's lifetime.
-  const authFile = await registryAuthFile(
-    clusterHost,
+  await streamContextToPod(pod, layer.context, execOpts)
+  await writePodFile(pod, `${BUILDER_DOCKERFILE_DIR}/Dockerfile`, `${layer.dockerfile}\n${NORMALIZE_STEP}`, execOpts)
+  await writePodFile(pod, BUILDER_POLICY_FILE, builderSourcePolicy(layer.buildArgs?.BASE_IMAGE), execOpts)
+  // Each layer gets a fresh grant, valid for the pod's lifetime.
+  await writePodFile(pod, BUILDER_AUTHFILE, await registryAuthFile(
+    registryPodHost(),
     builderGrantRepos(layer, ctx.projectId),
     BUILDER_ACTIVE_DEADLINE_SECONDS + 60,
-  )
-  await execInBuilderPod(
-    pod,
-    ['sh', '-c', `umask 077 && cat > ${BUILDER_AUTHFILE}`],
-    { ...execOpts, input: Readable.from([authFile]), idleTimeoutMs: BUILDER_CONTEXT_IDLE_TIMEOUT_MS },
-  )
+  ), execOpts)
 
+  const bucket = cacheBucket(ctx.projectId, ctx.cacheMaxDays ?? BUILD_CACHE_MAX_DAYS)
   await execInBuilderPod(
     pod,
-    ['podman', ...builderBuildArgs(layer, {
-      dockerfileRel: plan.dockerfileRel,
-      clusterHost,
-      cacheRepo: buildCacheRepo(ctx.projectId),
+    ['buildctl', ...builderBuildArgs(layer, {
+      cacheRef: `${registryPodHost()}/${buildCacheRepo(ctx.projectId)}:${layer.name}-${layer.cacheKey ?? 'none'}-${bucket}`,
+      noCache: ctx.noCache ?? false,
     })],
     { ...execOpts, idleTimeoutMs: BUILDER_BUILD_IDLE_TIMEOUT_MS },
-  )
-
-  // Parent blobs came from this registry, so podman cross-repo mounts
-  // them instead of re-uploading. No HEAD check: the build only ran because
-  // the tag was missing.
-  await execInBuilderPod(
-    pod,
-    [
-      'podman', 'push', '--tls-verify=false', '--authfile', BUILDER_AUTHFILE,
-      layer.tag, `${clusterHost}/${layer.tag}`,
-    ],
-    { ...execOpts, idleTimeoutMs: BUILDER_PUSH_IDLE_TIMEOUT_MS },
   )
 }
 
 /**
- * Delete every builder pod of this install, at server start. Only one
+ * Delete every builder pod of this install, and every build registration,
+ * older than this server process, at server start. Only one
  * server runs per install (its Deployment is `replicas: 1` with `Recreate`,
  * so the old pod is gone before this one starts), so any builder pod then
  * is a leak from the last one, and its memory reservation could block
@@ -643,8 +623,17 @@ async function runLayerBuild(
  * is bounded by its activeDeadlineSeconds.
  */
 export async function deleteLeakedBuilderPods(): Promise<void> {
-  await deleteObjects('v1', 'Pod', {
-    namespace: k8sNamespace(),
-    labelSelector: `${LABEL_ROLE}=${ROLE_BUILDER},${LABEL_INSTALL_ID}=${installId()}`,
-  })
+  const namespace = k8sNamespace()
+  for (const [kind, labelSelector] of [
+    ['Pod', `${LABEL_ROLE}=${ROLE_BUILDER},${LABEL_INSTALL_ID}=${installId()}`],
+    // Their registrations, which the namespace's proxy alone reads.
+    ['ConfigMap', `${LABEL_PROXY_INPUT}=registration,${LABEL_BUILD_ID}`],
+  ] as const) {
+    for (const obj of await listObjects('v1', kind, { namespace, labelSelector })) {
+      // A build this server started before the sweep ran is not a leak.
+      const created = Date.parse(obj.metadata?.creationTimestamp as unknown as string)
+      if (!(created < PROCESS_STARTED_AT)) continue
+      await deleteObject({ apiVersion: 'v1', kind, name: obj.metadata!.name!, namespace })
+    }
+  }
 }

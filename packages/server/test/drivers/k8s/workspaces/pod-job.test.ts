@@ -35,7 +35,7 @@ function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
     ephemeralStorageLimitBytes: 16 * 1024 ** 3,
     // The proxy Service's ClusterIP, never a DNS name.
     proxyHost: '10.96.0.179',
-    builderImage: 'registry.local/podman-stable:v5.5',
+    utilityImage: 'registry.local/podman-stable:v5.5',
     ...overrides,
   }
 }
@@ -355,8 +355,8 @@ describe('buildPodJobManifest', () => {
     // Root there runs the pinned builder image or nothing.
     expect(() => build({
       mounts: [{ source: { kind: 'pvc', claimName: 'yaac-volume-v1' }, mountPath: '/home/yaac/volume' }],
-      builderImage: undefined,
-    })).toThrow(/builderImage/)
+      utilityImage: undefined,
+    })).toThrow(/utilityImage/)
   })
 
   it('emits no lifecycle block without postStartExec', () => {

@@ -209,6 +209,11 @@ yaac workspace
     --start-at <time>           Queue it for HH:MM, YYYY-MM-DD HH:MM or ISO 8601,
                                 read in your yaac time zone (needs --prompt)
     --start-in <duration>       Queue it to start this long from now
+    --use-image <name>          Launch this image of the project (`yaac` is
+                                the stock image) instead of its default, at
+                                its last built revision (image-builds.md)
+    --await-build               Launch the image's current revision once its
+                                build finishes instead; fails if it does
   list [project]                List running workspaces of your projects, then
                                 those scheduled for later
     -s, --stopped               List stopped ones instead
@@ -326,6 +331,8 @@ yaac site                       A project's sites, each served by a
     --admin-port <n>            Port of each release only its owner reaches,
                                 by `yaac forward` or a preview
     --volume <name>             Volume each release mounts (see `yaac volume`)
+    --image <name>              Image each release launches (`yaac` is the
+                                stock image; default: the project's default)
     --deploy-timeout <duration> Fail a deploy unless its release is ready this
                                 long after it starts (default 1h, at most 1d);
                                 also bounds following, starts and replacements
@@ -339,6 +346,7 @@ yaac site                       A project's sites, each served by a
                                 moves at once
     --no-admin-port             Offer no admin port
     --no-volume                 Mount no volume
+    --no-image                  Launch the project's default image
     --no-follow                 Deploy only when asked; allowed mid-deploy,
                                 to whoever may stop the site
   publish <project> <name>      Route it at a hostname, or move it; approves
@@ -407,6 +415,54 @@ yaac workflow                   A project's named workflows, which routines,
   delete <project> <name>       Refused while a routine, site or queued
                                 workspace follows it
 
+yaac image                      A project's images, and your own Dockerfile.user:
+                                a Dockerfile with support files, saved as
+                                revisions and built in the cluster (cluster
+                                servers only; image-builds.md). `yaac` is the
+                                stock image, which has no revisions
+  list <project>                Its images: the default, each one's state, its
+                                current revision and the last one built, which
+                                creates launch
+  show <project> <image>        Print the Dockerfile to stdout, and its
+                                revision, author and support files to stderr
+    --revision <n>              Another revision instead of the current one
+  create <project> <image>      Create an image and start building it
+    --file <path>               The Dockerfile, `-` for stdin (required)
+    --context <dir>             Upload this dir's files, less what its
+                                .containerignore lists (literal paths only),
+                                as the support files it can COPY
+    --note <text>               A note on the revision
+  edit <project> <image>        Save new content: a change makes a revision and
+                                starts its build; prints which. Takes --file,
+                                --context and --note; without --context the
+                                current revision's files are kept
+  rm <project> <image>          Delete it with its revisions and builds
+  default <project> [image]     Print or set the image creates launch when they
+                                name none
+  revisions <project> <image>   Number, build status, author, time and note
+  restore <project> <image> <revision>
+                                Save an old revision's content as a new one;
+                                support files no longer kept are left out
+  build <project> <image>       Build it now
+    --revision <n>              Another revision instead of the current one
+    --no-cache                  Run every step again
+    --wait                      Follow its log until it ends; exits non-zero
+                                unless it succeeded
+  builds <project> [image]      List builds, newest first
+  logs <build-id>               Print a build's log
+    -f, --follow                Until it ends, then its outcome (non-zero
+                                exit unless it succeeded)
+  user show                     Your Dockerfile.user (--revision <n>), layered
+                                on every project you own
+  user edit                     Save it, creating it on the first save; takes
+                                --file, --context and --note. It must use
+                                `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}`
+  user revisions
+  user restore <revision>
+  user build <project>          Build it on the project's default image
+                                (--no-cache, --wait)
+  user builds [project]
+
 yaac volume                     A project's volumes, one running workspace at a
                                 time (cluster servers only; workspace-volumes.md)
   create <project> <name>
@@ -453,12 +509,13 @@ yaac config                     Each setting prints given no value, and is
     --none                      Keep none
   npm-cache <project> [on|off]  Show or set whether workspaces use the
                                 install's npm cache (k8s only)
-  dockerfile <project>          Print the project's Dockerfile.yaac (k8s only)
-    --file <path>               Replace it with a file's, `-` for stdin
-    --none                      Remove it
-  user-dockerfile               Print your Dockerfile.user (k8s only)
-    --file <path>               Replace it with a file's, `-` for stdin
-    --none                      Remove it
+  build-concurrency [n]         Show or set how many image builds the install
+                                runs at once (admins; k8s only)
+    --none                      Return to the default
+  image-cache-days <project> [days]
+                                Show or set how old a cached build step the
+                                project's image builds reuse (k8s only)
+    --none                      Return to the default, 28
   git-identity                  Show the git identity workspaces commit as
     --name <name> --email <email>  Set it
   workspace-auto-delete <project> [days|off]

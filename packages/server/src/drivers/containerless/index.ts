@@ -97,15 +97,13 @@ export function createContainerlessDriver(): WorkspaceDriver {
     // For a client on another machine; local clients dial directly.
     dialPort: (workspaceId, port) => dialWorkspacePort(workspaceId, port),
 
-    // No images.
-    listImageBuilds: () => [],
-    imageBuildLog: () => undefined,
-    dismissImageBuild: () => false,
-    retryImageBuild: () => false,
     assertCanLaunch: (opts) => assertHostCanLaunch(opts),
     ensureRuntimeReachable: () => Promise.resolve(),
-    prepareImage: () => unsupported('building a workspace image'),
-    currentImage: () => unsupported('resolving a workspace image'),
+    // No images.
+    resolveImageChain: () => unsupported('resolving a workspace image'),
+    missingImageLayers: () => unsupported('resolving a workspace image'),
+    buildImageLayers: () => unsupported('building a workspace image'),
+    imageRef: () => unsupported('resolving a workspace image'),
 
     exec: (jobName, cmd, opts) => execInWorkspace(jobName, cmd, opts),
     // `exec` is a host shell, so there is no transport to wait for.

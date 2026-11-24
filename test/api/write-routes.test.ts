@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
-import { buildApp, buildMamaRelayApp } from '@yaac/server/main/server'
+import { buildApp, buildMamaRelayApp, delegateApp } from '@yaac/server/main/server'
 import { git } from '@yaac/test-utils/git'
-import { projectConfigDir, getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
+import { getProjectsDir, projectDir, claudeDir, codexDir, repoDir } from '@yaac/shared/project-paths'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { credentialOwnerKey } from '@yaac/server/domain/auth'
 import { addHttpsCredential, listCredentialSummaries } from '@yaac/server/domain/auth/git-credentials'
@@ -31,7 +32,9 @@ import type * as projectAddModule from '@yaac/server/domain/projects/add'
 import type * as sessionDeleteModule from '@yaac/server/domain/workspaces/stop'
 import type * as projectRemoveModule from '@yaac/server/domain/workspaces/project-teardown'
 import type * as gitModule from '@yaac/server/domain/git'
-import type { ClaudeOAuthBundle } from '@yaac/shared/types'
+import { STOCK_IMAGE_ID, type ClaudeOAuthBundle, type Delegate, type ImageBuild, type ImageBuildStatus, type ImageSummary } from '@yaac/shared/types'
+import type { ImageBuildOutcome, ImageBuildRequest } from '@yaac/server/drivers/contract'
+import { _imageBuildsSettledForTests, _resetImageBuildsForTests } from '@yaac/server/domain/images/builds'
 import { ServerError } from '@yaac/shared/errors'
 import { asTailnet, makeTestApiClient } from '@yaac/test-utils/api'
 import { workspaceDriver } from '@yaac/server/drivers/driver'
@@ -469,178 +472,298 @@ describe('write routes', () => {
     })
   })
 
-  describe('GET /project/:projectId/dockerfile', () => {
-    it('returns empty content when the project has none', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':projectId'].dockerfile.$get({ param: { projectId: DEMO } })
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ content: '' })
+  // docs/image-builds.md. The builds run for real in `#domain/images`; the
+  // driver's registry lookup and builder are spied on, so each build is a
+  // request the test settles.
+  describe('image routes', () => {
+    const LAYERED = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n'
+    /** Build requests the driver got, oldest first, each settled by the test. */
+    let builds: Array<{ request: ImageBuildRequest; settle: (outcome: ImageBuildOutcome) => void }>
+    let spies: Array<{ mockRestore: () => void }>
+
+    beforeEach(() => {
+      builds = []
+      const driver = workspaceDriver()
+      spies = [
+        // The registry never has a project's or user's layer.
+        vi.spyOn(driver, 'missingImageLayers').mockImplementation((chain) =>
+          Promise.resolve(chain.layers.map((l) => l.name).filter((n) => n === 'project' || n === 'user'))),
+        // A build prints a step and waits for the test, or ends when cancelled.
+        vi.spyOn(driver, 'buildImageLayers').mockImplementation((request) => new Promise((settle) => {
+          request.onLayerStart(request.layers[0])
+          request.onLine(request.layers[0], '#5 [1/1] RUN echo hi')
+          request.signal.addEventListener('abort', () => { settle({ ok: false, error: 'cancelled', blockedHosts: [] }) })
+          builds.push({ request, settle })
+        })),
+      ]
     })
 
-    it('returns 404 for an unknown project', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':projectId'].dockerfile.$get({ param: { projectId: 'nope' } })
-      expect(res.status).toBe(404)
-    })
-  })
-
-  describe('PUT /project/:projectId/dockerfile', () => {
-    it('rejects requests with no content field', async () => {
-      const app = buildApp({ buildId: 'test' })
-      const res = await app.request('/api/project/demo/dockerfile', rawInit({
-        method: 'PUT',
-        body: JSON.stringify({}),
-      }))
-      expect(res.status).toBe(400)
+    afterEach(async () => {
+      // A cancelled build still records how it ended; let it, before the
+      // database closes under it.
+      await _imageBuildsSettledForTests()
+      _resetImageBuildsForTests()
+      for (const spy of spies) spy.mockRestore()
     })
 
-    it('writes the Dockerfile and returns it', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.project[':projectId'].dockerfile.$put({
-        param: { projectId: DEMO },
-        json: { content: 'FROM ubuntu:24.04\n' },
+    async function nextBuild(): Promise<(typeof builds)[number]> {
+      await vi.waitFor(() => { expect(builds.length).toBeGreaterThan(0) })
+      return builds.shift()!
+    }
+
+    /** Resolves once the image's newest build has `status`. */
+    async function newestBuild(client: ReturnType<typeof makeTestApiClient>, imageId: string, status: ImageBuildStatus): Promise<ImageBuild> {
+      return vi.waitFor(async () => {
+        const [newest] = await (await client.image.builds.$get({ query: { imageId } })).json()
+        expect(newest?.status).toBe(status)
+        return newest
       })
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ content: 'FROM ubuntu:24.04\n' })
-      const raw = await fs.readFile(
-        path.join(projectConfigDir(DEMO), 'build', 'Dockerfile.yaac'),
-        'utf8',
-      )
-      expect(raw).toBe('FROM ubuntu:24.04\n')
-    })
-  })
+    }
 
-  describe('GET/PUT /config/user-dockerfile', () => {
-    it('returns empty content when unset', async () => {
+    /** Create a project image of DEMO and let its first build finish. */
+    async function createImage(client: ReturnType<typeof makeTestApiClient>, name: string, dockerfile = 'FROM ubuntu:24.04\n'): Promise<string> {
+      const res = await client.image.project[':projectId'].$post({ param: { projectId: DEMO }, json: { name, dockerfile, files: {} } })
+      expect(res.status).toBe(201)
+      const { id } = await res.json()
+      ;(await nextBuild()).settle({ ok: true, blockedHosts: [] })
+      await newestBuild(client, id, 'succeeded')
+      return id
+    }
+
+    it("refuses the owner's delegate every image route: the user image, project images, builds and allow-host", async () => {
+      const owner = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const id = await createImage(owner, 'web')
+      const [build] = await (await owner.image.builds.$get({ query: { imageId: id } })).json()
+      expect((await owner.image.user.$put({ json: { dockerfile: LAYERED } })).status).toBe(200)
+      // That save builds the owner's user layer; the delegate starts none.
+      ;(await nextBuild()).settle({ ok: true, blockedHosts: [] })
+      const delegate: Delegate = {
+        kind: 'delegate', userId: BUILT_IN_USER_ID, login: null, projectId: DEMO, ceiling: 'bypass',
+        via: { kind: 'workspace', id: 'agent-ws', label: 'workspace agent-ws' },
+      }
+      const app = delegateApp(() => Promise.resolve(delegate), { buildId: 'test' })
+      const send = async (method: string, url: string, body?: unknown): Promise<Response> => app.request(url, {
+        method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+      })
+      for (const [method, url, body] of [
+        // Its user's own: it tops every project they own, not just this one.
+        ['GET', '/api/image/user'],
+        ['PUT', '/api/image/user', { dockerfile: LAYERED }],
+        ['POST', '/api/image/user/files', { content: 'x' }],
+        // What every future workspace of the project launches.
+        ['POST', `/api/image/project/${DEMO}`, { name: 'api', dockerfile: 'FROM x' }],
+        ['PUT', `/api/image/${id}`, { dockerfile: 'FROM y' }],
+        ['PUT', `/api/image/project/${DEMO}/default`, { imageId: id }],
+        ['DELETE', `/api/image/${id}`],
+        // Widens the project's egress allowlist.
+        ['POST', `/api/image/builds/${build.id}/allow-host`, { host: 'quay.io' }],
+        ['POST', `/api/image/builds/${build.id}/retry`, {}],
+        ['POST', `/api/image/${id}/builds`, {}],
+      ] as const) {
+        const res = await send(method, url, body)
+        expect(res.status, `${method} ${url}: ${await res.text()}`).toBe(403)
+      }
+      expect(builds).toEqual([])
+      const list = await (await owner.image.project[':projectId'].$get({ param: { projectId: DEMO } })).json()
+      expect(list.map((i) => i.name)).toEqual(['yaac', 'web'])
+    })
+
+    it('creates a project image beside the stock one, builds it at once with its files, and refuses a bad or taken name', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.config['user-dockerfile'].$get()
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ content: '' })
+      const project = client.image.project[':projectId']
+      const upload = await project.files.$post({ param: { projectId: DEMO }, json: { content: 'hello' } })
+      const file = await upload.json()
+      expect(file).toEqual({ sha256: createHash('sha256').update('hello').digest('hex'), size: 5 })
+
+      // Named by the project's name as well as its id.
+      const res = await project.$post({ param: { projectId: 'demo' }, json: { name: 'web', dockerfile: 'FROM ubuntu\nCOPY a.txt /a\n', files: { 'a.txt': file } } })
+      expect(res.status).toBe(201)
+      const web = await res.json()
+      expect(web).toMatchObject({ name: 'web', scope: 'project', isDefault: false, currentRevision: { number: 1 } })
+      expect(web.builds).toEqual([expect.objectContaining({ imageId: web.id, layer: 'project', reason: 'save', revisionNumber: 1 })])
+
+      // The build gets the revision's Dockerfile and its files as its context.
+      const { request, settle } = await nextBuild()
+      expect(request.spec.layers).toEqual([expect.objectContaining({ layer: 'project', dockerfile: 'FROM ubuntu\nCOPY a.txt /a\n' })])
+      expect(await fs.readFile(path.join(request.spec.layers[0].contextDir, 'a.txt'), 'utf8')).toBe('hello')
+      settle({ ok: true, blockedHosts: [] })
+      await vi.waitFor(async () => {
+        const list = await (await project.$get({ param: { projectId: DEMO } })).json()
+        expect(list.map((i) => [i.id, i.name, i.isDefault, i.state])).toEqual([
+          [STOCK_IMAGE_ID, 'yaac', true, 'ready'], [web.id, 'web', false, 'ready'],
+        ])
+      })
+
+      for (const name of ['Web', 'yaac']) {
+        expect((await project.$post({ param: { projectId: DEMO }, json: { name, dockerfile: 'FROM x' } })).status).toBe(400)
+      }
+      expect((await project.$post({ param: { projectId: DEMO }, json: { name: 'web', dockerfile: 'FROM x' } })).status).toBe(409)
+      expect((await project.$post({ param: { projectId: DEMO }, json: { name: 'api', dockerfile: '' } })).status).toBe(400)
+      expect((await project.$get({ param: { projectId: 'nope' } })).status).toBe(404)
+      expect(builds).toEqual([])
     })
 
-    it('writes a layered user Dockerfile and returns it', async () => {
+    it('saves an image as revisions, reads their files back, restores an old one and deletes it, cancelling its build', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const content = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo hi\n'
-      const res = await client.config['user-dockerfile'].$put({ json: { content } })
-      expect(res.status).toBe(200)
-      expect(await res.json()).toEqual({ content })
+      const id = await createImage(client, 'web', 'FROM ubuntu:22.04\n')
+      const image = client.image[':imageId']
+      const text = await (await image.files.$post({ param: { imageId: id }, json: { content: 'hello' } })).json()
+      const bytes = Buffer.from([0, 1, 2, 255])
+      const binary = await (await image.files.$post({ param: { imageId: id }, json: { contentBase64: bytes.toString('base64') } })).json()
+      expect(binary.size).toBe(4)
+      expect((await image.files.$post({ param: { imageId: id }, json: { content: 'x', contentBase64: 'eA==' } })).status).toBe(400)
+
+      const v2 = { dockerfile: 'FROM ubuntu:24.04\n', files: { 'a.txt': text, 'bin/x': binary }, note: 'newer base' }
+      const saved = await image.$put({ param: { imageId: id }, json: v2 })
+      expect(await saved.json()).toMatchObject({ changed: true, revision: { number: 2, note: 'newer base', missingFiles: [] } })
+      ;(await nextBuild()).settle({ ok: true, blockedHosts: [] })
+      await newestBuild(client, id, 'succeeded')
+      // The same content again makes no revision and builds nothing.
+      expect(await (await image.$put({ param: { imageId: id }, json: v2 })).json()).toMatchObject({ changed: false, revision: { number: 2 } })
+      // A file must be uploaded before a save names it.
+      expect((await image.$put({ param: { imageId: id }, json: { dockerfile: 'FROM x', files: { b: { sha256: 'f'.repeat(64), size: 1 } } } })).status).toBe(400)
+
+      const detail = await (await image.$get({ param: { imageId: id } })).json()
+      expect(detail).toMatchObject({
+        image: { currentRevision: { number: 2 }, lastBuiltRevision: { number: 2 }, state: 'ready' },
+        revision: { dockerfile: 'FROM ubuntu:24.04\n', buildStatus: 'succeeded' },
+      })
+      const revisions = await (await image.revisions.$get({ param: { imageId: id } })).json()
+      expect(revisions.map((r) => r.number)).toEqual([2, 1])
+      const file = image.revisions[':revisionId'].file
+      const read = async (rel: string): Promise<Response> => file.$get({ param: { imageId: id, revisionId: revisions[0].id }, query: { path: rel } })
+      expect(await (await read('a.txt')).json()).toEqual({ binary: false, content: 'hello' })
+      expect(await (await read('bin/x')).json()).toEqual({ binary: true, contentBase64: bytes.toString('base64') })
+      expect((await read('nope')).status).toBe(404)
+
+      const restore = image.revisions[':revisionId'].restore
+      const restored = await restore.$post({ param: { imageId: id, revisionId: revisions[1].id } })
+      expect(await restored.json()).toMatchObject({
+        changed: true, droppedFiles: [], revision: { number: 3, dockerfile: 'FROM ubuntu:22.04\n', note: 'restored revision 1' },
+      })
+      const restoreBuild = await nextBuild()
+
+      expect((await image.$delete({ param: { imageId: id } })).status).toBe(204)
+      expect((await image.$get({ param: { imageId: id } })).status).toBe(404)
+      expect((await restore.$post({ param: { imageId: id, revisionId: revisions[1].id } })).status).toBe(404)
+      // Its build was stopped with it.
+      expect(restoreBuild.request.signal.aborted).toBe(true)
     })
 
-    it('keeps one per user', async () => {
+    it('sets the project\'s default image and build cache age, refusing what it does not have', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const id = await createImage(client, 'web')
+      const project = client.image.project[':projectId']
+      const defaults = async (): Promise<string[]> =>
+        (await (await project.$get({ param: { projectId: DEMO } })).json()).filter((i) => i.isDefault).map((i) => i.name)
+
+      expect((await project.default.$put({ param: { projectId: DEMO }, json: { imageId: id } })).status).toBe(204)
+      expect(await defaults()).toEqual(['web'])
+      expect((await getProjectRow(DEMO))?.defaultImageId).toBe(id)
+      expect((await project.default.$put({ param: { projectId: DEMO }, json: { imageId: randomUUID() } })).status).toBe(404)
+      expect((await project.default.$put({ param: { projectId: DEMO }, json: { imageId: STOCK_IMAGE_ID } })).status).toBe(204)
+      expect(await defaults()).toEqual(['yaac'])
+
+      const cacheDays = project['cache-days']
+      expect((await cacheDays.$put({ param: { projectId: DEMO }, json: { days: 7 } })).status).toBe(204)
+      expect((await getProjectRow(DEMO))?.imageCacheDays).toBe(7)
+      expect((await cacheDays.$put({ param: { projectId: DEMO }, json: { days: 0 } })).status).toBe(400)
+      expect((await cacheDays.$put({ param: { projectId: DEMO }, json: { days: null } })).status).toBe(204)
+      expect((await getProjectRow(DEMO))?.imageCacheDays).toBeUndefined()
+    })
+
+    it('keeps one user image per user, which must layer on the project\'s image, and shows it to no one else', async () => {
       vi.stubEnv('YAAC_ALLOWED_HOSTS', 'srv.tailnet.ts.net')
       const app = buildApp({ buildId: 'test', access: () => 'tailnet' })
-      const as = (login: string): Record<string, string> => asTailnet(login, 'srv.tailnet.ts.net')
-      const content = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo alice\n'
-      const put = await app.request('/api/config/user-dockerfile', rawInit({
-        method: 'PUT', headers: as('alice@example.com'), body: JSON.stringify({ content }),
-      }))
-      expect(put.status).toBe(200)
-      const read = async (login: string): Promise<unknown> =>
-        (await app.request('/api/config/user-dockerfile', { headers: as(login) })).json()
-      expect(await read('alice@example.com')).toEqual({ content })
-      expect(await read('bob@example.com')).toEqual({ content: '' })
+      const as = (login: string): RequestInit => ({ headers: asTailnet(login, 'srv.tailnet.ts.net') })
+      const userImage = async (login: string): Promise<unknown> => (await app.request('/api/image/user', as(login))).json()
+      const put = (login: string, body: unknown): Response | Promise<Response> =>
+        app.request('/api/image/user', rawInit({ ...as(login), method: 'PUT', body: JSON.stringify(body) }))
+
+      expect(await userImage('alice@example.com')).toEqual({ image: null })
+      expect((await put('alice@example.com', { dockerfile: 'FROM ubuntu:24.04\n' })).status).toBe(400)
+      const file = await (await app.request('/api/image/user/files', rawInit({
+        ...as('alice@example.com'), method: 'POST', body: JSON.stringify({ content: '[user]\n' }),
+      }))).json() as { sha256: string; size: number }
+      const saved = await put('alice@example.com', { dockerfile: LAYERED, files: { gitconfig: file } })
+      expect(saved.status).toBe(200)
+      expect(await saved.json()).toMatchObject({ changed: true, revision: { number: 1, files: { gitconfig: file } } })
+      // Alice owns no project, so there is no image for it to top yet.
+      expect(builds).toEqual([])
+
+      const { image } = await userImage('alice@example.com') as { image: ImageSummary }
+      expect(image).toMatchObject({ name: 'Dockerfile.user', scope: 'user', currentRevision: { number: 1 }, state: 'never-built' })
+      expect(await userImage('bob@example.com')).toEqual({ image: null })
+      expect((await app.request(`/api/image/${image.id}`, as('bob@example.com'))).status).toBe(403)
       vi.unstubAllEnvs()
     })
 
-    it('rejects a non-layered user Dockerfile with 400', async () => {
+    it('lists, reads, cancels and retries a project\'s builds, and allows a host a build was refused', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.config['user-dockerfile'].$put({
-        json: { content: 'FROM ubuntu:24.04\n' },
+      const created = await client.image.project[':projectId'].$post({ param: { projectId: DEMO }, json: { name: 'web', dockerfile: 'FROM ubuntu\n' } })
+      const { id } = await created.json()
+      await nextBuild()
+      const running = await newestBuild(client, id, 'running')
+      expect(await (await client.image.builds.$get({ query: { projectId: DEMO } })).json()).toEqual([
+        expect.objectContaining({ id: running.id, imageName: 'web', layer: 'project', reason: 'save', stepCurrent: 1, stepText: 'RUN echo hi' }),
+      ])
+      const build = client.image.builds[':buildId']
+      expect(await (await build.$get({ param: { buildId: running.id } })).json()).toMatchObject({ id: running.id, status: 'running' })
+
+      // The log is read on from where the last read ended.
+      const log = (offset: number) => build.log.$get({ param: { buildId: running.id }, query: { offset: String(offset) } })
+      const first = await (await log(0)).json()
+      expect(first).toEqual({ text: '#5 [1/1] RUN echo hi\n', offset: 21, done: false })
+      expect(await (await log(first.offset)).json()).toEqual({ text: '', offset: 21, done: false })
+
+      expect((await build.cancel.$post({ param: { buildId: running.id } })).status).toBe(204)
+      await newestBuild(client, id, 'cancelled')
+      expect((await build.cancel.$post({ param: { buildId: running.id } })).status).toBe(409)
+      expect(await (await log(first.offset)).json()).toEqual({ text: '', offset: 21, done: true })
+
+      // A retry builds the same revision again; this one is refused a host.
+      const retried = await build.retry.$post({ param: { buildId: running.id }, json: {} })
+      expect(retried.status).toBe(202)
+      expect(await retried.json()).toEqual([expect.objectContaining({ reason: 'manual', revisionNumber: 1, layer: 'project' })])
+      ;(await nextBuild()).settle({ ok: false, error: 'pull refused', failedLayer: 'project', blockedHosts: ['registry.example.com'] })
+      const failed = await newestBuild(client, id, 'failed')
+      expect(failed).toMatchObject({ error: 'pull refused', blockedHosts: ['registry.example.com'] })
+
+      // Allowing it lets the project reach it, and builds again.
+      const allowed = await build['allow-host'].$post({ param: { buildId: failed.id }, json: { host: 'registry.example.com' } })
+      expect(allowed.status).toBe(202)
+      expect(await allowed.json()).toEqual({
+        allowed: ['registry.example.com'], builds: [expect.objectContaining({ reason: 'manual', revisionNumber: 1 })],
       })
-      expect(res.status).toBe(400)
-    })
-  })
+      expect((await getProjectRow(DEMO))?.egressAllowlist.hosts).toContain('registry.example.com')
+      const again = await nextBuild()
+      expect(again.request.allowedHosts).toContain('registry.example.com')
+      again.settle({ ok: true, blockedHosts: [] })
+      await newestBuild(client, id, 'succeeded')
 
-  describe('project build files', () => {
-    it('round-trips save → list → read → delete', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const bf = client.project[':projectId']['build-files']
+      // A build asked for by hand, importing no cache.
+      const manual = await client.image[':imageId'].builds.$post({ param: { imageId: id }, json: { noCache: true } })
+      expect(manual.status).toBe(202)
+      expect(await manual.json()).toEqual([expect.objectContaining({ reason: 'manual', noCache: true })])
+      const fresh = await nextBuild()
+      expect(fresh.request.noCache).toBe(true)
+      fresh.settle({ ok: true, blockedHosts: [] })
+      await newestBuild(client, id, 'succeeded')
 
-      const put = await bf.file.$put({
-        param: { projectId: DEMO },
-        json: { path: 'nvim/init.lua', content: 'print(1)\n' },
-      })
-      expect(put.status).toBe(200)
-      expect(await put.json()).toEqual({ path: 'nvim/init.lua', size: 9, binary: false })
-
-      const list = await bf.$get({ param: { projectId: DEMO } })
-      expect(await list.json()).toEqual({
-        files: [{ path: 'nvim/init.lua', size: 9, binary: false }],
-      })
-
-      const read = await bf.file.$get({ param: { projectId: DEMO }, query: { path: 'nvim/init.lua' } })
-      expect(await read.json()).toEqual({
-        path: 'nvim/init.lua', size: 9, binary: false, content: 'print(1)\n',
-      })
-
-      const del = await bf.file.$delete({ param: { projectId: DEMO }, query: { path: 'nvim' } })
-      expect(del.status).toBe(204)
-      const relist = await bf.$get({ param: { projectId: DEMO } })
-      expect(await relist.json()).toEqual({ files: [] })
-    })
-
-    it('stores a base64 upload and reads it back as binary', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const bf = client.project[':projectId']['build-files']
-      const bytes = Buffer.from([0, 1, 2, 3])
-
-      const put = await bf.file.$put({
-        param: { projectId: DEMO },
-        json: { path: 'blob.bin', contentBase64: bytes.toString('base64') },
-      })
-      expect(await put.json()).toEqual({ path: 'blob.bin', size: 4, binary: true })
-
-      const read = await bf.file.$get({ param: { projectId: DEMO }, query: { path: 'blob.bin' } })
-      expect(await read.json()).toEqual({ path: 'blob.bin', size: 4, binary: true, content: null })
-      const raw = await fs.readFile(path.join(projectConfigDir(DEMO), 'build', 'blob.bin'))
-      expect(raw.equals(bytes)).toBe(true)
-    })
-
-    it('rejects traversal, reserved names, and ambiguous bodies with 400', async () => {
-      const app = buildApp({ buildId: 'test' })
-
-      const traverse = await app.request(
-        '/api/project/demo/build-files/file?path=..%2F..%2Fetc%2Fpasswd',
-        rawInit(),
-      )
-      expect(traverse.status).toBe(400)
-
-      const reserved = await app.request('/api/project/demo/build-files/file', rawInit({
-        method: 'PUT',
-        body: JSON.stringify({ path: 'Dockerfile.yaac', content: 'FROM x\n' }),
-      }))
-      expect(reserved.status).toBe(400)
-
-      const both = await app.request('/api/project/demo/build-files/file', rawInit({
-        method: 'PUT',
-        body: JSON.stringify({ path: 'a', content: 'x', contentBase64: 'eA==' }),
-      }))
-      expect(both.status).toBe(400)
+      const all = await (await client.image.builds.$get({ query: { imageId: id } })).json()
+      expect(all.map((b) => b.status)).toEqual(['succeeded', 'succeeded', 'failed', 'cancelled'])
+      expect((await client.image.builds.$get({ query: {} })).status).toBe(400)
+      expect((await build.$get({ param: { buildId: randomUUID() } })).status).toBe(404)
     })
 
-    it('returns 404 for an unknown project or missing file', async () => {
+    it('reads and sets the install\'s build concurrency', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const bf = client.project[':projectId']['build-files']
-      expect((await bf.$get({ param: { projectId: 'nope' } })).status).toBe(404)
-      expect((await bf.file.$get({ param: { projectId: DEMO }, query: { path: 'nope' } })).status).toBe(404)
-    })
-  })
-
-  describe('user build files', () => {
-    it('round-trips against the user build dir', async () => {
-      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const bf = client.config['user-build-files']
-
-      const put = await bf.file.$put({ json: { path: 'gitconfig', content: '[user]\n' } })
-      expect(put.status).toBe(200)
-
-      const list = await bf.$get()
-      expect(await list.json()).toEqual({
-        files: [{ path: 'gitconfig', size: 7, binary: false }],
-      })
-
-      const del = await bf.file.$delete({ query: { path: 'gitconfig' } })
-      expect(del.status).toBe(204)
+      const settings = client.image.settings
+      expect(await (await settings.$get()).json()).toEqual({ buildConcurrency: 2 })
+      expect(await (await settings.$put({ json: { buildConcurrency: 4 } })).json()).toEqual({ buildConcurrency: 4 })
+      expect(await (await settings.$get()).json()).toEqual({ buildConcurrency: 4 })
+      expect((await settings.$put({ json: { buildConcurrency: 17 } })).status).toBe(400)
+      expect(await (await settings.$put({ json: { buildConcurrency: null } })).json()).toEqual({ buildConcurrency: 2 })
     })
   })
 
@@ -768,17 +891,23 @@ describe('write routes', () => {
       ])
     })
 
-    it('threads a branch into createWorkspace', async () => {
+    it('threads a branch and an image into createWorkspace', async () => {
       mockCreateWorkspace.mockResolvedValue({
         workspaceId: 'sess-x', jobName: 'j', forwardedPorts: [],
       })
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
-      const res = await client.workspace.create.$post({ json: { project: DEMO, branch: 'dev' } })
+      const res = await client.workspace.create.$post({
+        json: { project: DEMO, branch: 'dev', imageId: STOCK_IMAGE_ID, awaitBuild: true },
+      })
       expect(res.status).toBe(200)
       await res.text()
       expect(mockCreateWorkspace).toHaveBeenCalledWith(DEMO, expect.objectContaining({
         start: expect.objectContaining({ repos: [expect.objectContaining({ path: '', branch: 'dev' })], cwd: '' }) as unknown,
+        imageId: STOCK_IMAGE_ID,
+        awaitBuild: true,
       }))
+      const bad = await client.workspace.create.$post({ json: { project: DEMO, imageId: 'stock' } })
+      expect(bad.status).toBe(400)
     })
 
     // What the CLI sends as typed: a name, an id or an id prefix.
@@ -1405,17 +1534,17 @@ describe('write routes', () => {
         json: { projectId: DEMO, name: 'review' },
       })).json()
       const queued = await (await client().workspace.queue.create.$post({
-        json: { project: DEMO, parent: 'parent', prompt: 'follow up', tool: 'claude', title: 'Named', group: 'review' },
+        json: { project: DEMO, parent: 'parent', prompt: 'follow up', tool: 'claude', title: 'Named', group: 'review', imageId: STOCK_IMAGE_ID },
       })).json()
       expect(queued).toMatchObject({
-        parentWorkspaceId: 'parent', permissionMode: 'plan', title: 'Named', groupId,
+        parentWorkspaceId: 'parent', permissionMode: 'plan', title: 'Named', groupId, imageId: STOCK_IMAGE_ID,
         selection: { repos: [{ repo: DEMO, branch: 'main' }], nested: false },
       })
 
       const edited = await (await client().workspace.queue.update.$post({
         json: { id: queued.id, prompt: 'follow up, edited' },
       })).json()
-      expect(edited).toMatchObject({ prompt: 'follow up, edited', title: 'Named', groupId })
+      expect(edited).toMatchObject({ prompt: 'follow up, edited', title: 'Named', groupId, imageId: STOCK_IMAGE_ID })
       // A group named but not yet made is created, as a create's is.
       const refiled = await (await client().workspace.queue.update.$post({
         json: { id: queued.id, group: 'fresh group' },
@@ -1447,6 +1576,7 @@ describe('write routes', () => {
         start: expect.objectContaining({ repos: [expect.objectContaining({ path: '', branch: 'main' })], cwd: '' }) as unknown,
         title: 'Named',
         groupId: refiled.groupId,
+        imageId: STOCK_IMAGE_ID,
       })
       finish()
       // The entry became the workspace; there is nothing left to run.
@@ -1531,12 +1661,13 @@ describe('write routes', () => {
       expect((await post('routine/create', { ...base, cron: 'every night' })).status).toBe(400)
       expect((await post('routine/create', { ...base, cron: '@daily', timeZone: 'Mars/Olympus' })).status).toBe(400)
       const created = await json<{ id: string; groupId?: string; timeZone: string; nextRuns: string[] }>(
-        post('routine/create', { ...base, cron: '0 9 * * 1-5', timeout: 120 }))
-      expect(created).toMatchObject({ timeZone: 'UTC' })
+        post('routine/create', { ...base, cron: '0 9 * * 1-5', timeout: 120, imageId: STOCK_IMAGE_ID }))
+      expect(created).toMatchObject({ timeZone: 'UTC', imageId: STOCK_IMAGE_ID })
       expect(created.nextRuns).toHaveLength(3)
       expect(await listWorkspaceGroups(DEMO)).toContainEqual(expect.objectContaining({ groupId: created.groupId, name: 'Nightly' }))
-      expect(await json(post('routine/update', { id: created.id, timeout: null, group: null })))
-        .not.toHaveProperty('groupId')
+      const updated = await json(post('routine/update', { id: created.id, timeout: null, group: null }))
+      expect(updated).not.toHaveProperty('groupId')
+      expect(updated).toMatchObject({ imageId: STOCK_IMAGE_ID })
       expect(await json(post('routine/pause', { id: created.id }))).toMatchObject({ paused: true, nextRuns: [] })
       expect(await json(post('routine/resume', { id: created.id }))).toMatchObject({ paused: false })
       expect((await (await client().routine.list.$get({ query: {} })).json()).map((r) => r.id)).toEqual([created.id])
@@ -1562,15 +1693,19 @@ describe('write routes', () => {
     it('saves, replaces and discards a draft', async () => {
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const saved = await (await client.workspace.draft.save.$post({
-        json: { project: DEMO, prompt: 'someday', tool: 'codex', mode: 'acp', permissionMode: 'plan', repos: [{ repo: 'demo', branch: 'dev' }] },
+        json: {
+          project: DEMO, prompt: 'someday', tool: 'codex', mode: 'acp', permissionMode: 'plan', repos: [{ repo: 'demo', branch: 'dev' }],
+          imageId: STOCK_IMAGE_ID,
+        },
       })).json()
-      expect(saved).toMatchObject({ projectId: DEMO, tool: 'codex', mode: 'acp', repos: [{ repo: 'demo', branch: 'dev' }] })
+      expect(saved).toMatchObject({ projectId: DEMO, tool: 'codex', mode: 'acp', repos: [{ repo: 'demo', branch: 'dev' }], imageId: STOCK_IMAGE_ID })
 
       const replaced = await (await client.workspace.draft.save.$post({
         json: { id: saved.id, project: DEMO, prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan', startAfter: 'w1' },
       })).json()
       expect(replaced).toMatchObject({ id: saved.id, tool: 'claude', startAfter: 'w1' })
       expect(replaced).not.toHaveProperty('branch')
+      expect(replaced).not.toHaveProperty('imageId')
       expect((await listDraftWorkspaces()).map((d) => d.id)).toEqual([saved.id])
 
       expect((await post('discard', { id: saved.id })).status).toBe(204)

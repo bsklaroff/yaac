@@ -38,14 +38,7 @@ import {
   refreshedCredentials,
 } from '#drivers/k8s/egress'
 import { siteCloudflareStatus, siteTailnetStatus, syncProjectSecrets, syncProxyCredentials, syncSiteObjects } from '#drivers/k8s/cluster'
-import {
-  currentWorkspaceImage,
-  dismissImageBuild,
-  getImageBuildLog,
-  listImageBuilds,
-  prepareWorkspaceImage,
-  retryImageBuild,
-} from '#drivers/k8s/images'
+import { buildImageLayers, imageRef, missingImageLayers, resolveChain } from '#drivers/k8s/images'
 import {
   SERVER_MAMA_PORT,
   bootStreamd,
@@ -102,11 +95,6 @@ export function createK8sDriver(): WorkspaceDriver {
     resourceUsage: (opts) => k8sUsage(opts),
     nodeDisks: (opts) => readNodeDisks(opts),
 
-    listImageBuilds: () => listImageBuilds(),
-    imageBuildLog: (id) => getImageBuildLog(id),
-    dismissImageBuild: (id) => dismissImageBuild(id),
-    retryImageBuild: (id, projects) => retryImageBuild(id, projects),
-
     exec: podExec,
     awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),
     // The relay addresses streams by workspace id, not Job name.
@@ -121,8 +109,10 @@ export function createK8sDriver(): WorkspaceDriver {
     // post-launch window probe.
     assertCanLaunch: () => Promise.resolve(),
     ensureRuntimeReachable: () => ensureKubernetes(),
-    prepareImage: (opts) => prepareWorkspaceImage(opts),
-    currentImage: (opts) => currentWorkspaceImage(opts),
+    resolveImageChain: (spec) => resolveChain(spec),
+    missingImageLayers: (chain) => missingImageLayers(chain),
+    buildImageLayers: (request) => buildImageLayers(request),
+    imageRef: (tag) => imageRef(tag),
     prepareSubstrate: (intent) => prepareWorkspaceSubstrate(intent),
     syncCredentials: (bundle) => syncProxyCredentials(bundle),
     syncProjectSecrets: (projectId, values, runValues) => syncProjectSecrets(projectId, values, runValues),

@@ -78,6 +78,10 @@ export interface WorkspaceCreate {
   pane?: LaunchPane
   /** The project volume to attach, by name. */
   volume?: string
+  /** The image to launch, or `STOCK_IMAGE_ID`; absent is the project's
+   *  default. With `awaitBuild` it waits for the revision being built. */
+  imageId?: string
+  awaitBuild?: true
   /** A named workflow it starts with in place of the project's init
    *  workflows; with `nonInteractive`, an unattended run of it that gets
    *  its run secrets (docs/workflows.md). */
@@ -114,6 +118,8 @@ export async function createWorkspace(
     ...(c.draftId !== undefined ? { draftId: c.draftId } : {}),
     ...(c.timeout !== undefined ? { timeout: c.timeout } : {}),
     ...(c.volume !== undefined ? { volume: c.volume } : {}),
+    ...(c.imageId !== undefined ? { imageId: c.imageId } : {}),
+    ...(c.awaitBuild === true ? { awaitBuild: true } : {}),
     // A failed create's prompt lands in the sidebar as a draft to retry from.
     draftOnFailure: true,
   }

@@ -1,51 +1,38 @@
 /**
- * Builds each project's image chain (from `resolveImageChain`), running at
- * most one build per tag at a time. Tags are content
- * hashes, so concurrent creates or projects needing the same layer share
- * one build. Module-level maps are enough locking because the server is a
- * single process. The first caller owns the build row; later callers
- * attach their project and await the same promise.
+ * The k8s driver's image verbs: resolve a chain's tags, say which of its
+ * layers the registry lacks, and build those in one builder pod
+ * (docs/image-builds.md). Which builds run, when, and their records are
+ * `#domain/images`'; this module only builds what it is handed.
  */
 import { BuilderPodLease, buildLayerInPod } from './builder-pod'
 import {
   missingPrebuiltImage,
+  registryRef,
   registryTagState,
   resolveImageChain,
-  type ImageLayer,
 } from '#drivers/k8s/cluster'
+import { readBlockedHosts } from '#drivers/k8s/egress'
 import { serverLog } from '#lib/log'
-import { testEnv } from '@yaac/shared/env'
 import type { ImageLayerName } from '@yaac/shared/types'
-import {
-  attachImageBuildProject,
-  failImageBuild,
-  finishImageBuild,
-  type ImageBuildReason,
-  ingestImageBuildLine,
-  registerImageBuild,
-} from './image-builds'
-
-interface BuildContext {
-  projectId: string
-  reason: ImageBuildReason
-  /**
-   * Builder pod shared by the untrusted layers of one `ensureImage` call,
-   * which owns and releases it.
-   */
-  lease: BuilderPodLease
-}
+import type {
+  ImageBuildOutcome,
+  ImageBuildRequest,
+  ImageChainSpec,
+  ResolvedImageChain,
+} from '#drivers/contract'
 
 /**
  * The yaac-shipped layers, built and pushed by `yaac cluster install`, so
- * the server only looks them up (docs/trust-split-builds.md). Every other
- * layer runs user- or agent-editable RUN steps and builds in a sandboxed
- * builder pod. This is an allowlist, so a new layer name is sandboxed by
- * default; `resolveImageChain()` assigns these names only to the
- * yaac-shipped Dockerfiles.
+ * the server only looks them up (docs/image-builds.md). Every other layer
+ * runs user- or agent-editable RUN steps and builds in a sandboxed builder
+ * pod. This is an allowlist, so a new layer name is sandboxed by default;
+ * `resolveImageChain()` assigns these names only to the yaac-shipped
+ * Dockerfiles.
  */
 const TRUSTED_LAYERS: ReadonlySet<ImageLayerName> = new Set(['base', 'tools'])
 
-const inflightBuilds = new Map<string, { id: string; promise: Promise<void> }>()
+/** Builds running now, which main registry GC waits out. */
+let buildsInFlight = 0
 
 /**
  * Tags confirmed to be in the registry during this server run. Tags are
@@ -55,12 +42,15 @@ const inflightBuilds = new Map<string, { id: string; promise: Promise<void> }>()
  */
 const realizedTags = new Set<string>()
 
+/** How long the proxy takes to record a block (it debounces its writes). */
+const BLOCKED_HOSTS_SETTLE_MS = 500
+
 /**
  * True while this server is building an image. Builds write to the
  * registry, so main registry GC skips its collect while this is true.
  */
 export function imageWorkInFlight(): boolean {
-  return inflightBuilds.size > 0
+  return buildsInFlight > 0
 }
 
 /**
@@ -71,111 +61,98 @@ export function forgetVerifiedTags(): void {
   realizedTags.clear()
 }
 
-/**
- * Build one layer, joining any in-flight build of the same tag. All callers
- * share the outcome, including a failure.
- */
-function buildLayerShared(layer: ImageLayer, ctx: BuildContext): Promise<void> {
-  const existing = inflightBuilds.get(layer.tag)
-  if (existing) {
-    attachImageBuildProject(existing.id, ctx.projectId)
-    return existing.promise
-  }
-
-  const id = registerImageBuild({
-    tag: layer.tag,
-    layer: layer.name,
-    projectId: ctx.projectId,
-    reason: ctx.reason,
-  })
-  const promise = runBuild(id, layer, ctx)
-  // Set before any await so a same-tick caller joins this build.
-  inflightBuilds.set(layer.tag, { id, promise })
-  return promise
-}
-
-async function runBuild(
-  id: string,
-  layer: ImageLayer,
-  ctx: BuildContext,
-): Promise<void> {
-  try {
-    // A missing trusted layer means a missing install, not a build to run.
-    if (TRUSTED_LAYERS.has(layer.name)) throw missingPrebuiltImage(layer.name, layer.tag)
-    serverLog(`[build] starting ${layer.tag}`)
-    await buildLayerInPod(layer, {
-      projectId: ctx.projectId,
-      lease: ctx.lease,
-      onLog: (line) => ingestImageBuildLine(id, line),
-    })
-    finishImageBuild(id)
-    realizedTags.add(layer.tag)
-  } catch (err) {
-    failImageBuild(id, err instanceof Error ? err.message : String(err))
-    throw err
-  } finally {
-    inflightBuilds.delete(layer.tag)
+/** An image chain's tags (`ImageChainSpec` is what `#domain` resolved). */
+export async function resolveChain(spec: ImageChainSpec): Promise<ResolvedImageChain> {
+  const { layers, finalTag } = await resolveImageChain(spec)
+  return {
+    layers: layers.map((l) => ({ name: l.name, tag: l.tag, ...(l.buildArgs?.BASE_IMAGE ? { parentTag: l.buildArgs.BASE_IMAGE } : {}) })),
+    finalTag,
   }
 }
 
-interface EnsureImageOpts {
-  /** What triggered the build; shown in the webapp's build list. */
-  reason?: ImageBuildReason
-  /** Fired before each missing layer starts building (1-based index). */
-  onLayerStart?: (index: number, total: number, layer: ImageLayerName) => void
+/**
+ * The untrusted layers the registry lacks, in chain order. A missing
+ * yaac-shipped layer means a missing install, not a build to run, and a
+ * registry that does not answer fails the call rather than counting as
+ * missing.
+ */
+export async function missingImageLayers(chain: ResolvedImageChain): Promise<ImageLayerName[]> {
+  const missing: ImageLayerName[] = []
+  for (const { name, tag } of chain.layers) {
+    if (realizedTags.has(tag)) continue
+    const state = await registryTagState(tag)
+    if (state === 'present') {
+      realizedTags.add(tag)
+      continue
+    }
+    // A registry that did not answer is not a missing layer.
+    if (state !== 'absent') throw new Error(`the registry did not say whether it has ${tag}; try again`)
+    if (TRUSTED_LAYERS.has(name)) throw missingPrebuiltImage(name, tag)
+    missing.push(name)
+  }
+  return missing
 }
 
 /**
- * Ensure a project's full image chain is in the registry, and return the
- * final image tag.
- *
- * Layer 1: yaac-base (Dockerfile.default: Ubuntu, system packages, Node).
- *   Skipped when Dockerfile.yaac is standalone (FROM isn't ${BASE_IMAGE}).
- * Layer 1a: yaac-tools (Dockerfile.tools: claude, codex, opencode, etc.),
- *   whenever the base is used.
- * Layer 2: yaac-proj-<id> from Dockerfile.yaac, when present: either layered
- *   on the layers above (`FROM ${BASE_IMAGE}`) or standalone.
- * Layer 3 (optional): yaac-user-<id> from the project owner's Dockerfile.user.
- *
- * Under `YAAC_REQUIRE_PREBUILT_IMAGES` (the e2e suite) a missing layer
- * throws instead of building, so parallel workers fail fast.
+ * Build the requested layers of a chain in order, in one builder pod (so a
+ * user layer finds its project layer already local), and push each. The
+ * hosts the proxy refused are read before the pod's egress registration
+ * is deleted with it.
  */
-export async function ensureImage(
-  projectId: string,
-  owner: string,
-  opts: EnsureImageOpts = {},
-): Promise<string> {
-  const { layers, finalTag } = await resolveImageChain(projectId, owner)
-  const reason = opts.reason ?? 'session'
-
-  // One builder pod per call, created only if a layer needs building.
+export async function buildImageLayers(request: ImageBuildRequest): Promise<ImageBuildOutcome> {
+  const { layers } = await resolveImageChain(request.spec)
   const lease = new BuilderPodLease()
+  const release = (): void => { void lease.release() }
+  request.signal.addEventListener('abort', release, { once: true })
+  buildsInFlight++
+  let current: ImageLayerName | undefined
   try {
-    for (const [i, layer] of layers.entries()) {
-      // The registry decides whether a layer exists. If a build of the tag
-      // is in flight, join it instead of checking.
-      if (!inflightBuilds.has(layer.tag)) {
-        if (realizedTags.has(layer.tag)) continue
-        if (await registryTagState(layer.tag) === 'present') {
-          realizedTags.add(layer.tag)
-          continue
-        }
-      }
-
-      if (testEnv.requirePrebuiltImages) throw missingPrebuiltImage(layer.name, layer.tag)
-
-      opts.onLayerStart?.(i + 1, layers.length, layer.name)
-      await buildLayerShared(layer, { projectId, reason, lease })
+    for (const name of request.layers) {
+      current = name
+      // An abort before the listener above was attached never fires it.
+      if (request.signal.aborted) throw new Error('cancelled')
+      const layer = layers.find((l) => l.name === name)
+      if (!layer || TRUSTED_LAYERS.has(name)) throw new Error(`no untrusted ${name} layer in this chain`)
+      request.onLayerStart(name)
+      serverLog(`[build] starting ${layer.tag}`)
+      await buildLayerInPod(layer, {
+        projectId: request.spec.projectId,
+        egressId: request.egressId,
+        allowedHosts: request.allowedHosts,
+        noCache: request.noCache,
+        cacheMaxDays: request.cacheMaxDays,
+        lease,
+        onLog: (line) => request.onLine(name, line),
+      })
+      realizedTags.add(layer.tag)
+    }
+    return { ok: true, blockedHosts: await blockedHostsOf(request.egressId) }
+  } catch (err) {
+    return {
+      ok: false,
+      error: request.signal.aborted ? 'cancelled' : err instanceof Error ? err.message : String(err),
+      ...(current ? { failedLayer: current } : {}),
+      blockedHosts: await blockedHostsOf(request.egressId),
     }
   } finally {
+    request.signal.removeEventListener('abort', release)
     await lease.release()
+    buildsInFlight--
   }
-
-  return finalTag
 }
 
-/** Test helper: forget all in-flight builds and verified tags. */
+async function blockedHostsOf(egressId: string): Promise<string[]> {
+  await new Promise((r) => setTimeout(r, BLOCKED_HOSTS_SETTLE_MS))
+  return readBlockedHosts(egressId)
+}
+
+/** The ref a workspace launches for an image tag. */
+export function imageRef(tag: string): string {
+  return registryRef(tag)
+}
+
+/** Test helper: forget verified tags and in-flight builds. */
 export function _clearBuildCoordinatorForTests(): void {
-  inflightBuilds.clear()
   realizedTags.clear()
+  buildsInFlight = 0
 }

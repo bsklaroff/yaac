@@ -1,6 +1,7 @@
 import { useState, type JSX } from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
+import { STOCK_IMAGE_ID } from '@yaac/shared/types'
 import type {
   AuthListResult, DraftWorkspaceEntry, ProjectRepo, QueuedWorkspaceEntry, ServerSnapshot, WorkspaceListEntry,
 } from '@yaac/shared/types'
@@ -9,7 +10,7 @@ import { NewWorkspaceButton } from '#components/NewWorkspaceButton'
 import { flushTypedText, loadPersisted, useUiStore } from '#lib/store'
 import { SCHEDULE, START_AT, START_IN, type NewWorkspaceOpts } from '#lib/newWorkspace'
 import type { RepoBranches } from '#lib/repoApi'
-import { mockFetch, projectRepo, renderWithClient, serverError, typeInto, type FetchMock } from './harness'
+import { imageSummary, mockFetch, projectRepo, renderWithClient, serverError, typeInto, type FetchMock } from './harness'
 
 const CLAUDE = {
   tool: 'claude' as const, kind: 'oauth' as const, keyPreview: '***h', savedAt: '2026-01-01T00:00:00.000Z',
@@ -680,6 +681,86 @@ describe('NewWorkspacePane', () => {
     await openReady()
     expect(screen.queryByLabelText('Volume')).toBeNull()
     expect(server.called('GET /api/volume/list')).toEqual([])
+  })
+
+  it('offers the project\'s images with their states, opens on its last choice, and sends the pick, waiting for a building revision when asked', async () => {
+    const { lastBuiltRevision: _, ...neverBuilt } = imageSummary({ id: 'img-3', name: 'go', state: 'never-built' })
+    server.route('GET /api/image/project/proj', [
+      imageSummary({ id: STOCK_IMAGE_ID, name: 'yaac', isDefault: true }),
+      imageSummary(),
+      imageSummary({
+        id: 'img-2', name: 'rust', state: 'building',
+        currentRevision: { id: 'r3', number: 3, createdAt: '' }, lastBuiltRevision: { id: 'r2', number: 2 },
+      }),
+      neverBuilt,
+    ])
+    setSnapshot(project({ lastImageId: 'img-1' }))
+    await openReady()
+    await waitFor(() => expect(select('Image').value).toBe('img-1'))
+    expect([...select('Image').options].map((o) => o.textContent)).toEqual([
+      'yaac (stock), default', 'node (ready)', 'rust (building revision 3)', 'go (never built)',
+    ])
+    expect(screen.queryByRole('switch')).toBeNull()
+    typePrompt('use node')
+    fireEvent.click(sendButton())
+    expect(sent(CREATE).at(-1)).toMatchObject({ imageId: 'img-1' })
+    expect(sent(CREATE).at(-1)).not.toHaveProperty('awaitBuild')
+
+    // A building image starts on its last built revision unless told to wait.
+    act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj' }))
+    fireEvent.change(select('Image'), { target: { value: 'img-2' } })
+    expect(screen.getByText('Otherwise it starts now on revision 2, the last built')).toBeTruthy()
+    fireEvent.click(screen.getByRole('switch', { name: 'Wait for revision 3' }))
+    typePrompt('use rust')
+    fireEvent.click(sendButton())
+    expect(sent(CREATE).at(-1)).toMatchObject({ imageId: 'img-2', awaitBuild: true })
+
+    fireEvent.change(select('Image'), { target: { value: 'img-3' } })
+    expect(screen.getByText('Waits for its first build')).toBeTruthy()
+
+    // A queued start names its image too, and takes it at launch, so there
+    // is nothing to wait for.
+    fireEvent.change(select('Image'), { target: { value: 'img-2' } })
+    fireEvent.change(select('Start'), { target: { value: START_IN } })
+    fireEvent.change(screen.getByLabelText('Delay'), { target: { value: '1h' } })
+    expect(screen.queryByRole('switch')).toBeNull()
+    typePrompt('later')
+    fireEvent.click(sendButton())
+    await waitFor(() => expect(sent(QUEUE).at(-1)).toMatchObject({ imageId: 'img-2', startIn: 60 }))
+  })
+
+  it('reopens a draft on its image, and keeps a new pick in it', async () => {
+    server.route('GET /api/image/project/proj', [
+      imageSummary({ id: STOCK_IMAGE_ID, name: 'yaac' }), imageSummary(), imageSummary({ id: 'img-2', name: 'rust' }),
+    ])
+    setSnapshot(project({}, 'k8s', { draftWorkspaces: [{
+      id: 'd1', projectId: 'proj', prompt: 'half an idea', tool: 'claude', mode: 'tui', permissionMode: 'manual',
+      model: 'claude-sonnet-5', imageId: 'img-2', createdAt: '', updatedAt: '',
+    }] }))
+    await openWith({ draftId: 'd1' })
+    await waitFor(() => expect(select('Image').value).toBe('img-2'))
+    fireEvent.change(select('Image'), { target: { value: 'img-1' } })
+    leave()
+    fireEvent.click(await screen.findByRole('button', { name: 'Save changes' }))
+    await waitFor(() => expect(sent(SAVE_DRAFT).at(-1)).toMatchObject({ id: 'd1', imageId: 'img-1' }))
+  })
+
+  it('opens on the project default until a last choice, stock included, overrides it, and offers none on a containerless server', async () => {
+    server.route('GET /api/image/project/proj', [imageSummary({ id: STOCK_IMAGE_ID, name: 'yaac' }), imageSummary({ isDefault: true })])
+    setSnapshot(project({ defaultImageId: 'img-1' }))
+    await openReady()
+    await waitFor(() => expect(select('Image').value).toBe('img-1'))
+    cleanup()
+
+    setSnapshot(project({ defaultImageId: 'img-1', lastImageId: STOCK_IMAGE_ID }))
+    await openReady()
+    await waitFor(() => expect(select('Image').value).toBe(STOCK_IMAGE_ID))
+    cleanup()
+
+    setSnapshot(project({}, 'containerless'))
+    await openReady()
+    expect(screen.queryByLabelText('Image')).toBeNull()
+    expect(server.called('GET /api/image/project/proj')).toHaveLength(2)
   })
 
   // The remembered branch (see the first test) falls back to origin's

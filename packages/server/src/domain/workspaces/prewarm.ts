@@ -41,6 +41,7 @@ import {
 import type { WorkspaceCreateResult } from './create'
 import { tmuxCmd } from '#runtime/agents'
 import { getDefaultBranch } from '#domain/git'
+import { spareImageTag } from '#domain/images'
 import { credentialOwnerKey } from '#domain/auth'
 import { getProjectAllowlist, resolveProjectConfig, resolveProjectEnv } from '#domain/projects'
 import { fetchRepoOrigin } from '#domain/repos'
@@ -157,14 +158,17 @@ export function freeSpare(spare: Pick<RuntimeHandle, 'jobName' | 'workspaceId'>)
 }
 
 /**
- * The image a create in the project would launch on now, which a spare must
- * match to be claimed: a Dockerfile edit changes it, and a pod's image is
- * fixed. Undefined for a driver that runs none.
+ * The image a spare of the project is kept on now, which a spare must match
+ * to be claimed: the last built revision of the image the project's last
+ * create chose (docs/image-builds.md). A finished build changes it, and a
+ * pod's image is fixed. Undefined for a driver that runs none, and null
+ * while that image has nothing built.
  */
-export async function currentSpareImage(project: Pick<ProjectRow, 'id' | 'owner'>): Promise<string | undefined> {
+export async function currentSpareImage(project: Pick<ProjectRow, 'id'>): Promise<string | null | undefined> {
   const runtime = workspaceDriver()
   if (runtime.kind === 'containerless') return undefined
-  return await runtime.currentImage({ projectId: project.id, owner: project.owner })
+  const tag = await spareImageTag(project.id)
+  return tag === null ? null : runtime.imageRef(tag)
 }
 
 /**

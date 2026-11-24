@@ -34,6 +34,7 @@ import { WelcomePane } from './components/WelcomePane'
 import { MobileHeader } from './components/mobile/MobileHeader'
 import { StopWorkspaceDialog } from './components/StopWorkspaceDialog'
 import { SettingsDialog } from './components/SettingsButton'
+import { BuildPage } from './components/BuildPage'
 import { HomePage } from './components/home/HomePage'
 import { homeListOrder, homeRows, projectActivity } from './components/home/homeRows'
 import { CommandPalette } from './shell/CommandPalette'
@@ -135,6 +136,7 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
   const homeOpen = useUiStore((s) => s.homeOpen)
   const openHome = useUiStore((s) => s.openHome)
   const composing = useUiStore((s) => s.newWorkspace !== null)
+  const settingsOpen = useUiStore((s) => s.settingsOpen)
   const selectedObject = useUiStore((s) => s.selectedObject)
   const mobileScreen = useUiStore((s) => s.mobileScreen)
   const syncChatDrafts = useUiStore((s) => s.syncChatDrafts)
@@ -464,6 +466,8 @@ function Shell({ connected }: { connected: boolean }): JSX.Element {
       <LeaveNewWorkspaceDialog />
       <AddProjectDialog />
       <SettingsDialog />
+      {/* Open over settings, the build page is nested in its dialog. */}
+      {!settingsOpen && <BuildPage />}
       <CommandPalette scope={scope} rows={allHomeRows} projects={projects} />
     </div>
   )

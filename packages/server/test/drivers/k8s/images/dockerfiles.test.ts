@@ -12,33 +12,6 @@ import { LLAMA_CPP_SHA256, LLAMA_CPP_TAG } from '#domain/workspaces/llama-cpp'
 const read = (name: string): Promise<string> =>
   fs.readFile(path.join(DOCKERFILES_DIR, name), 'utf8')
 
-/**
- * Every line that starts a `RUN` instruction, with the `USER` in effect.
- * Continuation lines and heredoc bodies are skipped, so a `RUN` inside a
- * heredoc is not counted as a step.
- */
-function runSteps(content: string): Array<{ user: string; line: string }> {
-  const steps: Array<{ user: string; line: string }> = []
-  let user = 'root'
-  let continued = false
-  let heredoc: string | null = null
-  for (const line of content.split('\n')) {
-    if (heredoc !== null) {
-      if (line.trimEnd() === heredoc) heredoc = null
-      continue
-    }
-    const startsStep = !continued
-    continued = /\\\s*$/.test(line)
-    const opened = /<<-?'?([A-Za-z_][A-Za-z0-9_]*)'?/.exec(line)
-    if (opened && !continued) heredoc = opened[1]
-    if (!startsStep) continue
-    const asUser = /^USER\s+(\S+)/.exec(line)
-    if (asUser) user = asUser[1]
-    else if (/^RUN\s/.test(line)) steps.push({ user, line })
-  }
-  return steps
-}
-
 /** Every shipped Dockerfile, in the order a chain builds them. */
 const SHIPPED = [
   'Dockerfile.default', 'Dockerfile.tools', 'Dockerfile.server',
@@ -66,6 +39,20 @@ describe('Dockerfile.default', () => {
     expect(content).toContain('useradd -m -u 1000 -g 0')
     expect(content).toContain('chmod -R g=u /home/yaac')
     expect(content).not.toContain('YAAC_UID')
+  })
+
+  it('gives every RUN built on it umask 002, and names group 0 yaac', async () => {
+    const content = await read('Dockerfile.default')
+    // BuildKit carries SHELL into derived images, so a project's Dockerfile
+    // writes group-writable files with nothing written
+    // (docs/arbitrary-uid-images.md). Set before the first step that needs it.
+    const shell = content.indexOf('SHELL ["/usr/local/bin/yaac-run", "-c"]')
+    expect(shell).toBeGreaterThan(0)
+    expect(shell).toBeLessThan(content.indexOf('USER yaac'))
+    expect(content).toContain('umask 002\\nexec /bin/sh "$@"')
+    // So `chown yaac:yaac` resolves to the ids a pod at any uid needs.
+    expect(content).toContain('groupadd -o -g 0 yaac')
+    for (const name of SHIPPED) expect(await read(name), name).not.toMatch(/^RUN umask 002/m)
   })
 
   it('leaves /etc/passwd writable so the running uid can claim the yaac name', async () => {
@@ -163,21 +150,5 @@ describe('every shipped Dockerfile', () => {
         }
       }
     }
-  })
-
-  it('sets umask 002 on every RUN step that runs as yaac', async () => {
-    // A step running as `yaac` must create group-writable files, since the
-    // pod runs as another uid and reaches them through group 0
-    // (docs/arbitrary-uid-images.md). A missing umask works on a uid-1000
-    // host and fails with EACCES elsewhere, so every Dockerfile is checked.
-    let walked = 0
-    for (const name of SHIPPED) {
-      for (const { line } of runSteps(await read(name)).filter((s) => s.user === 'yaac')) {
-        expect(line, `${name}: ${line}`).toMatch(/^RUN umask 002 &&/)
-        walked++
-      }
-    }
-    // Guard against a parser that silently matches nothing.
-    expect(walked).toBeGreaterThan(10)
   })
 })

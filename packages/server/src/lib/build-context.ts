@@ -2,19 +2,21 @@
  * Which files make up an OCI build context and how large it may get. Pure
  * filesystem code, no podman or cluster.
  *
- * In `#lib` because two features use it: the k8s image code hashes this file
- * set into a tag and streams it to a builder pod, and the build-files API
- * lists the same set and enforces the same size cap at upload time.
+ * In `#lib` because two features use it: the k8s image code hashes and
+ * streams build contexts, and `#domain/images` enforces the same size cap
+ * when a revision is saved and imports old build dirs.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
 /**
- * Size cap on a streamed build context. The build-files API enforces it at
- * upload time too, so an oversized folder fails there rather than at the
- * next build.
+ * Size cap on a streamed build context. A save enforces it too, so an
+ * oversized revision fails there rather than at its build.
  */
 export const BUILDER_CONTEXT_MAX_BYTES = 512 * 1024 ** 2
+
+/** Cap on one support file of an image, well under the context cap. */
+export const MAX_IMAGE_FILE_BYTES = 50 * 1024 ** 2
 
 /**
  * Parse a .containerignore into the set of context-relative paths to skip.

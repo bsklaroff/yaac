@@ -1,6 +1,6 @@
 import { tearingDown, teardownForRestart } from './cleanup'
 import { prepareStart, startOf, withLaunchSlot } from './start'
-import { createWorkspace, refuseUnsignedTool, type WorkspaceCreateResult } from './create'
+import { createWorkspace, refuseUnsignedTool, storedImageId, type WorkspaceCreateResult } from './create'
 import { resolveWorkspaceId } from './resolve'
 import { provision, type ProvisionRun } from './provisioning'
 import { readGroupRoom, refuseFullGroup } from './group-limits'
@@ -208,8 +208,8 @@ async function terminalConversationSessions(
 
 /**
  * Rerun a non-interactive workspace (docs/workspace-steps.md): a new one
- * with the same graph, each repo at the commit its checkout was created at,
- * linked to it, in its group: the same workflow, whose run secrets reach it as they reached the
+ * with the same graph and image, each repo at the commit its checkout was
+ * created at, linked to it, in its group: the same workflow, whose run secrets reach it as they reached the
  * original, and the name it was chosen through (docs/workflows.md). With
  * `interactive`, an interactive workspace there instead, its graph as the
  * start steps, for reproducing a failure by hand.
@@ -237,6 +237,7 @@ export async function prepareRerun(
     ...(interactive ? {} : { nonInteractive: true, rerunOf: row.workspaceId }),
     ...(row.title !== undefined ? { title: row.title } : {}),
     ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
+    ...await storedImageId(row).then((imageId) => (imageId !== undefined ? { imageId } : {})),
     rememberDefaults: false,
     claimSpare: false,
   })

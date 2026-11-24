@@ -10,6 +10,7 @@ import {
 import { countStoppedWorkspaces } from '#db'
 import { listProjectAdds, listProjects, listWorkflowSummaries } from '#domain/projects'
 import { listSiteSummaries } from '#domain/sites'
+import { activeImageBuilds } from '#domain/images'
 import { workspaceDriver } from '#drivers/driver'
 import { planUsageForSnapshot } from '#domain/auth'
 import { feedbackHost } from '#domain/feedback'
@@ -41,7 +42,7 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
   ))
   const [
     { active, held: heldWorkspaces, provisioning }, workspaceGroups, projects, usage, queuedWorkspaces, draftWorkspaces,
-    routines, workflows, sites,
+    routines, workflows, sites, imageBuilds,
   ] = await Promise.all([
     rows,
     listWorkspaceGroups(undefined, stoppedCounts),
@@ -52,8 +53,8 @@ export async function buildSnapshot(): Promise<ServerSnapshot> {
     listRoutines(),
     listWorkflowSummaries(),
     listSiteSummaries(),
+    workspaceDriver().kind === 'k8s' ? activeImageBuilds() : [],
   ])
-  const imageBuilds = workspaceDriver().listImageBuilds()
   // A workspace with a provisioning entry is mid-create or mid-restart (or
   // failed, awaiting dismissal), so clients render the provisioning row
   // instead. The workspace lists as running before its agent and steps

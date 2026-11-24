@@ -45,9 +45,11 @@ describe('parseDnsQuery', () => {
 })
 
 describe('isInternalName', () => {
-  it('matches only Services in the install namespace, the ones workspaces dial directly', () => {
+  it('matches only Services in the install namespace, and the main registry builders dial', () => {
     for (const name of [
       'yaac-reg-foo.ns.svc.cluster.local',
+      // From a per-run e2e namespace too: the registry is in `yaac`.
+      'yaac-registry.yaac.svc.cluster.local',
       'yaac-npm-cache.ns.svc.cluster.local',
       'YAAC-Reg-Foo.NS.svc.cluster.local', // case-insensitive
       'yaac-reg-foo.ns.svc.cluster.local.', // trailing dot
@@ -60,6 +62,7 @@ describe('isInternalName', () => {
       // proxy applies the allowlist and non-public guard to them.
       'internal-web.other.svc.cluster.local',
       'kubernetes.default.svc.cluster.local',
+      'yaac-other.yaac.svc.cluster.local',
       '169-254-169-254.ns.pod.cluster.local',
       'foo.ns.cluster.local',
       'evil.ns.svc.cluster.local.attacker.example',

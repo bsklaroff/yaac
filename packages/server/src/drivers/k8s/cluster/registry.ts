@@ -1,4 +1,5 @@
 import { env, testEnv } from '@yaac/shared/env'
+import { registryBasicCredential } from './registry-grant'
 import {
   apiStatus,
   createObject,
@@ -10,12 +11,15 @@ import {
 
 /**
  * Client for the main OCI registry (the workload is main-registry.ts). It
- * has two addresses:
+ * has three addresses:
  *
- *  - `registryHost()`: the cluster address, the only one in image refs.
- *    Pods and node containerd use it.
- *  - `registryEndpoint()`: where this process reaches it. The Service
- *    directly when in-cluster, else a `kubectl port-forward`.
+ *  - `registryHost()`: the node port, the only address in image refs. Node
+ *    containerd pulls through it, anonymously.
+ *  - `registryPodHost()`: the pod port, the same Service on the port
+ *    builder pods and the server are admitted to, where a project's repos
+ *    need a grant to read (registry-gate.ts).
+ *  - `registryEndpoint()`: where this process reaches it. The pod port
+ *    when in-cluster, else a `kubectl port-forward` to the node port.
  *
  * The registry stores by repository path, so a push to any endpoint and a
  * pull by the cluster ref see the same bytes. Pushes are the install's
@@ -25,8 +29,11 @@ import {
 /** Service (and Deployment) name of the in-cluster registry. */
 export const REGISTRY_SERVICE_NAME = 'yaac-registry'
 
-/** In-cluster port. Not 443/80, which netd redirects to the proxy. */
+/** The node port. Not 443/80, which netd redirects to the proxy. */
 export const REGISTRY_SERVICE_PORT = 5000
+
+/** The pod port, beside it (5001 is the registry's own loopback). */
+export const REGISTRY_POD_PORT = 5002
 
 /**
  * The registry's namespace: the default install namespace, not
@@ -44,7 +51,24 @@ const REGISTRY_FORWARD_KEY = 'main-registry'
  * against the hosts.toml main-registry.ts writes instead of resolving it.
  */
 export function registryHost(): string {
-  return `${REGISTRY_SERVICE_NAME}.${REGISTRY_NAMESPACE}.svc.cluster.local:${REGISTRY_SERVICE_PORT}`
+  return `${registryServiceName()}:${REGISTRY_SERVICE_PORT}`
+}
+
+/** The host:port builder pods and the server dial (see the module comment). */
+export function registryPodHost(): string {
+  return `${registryServiceName()}:${REGISTRY_POD_PORT}`
+}
+
+function registryServiceName(): string {
+  return `${REGISTRY_SERVICE_NAME}.${REGISTRY_NAMESPACE}.svc.cluster.local`
+}
+
+/**
+ * Whether reading `repo` on the pod port needs a grant: a project, user or
+ * build-cache repo, named by a project id. The gate applies the same test.
+ */
+export function registryRepoIsProtected(repo: string): boolean {
+  return /-(proj|user|buildcache)-[0-9a-f]{8}-[^/]*$/.test(repo)
 }
 
 /** Full in-cluster image ref for a locally built `repo:tag`. */
@@ -53,16 +77,31 @@ export function registryRef(tag: string): string {
 }
 
 /**
- * Where this process reaches the registry: the Service when in-cluster,
- * else a shared port-forward started on first use. Throws if the forward
- * cannot be established (e.g. no registry Deployment).
+ * Where this process reaches the registry: the pod port when in-cluster,
+ * else a shared port-forward to the node port, started on first use. Throws
+ * if the forward cannot be established (e.g. no registry Deployment).
  */
 export async function registryEndpoint(): Promise<string> {
-  if (env.inCluster) return registryHost()
+  if (env.inCluster) return registryPodHost()
   const { host, port } = await resolvePortForward(REGISTRY_FORWARD_KEY, {
     namespace: REGISTRY_NAMESPACE,
     target: `deploy/${REGISTRY_SERVICE_NAME}`,
     remotePort: REGISTRY_SERVICE_PORT,
+  })
+  return `${host}:${port}`
+}
+
+/**
+ * Where this process reaches the pod port: the Service when in-cluster,
+ * else a port-forward to it. Only `yaac cluster check` needs it from the
+ * host, to see that the port refuses an anonymous read of a project repo.
+ */
+export async function registryPodEndpoint(): Promise<string> {
+  if (env.inCluster) return registryPodHost()
+  const { host, port } = await resolvePortForward(`${REGISTRY_FORWARD_KEY}-pods`, {
+    namespace: REGISTRY_NAMESPACE,
+    target: `deploy/${REGISTRY_SERVICE_NAME}`,
+    remotePort: REGISTRY_POD_PORT,
   })
   return `${host}:${port}`
 }
@@ -93,25 +132,31 @@ export async function registryReachable(): Promise<boolean> {
 
 /**
  * HEAD the manifest `ref` names, `repo:tag` or `repo@digest`. Null when the
- * registry cannot be asked: a ref with neither, or no answer.
+ * registry cannot be asked: a ref with neither, or no answer. In-cluster, a
+ * protected repo is read with a short grant naming it.
  */
 async function headManifest(ref: string): Promise<Response | null> {
   const at = ref.indexOf('@')
   const idx = at >= 0 ? at : ref.lastIndexOf(':')
   if (idx < 0) return null
+  const repo = ref.slice(0, idx)
   let endpoint: string
   try {
     endpoint = await registryEndpoint()
   } catch {
     return null
   }
+  const auth: Record<string, string> = env.inCluster && registryRepoIsProtected(repo)
+    ? { Authorization: `Basic ${await registryBasicCredential([repo], 300)}` }
+    : {}
   try {
-    return await fetch(`http://${endpoint}/v2/${ref.slice(0, idx)}/manifests/${ref.slice(idx + 1)}`, {
+    return await fetch(`http://${endpoint}/v2/${repo}/manifests/${ref.slice(idx + 1)}`, {
       method: 'HEAD',
       headers: {
         Accept: 'application/vnd.oci.image.manifest.v1+json'
           + ', application/vnd.oci.image.index.v1+json'
           + ', application/vnd.docker.distribution.manifest.v2+json',
+        ...auth,
       },
       signal: AbortSignal.timeout(5000),
     })
@@ -147,7 +192,7 @@ async function registryDigest(tag: string): Promise<string | null> {
  * The error for a yaac-shipped image missing from the registry. These
  * images (base/tools, proxy, netd, upstream mirrors) are built by
  * `yaac cluster install`, not by the server, which only builds project and
- * user layers (docs/trust-split-builds.md). So a missing tag means a
+ * user layers (docs/image-builds.md). So a missing tag means a
  * missing install, never a build trigger. Under test the fix is a rerun of
  * test/global-setup.ts instead.
  */
@@ -168,11 +213,11 @@ export async function prebuiltRef(what: string, tag: string): Promise<string> {
 
 /**
  * The ConfigMap, beside the registry, where install records the manifest
- * digest podman pushed each pinned upstream mirror as, keyed by mirror tag.
- * The builder image's pods and the gVisor installer take their mirror by
- * that digest (`mirrorRef`) rather than by its tag, so the registry cannot
- * swap the bytes under them; the next install re-mirrors a tag that no
- * longer names its record. e2e runs share it with the real install, as they
+ * digest podman pushed each pinned upstream mirror (and the builder image)
+ * as, keyed by tag. The utility image's pods, the builder pods and the
+ * gVisor installer take their image by that digest (`mirrorRef`) rather
+ * than by its tag, so the registry cannot swap the bytes under them; the
+ * next install re-pushes a tag that no longer names its record. e2e runs share it with the real install, as they
  * share the registry.
  */
 const MIRROR_DIGESTS = {

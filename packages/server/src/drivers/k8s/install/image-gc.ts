@@ -92,12 +92,25 @@ export async function retireStaleGenerations(
 }
 
 /**
+ * The trusted chain's repos under `prefix`, which the host store no longer
+ * holds: a host buildkitd builds them (docs/legacy-compat-shims.md
+ * "Trusted-chain images in the host podman store").
+ */
+export function legacyTrustedChainRepo(prefix: string): RegExp {
+  return new RegExp(`^(localhost(:\\d+)?/)?${prefix}-(base|tools)$`)
+}
+
+/**
  * One GC pass over the host engine: retire stale generation tags of the
- * yaac-built repos, then prune dangling images past the age floor. Returns
- * what was done for the log line.
+ * yaac-built repos and every tag of the old podman-built trusted chain,
+ * then prune dangling images past the age floor. Returns what was done for
+ * the log line.
  */
 export async function gcHostImages(): Promise<{ retired: string[]; pruned: number }> {
-  const retired = await retireStaleGenerations(YAAC_IMAGE_REPO)
+  const retired = [
+    ...await retireStaleGenerations(YAAC_IMAGE_REPO),
+    ...await retireStaleGenerations(legacyTrustedChainRepo('yaac'), new Set(), 0),
+  ]
   const { stdout: pruneOut } = await execFileAsync('podman', [
     'image', 'prune', '-f', '--filter', `until=${HOST_PRUNE_UNTIL}`,
   ])

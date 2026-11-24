@@ -14,7 +14,7 @@ import type { AgentMode, AgentOptions, AgentTool, PermissionMode, RepoStart, Wor
  */
 
 /** A routine's settings: what a create stores and an edit replaces. An
- *  absent effort, group or timeout is stored as null. Its schedule state
+ *  absent effort, image, group or timeout is stored as null. Its schedule state
  *  (`paused`, `nextRunAt`) is written only by the calls that own it, so an
  *  edit that read the row before a tick fired never writes the fired tick
  *  back. */
@@ -30,6 +30,8 @@ export interface RoutineFields {
   permissionMode: PermissionMode
   effort?: string
   agentOptions?: AgentOptions
+  /** An image id or `STOCK_IMAGE_ID`; absent is the project's default. */
+  imageId?: string
   /** What each run starts with (`routines.repos`). */
   repos: RepoStart[]
   nested: boolean
@@ -57,6 +59,7 @@ function columns(f: RoutineFields): Omit<typeof routines.$inferInsert, 'projectI
     nonInteractive: f.nonInteractive === true,
     effort: f.effort ?? null,
     agentOptions: f.agentOptions ?? {},
+    imageId: f.imageId ?? null,
     groupId: f.groupId ?? null,
     timeoutMinutes: f.timeoutMinutes ?? null,
   }

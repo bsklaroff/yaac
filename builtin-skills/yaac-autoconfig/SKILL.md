@@ -87,8 +87,9 @@ keep probing:
   Docker Hub) are on the default allowlist. Record any *extra* host you needed —
   the user adds it to the project's egress allowlist (not the config file).
 - **Missing system tooling**: if the build needs a compiler, runtime, or system
-  package the image lacks, that belongs in the project's **`Dockerfile.yaac`**
-  (`yaac config dockerfile <project> --file <path>`), **not** an init step — workspaces
+  package the image lacks, that belongs in a project **image** (a Dockerfile:
+  `yaac image create <project> <name> --file <path>`, then `yaac image default
+  <project> <name>`), **not** an init step — workspaces
   aren't root and init steps shouldn't try to `apt-get`. Call this out to
   the user; it's a separate step from writing the template.
 
@@ -155,7 +156,7 @@ Tell the user:
   (or `yaac forward`, then `http://localhost:<hostPort>` in a browser), where
   `hostPort` starts at your `hostPortStart` and may increment if that host
   port was busy,
-- any follow-up they still owe — e.g. adding a toolchain to `Dockerfile.yaac`,
+- any follow-up they still owe — e.g. adding a toolchain to a project image,
   or adding the extra egress hosts the build needed under Settings → Project
   Config → Egress allowlist (or with the blocked-hosts badge's "Allow
   permanently for this project").
@@ -234,5 +235,5 @@ key: Settings → Project → Storage, or `yaac config scratch-dirs`.
   project image.
 - **There is no `docker` or `docker compose` inside a k8s workspace.** A
   project that runs its services with docker-compose has to run them some
-  other way: install the services directly (in init steps, or in its
-  `Dockerfile.yaac`) and start them as `service` steps.
+  other way: install the services directly (in init steps, or in
+  a project image) and start them as `service` steps.

@@ -169,81 +169,31 @@ describe('buildServerFrontIngressNpManifest', () => {
 })
 
 describe('buildBuilderEgressNpManifest', () => {
-  // A builder RUN step reaching a node, a metadata service or any other
-  // internal address could read what only the cluster may. Only public
-  // addresses, DNS and the main registry stay open; the operator opens
-  // anything else. The nodes are a byo node's: a private InternalIP, public
-  // v4 and v6 ExternalIPs, and a ULA.
-  const manifest = buildBuilderEgressNpManifest(
-    ['10.0.1.5/32', '5.75.1.9/32', '2a01:4f8:1c1c::1/128', 'fd00::5/128'], ['10.96.0.10/32'],
-  ) as unknown as { metadata: { name: string }; spec: Spec }
-  const rules = manifest.spec.egress as Array<{
-    to: Array<{ ipBlock?: { cidr: string; except?: string[] } }>
-    ports?: Array<{ protocol: string; port: number; endPort: number }>
-  }>
+  // A build reaches the world only through the proxy, like a workspace, and
+  // the main registry's pod port for its parent and its push. A builder
+  // whose redirect netd has not programmed has no egress.
+  const manifest = buildBuilderEgressNpManifest(['10.89.0.7/32']) as unknown as {
+    metadata: { name: string }; spec: Spec
+  }
 
-  it('applies to every builder pod', () => {
+  it('gives every builder pod a workspace\'s egress plus the registry\'s pod port', () => {
     expect(manifest.metadata.name).toBe('yaac-builder-egress')
     expect(manifest.spec.podSelector).toEqual({ matchLabels: { [LABEL_ROLE]: 'builder' } })
     expect(manifest.spec.policyTypes).toEqual(['Egress'])
-  })
-
-  it('reaches public addresses on every port, and no special-purpose range or node', () => {
-    const [world] = rules
-    expect(world.ports).toBeUndefined()
-    const [v4, v6] = world.to.map((p) => p.ipBlock!)
-    expect(v4.cidr).toBe('0.0.0.0/0')
-    for (const cidr of [
-      '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
-      '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '168.63.129.16/32', '224.0.0.0/3',
-    ]) expect(v4.except).toContain(cidr)
-    // A public ExternalIP lies in no special-purpose range, so only its own
-    // except entry keeps a RUN step off its node. The private InternalIP is
-    // cut as well, though 10/8 already covers it.
-    expect(v4.except).toContain('5.75.1.9/32')
-    expect(v4.except).toContain('10.0.1.5/32')
-    // Each family's addresses go in its own block, since the apiserver
-    // rejects an except outside the cidr. The ULA (and the ULA metadata
-    // services, fd00:ec2::254 and fd20:ce::254) lie outside 2000::/3.
-    expect(v4.except!.some((c) => c.includes(':'))).toBe(false)
-    expect(v6).toEqual({
-      cidr: '2000::/3',
-      except: ['2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20', '2a01:4f8:1c1c::1/128'],
-    })
-  })
-
-  // NodeLocal DNSCache answers on the DNS Service's own ClusterIP (no DNAT
-  // to a CoreDNS pod) or on link-local, depending on its mode.
-  it('reaches DNS by selector, at the DNS Service, and on link-local', () => {
-    expect(rules[1]).toEqual({
-      to: [
-        {
-          namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
-          podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
-        },
-        { ipBlock: { cidr: '10.96.0.10/32' } },
-        { ipBlock: { cidr: '169.254.0.0/16' } },
-      ],
-      ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }],
-    })
-  })
-
-  it('names no node address as a destination, on any port', () => {
-    for (const rule of rules) {
-      for (const cidr of ['10.0.1.5/32', '5.75.1.9/32', '2a01:4f8:1c1c::1/128', 'fd00::5/128']) {
-        expect(rule.to.map((p) => p.ipBlock?.cidr)).not.toContain(cidr)
-      }
-    }
-  })
-
-  it('reaches the main registry by selector, in its own namespace', () => {
-    expect(rules[2]).toEqual({
-      to: [{
-        namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'yaac' } },
-        podSelector: { matchLabels: { app: 'yaac-main-registry' } },
-      }],
-      ports: [{ protocol: 'TCP', port: 5000 }],
-    })
+    const workspace = buildWorkspaceEgressNpManifest(['10.89.0.7/32']) as unknown as { spec: Spec }
+    expect(manifest.spec.egress).toEqual([
+      ...workspace.spec.egress!,
+      {
+        to: [{
+          namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'yaac' } },
+          podSelector: { matchLabels: { app: 'yaac-main-registry' } },
+        }],
+        ports: [{ protocol: 'TCP', port: 5002 }],
+      },
+    ])
+    // Nothing world-ward: no public block, no cluster DNS.
+    expect(JSON.stringify(manifest.spec.egress)).not.toContain('0.0.0.0/0')
+    expect(JSON.stringify(manifest.spec.egress)).not.toContain('kube-dns')
   })
 })
 
@@ -251,11 +201,12 @@ describe('buildProxyEgressNpManifest', () => {
   const egressOf = (apiserver: { cidrs: string[]; ports: number[] }) =>
     (buildProxyEgressNpManifest(['10.89.0.2/32'], [], apiserver) as unknown as { spec: Spec }).spec.egress!
 
-  it('adds the proxy\'s in-cluster peers to the builders\' floor, by selector', () => {
+  it('adds the proxy\'s in-cluster peers to the server\'s floor, by selector', () => {
     const egress = egressOf({ cidrs: [], ports: [] })
-    // The same floor, less the builders' registry rule.
-    const builders = buildBuilderEgressNpManifest(['10.89.0.2/32'], []) as unknown as { spec: Spec }
-    expect(egress.slice(0, 2)).toEqual(builders.spec.egress!.slice(0, 2))
+    // The same floor, less the server's registry rule.
+    const server = buildServerEgressNpManifest(['10.89.0.2/32'], [], { cidrs: ['10.0.0.1/32'], ports: [6443] }, null) as
+      unknown as { spec: Spec }
+    expect(egress.slice(0, 2)).toEqual(server.spec.egress!.slice(0, 2))
     expect(egress.slice(3)).toEqual([
       { to: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [{ protocol: 'TCP', port: SERVER_MAMA_PORT }] },
       {
@@ -296,24 +247,22 @@ describe('buildProxyEgressNpManifest', () => {
 })
 
 describe('buildServerEgressNpManifest', () => {
-  // The server clones whatever remote a user types, so its egress is the
-  // builders' floor (public addresses, DNS, the main registry) plus exactly
-  // the in-cluster peers it dials itself. A node address appears only as the
+  // The server clones whatever remote a user types, so its egress is a
+  // floor of public addresses, DNS and the main registry, plus exactly the
+  // in-cluster peers it dials itself. A node address appears only as the
   // apiserver endpoint, on its own port, as on kind and k3s.
   const nodes = ['172.18.0.2/32', '5.75.1.9/32']
   const apiserver = { cidrs: ['172.18.0.2/32'], ports: [6443] }
   const build = (tor: string | null) => buildServerEgressNpManifest(nodes, ['10.96.0.10/32'], apiserver, tor) as
     unknown as { metadata: { name: string }; spec: Spec }
 
-  it('selects the server by role, on the builders\' floor, adding the proxy and the apiserver', () => {
+  it('selects the server by role, on its floor, adding the proxy and the apiserver', () => {
     const manifest = build(null)
     expect(manifest.metadata.name).toBe(SERVER_EGRESS_NP_NAME)
     // Not `app`: a `cluster check` probe carrying the role must not join the
     // server's Service or be adopted by its ReplicaSet.
     expect(manifest.spec.podSelector).toEqual({ matchLabels: { [LABEL_ROLE]: 'server' } })
     expect(manifest.spec.policyTypes).toEqual(['Egress'])
-    const builders = buildBuilderEgressNpManifest(nodes, ['10.96.0.10/32']) as unknown as { spec: Spec }
-    expect(manifest.spec.egress!.slice(0, 3)).toEqual(builders.spec.egress)
     expect(manifest.spec.egress!.slice(3)).toEqual([
       {
         to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
@@ -339,5 +288,79 @@ describe('buildServerEgressNpManifest', () => {
 
   it('refuses to render without an apiserver endpoint, which would cut the server off', () => {
     expect(() => buildServerEgressNpManifest(nodes, [], { cidrs: [], ports: [] }, null)).toThrow(/apiserver/)
+  })
+})
+
+describe('buildServerEgressNpManifest floor', () => {
+  // The server clones remotes users type: a node, a metadata service or any
+  // other internal address would let it read what only the cluster may.
+  // Only public addresses, DNS and the main registry stay open beside its
+  // own peers. The nodes are a byo node's: a private InternalIP, public v4
+  // and v6 ExternalIPs, and a ULA.
+  const manifest = buildServerEgressNpManifest(
+    ['10.0.1.5/32', '5.75.1.9/32', '2a01:4f8:1c1c::1/128', 'fd00::5/128'], ['10.96.0.10/32'],
+    { cidrs: ['10.0.1.5/32'], ports: [6443] }, null,
+  ) as unknown as { metadata: { name: string }; spec: Spec }
+  const rules = manifest.spec.egress as Array<{
+    to: Array<{ ipBlock?: { cidr: string; except?: string[] } }>
+    ports?: Array<{ protocol: string; port: number; endPort: number }>
+  }>
+
+  it('reaches public addresses on every port, and no special-purpose range or node', () => {
+    const [world] = rules
+    expect(world.ports).toBeUndefined()
+    const [v4, v6] = world.to.map((p) => p.ipBlock!)
+    expect(v4.cidr).toBe('0.0.0.0/0')
+    for (const cidr of [
+      '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16',
+      '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '168.63.129.16/32', '224.0.0.0/3',
+    ]) expect(v4.except).toContain(cidr)
+    // A public ExternalIP lies in no special-purpose range, so only its own
+    // except entry keeps the server off its node. The private InternalIP is
+    // cut as well, though 10/8 already covers it.
+    expect(v4.except).toContain('5.75.1.9/32')
+    expect(v4.except).toContain('10.0.1.5/32')
+    // Each family's addresses go in its own block, since the apiserver
+    // rejects an except outside the cidr. The ULA (and the ULA metadata
+    // services, fd00:ec2::254 and fd20:ce::254) lie outside 2000::/3.
+    expect(v4.except!.some((c) => c.includes(':'))).toBe(false)
+    expect(v6).toEqual({
+      cidr: '2000::/3',
+      except: ['2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20', '2a01:4f8:1c1c::1/128'],
+    })
+  })
+
+  // NodeLocal DNSCache answers on the DNS Service's own ClusterIP (no DNAT
+  // to a CoreDNS pod) or on link-local, depending on its mode.
+  it('reaches DNS by selector, at the DNS Service, and on link-local', () => {
+    expect(rules[1]).toEqual({
+      to: [
+        {
+          namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } },
+          podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+        },
+        { ipBlock: { cidr: '10.96.0.10/32' } },
+        { ipBlock: { cidr: '169.254.0.0/16' } },
+      ],
+      ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }],
+    })
+  })
+
+  it('names no node address as a destination but the apiserver, on its port', () => {
+    for (const rule of rules.slice(0, -1)) {
+      for (const cidr of ['10.0.1.5/32', '5.75.1.9/32', '2a01:4f8:1c1c::1/128', 'fd00::5/128']) {
+        expect(rule.to.map((p) => p.ipBlock?.cidr)).not.toContain(cidr)
+      }
+    }
+  })
+
+  it('reaches the main registry\'s pod port by selector, in its own namespace', () => {
+    expect(rules[2]).toEqual({
+      to: [{
+        namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'yaac' } },
+        podSelector: { matchLabels: { app: 'yaac-main-registry' } },
+      }],
+      ports: [{ protocol: 'TCP', port: 5002 }],
+    })
   })
 })

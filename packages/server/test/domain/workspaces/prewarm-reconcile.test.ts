@@ -87,8 +87,9 @@ const WARM = {
   start: expect.objectContaining({ repos: [expect.objectContaining({ path: '' })], nested: false, cwd: '' }) as unknown,
 }
 
-/** The image the fake driver says the project builds now. */
-const IMAGE = 'registry.test/fake-image:latest'
+/** The image a spare of the project is kept on now: the fake driver's
+ *  stock chain, as nothing here names a project image. */
+const IMAGE = 'registry.test/fake-tools:t'
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
@@ -400,13 +401,16 @@ describe('reconcilePrewarmPool', () => {
     expect(mockCreate).toHaveBeenCalledWith('p', WARM)
   })
 
-  // A pod's image is fixed too, so a spare warmed before a Dockerfile edit
-  // would hand the user the old toolchain.
+  // A pod's image is fixed too, so a spare warmed before its image's chain
+  // changed (a new stock image here) would hand the user the old toolchain.
   it('replaces a spare warmed on an image the project no longer builds', async () => {
     vi.mocked(listProjectRows).mockResolvedValue([
       project('p'),
     ])
-    installFakeWorkspaceDriver({ destroy, currentImage: () => Promise.resolve(`${IMAGE}-edited`) })
+    installFakeWorkspaceDriver({
+      destroy,
+      resolveImageChain: () => Promise.resolve({ layers: [{ name: 'tools', tag: 'fake-tools:edited' }], finalTag: 'fake-tools:edited' }),
+    })
     mockWorkspaces.mockResolvedValue([
       pod({ jobName: 'yaac-p-real', workspaceId: 'r1' }),
       pod({ jobName: 'yaac-p-spare', workspaceId: 's2', prewarmed: true, warmed: { } }),

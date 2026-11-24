@@ -13,8 +13,8 @@ vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
 }))
 
 // The fsprobe pod's image; ensuring it would pull and push.
-vi.mock('#drivers/k8s/cluster/builder-image', () => ({
-  ensureBuilderImage: vi.fn().mockResolvedValue('localhost:5000/podman-stable:mirror'),
+vi.mock('#drivers/k8s/cluster/utility-image', () => ({
+  ensureUtilityImage: vi.fn().mockResolvedValue('localhost:5000/podman-stable:mirror'),
 }))
 
 // The registry: it answers, and already holds the probe image, so the
@@ -22,6 +22,7 @@ vi.mock('#drivers/k8s/cluster/builder-image', () => ({
 vi.mock('#drivers/k8s/cluster/registry', async (importOriginal) => ({
   ...await importOriginal<typeof registryModule>(),
   registryEndpoint: vi.fn().mockResolvedValue('127.0.0.1:41234'),
+  registryPodEndpoint: vi.fn().mockResolvedValue('127.0.0.1:41235'),
   registryReachable: vi.fn().mockResolvedValue(true),
   registryTagState: vi.fn().mockResolvedValue('present'),
 }))
@@ -456,6 +457,8 @@ function stage(overrides: { run?: RunMock; registryReachable?: boolean } = {}): 
 
 /** What the registry answers an anonymous upload; null for no answer. */
 let gateStatus: number | null = 401
+/** What the pod port answers an anonymous read of a project repo. */
+let podReadStatus: number | null = 401
 const gateProbes: Array<{ url: string; method?: string }> = []
 
 function byName(results: CheckResult[], name: string): CheckResult | undefined {
@@ -499,11 +502,13 @@ describe('runClusterCheck', () => {
     vi.spyOn(fakeCluster.podLogs, 'get').mockImplementation(logsFor)
     // The registry's write gate refuses an anonymous upload.
     gateStatus = 401
+    podReadStatus = 401
     vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
       gateProbes.push({ url, method: init?.method })
-      return gateStatus === null
+      const status = url.includes(':41235/') ? podReadStatus : gateStatus
+      return status === null
         ? Promise.reject(new Error('ECONNRESET'))
-        : Promise.resolve({ status: gateStatus } as Response)
+        : Promise.resolve({ status } as Response)
     }))
     gateProbes.length = 0
   })
@@ -1775,10 +1780,12 @@ describe('runClusterCheck', () => {
     stage()
     const healthy = byName((await check()).results, 'registry')
     expect(healthy).toMatchObject({ status: 'pass' })
-    expect(healthy?.detail).toContain('writes need a grant')
-    // Probed with an anonymous upload start.
+    expect(healthy?.detail).toContain('need a grant')
+    // Probed with an anonymous upload start on the node port, and an
+    // anonymous read of a project repo on the pod port.
     expect(gateProbes).toEqual([
       { url: 'http://127.0.0.1:41234/v2/yaac-cluster-probe/blobs/uploads/', method: 'POST' },
+      { url: 'http://127.0.0.1:41235/v2/yaac-proj-00000000-0000-0000-0000-000000000000/tags/list', method: 'GET' },
     ])
 
     // An ungated registry answers reads too; only a write shows the gate is
@@ -1789,7 +1796,15 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'registry')).toMatchObject({ status: 'fail' })
     expect(byName(results, 'registry')?.fix).toContain('yaac cluster install')
 
+    // A gate from before the pod port serves project images to any pod.
+    gateStatus = 401
+    podReadStatus = 404
+    const open = byName((await check()).results, 'registry')
+    expect(open).toMatchObject({ status: 'fail' })
+    expect(open?.detail).toContain('anonymous read of a project repo')
+
     gateStatus = null
+    podReadStatus = null
     const unverified = byName((await check()).results, 'registry')
     expect(unverified).toMatchObject({ status: 'warn' })
     expect(unverified?.detail).toContain('no answer')

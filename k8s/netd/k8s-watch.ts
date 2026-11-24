@@ -27,10 +27,13 @@ import { podMemoryRequestBytes, type NodePod } from 'yaac-netd/swap'
 
 /**
  * The pods netd redirects: workspace pods, never the proxy itself (a
- * self-redirect would loop). The workspace label must match the server's
- * LABEL_WORKSPACE_ID (netd can't import src/).
+ * self-redirect would loop), and image builder pods, whose builds go
+ * through the proxy too (docs/image-builds.md). A selector cannot OR two
+ * labels, so each is its own watch. The labels must match the server's
+ * LABEL_WORKSPACE_ID and LABEL_BUILD_ID (netd can't import src/).
  */
 export const WORKSPACE_POD_SELECTOR = 'yaac.workspace-id,app!=yaac-proxy'
+export const BUILDER_POD_SELECTOR = 'yaac.build-id'
 
 /** The fields netd reads off a Pod. */
 export interface NetdPod {
@@ -107,11 +110,13 @@ export function inClusterClient(namespace: string): WatchClient {
   return { kubeConfig, core: kubeConfig.makeApiClient(CoreV1Api), namespace }
 }
 
-/** Watch this namespace's workspace pods; returns a reader of the store. */
+/** Watch this namespace's redirected pods; returns a reader of the stores. */
 export function watchPods(client: WatchClient, onChange: () => void): () => NetdPod[] {
   const { core, namespace } = client
-  return watch(client, 'pods', { labelSelector: WORKSPACE_POD_SELECTOR }, mapPod, onChange,
-    () => core.listNamespacedPod({ namespace, labelSelector: WORKSPACE_POD_SELECTOR }))
+  const stores = [WORKSPACE_POD_SELECTOR, BUILDER_POD_SELECTOR].map((labelSelector) =>
+    watch(client, 'pods', { labelSelector }, mapPod, onChange,
+      () => core.listNamespacedPod({ namespace, labelSelector })))
+  return () => stores.flatMap((store) => store())
 }
 
 /**

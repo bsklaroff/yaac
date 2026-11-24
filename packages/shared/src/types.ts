@@ -2006,6 +2006,15 @@ export interface ProjectSummary extends ProjectConfig {
   /** The agent last created with; the create form opens on it. Absent
    *  before the first create (claude is assumed). */
   lastTool?: AgentTool
+  /** The image a create naming none launches (docs/image-builds.md);
+   *  absent is the stock image. */
+  defaultImageId?: string
+  /** The image the last create named, which the create form opens on:
+   *  `STOCK_IMAGE_ID` for the stock image, absent when no create has named
+   *  one (the default then applies). */
+  lastImageId?: string
+  /** Days a build cache is read; absent is `DEFAULT_IMAGE_CACHE_DAYS`. */
+  imageCacheDays?: number
   /** Per agent, what it was last created with here (see
    *  `resolveToolCreateDefaults`). */
   createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>>
@@ -2024,6 +2033,9 @@ export interface ProjectSummary extends ProjectConfig {
   keptIgnoredPaths?: string[]
   scratchDirs: ScratchDirSettings
 }
+
+/** Days a project's builds read a cache entry when it sets none. */
+export const DEFAULT_IMAGE_CACHE_DAYS = 28
 
 /**
  * One scratch dir: a checkout-relative dir of installed packages or build
@@ -2121,6 +2133,9 @@ export interface QueuedWorkspaceEntry {
   /** The effort it launches at; absent when its model has none. */
   effort?: string
   agentOptions: AgentOptions
+  /** The image it launches, or `STOCK_IMAGE_ID`; absent is the project's
+   *  default at launch. */
+  imageId?: string
   /** What it starts with: each repo at a branch, fetched fresh at launch,
    *  or at a full commit (docs/project-repos.md). */
   selection: RepoSelection
@@ -2248,6 +2263,9 @@ export const queuedWorkspaceSettingsSchema = z.object({
   effort: effortSchema.optional(),
   /** Options the tool lacks are refused. Unnamed ones resolve as a create's. */
   agentOptions: agentOptionsSchema.optional(),
+  /** The image to launch, or `STOCK_IMAGE_ID`; absent is the project's
+   *  default at launch (docs/image-builds.md). */
+  imageId: z.uuid().optional(),
   title: z.string().max(500).optional(),
   /** Minutes until the server stops the workspace. */
   timeout: timeoutMinutesSchema.optional(),
@@ -2281,6 +2299,9 @@ export const routineSettingsSchema = z.object({
   effort: effortSchema.optional(),
   /** Options the tool lacks are refused. Unnamed ones resolve as a create's. */
   agentOptions: agentOptionsSchema.optional(),
+  /** The image each run launches, or `STOCK_IMAGE_ID`; absent or null is
+   *  the project's default at each launch. */
+  imageId: z.uuid().nullable().optional(),
   group: z.string().min(1).max(500).nullable().optional(),
   timeout: timeoutMinutesSchema.nullable().optional(),
 })
@@ -2346,6 +2367,9 @@ export interface SiteEntry {
   /** How long a deploy's release has to become ready before the deploy
    *  fails, unless the deploy names its own. */
   deployTimeoutMinutes: number
+  /** The image its deploys launch (an image id, or `STOCK_IMAGE_ID`);
+   *  absent is the project's default. */
+  imageId?: string
   /** The named workflow each release runs, and its current graph. */
   workflow: string
   steps: StepGraph
@@ -2424,6 +2448,8 @@ export interface RoutineEntry {
   permissionMode: PermissionMode
   effort?: string
   agentOptions: AgentOptions
+  /** The image each run launches; absent is the project's default. */
+  imageId?: string
   /** What each run starts with. */
   selection: RepoSelection
   /** The named workflow its runs start with; absent runs the project's
@@ -2531,28 +2557,99 @@ export interface HeldWorkspaceEntry {
 /** Named step in a project's image chain, in build order. */
 export type ImageLayerName = 'base' | 'tools' | 'project' | 'user'
 
+/** Why a build ran (docs/image-builds.md "Images, revisions and builds"). */
+export type ImageBuildReason = 'create' | 'prewarm' | 'save' | 'manual'
+
+export type ImageBuildStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+
+/** A Dockerfile check warning, with the line it names when it names one. */
+export interface ImageBuildWarning {
+  message: string
+  line?: number
+}
+
+/** A revision's support files: context-relative path to content hash and size. */
+export type ImageFileManifest = Record<string, { sha256: string; size: number }>
+
 /**
- * An image build tracked in server memory. The snapshot
- * carries metadata only; the log tail comes from
- * `GET /image/builds/:id/log`.
+ * The id that names the stock yaac image where an image id is expected: a
+ * create's or queued entry's `imageId`. Absent (null) means the project's
+ * default, which may itself be the stock image.
  */
-export interface ImageBuildEntry {
+export const STOCK_IMAGE_ID = '00000000-0000-0000-0000-000000000000'
+
+/** One build of one layer of an image chain, as the build list and its page show it. */
+export interface ImageBuild {
   id: string
-  tag: string
-  /** The chain step. */
+  imageId: string
+  imageName: string
+  /** A project's image, or a user's own Dockerfile.user. */
+  scope: 'project' | 'user'
+  revisionId: string
+  revisionNumber: number
+  /** The project whose chain it built (a user image tops each of its owner's). */
+  projectId: string
   layer: ImageLayerName
-  /** Every project that requested this tag. */
-  projectIds: string[]
-  reason: 'session' | 'prewarm'
-  status: 'running' | 'succeeded' | 'failed'
-  /** Parsed from podman's `STEP N/M: <instruction>` output lines. */
-  stepCurrent?: number
-  stepTotal?: number
-  stepText?: string
-  error?: string
-  /** 'YYYY-MM-DD HH:MM:SS' UTC, same shape as provisioning `createdAt`. */
-  startedAt: string
+  tag: string
+  reason: ImageBuildReason
+  status: ImageBuildStatus
+  noCache: boolean
+  /** ISO timestamps. */
+  queuedAt: string
+  startedAt?: string
   finishedAt?: string
+  error?: string
+  warnings: ImageBuildWarning[]
+  parentTag?: string
+  /** The digest each upstream `FROM` resolved to, by ref. */
+  baseDigests: Record<string, string>
+  buildkitVersion?: string
+  cachedSteps: number
+  totalSteps: number
+  /** The step running now, while it runs. */
+  stepCurrent?: number
+  stepText?: string
+  /** Hosts the build tried and the project's allowlist refused. */
+  blockedHosts: string[]
+}
+
+/** One saved content of an image. */
+export interface ImageRevision {
+  id: string
+  imageId: string
+  number: number
+  dockerfile: string
+  files: ImageFileManifest
+  contentHash: string
+  author: string
+  note?: string
+  createdAt: string
+  /** The status of its newest build, if it has one. */
+  buildStatus?: ImageBuildStatus
+  /** Support files whose bytes are no longer kept: restoring it brings
+   *  back the Dockerfile and says which are gone. */
+  missingFiles: string[]
+}
+
+/** An image as the Images list and the create pane's selector show it. */
+export interface ImageSummary {
+  /** `STOCK_IMAGE_ID` for the stock yaac image, which is read-only. */
+  id: string
+  scope: 'project' | 'user'
+  name: string
+  /** The project's default (a create naming no image launches it). */
+  isDefault: boolean
+  currentRevision?: { id: string; number: number; createdAt: string }
+  lastBuiltRevision?: { id: string; number: number }
+  /**
+   * `ready`: a create starts at once. `building`: a build of the current
+   * revision is queued or running (a create may still start on the last
+   * built one). `never-built`: a create waits for the first build.
+   * `failed`: the current revision's newest build failed.
+   */
+  state: 'ready' | 'building' | 'never-built' | 'failed'
+  /** The build of the current revision in progress, or its newest. */
+  latestBuildId?: string
 }
 
 export type CheckStatus = 'pass' | 'fail' | 'warn' | 'skip'
@@ -2833,7 +2930,9 @@ export interface ServerSnapshot {
   sites: SiteSummary[]
   /** See `ActiveWorkspacesResult.gitAuthFailures`. */
   gitAuthFailures: Record<string, GitAuthFailure[]>
-  imageBuilds: ImageBuildEntry[]
+  /** Builds queued or running, and recent failures not yet superseded:
+   *  the sidebar's building pill (docs/image-builds.md "The queue"). */
+  imageBuilds: ImageBuild[]
   /** Each user's Claude subscription plan usage, by user id
    *  (domain/auth/plan-usage.ts); a user with no tool sign-in is absent.
    *  Null until the first refresh after a webapp client connects. */

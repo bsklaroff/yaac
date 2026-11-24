@@ -28,10 +28,9 @@ import { ProjectSelect, useSettingsProject } from '#components/settings/ProjectP
 import { ReposSettings } from '#components/settings/Repos'
 import { SkillsSettings } from '#components/settings/Skills'
 import { UsersPane } from '#components/settings/Users'
-import { FileEditor } from '#components/settings/FileEditor'
-import { BuildFiles } from '#components/settings/BuildFiles'
+import { UserImagePane } from '#components/settings/Images'
 import { SettingsPageTitle } from '#components/settings/SettingsPage'
-import { userBuildFilesApi } from '#lib/buildFilesApi'
+import { BuildPage } from '#components/BuildPage'
 import { useUiStore, type ProjectPage, type SettingsSection } from '#lib/store'
 import type { ThemePref } from '#lib/theme'
 import { useSnapshotSelect } from '#lib/useSnapshot'
@@ -65,7 +64,7 @@ const PROJECT_PAGES: { page: ProjectPage; Icon: NavIcon }[] = [
   { page: 'env', Icon: EnvIcon },
   { page: 'network', Icon: NetworkIcon },
   { page: 'storage', Icon: VolumeIcon },
-  { page: 'image', Icon: DockerIcon },
+  { page: 'images', Icon: DockerIcon },
 ]
 
 /**
@@ -163,7 +162,7 @@ export const SettingsDialog = memo(function SettingsDialog(): JSX.Element {
               onChange={pick}
               className="mb-1 max-md:mb-0 max-md:ml-2 max-md:h-9 max-md:shrink-0"
             />
-            {PROJECT_PAGES.filter((p) => p.page !== 'image' || buildsImages)
+            {PROJECT_PAGES.filter((p) => p.page !== 'images' || buildsImages)
               .map(({ page, Icon }) => navButton(`project-${page}`, PROJECT_PAGE_LABEL[page], Icon))}
           </>}
         </div>
@@ -218,62 +217,17 @@ export const SettingsDialog = memo(function SettingsDialog(): JSX.Element {
 
             {section.startsWith('project-') && <ProjectSettings page={section.slice('project-'.length) as ProjectPage} />}
 
-            {section === 'userDockerfile' && <UserDockerfilePane />}
+            {section === 'userDockerfile' && <UserImagePane />}
 
             {section === 'users' && <UsersPane />}
           </YPageBody>
         )}
       </div>
+      {/* A build opened from here stacks on settings, nested in it. */}
+      <BuildPage />
     </YDialog>
   )
 })
-
-/**
- * The global user image layer: the Dockerfile.user editor plus the support
- * files sharing its build dir (the layer's whole build context).
- */
-function UserDockerfilePane(): JSX.Element {
-  const filesApi = useMemo(() => userBuildFilesApi(), [])
-  return (
-    <>
-      <SettingsPageTitle title="User Dockerfile" />
-      <YSettingGroup>
-        <YSettingRow
-          stacked
-          label="Dockerfile.user"
-          hint={(
-            <>
-              Layered atop every project image. Must start with{' '}
-              <code className="text-muted">{'ARG BASE_IMAGE'}</code> and{' '}
-              <code className="text-muted">{'FROM ${BASE_IMAGE}'}</code>.
-            </>
-          )}
-        >
-          <FileEditor
-            title="Dockerfile.user"
-            language="dockerfile"
-            queryKey={['user-dockerfile']}
-            load={async () => (await api.config['user-dockerfile'].$get()).content}
-            save={async (content) => { await api.config['user-dockerfile'].$put({ json: { content } }) }}
-          />
-        </YSettingRow>
-        <YSettingRow
-          stacked
-          label="Build files"
-          hint={(
-            <>
-              Files stored next to Dockerfile.user as its build context — reference them
-              with <code className="text-muted">COPY</code>. Changes apply on the next
-              workspace create.
-            </>
-          )}
-        >
-          <BuildFiles filesApi={filesApi} title="Dockerfile.user" />
-        </YSettingRow>
-      </YSettingGroup>
-    </>
-  )
-}
 
 /**
  * View and rebind keyboard shortcuts. Click a row to record; the next unbound

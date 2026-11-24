@@ -266,12 +266,12 @@ transparent border (`max-md:safe-area-inset`, a Tailwind utility so it takes
 variants), and in the desktop shapes their margins grow by the insets.
 
 Below `md`, fixed-size dialogs go full screen. Settings (full screen on
-every width) turns its left nav into a scrolling row of chips, and the
-`inset-4` image builds overlay goes edge to edge.
+every width) turns its left nav into a scrolling row of chips, and an
+image build's page (a full-window sheet) goes edge to edge.
 
-Settings' Skills section and the image builds overlay are list/detail
-layouts, and a 20rem list leaves the detail a few dozen pixels at 390px.
-`components/MasterDetail` is their shared body: side by side above `md`, one at a time below it (the list until
+Settings' Skills section is a list/detail layout, and a 20rem list leaves
+the detail a few dozen pixels at 390px. `components/MasterDetail` is its
+body: side by side above `md`, one at a time below it (the list until
 a row is tapped, then the detail with a back chevron).
 
 - **The hidden side uses `max-md:hidden`** (`display: none`). Here that is
@@ -299,7 +299,7 @@ Unit tests in `packages/frontend/test/`: `viewport.test.ts`,
 `mobile-nav.test.ts` (the tap vs. app-choosing split; the
 `autoSelectWorkspace` case is the regression this design prevents),
 `mobile-shell.test.tsx` (layer visibility, history stack),
-`mobile-overlays.test.tsx` (no auto-pick and no detail fetch until a tap),
+`master-detail.test.tsx` (both panes stay mounted, one hidden below `md`),
 `workspace-list.test.tsx`, `pty-input.test.ts`,
 `terminal-key-bar.test.tsx`, `touch-scroll.test.ts`.
 

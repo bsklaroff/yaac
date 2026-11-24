@@ -55,7 +55,7 @@ vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   registryRef: (tag: string) => `reg.local:5000/${tag}`,
   prebuiltRef: (_what: string, tag: string) => Promise.resolve(`reg.local:5000/${tag}`),
   mirrorRef: (_what: string, tag: string) => Promise.resolve(`reg.local:5000/${tag}`),
-  ensureBuilderImage: () => Promise.resolve('reg.local:5000/podman-stable:v5.5'),
+  ensureUtilityImage: () => Promise.resolve('reg.local:5000/podman-stable:v5.5'),
   invalidateRegistryEndpoint: vi.fn(),
   contextHash: vi.fn().mockResolvedValue('ctxhash'),
   resolveTrustedLayers: vi.fn(() => {

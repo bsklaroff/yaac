@@ -199,10 +199,15 @@ See [workspace-egress.md](workspace-egress.md).
 
 The default workspace image is Ubuntu 26.04 with Node.js, gh, tmux, the agent
 CLIs, and pnpm 12 through corepack (a project's own `packageManager` pin wins).
-Two files customize it:
+It is the stock `yaac` image; a project can add its own named images, and you
+can add one Dockerfile on top of all of yours ([image-builds.md](image-builds.md)):
 
-- **`Dockerfile.yaac`** (per project: Settings → Project → Image → Dockerfile,
-  or `yaac config dockerfile <project> --file <path>`, `-` for stdin).
+- **A project's images** (Settings → Project Config → Images, or `yaac image
+  create|edit <project> <image> --file <path>`, `-` for stdin, `--context
+  <dir>` for support files). Each save is a revision and starts a build; a
+  create chooses an image (the project's default when it names none: `yaac
+  image default`, or the Images page) and launches its last built revision,
+  or waits for the revision being built with `--await-build`.
   - **Layered (recommended):** built on top of the default image. It must
     start with:
     ```dockerfile
@@ -214,28 +219,22 @@ Two files customize it:
     [arbitrary-uid-images.md](arbitrary-uid-images.md) describes. Its `tar`
     is its own: a GNU tar that extracts through `openat2` (Ubuntu's from
     26.04) cannot unpack nested paths in a pod, since gVisor lacks that call.
-- **`Dockerfile.user`** (yours, Settings → User Dockerfile or
-  `yaac config user-dockerfile --file <path>`): applied last, on top of the image of
-  every project you own, for things like editor or shell config. It must use the
+- **`Dockerfile.user`** (yours, Settings → User Dockerfile, or `yaac image
+  user edit --file <path>`): applied last, on top of the image of every
+  project you own, for things like editor or shell config. It must use the
   same `ARG BASE_IMAGE` / `FROM ${BASE_IMAGE}` header.
 
 Build order: default, then the agent CLI layer (`Dockerfile.tools`), then a
-layered `Dockerfile.yaac`, then `Dockerfile.user`. A standalone
-`Dockerfile.yaac` replaces the first two.
+layered project image, then `Dockerfile.user`. A standalone project image
+replaces the first two.
 
 The pod may run as a uid other than the image's `yaac` user (uid 1000,
-primary group 0), and reaches the image's files through group 0. So every
-step that writes under `/home/yaac` needs `umask 002`, and ownership is
-`yaac:0`, never `yaac:yaac` (there is no `yaac` group):
-
-```dockerfile
-ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
-RUN umask 002 && npm install -g my-tool
-```
-
-Without the umask the step works on a Linux host with uid 1000 and fails with
-`Permission denied` elsewhere. If a standalone image sets its own
+primary group 0), and reaches the image's files through group 0. A layered
+image needs nothing for that: every `RUN` gets `umask 002` from the default
+image, `chown yaac:yaac` gives a file the ids a pod needs, and a final step
+the builder adds fixes what a step left unwritable, printing what it fixed
+and its size. Fixing a file in a later layer copies it, so prefer `COPY
+--chown=yaac:yaac` and fixing modes in the step that wrote them. If a standalone image sets its own
 `ENTRYPOINT`, the entrypoint must not rely on the `yaac` user's passwd entry:
 yaac fixes that entry from the pod's postStart hook, which may run after the
 entrypoint starts, so `sudo`, `ssh` or `os.userInfo()` there can see the old
@@ -246,7 +245,7 @@ The default image's `tar` is a wrapper (`/usr/local/bin/tar`): an extraction
 using only options bsdtar shares (`-xzf`, `-C`, `--strip-components`, …) runs
 bsdtar, because GNU tar cannot unpack nested paths under gVisor, and any
 other call runs GNU tar (`/usr/bin/tar`). So an extraction with a GNU-only
-option such as `--wildcards` still fails in a pod, and in a `Dockerfile.yaac`
+option such as `--wildcards` still fails in a pod, and in a project image
 or `Dockerfile.user` step, which builds in a gVisor pod
-([trust-split-builds.md](trust-split-builds.md)). Drop the option (bsdtar
+([image-builds.md](image-builds.md)). Drop the option (bsdtar
 globs member names anyway) or call `bsdtar` directly.

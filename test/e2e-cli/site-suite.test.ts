@@ -208,7 +208,7 @@ describe('yaac site (real CLI + real server)', () => {
     expect(await refused('site', 'create', NAME, 'web', '--port', '3000', '--workflow', steps, '--deploy-timeout', '2d', ...repo))
       .toContain('--deploy-timeout takes a duration from 1m to 1d')
     const created = await yaac('site', 'create', NAME, 'web', '--port', '3000', '--admin-port', '3002', '--workflow', steps,
-      '--volume', 'data', '--deploy-timeout', '20m', ...repo)
+      '--volume', 'data', '--deploy-timeout', '20m', '--image', 'yaac', ...repo)
     expect(created).toContain('Created site "web", unpublished')
     expect(created).toContain(`yaac site publish ${NAME} web --hostname <host>`)
     expect(await yaac('site', 'list', NAME)).toMatch(/web\s+\(unpublished\)\s+-\s+3000\s+-/)
@@ -226,7 +226,7 @@ describe('yaac site (real CLI + real server)', () => {
     expect(published).toContain('no tunnel yet')
   })
 
-  it('list and show name its hostname, ports, workflow, volume and deploy timeout before any deploy', async () => {
+  it('list and show name its hostname, ports, workflow, volume, image and deploy timeout before any deploy', async () => {
     expect(await yaac('site', 'list', NAME))
       .toMatch(/NAME\s+HOSTNAME\s+EDGE\s+PORT\s+LIVE[\s\S]*web\s+app\.example\.test\s+public\s+3000\s+-/)
     const shown = await yaac('site', 'show', NAME, 'web')
@@ -235,22 +235,27 @@ describe('yaac site (real CLI + real server)', () => {
     expect(shown).toMatch(/admin port\s+3002/)
     expect(shown).toMatch(/workflow\s+v1 \(server\)/)
     expect(shown).toMatch(/volume\s+data/)
+    expect(shown).toMatch(/image\s+yaac\n/)
     expect(shown).toMatch(/timeout\s+20m per deploy/)
     expect(shown).toMatch(new RegExp(`repos\\s+${NAME}@main`))
     expect(shown).toMatch(/follow\s+no/)
   })
 
-  it('edit changes --port, --workflow, --volume and --deploy-timeout, and --no-admin-port and --no-volume drop theirs; publish moves the hostname', async () => {
+  it('edit changes --port, --workflow, --volume, --image and --deploy-timeout, and --no-admin-port, --no-volume and --no-image drop theirs; publish moves the hostname', async () => {
     expect(await refused('site', 'edit', NAME, 'web')).toContain('Nothing to change')
     expect(await yaac('site', 'publish', NAME, 'web', '--hostname', `www.${DOMAIN}`)).toContain(`hostname  www.${DOMAIN}`)
     const failing = await workflowOf('failing', { build: { run: 'exit 3' }, ...serving(3001, 'v2') })
-    await yaac('site', 'edit', NAME, 'web', '--port', '3001', '--workflow', failing, '--no-admin-port', '--no-volume', '--deploy-timeout', '2h')
+    await yaac('site', 'edit', NAME, 'web', '--port', '3001', '--workflow', failing, '--no-admin-port', '--no-volume', '--no-image', '--deploy-timeout', '2h')
     let shown = await yaac('site', 'show', NAME, 'web')
     expect(shown).toContain(`https://www.${DOMAIN} -> port 3001`)
     expect(shown).toMatch(/admin port\s+-/)
     expect(shown).toMatch(/workflow\s+failing \(build, server\)/)
     expect(shown).toMatch(/volume\s+-/)
+    expect(shown).toMatch(/image\s+- \(the project's default\)/)
     expect(shown).toMatch(/timeout\s+2h per deploy/)
+    expect(await refused('site', 'edit', NAME, 'web', '--image', 'nope')).toContain('has no image named "nope"')
+    await yaac('site', 'edit', NAME, 'web', '--image', 'yaac')
+    expect(await yaac('site', 'show', NAME, 'web')).toMatch(/image\s+yaac\n/)
     await yaac('site', 'edit', NAME, 'web', '--volume', 'data')
     expect(await yaac('site', 'show', NAME, 'web')).toMatch(/volume\s+data/)
     await yaac('site', 'edit', NAME, 'web', '--no-volume')

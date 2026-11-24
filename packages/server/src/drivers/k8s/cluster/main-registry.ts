@@ -1,6 +1,6 @@
 /**
  * The install's main OCI registry as an in-cluster workload: the one image
- * bus (docs/trust-split-builds.md). Host `podman build` and sandboxed
+ * bus (docs/image-builds.md). Host `podman build` and sandboxed
  * builder pods push to it, and node containerd pulls every workspace image
  * from it: digest-pinned `registry:2`, a Recreate Deployment, a ClusterIP
  * Service, an RWO PVC, and per-node containerd `hosts.toml` written by
@@ -44,6 +44,7 @@ import { nodeIpBlocks } from './cluster-cidrs'
 import {
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
+  REGISTRY_POD_PORT,
   REGISTRY_SERVICE_PORT,
   invalidateRegistryEndpoint,
   registryHost,
@@ -120,7 +121,10 @@ function buildMainRegistryPvcManifest(): Record<string, unknown> {
   }
 }
 
-/** Name of the write gate's ConfigMap (and of its container in the pod). */
+/** The gate's two listeners (registry-gate.ts). */
+const GATE_PORTS = { node: REGISTRY_SERVICE_PORT, pod: REGISTRY_POD_PORT }
+
+/** Name of the gate's ConfigMap (and of its container in the pod). */
 const REGISTRY_GATE_NAME = `${REGISTRY_SERVICE_NAME}-gate`
 
 /** The gate's Envoy bootstrap, rendered around the grant key's public half. */
@@ -133,7 +137,7 @@ function buildMainRegistryGateConfigMapManifest(publicKeyDer: Buffer): Record<st
       namespace: REGISTRY_NAMESPACE,
       labels: mainRegistryLabels(),
     },
-    data: { 'bootstrap.json': registryGateBootstrap(REGISTRY_SERVICE_PORT, publicKeyDer) },
+    data: { 'bootstrap.json': registryGateBootstrap(GATE_PORTS, publicKeyDer) },
   }
 }
 
@@ -155,7 +159,7 @@ function buildMainRegistryGateConfigMapManifest(publicKeyDer: Buffer): Record<st
 function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Record<string, unknown> {
   const selector = { app: MAIN_REGISTRY_APP_LABEL }
   const gateConfigHash = crypto.createHash('sha256')
-    .update(registryGateBootstrap(REGISTRY_SERVICE_PORT, publicKeyDer))
+    .update(registryGateBootstrap(GATE_PORTS, publicKeyDer))
     .digest('hex').slice(0, 16)
   return {
     apiVersion: 'apps/v1',
@@ -202,7 +206,7 @@ function buildMainRegistryDeploymentManifest(publicKeyDer: Buffer): Record<strin
                 capabilities: { drop: ['ALL'] },
               },
               command: ['envoy', '-c', `${REGISTRY_GATE_CONFIG_DIR}/bootstrap.json`, '--log-level', 'warn'],
-              ports: [{ containerPort: REGISTRY_SERVICE_PORT }],
+              ports: [{ containerPort: REGISTRY_SERVICE_PORT }, { containerPort: REGISTRY_POD_PORT }],
               readinessProbe: {
                 httpGet: {
                   path: '/v2/',
@@ -241,26 +245,25 @@ function buildMainRegistryServiceManifest(): Record<string, unknown> {
     spec: {
       type: 'ClusterIP',
       selector: { app: MAIN_REGISTRY_APP_LABEL, [LABEL_REGISTRY_SERVES]: 'true' },
-      ports: [{
-        name: 'registry',
-        port: REGISTRY_SERVICE_PORT,
-        targetPort: REGISTRY_SERVICE_PORT,
-        protocol: 'TCP',
-      }],
+      ports: [
+        { name: 'registry', port: REGISTRY_SERVICE_PORT, targetPort: REGISTRY_SERVICE_PORT, protocol: 'TCP' },
+        { name: 'pods', port: REGISTRY_POD_PORT, targetPort: REGISTRY_POD_PORT, protocol: 'TCP' },
+      ],
     },
   }
 }
 
 /**
- * The registry's ingress policy. Allowed callers:
- *  - The node, by `ipBlock` (containerd pulls, the kubelet probe, and
- *    `kubectl port-forward`).
- *  - Builder pods in any namespace (e2e runs use per-run namespaces). The
- *    role label cannot be forged; the builder-role admission policy blocks
- *    it.
- *  - The in-cluster server, in any namespace (docs/server-in-cluster.md).
- * Workspace pods are not allowed. What builders may write is limited by the
- * write gate, not this policy.
+ * The registry's ingress policy, which sorts callers between the gate's
+ * two ports:
+ *  - The node port, for the node by `ipBlock` (containerd pulls, the
+ *    kubelet probe, and `kubectl port-forward`).
+ *  - The pod port, for builder pods in any namespace (e2e runs use per-run
+ *    namespaces; the role label cannot be forged, the builder-role
+ *    admission policy blocks it) and the in-cluster server in any namespace
+ *    (docs/server-in-cluster.md).
+ * Workspace pods are not allowed. What a pod may read and write is decided
+ * by the gate, not this policy.
  *
  * Node addresses are rendered at ensure time and again by
  * `applyMainRegistryIngress` whenever the node set changes.
@@ -268,7 +271,8 @@ function buildMainRegistryServiceManifest(): Record<string, unknown> {
 function buildMainRegistryIngressNetworkPolicyManifest(
   nodeCidrs: string[],
 ): Record<string, unknown> {
-  const registryPort = { protocol: 'TCP', port: REGISTRY_SERVICE_PORT }
+  const nodePort = { protocol: 'TCP', port: REGISTRY_SERVICE_PORT }
+  const podPort = { protocol: 'TCP', port: REGISTRY_POD_PORT }
   return {
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
@@ -283,21 +287,14 @@ function buildMainRegistryIngressNetworkPolicyManifest(
       ingress: [
         {
           from: nodeCidrs.map((cidr) => ({ ipBlock: { cidr } })),
-          ports: [registryPort],
+          ports: [nodePort],
         },
         {
-          from: [{
-            namespaceSelector: {},
-            podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } },
-          }],
-          ports: [registryPort],
-        },
-        {
-          from: [{
-            namespaceSelector: {},
-            podSelector: { matchLabels: { app: SERVER_APP_NAME } },
-          }],
-          ports: [registryPort],
+          from: [
+            { namespaceSelector: {}, podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } } },
+            { namespaceSelector: {}, podSelector: { matchLabels: { app: SERVER_APP_NAME } } },
+          ],
+          ports: [podPort],
         },
       ],
     },

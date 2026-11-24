@@ -12,7 +12,7 @@ import path from 'node:path'
 const execFileAsync = promisify(execFile)
 
 import { fakeRegistry } from '#test/support/fake-registry'
-import { BUILDER_MIRROR_TAG } from '#drivers/k8s/cluster/builder-image'
+import { UTILITY_MIRROR_TAG } from '#drivers/k8s/cluster/utility-image'
 import { reapNodeLocal } from '#drivers/k8s/workspaces'
 // The sweep's script, run here against a node-like tree; not a unit under test.
 import { buildNodeLocalSweepScript } from '#drivers/k8s/workspaces/node-local-sweep'
@@ -65,7 +65,7 @@ beforeEach(() => {
   // The sweep pods run the mirrored builder image.
   fakeRegistry.install()
   fakeRegistry.holdsAll = true
-  fakeRegistry.mirror(BUILDER_MIRROR_TAG)
+  fakeRegistry.mirror(UTILITY_MIRROR_TAG)
 })
 
 afterEach(() => {

@@ -32,6 +32,7 @@ const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const REPO = PROJ
 const START = { repos: [{ repo: REPO, branch: 'main' }], nested: false, cwd: REPO }
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
+const IMAGE = 'b6a1f6a4-5d43-4e0b-9a59-6c2f0b8f3e11'
 
 describe('routine store', () => {
   let tmpDir: string
@@ -63,9 +64,9 @@ describe('routine store', () => {
   }, { routineId })
 
   it('stores, replaces and lists routines, leaving the schedule to the calls that own it', async () => {
-    const r = await insertRoutine(PROJ, { ...fields, groupId: 'g1', timeoutMinutes: 30 }, first)
+    const r = await insertRoutine(PROJ, { ...fields, groupId: 'g1', timeoutMinutes: 30, imageId: IMAGE }, first)
     expect(pushes).toBe(1)
-    expect(r).toMatchObject({ name: 'Nightly', groupId: 'g1', timeoutMinutes: 30, nextRunAt: first, paused: false })
+    expect(r).toMatchObject({ name: 'Nightly', groupId: 'g1', timeoutMinutes: 30, imageId: IMAGE, nextRunAt: first, paused: false })
     expect(await getRoutineRow('not-a-uuid')).toBeUndefined()
     await insertRoutine(OTHER, { ...fields, name: 'Other' }, null)
     expect((await listRoutineRows(PROJ)).map((x) => x.name)).toEqual(['Nightly'])
@@ -75,6 +76,7 @@ describe('routine store', () => {
     const replaced = await updateRoutine(r.id, fields)
     expect(replaced?.groupId).toBeUndefined()
     expect(replaced?.timeoutMinutes).toBeUndefined()
+    expect(replaced?.imageId).toBeUndefined()
     expect(replaced?.nextRunAt).toEqual(first)
     const next = new Date('2026-10-25T09:00:00Z')
     expect((await updateRoutine(r.id, fields, next))?.nextRunAt).toEqual(next)

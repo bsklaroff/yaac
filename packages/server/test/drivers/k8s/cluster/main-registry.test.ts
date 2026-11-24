@@ -131,13 +131,14 @@ function serveCluster(opts: {
 function runGate(
   bootstrap: string,
   verify: 'real' | 'raise' = 'real',
+  listener: 'node' | 'pod' = 'node',
 ): (method: string, path: string, authorization?: string) => string {
   const { lua, lauxlib, lualib, to_luastring } = fengari
   const source = (JSON.parse(bootstrap) as {
-    static_resources: { listeners: Array<{ filter_chains: Array<{ filters: Array<{ typed_config: {
+    static_resources: { listeners: Array<{ name: string; filter_chains: Array<{ filters: Array<{ typed_config: {
       http_filters: Array<{ name: string; typed_config: { default_source_code?: { inline_string: string } } }>
     } }> }> }> }
-  }).static_resources.listeners[0].filter_chains[0].filters[0].typed_config.http_filters
+  }).static_resources.listeners.find((l) => l.name === listener)!.filter_chains[0].filters[0].typed_config.http_filters
     .find((f) => f.name === 'envoy.filters.http.lua')!.typed_config.default_source_code!.inline_string
   const harness = `
 function run_request(method, path, authorization)
@@ -288,7 +289,10 @@ describe('ensureMainRegistry', () => {
     expect(svc.metadata).toMatchObject({ name: 'yaac-registry', namespace: 'yaac' })
     expect(svc.spec).toMatchObject({
       type: 'ClusterIP',
-      ports: [{ name: 'registry', port: 5000, targetPort: 5000, protocol: 'TCP' }],
+      ports: [
+        { name: 'registry', port: 5000, targetPort: 5000, protocol: 'TCP' },
+        { name: 'pods', port: 5002, targetPort: 5002, protocol: 'TCP' },
+      ],
     })
     // Only the serving pod is an endpoint: a writer pod shares the registry's
     // other labels, and a dial routed to it would hang.
@@ -358,7 +362,7 @@ describe('ensureMainRegistry', () => {
     ])
     expect(registry.ports).toBeUndefined()
     expect(gate.name).toBe('gate')
-    expect(gate.ports).toEqual([{ containerPort: 5000 }])
+    expect(gate.ports).toEqual([{ containerPort: 5000 }, { containerPort: 5002 }])
     // Readiness goes through the gate to the registry. The bare `/v2/` is
     // challenged, so the probe presents an empty credential.
     expect(gate.readinessProbe?.httpGet).toMatchObject({ path: '/v2/', port: 5000 })
@@ -450,7 +454,44 @@ describe('ensureMainRegistry', () => {
     expect(runGate(bootstrap, 'raise')('POST', `/v2/${a}/blobs/uploads/`, grantA)).toBe('500')
   })
 
-  it('locks registry ingress to the node and to builder pods in any namespace', async () => {
+  it('makes a pod name the project repo it reads on the pod port', async () => {
+    answersAfterFirstPing()
+    await ensureMainRegistry()
+    const bootstrap = (appliedOfKind('ConfigMap') as unknown as { data: Record<string, string> })
+      .data['bootstrap.json']
+    const gate = runGate(bootstrap, 'real', 'pod')
+    const host = 'yaac-registry.yaac.svc.cluster.local:5002'
+    const projA = 'yaac-proj-3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
+    const projB = 'yaac-proj-0b6f1d2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e'
+    const cacheA = 'yaac-buildcache-3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
+    const grantA = basicOf(await registryAuthFile(host, [projA, cacheA], 600))
+    const admin = basicOf(await registryAuthFile(host, '*', 600))
+
+    const cases: Array<[string, string, string | undefined, string]> = [
+      // The trusted chain and the mirrors stay anonymous.
+      ['HEAD', '/v2/yaac-tools/manifests/t', undefined, 'pass'],
+      ['GET', '/v2/envoyproxy/envoy/blobs/sha256:00', undefined, 'pass'],
+      // A project repo needs a grant naming it, for manifests, blobs and tags.
+      ['GET', `/v2/${projA}/manifests/t`, undefined, '401'],
+      ['GET', `/v2/${projA}/manifests/t`, grantA, 'pass'],
+      ['GET', `/v2/${cacheA}/blobs/sha256:00`, grantA, 'pass'],
+      ['GET', `/v2/${projA}/tags/list`, grantA, 'pass'],
+      ['GET', `/v2/${projB}/manifests/t`, grantA, '403'],
+      ['HEAD', `/v2/${projB}/blobs/sha256:00`, grantA, '403'],
+      ['GET', `/v2/${projB}/manifests/t`, admin, 'pass'],
+      // The catalog, or any other read shape, would list every project.
+      ['GET', '/v2/_catalog', admin, '403'],
+      ['GET', `/v2/${projA}/referrers/sha256:00`, grantA, '403'],
+      // A mount reads its source, so another project's repo is refused.
+      ['POST', `/v2/${projA}/blobs/uploads/?mount=sha256:00&from=${projB}`, grantA, '403'],
+      ['POST', `/v2/${projA}/blobs/uploads/?mount=sha256:00&from=${encodeURIComponent(projB)}`, grantA, '403'],
+      ['POST', `/v2/${projA}/blobs/uploads/?mount=sha256:00&from=yaac-tools`, grantA, 'pass'],
+    ]
+    expect(cases.map(([method, path, auth]) => gate(method, path, auth)))
+      .toEqual(cases.map(([, , , want]) => want))
+  })
+
+  it('gives the node the node port, and builder and server pods in any namespace the pod port', async () => {
     answersAfterFirstPing()
     await ensureMainRegistry()
 
@@ -464,13 +505,15 @@ describe('ensureMainRegistry', () => {
     // containerd pulls, the kubelet probe and the server's port-forward
     // come from the node's network namespace, which only an ipBlock names.
     expect(rules[0].from).toEqual([{ ipBlock: { cidr: '10.89.0.7/32' } }])
+    expect(rules[0].ports).toEqual([{ protocol: 'TCP', port: 5000 }])
     // Builder pods live in per-run namespaces during e2e, so a bare
     // podSelector (this namespace only) would lock them out.
-    expect(rules[1].from).toEqual([{
-      namespaceSelector: {},
-      podSelector: { matchLabels: { 'yaac.role': ROLE_BUILDER } },
-    }])
-    for (const r of rules) expect(r.ports).toEqual([{ protocol: 'TCP', port: 5000 }])
+    expect(rules[1].from).toEqual([
+      { namespaceSelector: {}, podSelector: { matchLabels: { 'yaac.role': ROLE_BUILDER } } },
+      { namespaceSelector: {}, podSelector: { matchLabels: { app: 'yaac-server' } } },
+    ])
+    expect(rules[1].ports).toEqual([{ protocol: 'TCP', port: 5002 }])
+    expect(rules).toHaveLength(2)
   })
 
   it('annotates a rollout failure with the command that diagnoses it', async () => {

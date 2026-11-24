@@ -22,7 +22,7 @@ import {
 import { PRE_STOP_GRACE_SECONDS, TREE_FINAL_PASS_SECONDS, TREE_STARTUP_SECONDS, buildPodJobManifest } from './pod-job'
 import { treeMounts, treeImage } from './tree-mounts'
 import {
-  ensureBuilderImage,
+  ensureUtilityImage,
   proxyServiceClusterIp,
   runSecretsName,
   servingNpmCacheUrl,
@@ -200,9 +200,9 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
   const substrate = narrow(spec.substrate)
   const jobName = workspaceJobName(spec.workspaceId)
   // The contract makes `image` optional for runtimes that run none; here a
-  // missing one means `prepareImage` was skipped, a wiring bug.
+  // missing one means the create chose no image, a wiring bug.
   if (!spec.image) {
-    throw new Error(`launch ${jobName}: no image on the spec (prepareImage was skipped)`)
+    throw new Error(`launch ${jobName}: no image on the spec`)
   }
   const image = spec.image
 
@@ -316,7 +316,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
         },
       }
       : {}),
-    ...(volumeClaim ? { builderImage: await ensureBuilderImage() } : {}),
+    ...(volumeClaim ? { utilityImage: await ensureUtilityImage() } : {}),
     ...(spec.siteId !== undefined ? { priorityClassName: PRIORITY_CLASS_RELEASE } : {}),
     ...(nodeName !== undefined ? { nodeName } : {}),
   })

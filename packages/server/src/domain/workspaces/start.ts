@@ -21,7 +21,7 @@ import { getProjectRow, getWorkflow, listWorkspaceRepos, recordProjectCreate, st
 import { resolveStart, storedSelection, type StartRequest, type WorkspaceStart } from './checkouts'
 import { ServerError } from '@yaac/shared/errors'
 import { FULL_COMMIT_PATTERN, graphHasTask, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
-import type { AgentMode, AgentOptions, AgentTool, PermissionMode, RepoStart } from '@yaac/shared/types'
+import { STOCK_IMAGE_ID, type AgentMode, type AgentOptions, type AgentTool, type PermissionMode, type RepoStart } from '@yaac/shared/types'
 
 /** A request to start a workspace. */
 export interface StartWorkspaceRequest {
@@ -95,6 +95,10 @@ export interface StartWorkspaceRequest {
   image?: string
   stageVolumeId?: string
   colocateWith?: string
+  /** The image to launch, and whether to wait for its current revision
+   *  (`WorkspaceCreateOptions`). */
+  imageId?: string
+  awaitBuild?: boolean
   /** Remember the named settings as project defaults (user creates only). */
   rememberDefaults: boolean
   /** Try a prewarmed spare first. A spare has its own id, so callers that
@@ -291,7 +295,7 @@ async function prepareAuthorizedStart(
       // spare's mounts, fixed at launch, have no volume, and a spare starts
       // the project's init workflows with each repo at a branch.
       if (request.claimSpare && workspaceDriver().kind !== 'containerless' && volume === undefined
-        && workflow === undefined && !atCommit) {
+        && workflow === undefined && !atCommit && await spareImageFits(projectId, request)) {
         const claimed = await tryClaimPrewarmed(projectId, workspaceId, session, onProgress, {
           start,
           ...(title !== undefined ? { title } : {}),
@@ -318,6 +322,8 @@ async function prepareAuthorizedStart(
         ...(volume !== undefined ? { volumeId: volume.id } : {}),
         ...(request.siteId !== undefined ? { siteId: request.siteId } : {}),
         ...(request.image !== undefined ? { image: request.image } : {}),
+        ...(request.imageId !== undefined ? { imageId: request.imageId } : {}),
+        ...(request.awaitBuild === true ? { awaitBuild: true } : {}),
         ...(request.stageVolumeId !== undefined ? { stageVolumeId: request.stageVolumeId } : {}),
         ...(request.colocateWith !== undefined ? { colocateWith: request.colocateWith } : {}),
       })
@@ -333,6 +339,7 @@ async function prepareAuthorizedStart(
         ...(setup.model !== undefined ? { model: setup.model } : {}),
         ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
         agentOptions: setup.agentOptions,
+        ...(request.imageId !== undefined ? { imageId: request.imageId } : {}),
         ...selection,
         ...(title !== undefined ? { title } : {}),
         ...(groupId !== undefined ? { groupId } : {}),
@@ -451,4 +458,17 @@ export function checkStartSteps(
   }
   if (request.noSession !== true) throw new ServerError('VALIDATION', 'a non-interactive workspace starts no agent')
   return steps
+}
+
+/**
+ * Whether a spare may serve this create's image: spares are warmed on the
+ * project's last chosen image at its last built revision, so a create
+ * naming another image, or waiting for a newer build, starts cold.
+ */
+async function spareImageFits(projectId: string, request: StartWorkspaceRequest): Promise<boolean> {
+  if (request.awaitBuild === true || request.image !== undefined) return false
+  const project = await getProjectRow(projectId)
+  if (!project) return false
+  const wanted = request.imageId ?? project.defaultImageId ?? STOCK_IMAGE_ID
+  return wanted === (project.lastImageId ?? STOCK_IMAGE_ID)
 }

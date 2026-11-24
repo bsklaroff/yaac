@@ -130,7 +130,7 @@ async function main() {
     headers: { 'content-type': 'application/json', ...headersFor(ADA) },
     body: JSON.stringify({ project: projectId, tool: 'claude', prompt: 'Ada fixes the parser', title: 'Parser fix' }),
   })
-  const last = (await created.text()).trim().split('\n').map((l) => JSON.parse(l)).at(-1)
+  const last = (await created.text()).split('\n').filter((l) => l.trim() !== '').map((l) => JSON.parse(l)).at(-1)
   if (last?.type !== 'result') throw new Error(`create failed: ${JSON.stringify(last)}`)
   const workspaceId = last.result.workspaceId
   // Bob becomes a user on his first request.

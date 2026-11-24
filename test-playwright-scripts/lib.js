@@ -86,7 +86,7 @@ export async function createWorkspace(body) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
-  const last = (await res.text()).trim().split('\n').map((l) => JSON.parse(l)).at(-1)
+  const last = (await res.text()).split('\n').filter((l) => l.trim() !== '').map((l) => JSON.parse(l)).at(-1)
   if (last?.type !== 'result') throw new Error(`create failed: ${JSON.stringify(last)}`)
   return last.result.workspaceId
 }

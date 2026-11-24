@@ -37,6 +37,7 @@ import { authorizeProject, isProjectHeld, requireAdmin, requirePerson, type Acto
 import { remoteBranchExists } from '#domain/git'
 import { approveStart, missingRepos, projectRepo, resolveWorkflow } from '#domain/projects'
 import { fetchRepoOrigin } from '#domain/repos'
+import { resolveImageName } from '#domain/images'
 import { VOLUME_NEED } from '#domain/workspaces'
 import { isInfraPort } from '#lib/port-policy'
 import { env, testEnv } from '@yaac/shared/env'
@@ -247,6 +248,8 @@ export async function createSite(principal: Actor, projectId: string, input: {
   repos: RepoStart[]
   follow?: boolean
   deployTimeoutMinutes?: number
+  /** The image its deploys launch, by name; absent is the project default. */
+  image?: string
 }): Promise<void> {
   await authorizeProject(principal, projectId, 'delegate')
   const project = await getProjectRow(projectId)
@@ -268,6 +271,7 @@ export async function createSite(principal: Actor, projectId: string, input: {
     repos,
     follow,
     ...(input.deployTimeoutMinutes !== undefined ? { deployTimeoutMinutes: input.deployTimeoutMinutes } : {}),
+    ...(input.image !== undefined ? { imageId: await resolveImageName(projectId, input.image) } : {}),
   })
   if (follow) await approveStart(principal, siteSpec(site.id, await siteConfig(site)), repos)
 }
@@ -291,6 +295,8 @@ export async function editSite(principal: Actor, projectId: string, name: string
   repos?: RepoStart[]
   follow?: boolean
   deployTimeoutMinutes?: number
+  /** The image its deploys launch, by name; null is the project default. */
+  image?: string | null
 }): Promise<void> {
   if (input.follow === false && Object.entries(input).every(([k, v]) => k === 'follow' || v === undefined)) {
     await authorizeSiteEnd(principal, projectId, 'delegate')
@@ -320,6 +326,7 @@ export async function editSite(principal: Actor, projectId: string, name: string
     if (repos !== undefined) patch.repos = repos
     if (input.follow !== undefined) patch.follow = input.follow
     if (input.deployTimeoutMinutes !== undefined) patch.deployTimeoutMinutes = input.deployTimeoutMinutes
+    if (input.image !== undefined) patch.imageId = input.image === null ? null : await resolveImageName(projectId, input.image)
     const hasVolume = input.volume !== undefined ? input.volume !== null : row.volumeId !== undefined
     // The graph is checked against the volume and repos it will run with,
     // so dropping the volume, or a repo, that the graph needs is refused.
@@ -520,6 +527,7 @@ async function toSiteEntry(row: SiteRow): Promise<SiteEntry> {
     port: row.port,
     ...(row.adminPort !== undefined ? { adminPort: row.adminPort } : {}),
     deployTimeoutMinutes: row.deployTimeoutMinutes,
+    ...(row.imageId !== undefined ? { imageId: row.imageId } : {}),
     steps: workflow?.workflow.steps ?? {},
     ...(volume !== undefined ? { volume: volume.name } : {}),
     repos: row.repos.map((r) => ({

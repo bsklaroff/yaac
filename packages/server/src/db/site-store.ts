@@ -44,6 +44,7 @@ export async function insertSite(values: {
   repos: RepoStart[]
   follow: boolean
   deployTimeoutMinutes?: number
+  imageId?: string
 }): Promise<SiteRow> {
   const db = await getDb()
   const [row] = await db.insert(sites).values(values).onConflictDoNothing().returning()

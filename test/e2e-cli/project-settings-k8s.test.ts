@@ -1,11 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createYaacTestEnv, spawnYaacServer, runYaac, type RunYaacOptions, type YaacTestEnv } from '#support/cli'
 import type { SpawnedServer } from '@yaac/test-utils/api'
 import { createTestRepo } from '@yaac/test-utils/setup'
 import { addTestProject } from '#support/cluster'
-import { BUILT_IN_USER_ID } from '@yaac/server/db/user-store'
 import { startMockGit } from '#support/mock-remotes'
 import { describeRepoForks } from '#support/repo-fork-cases'
 
@@ -89,30 +87,18 @@ describe('yaac config: the settings of a cluster install (real CLI + real server
     expect((await config('npm-cache', 'demo-settings', 'on')).exitCode).toBe(0)
   })
 
-  it('config dockerfile and user-dockerfile print, replace from a file or stdin, and clear', async () => {
-    const file = path.join(testEnv.scratchDir, 'Dockerfile.yaac')
-    await fs.writeFile(file, 'RUN echo dockerfile-marker\n')
-    expect((await config('dockerfile', 'demo-settings')).stderr).toContain('demo-settings has no Dockerfile.yaac')
-    const set = await config('dockerfile', 'demo-settings', '--file', file)
-    expect(set.exitCode, set.stderr).toBe(0)
-    expect(set.stdout).toContain('Saved demo-settings\'s Dockerfile.yaac')
-    expect((await config('dockerfile', 'demo-settings')).stdout).toBe('RUN echo dockerfile-marker\n')
-    expect((await config('dockerfile', 'demo-settings', '--file', '-', { stdin: 'RUN echo from-stdin\n' })).exitCode).toBe(0)
-    expect((await config('dockerfile', 'demo-settings')).stdout).toBe('RUN echo from-stdin\n')
-    expect((await config('dockerfile', 'demo-settings', '--file', file, '--none')).stderr).toContain('Pass --file or --none, not both.')
-    expect((await config('dockerfile', 'demo-settings', '--none')).stdout).toContain('Cleared demo-settings\'s Dockerfile.yaac')
-    expect((await config('dockerfile', 'demo-settings')).stdout).toBe('')
+  it('config build-concurrency and image-cache-days print, set and return to the default', async () => {
+    expect((await config('build-concurrency')).stdout).toMatch(/^The server runs up to \d+ image builds at once\.\n$/)
+    expect((await config('build-concurrency', '3')).stdout).toContain('now runs up to 3 image builds at once.')
+    expect((await config('build-concurrency')).stdout).toContain('runs up to 3 image builds')
+    expect((await config('build-concurrency', 'many')).stderr).toContain('many is not a whole number of builds')
+    expect((await config('build-concurrency', '--none')).exitCode).toBe(0)
 
-    const layered = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN echo user-marker\n'
-    expect((await config('user-dockerfile')).stderr).toContain('You have no Dockerfile.user.')
-    const user = await config('user-dockerfile', '--file', '-', { stdin: layered })
-    expect(user.exitCode, user.stderr).toBe(0)
-    expect((await config('user-dockerfile')).stdout).toBe(layered)
-    // The caller is local, so the file is the built-in user's.
-    const target = path.join(testEnv.dataDir, 'server-local', 'users', BUILT_IN_USER_ID, 'build', 'Dockerfile.user')
-    expect(await fs.readFile(target, 'utf8')).toBe(layered)
-    expect((await config('user-dockerfile', '--file', file)).stderr).toMatch(/layered|BASE_IMAGE/)
-    expect((await config('user-dockerfile', '--none')).stdout).toContain('Cleared your Dockerfile.user.')
+    expect((await config('image-cache-days', 'demo-settings')).stdout)
+      .toContain('demo-settings\'s image builds reuse cached steps up to 28 days old (the default).')
+    expect((await config('image-cache-days', 'demo-settings', '7')).stdout).toContain('now reuse cached steps up to 7 days old.')
+    expect((await config('image-cache-days', 'demo-settings')).stdout).toContain('up to 7 days old.')
+    expect((await config('image-cache-days', 'demo-settings', '--none')).stdout).toContain('up to 28 days old (the default).')
   })
 
   // Last, so it sees what the cases above left set.
@@ -120,7 +106,8 @@ describe('yaac config: the settings of a cluster install (real CLI + real server
     const { stdout, exitCode, stderr } = await config('show', 'demo-settings')
     expect(exitCode, stderr).toBe(0)
     expect(stdout).toMatch(/\n {2}egress-allowlist +the defaults\n/)
-    expect(stdout).toMatch(/\n {2}npm-cache +on\n {2}dockerfile +none\n/)
+    expect(stdout).toMatch(/\n {2}npm-cache +on\n {2}image-cache-days +the default\n/)
+    expect(stdout).toContain('\n  default image  yaac (`yaac image default`)\n')
   })
 })
 

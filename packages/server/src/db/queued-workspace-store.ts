@@ -29,8 +29,8 @@ import type { AgentMode, AgentOptions, AgentTool, PermissionMode, RepoStart } fr
 export type QueuedParent = { parentWorkspaceId: string } | { parentQueuedId: string } | { startAt: Date } | null
 
 /** An entry's settings: what an insert takes and an update replaces. An
- *  absent title, group or effort is stored as null, absent agent options
- *  as none. */
+ *  absent title, group, effort or image is stored as null, absent agent
+ *  options as none. */
 export interface QueuedWorkspaceSettings {
   /** Absent for a non-interactive entry, which opens no session. */
   prompt?: string
@@ -40,6 +40,8 @@ export interface QueuedWorkspaceSettings {
   permissionMode: PermissionMode
   effort?: string
   agentOptions?: AgentOptions
+  /** An image id or `STOCK_IMAGE_ID`; absent is the project's default. */
+  imageId?: string
   /** What it starts with (`queued_workspaces.repos`). */
   repos: RepoStart[]
   nested: boolean
@@ -91,6 +93,7 @@ function settingsColumns(s: QueuedWorkspaceSettings): Omit<typeof queuedWorkspac
     groupId: s.groupId ?? null,
     effort: s.effort ?? null,
     agentOptions: s.agentOptions ?? {},
+    imageId: s.imageId ?? null,
     timeoutMinutes: s.timeoutMinutes ?? null,
   }
 }

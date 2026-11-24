@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react'
-import type { ProjectEnvVar, ProjectRunSecret, ProjectSummary } from '@yaac/shared/types'
+import { STOCK_IMAGE_ID, type ProjectEnvVar, type ProjectRunSecret, type ProjectSummary } from '@yaac/shared/types'
 
 // CodeMirror doesn't run under jsdom; each file editor gets a textarea.
 vi.mock('#components/CodeEditor', () => ({
@@ -13,7 +13,7 @@ import { ProjectSettings } from '#components/settings/ProjectSettings'
 import { SettingsButton, SettingsDialog } from '#components/SettingsButton'
 import { useUiStore, type ProjectPage } from '#lib/store'
 import {
-  mockFetch, projectRepo, renderWithClient, repoSummary, serverSnapshot, testQueryClient, TEST_USER_ID,
+  imageRevision, imageSummary, mockFetch, projectRepo, renderWithClient, repoSummary, serverSnapshot, testQueryClient, TEST_USER_ID,
   type FetchCall, type FetchMock,
 } from './harness'
 
@@ -77,7 +77,7 @@ describe('ProjectSettings', () => {
     expect(useUiStore.getState().settingsProjectId).toBe('id-beta')
   })
 
-  it('offers the project pages, Image only under k8s, and no workflows or sites', () => {
+  it('offers the project pages, Images only under k8s, and no workflows or sites', () => {
     openProjectSettings('containerless')
     const pages = (): string[] => within(screen.getByRole('group', { name: 'Project' })).getAllByRole('button').map((b) => b.textContent)
     expect(pages()).toEqual(['General', 'Environment', 'Network', 'Storage'])
@@ -90,7 +90,7 @@ describe('ProjectSettings', () => {
     cleanup()
 
     openProjectSettings('k8s')
-    expect(pages()).toEqual(['General', 'Environment', 'Network', 'Storage', 'Image'])
+    expect(pages()).toEqual(['General', 'Environment', 'Network', 'Storage', 'Images'])
   })
 
   it('adds a kept ignored path to the snapshot\'s list, and removes one', async () => {
@@ -171,8 +171,7 @@ describe('ProjectSettings', () => {
     const server = mockFetch({
       'GET /api/project/id-alpha/env': { vars: [] },
       'GET /api/project/id-alpha/allowlist': { allowlist: { hosts: [], defaults: true }, defaultHosts: [] },
-      'GET /api/project/id-alpha/dockerfile': { content: '' },
-      'GET /api/project/id-alpha/build-files': { files: [] },
+      'GET /api/image/project/id-alpha': [],
       'PUT /api/project/id-alpha/port-forwards': {},
       'PUT /api/project/id-alpha/cache-volumes': {},
       'PUT /api/project/id-alpha/npm-cache': {},
@@ -180,7 +179,7 @@ describe('ProjectSettings', () => {
     renderWithClient(<>
       <ProjectSettings page="network" />
       <ProjectSettings page="storage" />
-      <ProjectSettings page="image" />
+      <ProjectSettings page="images" />
     </>, testQueryClient(undefined, serverSnapshot({ driver: 'k8s', projects: [alpha] })))
     const bodies = (route: string): unknown[] => server.called(`PUT /api/project/id-alpha/${route}`).map((c) => c.body)
 
@@ -221,7 +220,7 @@ describe('ProjectSettings', () => {
     renderAlpha('storage')
     expect(screen.queryByText('Cache volumes')).toBeNull()
     cleanup()
-    renderAlpha('image')
+    renderAlpha('images')
     expect(screen.queryByRole('checkbox', { name: /npm cache/ })).toBeNull()
   })
 
@@ -469,15 +468,15 @@ describe('ProjectSettings', () => {
         { id: 'v1', name: 'PLAIN', secret: false, value: 'visible-elsewhere', hasValue: true },
         { id: 'v2', name: 'TOKEN', secret: true, hasValue: true, rule: { hosts: ['api.example.com'] } },
       ] },
-      'GET /api/project/id-hers/dockerfile': { content: 'FROM scratch\n' },
-      'GET /api/project/id-hers/build-files': { files: [{ path: 'init.lua', size: 3, binary: false }] },
-      'GET /api/project/id-hers/build-files/file': { path: 'init.lua', size: 3, binary: false, content: 'x=1' },
+      'GET /api/image/project/id-hers': [imageSummary({ id: STOCK_IMAGE_ID, name: 'yaac' }), imageSummary()],
+      'GET /api/image/img-1': { image: imageSummary(), revision: imageRevision({ files: { 'init.lua': { sha256: 'h1', size: 3 } } }) },
+      'GET /api/image/img-1/revisions/rev-1/file': { binary: false, content: 'x=1' },
     })
     renderWithClient(<>
       <ProjectSettings page="env" />
       <ProjectSettings page="network" />
       <ProjectSettings page="storage" />
-      <ProjectSettings page="image" />
+      <ProjectSettings page="images" />
     </>, testQueryClient(undefined, snapshot))
 
     await screen.findByText('PLAIN')
@@ -487,14 +486,18 @@ describe('ProjectSettings', () => {
     expect(screen.queryByPlaceholderText('NAME')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
 
-    // The Dockerfile and a build file read, with nothing to save or upload,
-    // and the launch settings shown but not editable.
+    // An image's Dockerfile and a support file read, with nothing to save,
+    // upload or manage, and the launch settings shown but not editable.
+    expect(screen.queryByRole('button', { name: 'New image' })).toBeNull()
+    expect(screen.getAllByRole('checkbox').every((c) => c.getAttribute('aria-disabled') === 'true')).toBe(true)
+    fireEvent.click(await screen.findByRole('button', { name: 'Open image node' }))
     await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(1))
+    expect(screen.queryByRole('button', { name: 'Set as project default' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Delete image' })).toBeNull()
     fireEvent.click(await screen.findByRole('button', { name: 'init.lua' }))
     await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(2))
     expect(screen.queryByRole('button', { name: 'Add forwarded port' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Add cache volume' })).toBeNull()
-    expect(screen.getAllByRole('checkbox').every((c) => c.getAttribute('aria-disabled') === 'true')).toBe(true)
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Upload files' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Rename init.lua' })).toBeNull()

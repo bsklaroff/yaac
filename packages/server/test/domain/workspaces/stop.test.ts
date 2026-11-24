@@ -34,7 +34,7 @@ import {
 import { clearQueuedLaunchesForTests } from '#domain/workspaces/queued-workspaces'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
 import { getQueuedWorkspaceRow } from '#db/queued-workspace-store'
-import { createWorkspaceGroup, getWorkspaceRow, insertSession, insertSite, updateSite, listWorkspaceRepos, listWorkspaceSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
+import { createWorkspaceGroup, getWorkspaceRow, insertImage, insertImageRevision, insertSession, insertSite, updateSite, listWorkspaceRepos, listWorkspaceSessions, setProjectKeptIgnoredPaths, setWorkspaceGroup, setWorkspaceGroupLimit } from '#db'
 import { recordWorkspaceCreated, recordWorkspaceLife } from '#db/workspace-store'
 import { closeDb, getDb } from '#db/client'
 import { workspaces } from '#db/schema'
@@ -42,7 +42,8 @@ import { eq } from 'drizzle-orm'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import { seedProject } from '@yaac/test-utils/project-fixture'
-import { WorkspaceExecError } from '#drivers/contract'
+import { WorkspaceExecError, type ImageBuildOutcome, type WorkspaceDriver } from '#drivers/contract'
+import type { ImageLayerName } from '@yaac/shared/types'
 import { BUILT_IN_USER_ID } from '#db'
 import { isWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { serverLog } from '#lib/log'
@@ -371,10 +372,12 @@ describe('stopWorkspace', () => {
   describe('a workspace still being created', () => {
     /** Start creating workspace `new` (or restarting `parent`) the way the
      *  routes do, with the driver's `assertCanLaunch`, `awaitReady` and `exec`
-     *  as given, recording what it tears down. */
+     *  as given, recording what it tears down. A create naming `imageId`
+     *  builds that image with `buildImageLayers`. */
     function startCreate(driver: {
       assertCanLaunch?: () => Promise<void>
-      prepareImage?: () => Promise<string>
+      imageId?: string
+      buildImageLayers?: WorkspaceDriver['buildImageLayers']
       awaitReady?: () => Promise<void>
       exec?: (cmd: string) => Promise<void>
     }, kind: 'create' | 'restart' = 'create'): {
@@ -388,7 +391,10 @@ describe('stopWorkspace', () => {
       installFakeWorkspaceDriver({
         deregisterWorkspace: (id) => { deregistered.push(id); return Promise.resolve() },
         ...(driver.assertCanLaunch !== undefined ? { assertCanLaunch: driver.assertCanLaunch } : {}),
-        ...(driver.prepareImage !== undefined ? { prepareImage: driver.prepareImage } : {}),
+        // An image needs building only when a case builds one.
+        ...(driver.buildImageLayers !== undefined
+          ? { missingImageLayers: () => Promise.resolve<ImageLayerName[]>(['project']), buildImageLayers: driver.buildImageLayers }
+          : {}),
         launch: (spec) => {
           launched.push(spec.workspaceId)
           return Promise.resolve(handleFixture({ workspaceId: id, projectId: PROJ, jobName: `yaac-proj-${id}` }))
@@ -419,6 +425,7 @@ describe('stopWorkspace', () => {
           rememberDefaults: false,
           claimSpare: false,
           draft: {},
+          ...(driver.imageId !== undefined ? { imageId: driver.imageId } : {}),
         })).then((run) => run())
       create.catch(() => { /* asserted by the test */ })
       return { create, destroyed, deregistered }
@@ -473,21 +480,25 @@ describe('stopWorkspace', () => {
       expect(await listDraftWorkspaces()).toEqual([expect.objectContaining({ prompt: 'build it' })])
     })
 
-    // Stopped during an image build that then fails: the build's error is
-    // the outcome, not a rollback, so no draft joins whatever it left.
+    // Stopped during the first build of the image it asked for, which then
+    // fails: the build's error is the outcome, not a rollback, so no draft
+    // joins whatever it left.
     it('keeps the failure, and makes no draft, when the create fails on its own', async () => {
-      let fail!: (err: Error) => void
+      const image = await insertImage({ projectId: PROJ }, 'web')
+      await insertImageRevision({ imageId: image.id, dockerfile: 'FROM ubuntu', files: {}, contentHash: 'h1', author: BUILT_IN_USER_ID })
+      let fail!: (outcome: ImageBuildOutcome) => void
       let building!: () => void
       const started = new Promise<void>((resolve) => { building = resolve })
       const { create } = startCreate({
-        prepareImage: () => new Promise((_, reject) => { fail = reject; building() }),
+        imageId: image.id,
+        buildImageLayers: () => new Promise((resolve) => { fail = resolve; building() }),
       })
       await started
 
       expect(await stopWorkspace(local, 'new')).toMatchObject({ provisioning: true })
-      fail(new Error('image build failed'))
+      fail({ ok: false, error: 'no space left on device', failedLayer: 'project', blockedHosts: [] })
 
-      await expect(create).rejects.toThrow('image build failed')
+      await expect(create).rejects.toThrow('the image build failed: no space left on device')
       expect(launched).toEqual([])
       expect(listProvisioning()).toEqual([])
       expect(await listDraftWorkspaces()).toEqual([])

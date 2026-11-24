@@ -169,6 +169,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
       noSession: z.boolean().optional(),
       // A volume of the project to mount, by name (docs/workspace-volumes.md).
       volume: z.string().min(1).optional(),
+      // Wait for the image's current revision to build rather than launch
+      // the last one built (docs/image-builds.md).
+      awaitBuild: z.boolean().optional(),
     })),
     async (c) => {
       const body = c.req.valid('json')
@@ -221,6 +224,8 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.timeout !== undefined ? { deadline: minutesFromNow(body.timeout) } : {}),
         ...(noSession ? { noSession: true } : {}),
         ...(body.volume !== undefined ? { volume: body.volume } : {}),
+        ...(body.imageId !== undefined ? { imageId: body.imageId } : {}),
+        ...(body.awaitBuild === true ? { awaitBuild: true } : {}),
         // A user request, so its settings become the project's defaults.
         rememberDefaults: true,
         // A delegate keeps the id it named; a spare has its own.
@@ -408,6 +413,8 @@ export const workspaceApp = new Hono<IdentityEnv>()
       group: queuedGroup,
       // Null clears it.
       timeout: timeoutMinutesSchema.nullable().optional(),
+      // Null launches the project's default image.
+      imageId: queuedSettings.imageId.nullable(),
     })),
     async (c) => {
       const { id, startAt, startIn, ...rest } = c.req.valid('json')

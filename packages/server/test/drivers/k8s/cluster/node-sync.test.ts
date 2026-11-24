@@ -10,6 +10,7 @@ import { reconcileNodeSet } from '#drivers/k8s/cluster'
 import { _nodeSyncSettledForTests, _resetNodeSyncForTests } from '#drivers/k8s/cluster/node-sync'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
+import { NETD_LISTENER_PORT_BASE } from '#drivers/k8s/substrate/proxy-constants'
 
 interface Applied {
   kind: string
@@ -68,11 +69,6 @@ function egressPeers(port: number, policy = 'yaac-proxy-egress'): string[] {
     .flatMap((r) => r.to ?? []).flatMap((t) => (t.ipBlock ? [t.ipBlock.cidr] : []))
 }
 
-/** What the builders' public IPv4 block cuts, in the last apply of their policy. */
-function builderExcepts(): string[] {
-  const np = applied().filter((m) => m.kind === 'NetworkPolicy' && m.metadata.name === 'yaac-builder-egress').pop()
-  return np?.spec?.egress?.[0].to?.[0].ipBlock?.except ?? []
-}
 
 /** (Re)seed the Node objects from `nodes`, replacing any removed one. */
 function seedNodes(): void {
@@ -166,14 +162,13 @@ describe('reconcileNodeSet', () => {
     expect(applied()).toEqual([])
 
     // An autoscaled node registers: the policies admit it straight away, but
-    // its writer pods wait until it is Ready. A builder that waited for it
-    // must not reach it through its public address, so the builders' policy
-    // cuts that too, though only InternalIPs are admitted.
+    // its writer pods wait until it is Ready. A builder scheduled there
+    // reaches netd's redirect on it as a workspace does.
     nodes['node-b'] = { ip: '10.0.2.9', externalIp: '5.75.1.9', uid: 'u-b', ready: false }
     await pass()
     expect(admittedNodes('yaac-registry-ingress')).toEqual(['10.0.1.5/32', '10.0.2.9/32'])
     expect(admittedNodes('yaac-server-ingress')).toEqual(['10.0.1.5/32', '10.0.2.9/32'])
-    expect(builderExcepts()).toEqual(expect.arrayContaining(['5.75.1.9/32', '10.0.2.9/32']))
+    expect(egressPeers(NETD_LISTENER_PORT_BASE, 'yaac-builder-egress')).toEqual(['10.0.1.5/32', '10.0.2.9/32'])
     expect(hostsWrites()).toEqual([])
 
     // Ready: only the new node gets a writer pod.

@@ -45,7 +45,7 @@ vi.mock('node:child_process', () => ({
     })
     process.nextTick(() => {
       const code = spawnExit.code(args)
-      if (args[0] === 'push' && code === 0) onPushed.fn(args)
+      if ((args[0] === 'push' || args.includes('buildctl')) && code === 0) onPushed.fn(args)
       child.emit('close', code)
     })
     return child
@@ -53,21 +53,24 @@ vi.mock('node:child_process', () => ({
 }))
 
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { getDataDir } from '@yaac/shared/paths'
 import { clientLocalPath } from '@yaac/shared/paths'
 import { buildBuiltinImages } from '#drivers/k8s/install'
 import {
-  BUILDER_MIRROR_TAG,
+  UTILITY_MIRROR_TAG,
   CLOUDFLARED_MIRROR_TAG,
   ENVOY_MIRROR_TAG,
   NGINX_MIRROR_TAG,
   TAILSCALE_MIRROR_TAG,
   VERDACCIO_MIRROR_TAG,
-  ensureBuilderImage,
+  ensureUtilityImage,
+  registryPodHost,
   registryRef,
+  resolveBuilderImageTag,
   resolveTrustedLayers,
+  stringHash,
 } from '#drivers/k8s/cluster'
 // Setup values and state-reset hooks, not units under test.
-import { TRUSTED_PARENT_COMPRESSION } from '#drivers/k8s/install/builtin-images'
 import { _clearTrackedPodmanProcsForTests } from '#drivers/k8s/install/host-procs'
 import { HOST_PRUNE_UNTIL } from '#drivers/k8s/install/image-gc'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/cluster/registry-grant'
@@ -79,12 +82,16 @@ const GRANT_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).pri
 const built = (): string[] =>
   spawned.filter((a) => a[0] === 'build').map((a) => a[a.indexOf('-t') + 1])
 
-/** Each pushed local tag, with the compression it was pushed with. */
-const pushes = (): Array<{ tag: string; compression?: string }> =>
-  spawned.filter((a) => a[0] === 'push').map((a) => {
-    const c = a.indexOf('--compression-format')
-    return { tag: a.at(-2)!, ...(c >= 0 ? { compression: a[c + 1] } : {}) }
-  })
+/** Each tag podman pushed. */
+const pushes = (): Array<{ tag: string }> =>
+  spawned.filter((a) => a[0] === 'push').map((a) => ({ tag: a.at(-2)! }))
+
+/** The registry ref a buildctl argv pushes to. */
+const outputOf = (args: string[]): string =>
+  /name=([^,]+)/.exec(args[args.indexOf('--output') + 1])![1]
+
+/** Each `buildctl build` the host buildkitd ran, in order. */
+const buildctlBuilds = (): string[][] => spawned.filter((a) => a.includes('buildctl'))
 
 const podmanCalls = (sub: string): string[][] =>
   mockExecFile.mock.calls.filter(([f, a]) => f === 'podman' && a[0] === sub).map(([, a]) => a)
@@ -111,10 +118,10 @@ function emptyEngine(file: string, args: string[]): Promise<ExecResult> {
 
 /** A registry holding every tag, with each pinned mirror's digest recorded
  *  as an earlier install left it. */
-function holdsEverything(): void {
+async function holdsEverything(): Promise<void> {
   fakeRegistry.holdsAll = true
   fakeRegistry.mirror(
-    ENVOY_MIRROR_TAG, BUILDER_MIRROR_TAG,
+    await resolveBuilderImageTag('yaac'), ENVOY_MIRROR_TAG, UTILITY_MIRROR_TAG,
     GVISOR_INSTALLER_MIRROR_TAG, VERDACCIO_MIRROR_TAG, NGINX_MIRROR_TAG, CLOUDFLARED_MIRROR_TAG, TAILSCALE_MIRROR_TAG,
   )
 }
@@ -132,7 +139,7 @@ beforeEach(async () => {
   fakeRegistry.install()
   // A push lands the tag as fresh bytes, and reports their digest when asked.
   onPushed.fn = (args) => {
-    const tag = args.at(-2)!
+    const tag = args[0] === 'push' ? args.at(-2)! : outputOf(args).slice(registryPodHost().length + 1)
     const digest = `sha256:${crypto.createHash('sha256').update(`${tag}#${spawned.length}`).digest('hex')}`
     fakeRegistry.push(tag, digest)
     const digestFile = args.indexOf('--digestfile')
@@ -155,17 +162,42 @@ afterEach(async () => {
 })
 
 describe('buildBuiltinImages', () => {
-  it('builds the whole trusted chain and pushes it under the tags a create looks up', async () => {
+  it('builds the trusted chain with a host buildkitd, under the tags a create looks up', async () => {
     await buildBuiltinImages({ log: vi.fn() })
 
-    // The tags a create looks up, derived from content alone.
+    // The builder image is built first, since the daemon runs it.
+    const builder = await resolveBuilderImageTag('yaac')
+    expect(built()[0]).toBe(builder)
+    const name = `yaac-buildkitd-${stringHash(getDataDir()).slice(0, 8)}`
+    const runs = podmanCalls('run')
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toEqual(expect.arrayContaining(['--name', name, '-v', `${name}:/var/lib/buildkit`, builder]))
+    // Removed before the run (an interrupted install's daemon) and after.
+    expect(podmanCalls('rm').map((a) => a.at(-1))).toEqual([name, name])
+    // Its cache is pruned to a few GB before it goes, so the volume does
+    // not keep every layer of the chain on the host.
+    const calls = mockExecFile.mock.calls.filter(([f]) => f === 'podman').map(([, a]) => a)
+    const prune = calls.findIndex((a) => a.includes('prune'))
+    expect(calls[prune]).toEqual(['exec', name, 'buildctl', 'prune', '--keep-storage', '3072'])
+    expect(calls.map((a) => a[0]).lastIndexOf('rm')).toBeGreaterThan(prune)
+
+    // The tags a create looks up, derived from content alone, built in
+    // dependency order (base is tools' FROM) and pushed as zstd images.
     const { base, tools } = await resolveTrustedLayers('yaac')
-    // In dependency order: base is tools' FROM.
-    expect(built().slice(0, 2)).toEqual([base.tag, tools.tag])
-    // Pushed with zstd, since builder pods pull these as parents.
-    for (const layer of [base, tools]) {
-      expect(pushes()).toContainEqual({ tag: layer.tag, compression: TRUSTED_PARENT_COMPRESSION })
+    const host = registryPodHost()
+    const builds = buildctlBuilds()
+    expect(builds.map(outputOf)).toEqual([`${host}/${base.tag}`, `${host}/${tools.tag}`])
+    for (const args of builds) {
+      expect(args[args.indexOf('--output') + 1]).toContain('compression=zstd')
+      expect(args).toEqual(expect.arrayContaining(['--opt', 'cmdline=dockerfile.v0']))
     }
+    expect(builds[1]).toContain(`build-arg:BASE_IMAGE=${host}/${base.tag}`)
+    // Each ends with the normalize step, written beside its context.
+    expect(spawned.filter((a) => a.at(-1)?.includes('cat > /dockerfile/Dockerfile'))).toHaveLength(2)
+
+    // The builder image goes to the registry, by the digest pods pull.
+    expect(pushes()).toContainEqual({ tag: builder })
+    expect(fakeCluster.get('ConfigMap', 'yaac-mirror-digests', 'yaac')).toBeDefined()
   })
 
   it('builds the proxy, netd and tailgate images, and mirrors every pinned upstream', async () => {
@@ -182,17 +214,17 @@ describe('buildBuiltinImages', () => {
     expect(pulls.some((r) => r.includes('podman/stable@sha256:'))).toBe(true)
     expect(pulls.some((r) => r.includes('curlimages/curl@sha256:'))).toBe(true)
     expect(pulls.some((r) => r.includes('tailscale/tailscale@sha256:'))).toBe(true)
-    expect(podmanCalls('tag').map((a) => a[2])).toContain(BUILDER_MIRROR_TAG)
-    expect(pushes().map((p) => p.tag)).toContain(BUILDER_MIRROR_TAG)
+    expect(podmanCalls('tag').map((a) => a[2])).toContain(UTILITY_MIRROR_TAG)
+    expect(pushes().map((p) => p.tag)).toContain(UTILITY_MIRROR_TAG)
     // Root pods run the builder by the digest the push landed as.
-    await expect(ensureBuilderImage()).resolves
-      .toBe(registryRef(`podman-stable@${fakeRegistry.digestOf(BUILDER_MIRROR_TAG)}`))
+    await expect(ensureUtilityImage()).resolves
+      .toBe(registryRef(`podman-stable@${fakeRegistry.digestOf(UTILITY_MIRROR_TAG)}`))
   })
 
   it('is a no-op when the registry already holds every tag', async () => {
     // With content-hash tags, re-running install with no changes costs
     // only registry lookups.
-    holdsEverything()
+    await holdsEverything()
 
     await buildBuiltinImages({ log: vi.fn() })
 
@@ -203,11 +235,11 @@ describe('buildBuiltinImages', () => {
 
   it('re-mirrors a pinned upstream whose tag no longer names its recorded digest', async () => {
     await buildBuiltinImages({ log: vi.fn() })
-    const pinned = await ensureBuilderImage()
+    const pinned = await ensureUtilityImage()
     // Other bytes pushed under the tag, by a leaked grant or the registry.
-    fakeRegistry.push(BUILDER_MIRROR_TAG, `sha256:${'f'.repeat(64)}`)
+    fakeRegistry.push(UTILITY_MIRROR_TAG, `sha256:${'f'.repeat(64)}`)
     // Root pods keep running what install recorded, never the new tag.
-    await expect(ensureBuilderImage()).resolves.toBe(pinned)
+    await expect(ensureUtilityImage()).resolves.toBe(pinned)
     spawned.length = 0
     mockExecFile.mockClear()
 
@@ -216,10 +248,10 @@ describe('buildBuiltinImages', () => {
     // Install puts the upstream back, and pods follow the digest podman
     // reported for that push.
     expect(podmanCalls('pull').map((a) => a[1])).toEqual([expect.stringContaining('podman/stable@sha256:')])
-    expect(pushes()).toEqual([{ tag: BUILDER_MIRROR_TAG }])
-    const repinned = await ensureBuilderImage()
+    expect(pushes()).toEqual([{ tag: UTILITY_MIRROR_TAG }])
+    const repinned = await ensureUtilityImage()
     expect(repinned).not.toBe(pinned)
-    expect(repinned).toBe(registryRef(`podman-stable@${fakeRegistry.digestOf(BUILDER_MIRROR_TAG)}`))
+    expect(repinned).toBe(registryRef(`podman-stable@${fakeRegistry.digestOf(UTILITY_MIRROR_TAG)}`))
   })
 
   it('fails the install, recording nothing, when another writer moves the tag mid-push', async () => {
@@ -276,8 +308,8 @@ describe('buildBuiltinImages', () => {
       '',
     ].join('\n')
 
-    beforeEach(() => {
-      holdsEverything()
+    beforeEach(async () => {
+      await holdsEverything()
       mockExecFile.mockImplementation((file, args) => {
         if (args[0] === 'image' && args[1] === 'ls') return Promise.resolve({ stdout: LS_OUTPUT, stderr: '' })
         if (args[1] === 'prune') {
@@ -295,7 +327,13 @@ describe('buildBuiltinImages', () => {
       // and wait for the next sweep. The registry-staged ref is within
       // budget, ubuntu is not a yaac repo, and yaac-test-* belongs to the
       // e2e suite, which may be using it on another rig.
+      // The trusted chain is no longer built in this store, so its tags are
+      // then retired whole (here the fake lists them again).
       expect(podmanCalls('rmi')).toEqual([
+        ['rmi', 'localhost/yaac-base:old1'],
+        ['rmi', 'localhost/yaac-base:old2'],
+        ['rmi', 'localhost/yaac-base:new1'],
+        ['rmi', 'localhost/yaac-base:new2'],
         ['rmi', 'localhost/yaac-base:old1'],
         ['rmi', 'localhost/yaac-base:old2'],
       ])
@@ -303,7 +341,7 @@ describe('buildBuiltinImages', () => {
         ['image', 'prune', '-f', '--filter', `until=${HOST_PRUNE_UNTIL}`],
       ])
       expect(log).toHaveBeenCalledWith(
-        'Reclaimed 2 stale image tag(s) and 2 dangling image(s) from the host build store.',
+        'Reclaimed 6 stale image tag(s) and 2 dangling image(s) from the host build store.',
       )
     })
 
@@ -362,7 +400,7 @@ describe('buildBuiltinImages', () => {
     it('skips records whose pid could signal a process group', async () => {
       // `process.kill(0)` signals our own process group and `process.kill(-n)`
       // all of group n, so these must be rejected before `ps` runs.
-      holdsEverything()
+      await holdsEverything()
       writeState([
         { pid: 0, tag: 'a:1', verb: 'build' },
         { pid: -4242, tag: 'b:2', verb: 'build' },
@@ -379,7 +417,7 @@ describe('buildBuiltinImages', () => {
     })
 
     it('leaves a reused pid alone when it is no longer our podman build', async () => {
-      holdsEverything()
+      await holdsEverything()
       writeState([
         { pid: 9001, tag: 'yaac-tools:abc', verb: 'build' },
         { pid: 9002, tag: 'yaac-base:def', verb: 'build' },
@@ -395,7 +433,7 @@ describe('buildBuiltinImages', () => {
     })
 
     it('escalates to SIGKILL when the orphan ignores SIGTERM, keeping the record until then', async () => {
-      holdsEverything()
+      await holdsEverything()
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       writeState([{ pid: 9001, tag: 'yaac-tools:abc', verb: 'build' }])
       psSees({ 9001: 'podman build -t yaac-tools:abc .' })
@@ -417,7 +455,7 @@ describe('buildBuiltinImages', () => {
     })
 
     it('does not SIGKILL a pid that stopped being ours during the grace period', async () => {
-      holdsEverything()
+      await holdsEverything()
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
       writeState([{ pid: 9001, tag: 'yaac-tools:abc', verb: 'build' }])
       psSees({ 9001: ['podman build -t yaac-tools:abc .', 'psql -h localhost'] })
@@ -432,7 +470,7 @@ describe('buildBuiltinImages', () => {
     })
 
     it('starts no state file when there was none, and clears a torn one', async () => {
-      holdsEverything()
+      await holdsEverything()
       const kill = spyKill()
       await buildBuiltinImages({ log: vi.fn() })
       expect(fs.existsSync(statePath())).toBe(false)

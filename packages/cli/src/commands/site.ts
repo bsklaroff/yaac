@@ -30,6 +30,9 @@ export interface SiteOptions {
   workflow?: string
   /** A volume name; false (`--no-volume`) for none. */
   volume?: string | false
+  /** An image of the project, by name; false (`--no-image`) for the
+   *  project's default. */
+  image?: string | false
   /** Deploy whenever a branch in its repos moves (`--follow`), or not
    *  (`--no-follow`). */
   follow?: boolean
@@ -78,6 +81,7 @@ export async function siteCreate(
     ...(typeof opts.adminPort === 'string' ? { adminPort: portOption('--admin-port', opts.adminPort) } : {}),
     workflow: opts.workflow,
     ...(typeof opts.volume === 'string' ? { volume: opts.volume } : {}),
+    ...(typeof opts.image === 'string' ? { image: opts.image } : {}),
     repos,
     ...(opts.follow === true ? { follow: true } : {}),
     ...deployTimeoutOf(opts),
@@ -144,6 +148,7 @@ export async function siteEdit(project: string, name: string, opts: SiteOptions)
       : {}),
     ...(opts.workflow !== undefined ? { workflow: opts.workflow } : {}),
     ...(opts.volume !== undefined ? { volume: opts.volume === false ? null : opts.volume } : {}),
+    ...(opts.image !== undefined ? { image: opts.image === false ? null : opts.image } : {}),
     ...(repos.length > 0 ? { repos } : {}),
     ...(opts.follow !== undefined ? { follow: opts.follow } : {}),
     ...deployTimeoutOf(opts),
@@ -174,7 +179,11 @@ export async function siteList(project: string): Promise<void> {
 }
 
 export async function siteShow(project: string, name: string): Promise<void> {
-  const site = await api.site.show.$get({ query: { project: await resolveProjectId(project), name } })
+  const projectId = await resolveProjectId(project)
+  const site = await api.site.show.$get({ query: { project: projectId, name } })
+  const image = site.imageId !== undefined
+    ? (await api.image.project[':projectId'].$get({ param: { projectId } })).find((i) => i.id === site.imageId)?.name ?? site.imageId
+    : '- (the project\'s default)'
   console.log(site.hostname !== undefined
     ? `Site "${site.name}": https://${site.hostname} -> port ${site.port}`
     : `Site "${site.name}": unpublished, port ${site.port}`)
@@ -183,6 +192,7 @@ export async function siteShow(project: string, name: string): Promise<void> {
   console.log(`  admin port   ${site.adminPort ?? '-'}`)
   console.log(`  workflow     ${site.workflow} (${Object.keys(site.steps).join(', ')})`)
   console.log(`  volume       ${site.volume ?? '-'}`)
+  console.log(`  image        ${image}`)
   console.log(`  repos        ${site.repos.map((r) => `${r.dir}@${r.branch ?? r.commit ?? '?'}`).join(' ')}`)
   console.log(`  timeout      ${formatDuration(site.deployTimeoutMinutes)} per deploy`)
   console.log(`  follow       ${site.follow ? 'yes' : 'no'}${site.followPaused !== undefined ? ` (paused: ${site.followPaused})` : ''}`)

@@ -8,7 +8,7 @@
 # lack pnpm.
 #
 # Built by `yaac cluster install` on the CLI's machine, never in-cluster
-# (docs/trust-split-builds.md), and tagged by the context's content hash.
+# (docs/image-builds.md), and tagged by the context's content hash.
 # Every download is pinned to a digest or SHA-256, so a release asset
 # replaced upstream fails the build instead of entering the image.
 FROM docker.io/ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944

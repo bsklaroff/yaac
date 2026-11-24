@@ -62,7 +62,7 @@ export async function reconcileNodeSet(): Promise<void> {
       buildWorkspaceEgressNpManifest(nodeCidrs),
       buildProxyIngressNpManifest(nodeCidrs),
       buildProxyEgressNpManifest(nodeAddrs, dnsCidrs, apiserver),
-      buildBuilderEgressNpManifest(nodeAddrs, dnsCidrs),
+      buildBuilderEgressNpManifest(nodeCidrs),
       ...(serverEgress ? [serverEgress] : []),
     ]) await applyObject(manifest)
     await syncNpmCacheNodes(nodeCidrs)

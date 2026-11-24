@@ -60,6 +60,8 @@ export const siteApp = new Hono<IdentityEnv>()
       repos: z.array(repoStartSchema).min(1),
       follow: z.boolean().optional(),
       deployTimeoutMinutes: deployTimeoutMinutesSchema.optional(),
+      // The image its deploys launch, by name (`yaac` is the stock image).
+      image: z.string().min(1).optional(),
     })),
     async (c) => {
       const { project, ...input } = c.req.valid('json')
@@ -78,6 +80,8 @@ export const siteApp = new Hono<IdentityEnv>()
       repos: z.array(repoStartSchema).min(1).optional(),
       follow: z.boolean().optional(),
       deployTimeoutMinutes: deployTimeoutMinutesSchema.optional(),
+      // Null returns it to the project's default image.
+      image: z.string().min(1).nullable().optional(),
     })),
     async (c) => {
       const { project, name, ...input } = c.req.valid('json')

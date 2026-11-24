@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 import { globalRoot } from '@yaac/shared/paths'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
-import { BUILDER_MIRROR_TAG } from '#drivers/k8s/cluster/builder-image'
+import { UTILITY_MIRROR_TAG } from '#drivers/k8s/cluster/utility-image'
 import { fakeRegistry } from './fake-registry'
 
 /**
@@ -32,7 +32,7 @@ afterEach(() => { vi.unstubAllEnvs() })
 export function podsRunAsRoot(...phases: Array<'Succeeded' | 'Failed'>): void {
   // The pods run the mirrored builder image.
   fakeRegistry.install()
-  fakeRegistry.mirror(BUILDER_MIRROR_TAG)
+  fakeRegistry.mirror(UTILITY_MIRROR_TAG)
   fakeCluster.intercept((c) => {
     if (c.verb !== 'apply' || c.kind !== 'Pod') return
     const phase = phases.length > 1 ? phases.shift() : phases[0]

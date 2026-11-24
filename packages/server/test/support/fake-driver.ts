@@ -158,10 +158,6 @@ function defaultRuntime(): WorkspaceDriver {
     nodeDisks: () => Promise.resolve([]),
     salvageTree: () => Promise.resolve('saved'),
     importTree: () => Promise.resolve(),
-    listImageBuilds: () => [],
-    imageBuildLog: () => undefined,
-    dismissImageBuild: () => false,
-    retryImageBuild: () => false,
     exec: () => Promise.resolve({ stdout: '', stderr: '' }),
     awaitAgentTransport: () => Promise.resolve(),
     // Enough for a mediator that only passes the stream along.
@@ -171,8 +167,24 @@ function defaultRuntime(): WorkspaceDriver {
     claimSpare: () => Promise.resolve({ unmarked: Promise.resolve() }),
     assertCanLaunch: () => Promise.resolve(),
     ensureRuntimeReachable: () => Promise.resolve(),
-    prepareImage: () => Promise.resolve('registry.test/fake-image:latest'),
-    currentImage: () => Promise.resolve('registry.test/fake-image:latest'),
+    // A chain of the stock image plus each source, tagged by content; all
+    // present, so a create launches at once.
+    resolveImageChain: (spec) => {
+      // Each tag folds in its parent's, as real ones do, so a user layer
+      // over two different project images has two tags.
+      let parent = 't'
+      const tags = ['fake-tools:t', ...spec.layers.map((l) => {
+        parent = `${parent}.${l.contentHash}`
+        return `fake-${l.layer}-${spec.projectId}:${parent}`
+      })]
+      return Promise.resolve({
+        layers: tags.map((tag, i) => ({ name: i === 0 ? 'tools' : spec.layers[i - 1].layer, tag })),
+        finalTag: tags.at(-1)!,
+      })
+    },
+    missingImageLayers: () => Promise.resolve([]),
+    buildImageLayers: () => Promise.resolve({ ok: true, blockedHosts: [] }),
+    imageRef: (tag) => `registry.test/${tag}`,
     prepareSubstrate: () => Promise.resolve(substrateFixture()),
     syncCredentials: () => Promise.resolve(),
     syncProjectSecrets: () => Promise.resolve(),

@@ -1,6 +1,6 @@
 # Repos as build sources
 
-A follow-up to docs/plans/buildkit-image-builds.md, which it assumes has
+A follow-up to docs/image-builds.md, which it assumes has
 shipped: BuildKit builders, named images with revisions, one cache ref per
 image. This is an outline. It names the shape and the questions, not the
 design.
@@ -48,7 +48,7 @@ that quiet, to be chosen between:
   action, for projects that want to choose the moment.
 
 Creates already take the last built image
-(docs/plans/buildkit-image-builds.md "Revision behavior"), so however often
+(docs/image-builds.md "Behavior"), so however often
 a followed image rebuilds, nothing waits on it.
 
 ## Trust

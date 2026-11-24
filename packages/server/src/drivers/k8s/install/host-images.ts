@@ -11,7 +11,7 @@ import { usesRootfulPodman } from './podman'
  * The host image store: what `yaac cluster install` (and the e2e global
  * setup) builds with podman and pushes to the main registry. The server
  * never builds here; it resolves images from the in-cluster registry
- * (docs/trust-split-builds.md).
+ * (docs/image-builds.md).
  */
 
 /** Whether an image exists in the local podman store. */
@@ -79,7 +79,7 @@ const PODMAN_VM_HOST_ALIAS = 'host.containers.internal'
  * port-forward) on Linux, the gvproxy host alias with the same port under
  * podman machine, whose engine runs in a VM.
  */
-async function podmanRegistryEndpoint(): Promise<string> {
+export async function podmanRegistryEndpoint(): Promise<string> {
   const endpoint = await registryEndpoint()
   if (usesRootfulPodman()) return endpoint
   return `${PODMAN_VM_HOST_ALIAS}:${endpoint.slice(endpoint.lastIndexOf(':') + 1)}`
@@ -91,17 +91,11 @@ async function podmanRegistryEndpoint(): Promise<string> {
  *
  * Only trusted writers call this (install, e2e setup, `cluster check`), so
  * it uses a one-hour admin grant in a private temp authfile.
- *
- * `zstd` compression speeds up builder pods' parent pulls
- * (docs/trust-split-builds.md); node containerd handles it too.
  */
-export async function pushImageToRegistry(
-  localTag: string,
-  opts: { compressionFormat?: 'zstd' } = {},
-): Promise<string> {
+export async function pushImageToRegistry(localTag: string): Promise<string> {
   const ref = registryRef(localTag)
   if (await registryTagState(localTag) === 'present') return ref
-  await podmanPush(localTag, opts.compressionFormat ? ['--compression-format', opts.compressionFormat] : [])
+  await podmanPush(localTag, [])
   return ref
 }
 

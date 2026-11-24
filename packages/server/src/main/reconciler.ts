@@ -6,6 +6,7 @@ import type {
   RuntimeSnapshot,
 } from '#drivers/contract'
 import { defaultReconcileSteps } from '#main/reconcile-steps'
+import { keptImageTags } from '#domain/images'
 import { listProjectRows, listSites } from '#db'
 import { isWorkspaceTerminating } from '#runtime/status'
 import { onConvergenceChange, type ChangeSource } from '#main/convergence'
@@ -91,13 +92,9 @@ export async function startReconciler(deps: ReconcilerDeps): Promise<void> {
         // rejects rather than returning empty, because the orphan
         // collectors would treat an empty list as "collect everything".
         projectIds: () => rows().then((all) => all.map((r) => r.id)),
-        projectOwner: async (projectId) => {
-          const row = (await rows()).find((r) => r.id === projectId)
-          if (!row) throw new Error(`project ${projectId} no longer exists`)
-          return row.owner
-        },
         pinnedImages: async () => (await listSites())
           .flatMap((r) => [r.releaseImage, r.deployImage].filter((i): i is string => i !== undefined)),
+        keptImageTags: () => keptImageTags(),
         // Not memoized: a stop that lands mid-pass must be seen at once.
         terminating: (workspaceId) => isWorkspaceTerminating(workspaceId),
       }

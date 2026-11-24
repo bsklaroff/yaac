@@ -35,7 +35,7 @@ import {
   k8sNamespace,
   runPodToCompletion,
 } from '#drivers/k8s/substrate'
-import { ensureBuilderImage } from '#drivers/k8s/cluster'
+import { ensureUtilityImage } from '#drivers/k8s/cluster'
 import { isEntryName } from '#lib/confined-fs'
 import { globalRoot, volumesRoot } from '@yaac/shared/paths'
 
@@ -125,7 +125,7 @@ export async function removeAsRoot(dir: string, names: string[]): Promise<boolea
     app: 'yaac-root-remove',
     prefix: 'yaac-root-rm',
     container: 'rm',
-    image: await ensureBuilderImage(),
+    image: await ensureUtilityImage(),
     mountPath: TARGET_POD_PATH,
     command: ['sh', '-c', ROOT_REMOVE_SCRIPT, '--', ...names],
     timeoutMs: ROOT_REMOVE_TIMEOUT_MS,
@@ -146,7 +146,7 @@ export async function removeVolumeDirAsRoot(volumeId: string): Promise<void> {
     app: 'yaac-root-remove',
     prefix: 'yaac-root-rm',
     container: 'rm',
-    image: await ensureBuilderImage(),
+    image: await ensureUtilityImage(),
     mountPath: TARGET_POD_PATH,
     command: ['sh', '-c', `cd ${TARGET_POD_PATH} && find . -mindepth 1 -delete`],
     timeoutMs: ROOT_REMOVE_TIMEOUT_MS,

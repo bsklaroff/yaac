@@ -26,7 +26,7 @@ import {
   runOnEachNode,
   workspacePodSelector,
 } from '#drivers/k8s/substrate'
-import { ensureBuilderImage } from '#drivers/k8s/cluster'
+import { ensureUtilityImage } from '#drivers/k8s/cluster'
 import { serverLog } from '#lib/log'
 import type { NodeLocalLiveSet } from '#drivers/contract'
 
@@ -143,12 +143,12 @@ async function mountedNames(): Promise<{ projects: Set<string>; stores: Set<stri
 export async function reapNodeLocal(live: NodeLocalLiveSet): Promise<void> {
   const now = Date.now()
   try {
-    const imageRef = await ensureBuilderImage()
+    const imageRef = await ensureUtilityImage()
     const cutoffEpoch = Math.floor((now - NODE_LOCAL_SWEEP_SLACK_MS) / 1000)
     const mounted = await mountedNames()
     const kept = new Set([...live.projectIds, ...mounted.projects])
     // Root, with the install's node directory mounted read-write. The
-    // builder image, because busybox lacks `find -newermt`.
+    // utility image, because busybox lacks `find -newermt`.
     const runs = await runOnEachNode({
       name: 'yaac-node-sweep',
       labels: sweepLabels(),

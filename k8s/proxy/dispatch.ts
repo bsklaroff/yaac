@@ -31,6 +31,8 @@ import { MAMA_MAGIC_HOST, MAMA_PATH } from './yaac-relay'
 export interface DispatchContext extends MitmContext {
   liveTunnels: LiveTunnels
   recordBlockedHost: (workspaceId: string, hostname: string) => void
+  /** Whether an id is an image build's (pod-watch.ts `isBuild`). */
+  isBuild: (id: string) => boolean
   /** Every IPv4 address of a name (dns.lookup); stubbed by tests. */
   lookup: (hostname: string) => Promise<LookupAddress[]>
   /** The proxy's private ssh host key (ssh-session.ts). */
@@ -157,7 +159,12 @@ export async function dispatchToUpstream(
   // Tracked before the lookup, so a registration change meanwhile drops it.
   ctx.liveTunnels.add(workspaceId, clientSocket, hostname, admitted)
 
-  if (isSiteHost(ctx.sites.domain, hostname)) {
+  // A build gets the project's allowlist and nothing more: every host is a
+  // plain tunnel, so no credential is injected and nothing needs the proxy
+  // CA inside its RUN steps (docs/image-builds.md "Build egress").
+  const build = ctx.isBuild(workspaceId)
+
+  if (!build && isSiteHost(ctx.sites.domain, hostname)) {
     if (opts.writeConnectOk) clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
     if (opts.head && opts.head.length > 0) clientSocket.unshift(opts.head)
     const identity = ctx.objects.registration(workspaceId)?.identity ?? null
@@ -167,7 +174,7 @@ export async function dispatchToUpstream(
   }
 
   const destPort = parseInt(port ?? '', 10) || 443
-  const redirect = ctx.objects.registration(workspaceId)?.upstreamRedirects?.[hostname] ?? null
+  const redirect = build ? null : ctx.objects.registration(workspaceId)?.upstreamRedirects?.[hostname] ?? null
   let direct: DirectUpstream | null = null
   if (redirect === null) {
     try {
@@ -181,7 +188,7 @@ export async function dispatchToUpstream(
     if (clientSocket.destroyed) return
   }
 
-  if (destPort === SSH_PORT && hasSshGrantOnHost(ctx.objects, workspaceId, hostname)) {
+  if (!build && destPort === SSH_PORT && hasSshGrantOnHost(ctx.objects, workspaceId, hostname)) {
     if (opts.writeConnectOk) clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
     if (opts.head && opts.head.length > 0) clientSocket.unshift(opts.head)
     serveSshSession({
@@ -194,8 +201,8 @@ export async function dispatchToUpstream(
     return
   }
 
-  const rules = findRulesForHost(ctx.objects, workspaceId, hostname)
-  const needsDynMitm = hostNeedsDynamicMitm(ctx.objects, workspaceId, hostname, destPort)
+  const rules = build ? [] : findRulesForHost(ctx.objects, workspaceId, hostname)
+  const needsDynMitm = !build && hostNeedsDynamicMitm(ctx.objects, workspaceId, hostname, destPort)
 
   const mitm = rules.length > 0 || needsDynMitm || redirect !== null
   if (mitm && opts.writeConnectOk) {

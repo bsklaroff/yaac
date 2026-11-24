@@ -37,7 +37,7 @@ describe('workspaceCreate', () => {
       ['--timeout', { timeout: '1h' }], ['--start-at', { startAt: '10:00' }], ['--start-in', { startIn: '5m' }],
       ['--volume', { volume: 'v' }], ['--commit', { commit: 'a'.repeat(40) }], ['--steps', { steps: 'steps.json' }],
       ['--no-steps', { steps: false }], ['--workflow', { workflow: 'ci' }], ['--non-interactive', { nonInteractive: true }],
-      ['--wait', { wait: true }],
+      ['--wait', { wait: true }], ['--use-image', { useImage: 'tiny' }], ['--await-build', { awaitBuild: true }],
     ]
     for (const [flag, options] of workspaceSettings) {
       await refused(undefined, { workspace: 'abc123', ...options },
@@ -71,6 +71,15 @@ describe('workspaceCreate', () => {
       '--wait waits for a workspace started now; a scheduled one starts later.')
     await refused('p', { prompt: 'x', startAt: '10:00', startIn: '5m' }, 'Give --start-at or --start-in, not both.')
     await refused('p', { prompt: 'x', startIn: '30s' }, 'whole minutes')
+
+    // A scheduled create launches whatever image is built when it starts,
+    // so it has no build to wait for.
+    for (const [, options] of scheduling) {
+      for (const image of [{}, { useImage: 'tiny' }]) {
+        await refused('p', { prompt: 'x', awaitBuild: true, ...image, ...options },
+          '--await-build waits for a create now; a scheduled one launches the image built when it starts.')
+      }
+    }
 
     expect(api.requests).toEqual([])
   })

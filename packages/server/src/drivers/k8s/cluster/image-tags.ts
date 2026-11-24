@@ -3,9 +3,10 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
-import { PROJECT_DOCKERFILE, USER_DOCKERFILE, projectBuildDir, userBuildDir } from '#lib/build-dirs'
 import { collectContextFiles, isLayered, parseContainerIgnore } from '#lib/build-context'
+import type { ImageChainSpec } from '#drivers/contract'
 import type { ImageLayerName } from '@yaac/shared/types'
+import { NORMALIZE_STEP } from './normalize-step'
 
 /**
  * Content-hash image tags: every workspace image chain (the yaac-shipped
@@ -31,15 +32,17 @@ export async function fileHash(filePath: string): Promise<string> {
 
 /**
  * Content hash of the base image layer: its Dockerfile plus the in-pod
- * daemons it COPYs (dockerfiles/streamd/ and dockerfiles/acpd/). Shared
- * with the test global setup so both derive identical tags. No uid goes
+ * daemons it COPYs (dockerfiles/streamd/ and dockerfiles/acpd/), and the
+ * normalize step every build appends (which the tools tag inherits through
+ * this one). Shared with the test global setup so both derive identical
+ * tags. No uid goes
  * in, since the images work under any uid (docs/arbitrary-uid-images.md).
  */
 export async function baseImageHash(dockerfilePath: string): Promise<string> {
   const streamdHash = await contextHash(path.join(DOCKERFILES_DIR, 'streamd'))
   const acpdHash = await contextHash(path.join(DOCKERFILES_DIR, 'acpd'))
   return stringHash(
-    `${await fileHash(dockerfilePath)}:streamd=${streamdHash}:acpd=${acpdHash}`,
+    `${await fileHash(dockerfilePath)}:streamd=${streamdHash}:acpd=${acpdHash}:normalize=${stringHash(NORMALIZE_STEP)}`,
   )
 }
 
@@ -75,11 +78,14 @@ export interface ImageLayer {
   tag: string
   /** Which chain step this is — the dependency the tag realizes. */
   name: ImageLayerName
+  /** A yaac-shipped layer's Dockerfile path; an untrusted layer's text. */
   dockerfile: string
   context: string
   buildArgs?: Record<string, string>
   /** Hash of this layer's content, folded into downstream layers' hashes. */
   contentHash: string
+  /** An untrusted layer's build cache key (`ImageLayerSource.cacheKey`). */
+  cacheKey?: string
 }
 
 /** The yaac-shipped layers, in dependency order. */
@@ -91,7 +97,7 @@ interface TrustedLayers {
 /**
  * The two layers yaac ships: the Ubuntu+Node base and the agent CLIs.
  * `yaac cluster install` builds these
- * (docs/trust-split-builds.md), never the server. Both the install and
+ * (docs/image-builds.md), never the server. Both the install and
  * `resolveImageChain` take their tags from here, so they always agree.
  */
 export async function resolveTrustedLayers(prefix = imagePrefix()): Promise<TrustedLayers> {
@@ -119,102 +125,55 @@ export async function resolveTrustedLayers(prefix = imagePrefix()): Promise<Trus
   return { base, tools }
 }
 
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath)
-    return true
-  } catch {
-    return false
-  }
-}
-
 /**
- * Resolve a project's ordered image layer chain without building anything.
+ * An image chain's layers, from the sources `#domain/images` resolved
+ * (docs/image-builds.md "Images, revisions and builds"), without building or asking the registry.
  *
- * The chain is base and tools, then the project's Dockerfile.yaac and its
- * owner's Dockerfile.user if present. A standalone (non-layered)
- * Dockerfile.yaac replaces base and tools, and owns its own uid setup
- * (docs/arbitrary-uid-images.md). Each layer's build dir is its whole
- * context, so support files count toward its hash.
+ * The chain is base and tools, then the project layer and its owner's user
+ * layer when present. A standalone (non-layered) project layer replaces
+ * base and tools, and owns its own uid setup (docs/arbitrary-uid-images.md).
+ * Every untrusted layer's tag folds in the normalize step the builder
+ * appends.
  *
  * Project and user layers live in repos named by project id
  * (`<prefix>-proj-<id>`, `<prefix>-user-<id>`): a repo is what a registry
  * grant can scope, and ids are never reused, so a project added again
  * never picks up the old project's tags.
  */
-export async function resolveImageChain(
-  projectId: string,
-  owner: string,
-): Promise<{ layers: ImageLayer[]; finalTag: string }> {
+export async function resolveImageChain(spec: ImageChainSpec): Promise<{ layers: ImageLayer[]; finalTag: string }> {
   const prefix = imagePrefix()
+  const project = spec.layers.find((l) => l.layer === 'project')
+  const user = spec.layers.find((l) => l.layer === 'user')
+  if (user && !isLayered(user.dockerfile)) {
+    throw new Error(
+      'Dockerfile.user must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` '
+      + 'so the parent image is injected via --build-arg. '
+      + 'Example:\n  ARG BASE_IMAGE\n  FROM ${BASE_IMAGE}',
+    )
+  }
+  const normalize = stringHash(NORMALIZE_STEP)
   const layers: ImageLayer[] = []
-
-  const projectBuild = projectBuildDir(projectId)
-  const localDockerfile = path.join(projectBuild, PROJECT_DOCKERFILE)
-  let yaacDockerfile: string | null = null
-  let yaacContent: string | null = null
-
-  if (await fileExists(localDockerfile)) {
-    yaacDockerfile = localDockerfile
-    yaacContent = await fs.readFile(localDockerfile, 'utf8')
+  let parent: { tag: string; hash: string } | null = null
+  if (!project || isLayered(project.dockerfile)) {
+    const { base, tools } = await resolveTrustedLayers(prefix)
+    layers.push(base, tools)
+    parent = { tag: tools.tag, hash: tools.contentHash }
   }
-
-  const yaacIsLayered = yaacContent ? isLayered(yaacContent) : false
-
-  const useDefaultBase = !yaacDockerfile || yaacIsLayered
-  const trusted = useDefaultBase ? await resolveTrustedLayers(prefix) : null
-
-  if (trusted) layers.push(trusted.base, trusted.tools)
-  const parentTag = trusted?.tools.tag
-  const parentHash = trusted?.tools.contentHash
-  const projectContextHash = yaacDockerfile ? await contextHash(projectBuild) : null
-  const baseHash = yaacIsLayered
-    ? stringHash(`${parentHash!}:${projectContextHash!}`)
-    : yaacDockerfile
-      ? stringHash(projectContextHash!)
-      : parentHash!
-  const baseTag = yaacDockerfile
-    ? `${prefix}-proj-${projectId}:${baseHash}`
-    : parentTag!
-
-  if (yaacDockerfile) {
+  for (const source of [project, user]) {
+    if (!source) continue
+    const hash = stringHash(`${parent ? `${parent.hash}:` : ''}${source.contentHash}:${normalize}`)
+    const repo = source.layer === 'project' ? 'proj' : 'user'
+    const tag = `${prefix}-${repo}-${spec.projectId}:${hash}`
     layers.push({
-      tag: baseTag,
-      name: 'project',
-      dockerfile: yaacDockerfile,
-      context: projectBuild,
-      ...(yaacIsLayered ? { buildArgs: { BASE_IMAGE: parentTag! } } : {}),
-      contentHash: baseHash,
+      tag,
+      name: source.layer,
+      dockerfile: source.dockerfile,
+      context: source.contextDir,
+      ...(parent ? { buildArgs: { BASE_IMAGE: parent.tag } } : {}),
+      contentHash: hash,
+      cacheKey: source.cacheKey,
     })
+    parent = { tag, hash }
   }
-
-  let effectiveTag = baseTag
-  const effectiveHash = baseHash
-
-  const userBuild = userBuildDir(owner)
-  const userDockerfile = path.join(userBuild, USER_DOCKERFILE)
-  if (await fileExists(userDockerfile)) {
-    const userContent = await fs.readFile(userDockerfile, 'utf8')
-    if (!isLayered(userContent)) {
-      throw new Error(
-        'Dockerfile.user must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}` ' +
-        'so the parent image is injected via --build-arg. ' +
-        'Example:\n  ARG BASE_IMAGE\n  FROM ${BASE_IMAGE}',
-      )
-    }
-    const userHash = stringHash(`${effectiveHash}:${await contextHash(userBuild)}`)
-    const userTag = `${prefix}-user-${projectId}:${userHash}`
-    layers.push({
-      tag: userTag,
-      name: 'user',
-      dockerfile: userDockerfile,
-      context: userBuild,
-      buildArgs: { BASE_IMAGE: effectiveTag },
-      contentHash: userHash,
-    })
-    effectiveTag = userTag
-  }
-
-  return { layers, finalTag: effectiveTag }
+  return { layers, finalTag: layers.at(-1)!.tag }
 }
-

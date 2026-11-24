@@ -1,11 +1,12 @@
 import path from 'node:path'
 import { execFileAsync } from '#drivers/k8s/substrate'
-import { buildImage, ensureImageByTag, imageExists, pushImageToRegistry, pushMirrorImage } from './host-images'
+import { buildImage, imageExists, pushImageToRegistry, pushMirrorImage } from './host-images'
+import { buildTrustedLayers, ensureLocalBuilderImage } from './host-buildkit'
 import { reapOrphanedPodmanProcs } from './host-procs'
 import { gcHostImages } from './image-gc'
 import {
-  BUILDER_MIRROR_TAG,
-  BUILDER_UPSTREAM_IMAGE,
+  UTILITY_MIRROR_TAG,
+  UTILITY_UPSTREAM_IMAGE,
   CLOUDFLARED_MIRROR_TAG,
   CLOUDFLARED_UPSTREAM_IMAGE,
   TAILSCALE_MIRROR_TAG,
@@ -19,11 +20,13 @@ import {
   recordMirrorDigest,
   registryRef,
   registryTagState,
+  resolveBuilderImageTag,
   resolveTrustedLayers,
   resolveNetdImageTag,
   resolveProxyImageTag,
   VERDACCIO_MIRROR_TAG,
   VERDACCIO_UPSTREAM_IMAGE,
+  type ImageLayer,
 } from '#drivers/k8s/cluster'
 import { NETD_DIR, PROXY_DIR, TAILGATE_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
@@ -37,23 +40,49 @@ import { hostNodeArchitecture } from './byo-gates'
  * Builds and pushes every image yaac ships, as part of `yaac cluster
  * install` on the CLI's machine.
  *
- * yaac-built images (the base/tools workspace chain, the egress
- * proxy, netd) are `podman build`s tagged by content hash, so an unchanged
- * source costs one registry HEAD. Digest-pinned upstream images are
+ * yaac-built images are tagged by content hash, so an unchanged source costs
+ * one registry HEAD. The base/tools workspace chain is built with a host
+ * buildkitd (host-buildkit.ts); the rest (the builder image, the egress
+ * proxy, netd, tailgate) are `podman build`s. Digest-pinned upstream images are
  * mirrored into the registry so nodes need no upstream egress. Image names
  * and tags are defined in `#drivers/k8s/cluster`, which the server also
- * reads (docs/trust-split-builds.md).
+ * reads (docs/image-builds.md).
  */
-
-/**
- * Compression for trusted-layer pushes. Builder pods pull these as parents,
- * and zstd cut that pull from 65.6s to 40.4s in measurement. Node
- * containerd pulls zstd blobs fine.
- */
-export const TRUSTED_PARENT_COMPRESSION = 'zstd' as const
 
 interface BuiltinImageDeps {
   log: (message: string) => void
+}
+
+/**
+ * Build the trusted chain's missing layers with the host buildkitd
+ * (host-buildkit.ts), which pushes them. The e2e global setup also calls
+ * this, with its own image prefix.
+ */
+export async function ensureTrustedChain(
+  log: (message: string) => void,
+  prefix?: string,
+  /** A `key=value` label for the BuildKit container (the e2e owner label). */
+  containerLabel?: string,
+): Promise<void> {
+  const { base, tools } = await resolveTrustedLayers(prefix)
+  const missing: ImageLayer[] = []
+  for (const layer of [base, tools]) {
+    // A rebuilt base changes the tools tag, so a present tools is current.
+    if (await registryTagState(layer.tag) === 'present') log(`  ${layer.tag} — already in the registry`)
+    else missing.push(layer)
+  }
+  if (missing.length > 0) await buildTrustedLayers(missing, log, prefix, containerLabel)
+}
+
+/**
+ * Push the builder image (built by `ensureTrustedChain`, which runs it)
+ * and record the digest it pushed, which builder pods pull by. Re-pushed
+ * when its tag no longer names that record, like a pinned mirror.
+ */
+export async function pushBuilderImage(prefix?: string): Promise<void> {
+  if (await mirrorMatchesRecord(await resolveBuilderImageTag(prefix))) return
+  const tag = await ensureLocalBuilderImage(prefix)
+  await recordMirrorDigest(tag, await pushMirrorImage(tag))
 }
 
 /** Build one yaac-shipped image if the registry lacks it, and push it. */
@@ -111,7 +140,7 @@ async function mirrorPinnedImage(upstream: string, mirrorTag: string): Promise<v
  */
 export async function mirrorPinnedUpstreams(): Promise<void> {
   await mirrorPinnedImage(ENVOY_UPSTREAM_IMAGE, ENVOY_MIRROR_TAG)
-  await mirrorPinnedImage(BUILDER_UPSTREAM_IMAGE, BUILDER_MIRROR_TAG)
+  await mirrorPinnedImage(UTILITY_UPSTREAM_IMAGE, UTILITY_MIRROR_TAG)
   await mirrorPinnedImage(GVISOR_INSTALLER_UPSTREAM_IMAGE, GVISOR_INSTALLER_MIRROR_TAG)
   await mirrorPinnedImage(VERDACCIO_UPSTREAM_IMAGE, VERDACCIO_MIRROR_TAG)
   await mirrorPinnedImage(NGINX_UPSTREAM_IMAGE, NGINX_MIRROR_TAG)
@@ -131,18 +160,10 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
     deps.log(`note: could not reap a previous install's podman processes: ${String(err)}`)
   })
 
-  const { base, tools } = await resolveTrustedLayers()
-
   deps.log('Ensuring the workspace image chain (base → tools)...')
-  for (const layer of [base, tools]) {
-    if (await registryTagState(layer.tag) === 'present') {
-      deps.log(`  ${layer.tag} — already in the registry`)
-      continue
-    }
-    deps.log(`  ${layer.tag}`)
-    await ensureImageByTag(layer.tag, layer.dockerfile, layer.context, layer.buildArgs)
-    await pushImageToRegistry(layer.tag, { compressionFormat: TRUSTED_PARENT_COMPRESSION })
-  }
+  await ensureTrustedChain(deps.log)
+  deps.log('Ensuring the builder image...')
+  await pushBuilderImage()
 
   deps.log('Ensuring the egress proxy image...')
   await buildShippedImage(await resolveProxyImageTag(testEnv.proxyImage), PROXY_DIR)

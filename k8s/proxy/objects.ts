@@ -21,6 +21,9 @@ export const LABEL_PROXY_OUTPUT = 'yaac.proxy-output'
 /** The workspace a registration ConfigMap belongs to (same key as
  *  pod-watch.ts). */
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
+/** The image build a registration ConfigMap belongs to instead (same key
+ *  as pod-watch.ts). */
+export const LABEL_BUILD_ID = 'yaac.build-id'
 
 export const CREDENTIALS_SECRET_NAME = 'yaac-proxy-credentials'
 export const REFRESHED_SECRET_NAME = 'yaac-proxy-refreshed'
@@ -434,14 +437,14 @@ function decodeRedirects(raw: unknown): Record<string, UpstreamRedirect> | undef
 }
 
 /**
- * A registration ConfigMap: the workspace id from its label and the payload
- * from `registration.json`. A registration missing `projectId` or a well-formed
+ * A registration ConfigMap: the workspace id (or an image build's id) from
+ * its label and the payload from `registration.json`. A registration missing `projectId` or a well-formed
  * `owner` is dropped, so that workspace fails closed.
  */
 export function decodeRegistration(
   cm: RawObject,
 ): { workspaceId: string; registration: ProxyRegistration } | null {
-  const workspaceId = cm.metadata?.labels?.[LABEL_WORKSPACE_ID]
+  const workspaceId = cm.metadata?.labels?.[LABEL_WORKSPACE_ID] ?? cm.metadata?.labels?.[LABEL_BUILD_ID]
   if (!workspaceId) return null
   const o = parseJson(cm.data?.['registration.json'])
   if (!o) return null

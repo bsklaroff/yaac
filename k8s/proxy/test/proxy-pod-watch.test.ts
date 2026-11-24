@@ -107,6 +107,22 @@ describe('PodWorkspaceIndex', () => {
     expect(idx.isRelease('rel-a')).toBe(false)
   })
 
+  it('knows a builder pod by its build id, and marks it a build until it goes', () => {
+    const idx = new PodWorkspaceIndex()
+    const builder: WatchedPod = {
+      metadata: { labels: { 'yaac.build-id': 'build-1', 'yaac.role': 'builder' } },
+      status: { podIP: '10.0.0.9' },
+    }
+    idx.apply({ type: 'ADDED', object: builder })
+    idx.apply({ type: 'ADDED', object: pod('10.0.0.8', 'dev-b') })
+    expect(idx.resolve('10.0.0.9')).toBe('build-1')
+    expect(idx.isBuild('build-1')).toBe(true)
+    expect(idx.isBuild('dev-b')).toBe(false)
+    idx.apply({ type: 'DELETED', object: builder })
+    expect(idx.isBuild('build-1')).toBe(false)
+    expect(idx.resolve('10.0.0.9')).toBeUndefined()
+  })
+
   it('replaceAll rebuilds the reverse index too', () => {
     const idx = new PodWorkspaceIndex()
     idx.apply({ type: 'ADDED', object: pod('10.0.0.1', 'sess-a') })

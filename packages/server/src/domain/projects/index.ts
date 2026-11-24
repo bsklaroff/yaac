@@ -29,13 +29,6 @@ export {
 } from './allowlist'
 export { MAX_ICON_BYTES, readProjectIcon, removeProjectIcon, setProjectIcon } from './icon'
 export {
-  deleteBuildFile,
-  listBuildFiles,
-  readBuildFile,
-  renameBuildFile,
-  writeBuildFile,
-} from './build-files'
-export {
   addPortForward,
   cacheVolumesSchema,
   portForwardsSchema,
@@ -44,7 +37,6 @@ export {
 } from './config'
 export { importProjectConfigFiles } from './config-import'
 export { scratchDirSettingsPatchSchema, setScratchDirs } from './scratch-dirs'
-export { dismissImageBuild, retryImageBuild } from './images'
 export { setKeptIgnoredPaths } from './kept-paths'
 export {
   listProjectEnv,
@@ -81,10 +73,4 @@ export {
   getProjectDetail,
   resolveProjectId,
 } from './detail'
-export {
-  readProjectDockerfile,
-  readUserDockerfile,
-  writeProjectDockerfile,
-  writeUserDockerfile,
-} from './dockerfile'
 export { listProjects } from './list'

@@ -7,6 +7,7 @@ import type * as generatedModule from '@yaac/shared/tool-providers.generated'
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
 const P = '83878c91-1713-4890-8e0f-e0fb97a8c47a'
+const IMAGE = 'b6a1f6a4-5d43-4e0b-9a59-6c2f0b8f3e11'
 
 // Rows, create resolution and the launch path are real. createWorkspace is
 // stubbed, and the tests assert on what a queued launch passes to it.
@@ -72,7 +73,7 @@ import { handleFixture, installFakeWorkspaceDriver, resetWorkspaceDriver } from 
 import { projectDir, repoDir } from '@yaac/shared/project-paths'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { EFFORTS } from '@yaac/shared/tool-providers.generated'
-import type { AgentMode, AgentTool, PermissionMode, RepoSelection } from '@yaac/shared/types'
+import { STOCK_IMAGE_ID, type AgentMode, type AgentTool, type PermissionMode, type RepoSelection } from '@yaac/shared/types'
 import { workspaceDelegate } from '#test/support/delegate'
 
 /** The caller of every user-caused write here. */
@@ -497,11 +498,16 @@ describe('updateQueuedWorkspace', () => {
 
   it('replaces what it names, re-resolving a new tool\'s model and posture', async () => {
     await workspace(P, { tool: 'claude', model: 'claude-sonnet-5', permissionMode: 'plan' })
-    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'x' })
-    expect(entry.permissionMode).toBe('plan')
+    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'x', imageId: IMAGE })
+    expect(entry).toMatchObject({ permissionMode: 'plan', imageId: IMAGE })
 
     const edited = await updateQueuedWorkspace(local, entry.id, { prompt: 'edited', branch: OTHER })
-    expect(edited).toMatchObject({ prompt: 'edited', selection: startsAt(OTHER), model: 'claude-sonnet-5', permissionMode: 'plan' })
+    expect(edited).toMatchObject({
+      prompt: 'edited', selection: startsAt(OTHER), model: 'claude-sonnet-5', permissionMode: 'plan', imageId: IMAGE,
+    })
+    // The image is kept until named; null goes back to the project's default.
+    expect((await updateQueuedWorkspace(local, entry.id, { imageId: STOCK_IMAGE_ID })).imageId).toBe(STOCK_IMAGE_ID)
+    expect(await updateQueuedWorkspace(local, entry.id, { imageId: null })).not.toHaveProperty('imageId')
 
     // A stored effort stays for a model that has it and is re-resolved for
     // one that does not (docs/effort-levels.md).
@@ -631,7 +637,7 @@ describe('runQueuedWorkspace', () => {
     await workspace(P, { tool: 'codex', model: 'gpt-5.5', permissionMode: 'accept-edits' })
     const group = await createWorkspaceGroup(PROJ, 'review', null)
     await setWorkspaceGroup(PROJ, P, group.groupId)
-    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'go', title: 'Named' })
+    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'go', title: 'Named', imageId: IMAGE })
     const child = await queueWorkspace(local, PROJ, { parent: entry.id, prompt: 'after' })
     // Moving the parent after queueing leaves the entry where it was filed.
     await setWorkspaceGroup(PROJ, P, null)
@@ -648,6 +654,7 @@ describe('runQueuedWorkspace', () => {
       start: expect.objectContaining({ repos: [expect.objectContaining({ path: '', branch: 'develop' })], cwd: '' }) as unknown,
       title: 'Named',
       groupId: group.groupId,
+      imageId: IMAGE,
     })])
     await settled(entry.id, true)
     // Its chain now waits on the new workspace; the parent keeps running.
@@ -667,6 +674,7 @@ describe('runQueuedWorkspace', () => {
     await launched(2)
     expect(mockCreate.mock.calls[1][1]).toMatchObject({ session: { prompt: 'after' }, generatedTitle: 'Generated' })
     expect(mockCreate.mock.calls[1][1]).not.toHaveProperty('title')
+    expect(mockCreate.mock.calls[1][1]).not.toHaveProperty('imageId')
     expect(rows).toEqual([expect.objectContaining({ title: 'Generated' })])
   })
 

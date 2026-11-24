@@ -31,7 +31,7 @@ follow-up, described last.
   has no network interface. Its egress and its streams cross two sockets
   in a directory on its node, which netd relays to the proxy and from the
   server. kind runs its default CNI.
-- **docs/plans/buildkit-image-builds.md has shipped.** An untrusted layer
+- **BuildKit builds have shipped** (docs/image-builds.md). An untrusted layer
   is built by a BuildKit daemon in a sandbox of its own, behind the proxy.
 - **Pamir runs one node** (docs/plans/pamir.md "Milestones"): it starts,
   watches and stops units on one machine's containerd, carries their
@@ -313,7 +313,7 @@ Each item removes a `NOT_SUPPORTED` or a difference from k8s:
   registration and nothing bound. The take becomes a conditional update
   of the spare's row. Spike 1's numbers size the pool.
 - **Untrusted layers.** The trust split holds
-  (docs/trust-split-builds.md). Each untrusted build runs in a throwaway
+  (docs/image-builds.md). Each untrusted build runs in a throwaway
   builder sandbox, as it runs in a builder pod. With no registry, its
   output is an image archive loaded into containerd's store and its cache
   a per-project directory. Prewarm reuses `reconcileImagePrewarm`. Image

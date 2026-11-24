@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm'
 import { buildApp, delegateApp } from '@yaac/server/main/server'
 import { workspaceDriver } from '@yaac/server/drivers/driver'
 import { closeDb, getDb } from '@yaac/server/db/client'
-import { draftWorkspaces, gitCredentials, queuedWorkspaces, routines, sessions } from '@yaac/server/db/schema'
+import { draftWorkspaces, gitCredentials, imageBuilds, imageRevisions, images, queuedWorkspaces, routines, sessions } from '@yaac/server/db/schema'
 import { insertRoutine } from '@yaac/server/db/routine-store'
 import { recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
 import { insertQueuedWorkspace } from '@yaac/server/db/queued-workspace-store'
@@ -11,7 +11,6 @@ import { insertDraftWorkspace } from '@yaac/server/db/draft-workspace-store'
 import { BUILT_IN_USER_ID, insertGitCredential, insertSession } from '@yaac/server/db'
 import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } from '@yaac/server/domain/workspaces/provisioning'
 import { trackProjectAdd } from '@yaac/server/domain/projects/adding'
-import { registerImageBuild } from '@yaac/server/drivers/k8s/images/image-builds'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { asTailnet } from '@yaac/test-utils/api'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
@@ -97,8 +96,9 @@ const ID = {
   group: 'g1',
   credential: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
   user: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-  // The first id the build feed hands out in a fresh process.
-  build: 'build-1',
+  image: 'f6a7b8c9-d0e1-4f2a-8b3c-4d5e6f7a8b9c',
+  revision: 'a7b8c9d0-e1f2-4a3b-8c4d-5e6f7a8b9c0d',
+  build: 'b8c9d0e1-f2a3-4b4c-8d5e-6f7a8b9c0d1e',
 } as const
 
 const P = `/api/project/${ID.project}`
@@ -192,40 +192,41 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/project/:projectId/skills', request: `${P}/skills`, access: 'reader', k8s: OK_OR_MISSING, containerless: OK_OR_MISSING },
   { method: 'GET', path: '/api/project/:projectId/skills/body', request: `${P}/skills/body?path=x`, access: 'reader', k8s: [200, 400, 404], containerless: [200, 400, 404] },
 
-  // ── images: the project's build inputs ────────────────────────────────
-  // A containerless server builds no images, so these refuse rather than
-  // answer empty.
-  { method: 'GET', path: '/api/project/:projectId/dockerfile', request: `${P}/dockerfile`, access: 'reader', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'PUT', path: '/api/project/:projectId/dockerfile', request: `${P}/dockerfile`, body: { content: '' }, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'GET', path: '/api/project/:projectId/build-files', request: `${P}/build-files`, access: 'reader', why: 'builds no images', k8s: OK_OR_MISSING, containerless: UNSUPPORTED },
-  { method: 'GET', path: '/api/project/:projectId/build-files/file', request: `${P}/build-files/file?path=a`, access: 'reader', why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
-  { method: 'PUT', path: '/api/project/:projectId/build-files/file', request: `${P}/build-files/file`, body: { path: 'a', content: '' }, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/project/:projectId/build-files/rename', request: `${P}/build-files/rename`, body: { from: 'a', to: 'b' }, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'DELETE', path: '/api/project/:projectId/build-files/file', request: `${P}/build-files/file?path=a`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
   // The caller's own settings: the git identity their workspaces commit
-  // under and the zone they run in (every substrate needs both), and the
-  // Dockerfile.user topping their projects' images.
+  // under and the zone they run in (every substrate needs both).
   { method: 'GET', path: '/api/config/git-identity', access: 'owner', callerScoped: true, k8s: 200, containerless: 200 },
   { method: 'PUT', path: '/api/config/git-identity', body: { name: 'A', email: 'a@b.co' }, access: 'owner', callerScoped: true, k8s: 200, containerless: 200 },
   { method: 'GET', path: '/api/config/time-zone', access: 'owner', callerScoped: true, k8s: 200, containerless: 200 },
   { method: 'PUT', path: '/api/config/time-zone', body: { timeZone: 'America/New_York' }, access: 'owner', callerScoped: true, k8s: 200, containerless: 200 },
-  { method: 'GET', path: '/api/config/user-dockerfile', access: 'owner', callerScoped: true, why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
-  { method: 'PUT', path: '/api/config/user-dockerfile', body: { content: '' }, access: 'owner', callerScoped: true, why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
-  { method: 'GET', path: '/api/config/user-build-files', access: 'owner', callerScoped: true, why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
-  { method: 'GET', path: '/api/config/user-build-files/file', request: '/api/config/user-build-files/file?path=a', access: 'owner', callerScoped: true, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
-  { method: 'PUT', path: '/api/config/user-build-files/file', body: { path: 'a', content: '' }, access: 'owner', callerScoped: true, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/config/user-build-files/rename', body: { from: 'a', to: 'b' }, access: 'owner', callerScoped: true, why: 'builds no images', k8s: [200, 400, 404], containerless: UNSUPPORTED },
-  { method: 'DELETE', path: '/api/config/user-build-files/file', request: '/api/config/user-build-files/file?path=a', access: 'owner', callerScoped: true, why: 'builds no images', k8s: [200, 204, 400, 404], containerless: UNSUPPORTED },
 
-  // ── images: the build feed ────────────────────────────────────────────
-  // The driver answers `[]` so the snapshot keeps rendering, but the route
-  // refuses: `[]` would mean "no builds running", not "never builds". A
-  // shared image's build is anyone's to retry or dismiss; the non-owner
-  // check names a project layer's.
-  { method: 'GET', path: '/api/image/builds', access: 'reader', why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
-  { method: 'GET', path: '/api/image/builds/:id/log', request: `/api/image/builds/${ID.build}/log`, access: 'reader', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'DELETE', path: '/api/image/builds/:id', request: `/api/image/builds/${ID.build}`, access: 'owner', why: 'builds no images', k8s: 204, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/image/builds/:id/retry', request: `/api/image/builds/${ID.build}/retry`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  // ── images (docs/image-builds.md) ─────────────────────────────────────
+  // A containerless server builds no images, so every route refuses rather
+  // than answer empty. A project's images and builds are its owner's; the
+  // user image is the caller's own.
+  { method: 'GET', path: '/api/image/settings', access: 'reader', why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
+  { method: 'PUT', path: '/api/image/settings', body: { buildConcurrency: null }, access: 'admin', why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/image/project/:projectId', request: `/api/image/project/${ID.project}`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/image/project/:projectId', request: `/api/image/project/${ID.project}`, body: { name: 'web', dockerfile: 'FROM x' }, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'PUT', path: '/api/image/project/:projectId/default', request: `/api/image/project/${ID.project}/default`, body: { imageId: ID.image }, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'PUT', path: '/api/image/project/:projectId/cache-days', request: `/api/image/project/${ID.project}/cache-days`, body: { days: null }, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/image/project/:projectId/files', request: `/api/image/project/${ID.project}/files`, body: { content: 'a' }, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/image/user', access: 'owner', callerScoped: true, why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
+  { method: 'PUT', path: '/api/image/user', body: { dockerfile: 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n' }, access: 'owner', callerScoped: true, why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/image/user/files', body: { content: 'a' }, access: 'owner', callerScoped: true, why: 'builds no images', k8s: 200, containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/image/builds', request: `/api/image/builds?projectId=${ID.project}`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/image/builds/:buildId', request: `/api/image/builds/${ID.build}`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/image/builds/:buildId/log', request: `/api/image/builds/${ID.build}/log`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/image/builds/:buildId/cancel', request: `/api/image/builds/${ID.build}/cancel`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/image/builds/:buildId/allow-host', request: `/api/image/builds/${ID.build}/allow-host`, body: { host: 'registry.example.com' }, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/image/builds/:buildId/retry', request: `/api/image/builds/${ID.build}/retry`, body: {}, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/image/:imageId', request: `/api/image/${ID.image}`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'PUT', path: '/api/image/:imageId', request: `/api/image/${ID.image}`, body: { dockerfile: 'FROM x' }, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'DELETE', path: '/api/image/:imageId', request: `/api/image/${ID.image}`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/image/:imageId/files', request: `/api/image/${ID.image}/files`, body: { content: 'a' }, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/image/:imageId/revisions', request: `/api/image/${ID.image}/revisions`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'GET', path: '/api/image/:imageId/revisions/:revisionId/file', request: `/api/image/${ID.image}/revisions/${ID.revision}/file?path=a`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/image/:imageId/revisions/:revisionId/restore', request: `/api/image/${ID.image}/revisions/${ID.revision}/restore`, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/image/:imageId/builds', request: `/api/image/${ID.image}/builds`, body: {}, access: 'owner', why: 'builds no images', k8s: MISSING, containerless: UNSUPPORTED },
 
   // ── server health ─────────────────────────────────────────────────────
   // Both drivers report their usage: the host's, or the cluster's.
@@ -409,7 +410,7 @@ function assertMatrixCoversEveryRoute(): void {
   const registered = new Set(
     (app.routes as Array<{ method: string; path: string }>)
       // `ALL` entries are middleware (auth, CORS, the feature guard on the
-      // build-files sub-app), not routes a client can address.
+      // image sub-app), not routes a client can address.
       .filter((r) => r.method !== 'ALL')
       .map((r) => `${r.method} ${r.path}`),
   )
@@ -486,9 +487,15 @@ async function seedOwnedFixtures(): Promise<void> {
     true,
     () => Promise.reject(new Error('failed')),
   ).catch(() => undefined)
-  // Only a k8s server lists it; a containerless one never asks.
-  expect(registerImageBuild({ tag: `yaac-proj-${ID.project}:x`, layer: 'project', projectId: ID.project, reason: 'prewarm' }))
-    .toBe(ID.build)
+  // An image of the project, its revision and a build of it.
+  await db.insert(images).values({ id: ID.image, projectId: ID.project, name: 'web', currentRevisionId: ID.revision })
+  await db.insert(imageRevisions).values({
+    id: ID.revision, imageId: ID.image, number: 1, dockerfile: 'FROM x', contentHash: 'h', author: BUILT_IN_USER_ID,
+  })
+  await db.insert(imageBuilds).values({
+    id: ID.build, imageId: ID.image, revisionId: ID.revision, projectId: ID.project, layer: 'project',
+    tag: `yaac-proj-${ID.project}:x`, reason: 'manual', status: 'failed',
+  })
 }
 
 /**

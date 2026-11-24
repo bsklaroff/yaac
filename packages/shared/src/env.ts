@@ -237,8 +237,10 @@ export const env = {
   },
 
   /**
-   * `YAAC_IMAGE_PREWARM` — background per-project image prewarm builds.
-   * Unset → on; empty, "0", and "false" (case-insensitive) → off.
+   * `YAAC_IMAGE_PREWARM` — the image sweep's background builds
+   * (`reconcileImageSweep`), which rebuild each project's default and
+   * last used image after the trusted chain changes. Unset → on; empty,
+   * "0", and "false" (case-insensitive) → off.
    */
   get imagePrewarm(): boolean {
     const raw = process.env.YAAC_IMAGE_PREWARM

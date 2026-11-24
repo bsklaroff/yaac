@@ -102,6 +102,7 @@ export async function updateRoutine(
     ...(nonInteractive ? { nonInteractive } : {}),
     group: patch.group !== undefined ? patch.group : row.groupId ?? null,
     timeout: patch.timeout !== undefined ? patch.timeout : row.timeoutMinutes ?? null,
+    imageId: patch.imageId !== undefined ? patch.imageId : row.imageId ?? null,
     ...(patch.model !== undefined ? { model: patch.model } : retooled ? {} : { model: row.model }),
     ...(patch.permissionMode !== undefined
       ? { permissionMode: patch.permissionMode }
@@ -230,6 +231,7 @@ async function insertRun(
     permissionMode: row.permissionMode,
     ...(row.effort !== undefined ? { effort: row.effort } : {}),
     agentOptions: row.agentOptions,
+    ...(row.imageId !== undefined ? { imageId: row.imageId } : {}),
     repos: row.repos,
     nested: row.nested,
     cwd: row.cwd,
@@ -297,6 +299,7 @@ async function resolveRoutine(
     ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
     ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
+    ...(request.imageId != null ? { imageId: request.imageId } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
     ...(request.group !== undefined ? { group: request.group } : {}),
   }, own, kept)
@@ -311,6 +314,7 @@ async function resolveRoutine(
     permissionMode: settings.permissionMode,
     ...(settings.effort !== undefined ? { effort: settings.effort } : {}),
     agentOptions: settings.agentOptions ?? {},
+    ...(settings.imageId !== undefined ? { imageId: settings.imageId } : {}),
     repos: settings.repos,
     nested: settings.nested,
     cwd: settings.cwd,
@@ -388,6 +392,7 @@ async function toEntries(rows: RoutineRow[]): Promise<RoutineEntry[]> {
       permissionMode: r.permissionMode,
       ...(r.effort !== undefined ? { effort: r.effort } : {}),
       agentOptions: r.agentOptions,
+      ...(r.imageId !== undefined ? { imageId: r.imageId } : {}),
       selection: { repos: r.repos, nested: r.nested, cwd: r.cwd },
       ...(workflow !== undefined ? { workflow: workflow.name } : {}),
       ...(r.nonInteractive ? { nonInteractive: true as const } : {}),

@@ -28,6 +28,7 @@ const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 /** The repo the fixtures start with; only its id is stored. */
 const REPO = PROJ
 const START = { repos: [{ repo: REPO, branch: 'main' }], nested: false, cwd: REPO }
+const IMAGE = 'b6a1f6a4-5d43-4e0b-9a59-6c2f0b8f3e11'
 
 describe('queued workspace store', () => {
   let tmpDir: string
@@ -69,16 +70,18 @@ describe('queued workspace store', () => {
 
     // Re-parented onto a workspace, the entry column clears.
     await updateQueuedWorkspace(child.id, {
-      ...settings, parent: { parentWorkspaceId: 'wt-b' }, prompt: 'edited', title: 'Named', groupId: 'g1',
+      ...settings, parent: { parentWorkspaceId: 'wt-b' }, prompt: 'edited', title: 'Named', groupId: 'g1', imageId: IMAGE,
     })
     const moved = await getQueuedWorkspaceRow(child.id)
-    expect(moved).toMatchObject({ parentWorkspaceId: 'wt-b', prompt: 'edited', title: 'Named', groupId: 'g1' })
+    expect(moved).toMatchObject({ parentWorkspaceId: 'wt-b', prompt: 'edited', title: 'Named', groupId: 'g1', imageId: IMAGE })
     expect(moved?.parentQueuedId).toBeUndefined()
 
-    // An update replaces every setting: a title or group it leaves out is none.
+    // An update replaces every setting: a title, group or image it leaves
+    // out is none.
     await updateQueuedWorkspace(child.id, settings)
     expect(await getQueuedWorkspaceRow(child.id)).not.toHaveProperty('title')
     expect(await getQueuedWorkspaceRow(child.id)).not.toHaveProperty('groupId')
+    expect(await getQueuedWorkspaceRow(child.id)).not.toHaveProperty('imageId')
   })
 
   it('keeps a generated title only for the untitled, unclaimed prompt it was made from', async () => {

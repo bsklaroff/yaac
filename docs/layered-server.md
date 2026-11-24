@@ -94,13 +94,15 @@ then acts belongs in `#domain`. For example, `dismissWorkspacePort` refuses
 a port the runtime is not offering, and `getWorkspaceChanges` picks the
 fork branch as the diff's default base. A display value the runtime
 already has, fetched and rendered as-is, does not need a domain wrapper:
-the image-build list and log routes call the contract directly. A wrapper
+the snapshot reads `workspaceDriver().kind` directly. A wrapper
 whose whole body is `return workspaceDriver().x(...)` only hides the call.
 Lint cannot tell these cases apart, so this is a convention.
 
-`retryImageBuild` in `#domain/projects` is in domain because it is more
-than a wrapper: a retry must hand the runtime a project-config reader, and
-the runtime may not read config itself.
+`retryBuild` in `#domain/images` is in domain because it is more than a
+wrapper: it resolves from rows which revisions the build's chain is made
+of and queues that chain, and the driver's build verb is handed the
+layers' content, allowed hosts and cache age, since the runtime may not
+look up a revision or read config itself.
 
 ### Drivers are handed what they need
 
@@ -151,8 +153,9 @@ happens a layer up, in `recordedTranscript`.
   titles, who a workspace's `yaac-mama` call acts as (`callingWorkspace`)
   and what it reads of and sends its siblings, and the file editor's reads
   and writes of a checkout), `projects/` (which projects exist
-  and what each keeps on disk: the repos it links, the two config layers,
-  Dockerfiles and build files), `repos/` (each user's git repos: the main
+  and what each keeps on disk: the repos it links and the two config
+  layers), `images/` (named images, their revisions and support files, the
+  build queue and its records; docs/image-builds.md), `repos/` (each user's git repos: the main
   clone and its branches, the remote of a repo the server hosts, which git
   credential it uses and who may use it; docs/project-repos.md), `git/`
   (domain's one process boundary onto git; docs/server-git.md),
@@ -206,8 +209,8 @@ happens a layer up, in `recordedTranscript`.
   folders: `workspaces` (launch and the Job manifest, locate, claim,
   teardown, port forwards, the
   node-local orphan sweep, the per-pass snapshot, and the mapping from a
-  pod to a `RuntimeHandle`), `images` (builder pods, the build coordinator
-  and its build rows, prewarm, main registry GC),
+  pod to a `RuntimeHandle`), `images` (builder pods, which run the builds
+  `#domain/images` queues, and the main registry and node image GC),
   `egress`, `cluster` (the in-cluster datapath, the main registry and its
   client, and every image tag), and `substrate` (client, informers, exec,
   pod-spec fragments, the streaming child-process runner, the datapath's
@@ -220,11 +223,12 @@ happens a layer up, in `recordedTranscript`.
   A sixth folder, `install`, is outside that graph. It is what `yaac
   cluster install|check|delete` run: creating the cluster and its CNI,
   installing gVisor and the node tuning, re-applying node state a restart
-  drops, building every image yaac ships on the host's podman and pushing
-  it, and deploying the in-cluster pieces, all from the CLI's machine
+  drops, building every image yaac ships on the host (the base and tools
+  chain with a BuildKit container, the rest with podman) and pushing it,
+  and deploying the in-cluster pieces, all from the CLI's machine
   before any server exists. An eslint zone bans `#drivers/k8s/install`
   everywhere in the server, which keeps a container engine off every
-  server code path (docs/trust-split-builds.md). It imports `cluster` to
+  server code path (docs/image-builds.md). It imports `cluster` to
   read each shipped image's identity, the name the server later looks it
   up by.
 

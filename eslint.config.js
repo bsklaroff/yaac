@@ -26,7 +26,7 @@ const UNTIERED_DATA_DIR = [
 // This is a `regex`, not a `group` glob: groups use gitignore semantics,
 // where a leading `#` starts a comment and the pattern matches nothing.
 const SEALED_FOLDERS = {
-  regex: '^#(domain/(access|auth|feedback|git|projects|repos|sites|skills|workspaces)|db|runtime/(agents|status|terminals|usage)|drivers/k8s/(cluster|egress|images|install|substrate|workspaces))/.',
+  regex: '^#(domain/(access|auth|feedback|git|images|projects|repos|sites|skills|workspaces)|db|runtime/(agents|status|terminals|usage)|drivers/k8s/(cluster|egress|images|install|substrate|workspaces))/.',
   message: 'This folder is sealed; import its barrel (e.g. #drivers/k8s/images).',
 }
 
@@ -58,7 +58,7 @@ const NO_DRIVER_INTERNALS = {
 // The install feature administers the substrate from the CLI, before any
 // server exists. No server module may import it, including the driver's
 // own folders, so the server never needs a container engine
-// (docs/trust-split-builds.md).
+// (docs/image-builds.md).
 const NO_INSTALL_FROM_SERVER = {
   regex: '^#drivers/k8s/install(/|$)',
   message: 'Only the CLI enters #drivers/k8s/install; the server never administers its own substrate (docs/layered-server.md).',
