@@ -90,6 +90,10 @@ const MOBILE_STRIP = 'pointer-events-none flex h-8 shrink-0 items-center gap-1 b
   + '[&>*]:pointer-events-auto'
 /** Inner padding around a pane's body. */
 const PAD = 0
+/** Width of the `border-l` dividing a tiles-mode column from the one to its
+ *  left. A column's pane body is inset by it, or the body would paint over
+ *  the divider below the tab strip. */
+const DIVIDER = 1
 /** Most workspaces attached in the background after a page load. Each costs
  *  a server-side PTY, so a large install shouldn't open dozens at once;
  *  the rest attach when first viewed. */
@@ -864,11 +868,12 @@ export function WorkspaceView({
           }
           const onScreen = colRect != null || (id === sid && !tiled && target === activeTab)
           const focused = id === sid && target === activeTab
+          const divider = colRect && colRect.x > 0 ? DIVIDER : 0
           const style = colRect
             ? {
-                left: colRect.x + PAD,
+                left: colRect.x + PAD + divider,
                 top: colRect.y + headerH,
-                width: colRect.w - PAD * 2,
+                width: colRect.w - PAD * 2 - divider,
                 height: colRect.h - headerH - PAD,
               }
             : id === sid && !tiled && (ephemeral ? target === activeTab : targets.includes(target))
