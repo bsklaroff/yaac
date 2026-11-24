@@ -22,7 +22,12 @@ const PANE_NAME: Record<LaunchPane, string> = { shell: 'a shell', files: 'Files'
  * started from the bar for (`launches` in the store) opens beside it. A failure shows its error, beside the prompt so it
  * can be reused, with Dismiss. A restart refused because another running
  * workspace holds its volume (`VOLUME_HELD`) also offers to restart
- * without the volume.
+ * without the volume, and one whose last checkpoint cannot be restored
+ * (`CHECKPOINT_UNRESTORABLE`) to restart from the newest readable one.
+ * Such a retry sends only its own option: a restart refused for its
+ * checkpoint has already forgotten a volume it was told to go without. It
+ * dismisses the failed row first, since a server row outlives this tab's
+ * and would hide a retry refused before it registers one of its own.
  */
 export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntry }): JSX.Element {
   const removeOptimisticProvisioning = useUiStore((s) => s.removeOptimisticProvisioning)
@@ -39,6 +44,7 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
     s.optimisticProvisioning.find((e) => e.workspaceId === creating.workspaceId)?.errorCode)
   const errorCode = creating.errorCode ?? ownCode
   const volumeHeld = creating.kind === 'restart' && errorCode === 'VOLUME_HELD'
+  const unrestorable = creating.kind === 'restart' && errorCode === 'CHECKPOINT_UNRESTORABLE'
 
   const dismiss = (): void => {
     void dismissProvisioning(creating.workspaceId).catch(() => { /* best-effort */ })
@@ -46,7 +52,8 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
     selectWorkspace(null)
   }
 
-  const restartWithoutVolume = (): void => {
+  const restartAgain = async (opts: Parameters<typeof restartWorkspace>[2]): Promise<void> => {
+    await dismissProvisioning(creating.workspaceId).catch(() => { /* best-effort */ })
     removeOptimisticProvisioning(creating.workspaceId)
     provision({
       workspaceId: creating.workspaceId,
@@ -54,7 +61,7 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
       kind: 'restart',
       ...(creating.tool !== undefined ? { tool: creating.tool } : {}),
       ...(creating.groupId !== undefined ? { groupId: creating.groupId } : {}),
-    }, (onProgress) => restartWorkspace(creating.workspaceId, onProgress, null))
+    }, (onProgress) => restartWorkspace(creating.workspaceId, onProgress, opts))
   }
 
   return (
@@ -84,7 +91,12 @@ export function CreatingPane({ creating }: { creating: ProvisioningWorkspaceEntr
                 + (pane !== undefined ? `, then opening ${PANE_NAME[pane]}` : '')}
           </span>
           {volumeHeld && (
-            <YButton onClick={restartWithoutVolume}>Restart without volume</YButton>
+            <YButton onClick={() => void restartAgain({ volume: null })}>Restart without volume</YButton>
+          )}
+          {unrestorable && (
+            <YButton onClick={() => void restartAgain({ restoreNewest: true })}>
+              Restart from newest readable checkpoint
+            </YButton>
           )}
           {creating.error !== undefined ? (
             <YButton variant="ghost" onClick={dismiss}>Dismiss</YButton>

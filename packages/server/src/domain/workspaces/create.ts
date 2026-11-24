@@ -394,7 +394,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
       if (!restoreWatch) return
       void restoreFailure(projectId, workspaceId, tree.life).then((why) => {
         if (why !== null) {
-          reject(new ServerError('CONFLICT', `the restart cannot restore its files: ${why}. Work after the newest `
+          reject(new ServerError('CHECKPOINT_UNRESTORABLE', `the restart cannot restore its files: ${why}. Work after the newest `
             + 'readable checkpoint is missing; restart with --restore-newest to start from it'))
         }
         else setTimeout(poll, 3_000)

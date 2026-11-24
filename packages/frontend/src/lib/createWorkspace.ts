@@ -121,13 +121,15 @@ export async function createWorkspace(
 }
 
 /** Restart a stopped workspace. `volume` names a volume to attach, null
- *  starts it without one, and absent attaches the one it last held. */
+ *  starts it without one, and absent attaches the one it last held.
+ *  `restoreNewest` restores the newest readable state when its last
+ *  checkpoint cannot be restored, rather than refuse. */
 export async function restartWorkspace(
   workspaceId: string,
   onProgress: (message: string) => void,
-  volume?: string | null,
+  opts: { volume?: string | null; restoreNewest?: true } = {},
 ): Promise<{ workspaceId: string }> {
-  const body = { workspaceId, ...(volume !== undefined ? { volume } : {}) }
+  const body = { workspaceId, ...opts }
   return await streamWorkspaceOp('/api/workspace/restart', body, onProgress) as { workspaceId: string }
 }
 

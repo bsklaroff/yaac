@@ -14,6 +14,7 @@ export type ErrorCode =
   | 'NOT_SUPPORTED'
   | 'MISSING_TOOL'
   | 'VOLUME_HELD'
+  | 'CHECKPOINT_UNRESTORABLE'
   | 'PUSH_REFUSED'
   | 'TOO_LARGE'
   | 'INTERNAL'
@@ -57,6 +58,9 @@ export function defaultStatus(code: ErrorCode): number {
     // A launch's volume is attached to another running workspace; the
     // webapp offers to start without it.
     case 'VOLUME_HELD': return 409
+    // A restart whose newest checkpoint cannot be restored; the webapp
+    // offers to restart from the newest readable state (`restoreNewest`).
+    case 'CHECKPOINT_UNRESTORABLE': return 409
     // An add of a remote its credential cannot push to; the webapp offers
     // to add it as a fork or read-only (docs/repo-forks.md "Push access").
     case 'PUSH_REFUSED': return 403

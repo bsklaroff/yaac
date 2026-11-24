@@ -16,6 +16,7 @@ describe('shared errors', () => {
         NOT_SUPPORTED: 501,
         MISSING_TOOL: 400,
         VOLUME_HELD: 409,
+        CHECKPOINT_UNRESTORABLE: 409,
         PUSH_REFUSED: 403,
         TOO_LARGE: 413,
         INTERNAL: 500,

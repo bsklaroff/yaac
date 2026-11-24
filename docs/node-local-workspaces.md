@@ -314,7 +314,10 @@ naming it, and an unreadable bundle is renamed aside. `yaac workspace
 restart --restore-newest` restarts from the newest readable state: the
 longest readable prefix of the chain, an older life's manifest past an
 unreadable one, else each checkout's HEAD alone. That is a choice, never a
-silent fallback.
+silent fallback. These refusals have the code `CHECKPOINT_UNRESTORABLE`,
+on which the webapp's failed-restart pane offers the same restart as a
+button. An unsaved tree's refusal (below) does not: nothing is lost yet,
+and a later retry may still save it.
 
 ## Life cycle
 

@@ -9,7 +9,7 @@ import { recordWorkspaceCreated } from '@yaac/server/db/workspace-store'
 import { insertQueuedWorkspace } from '@yaac/server/db/queued-workspace-store'
 import { insertDraftWorkspace } from '@yaac/server/db/draft-workspace-store'
 import { BUILT_IN_USER_ID, insertGitCredential, insertSession } from '@yaac/server/db'
-import { clearAllProvisioningForTests, registerProvisioning } from '@yaac/server/domain/workspaces/provisioning'
+import { clearAllProvisioningForTests, failProvisioning, registerProvisioning } from '@yaac/server/domain/workspaces/provisioning'
 import { trackProjectAdd } from '@yaac/server/domain/projects/adding'
 import { registerImageBuild } from '@yaac/server/drivers/k8s/images/image-builds'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
@@ -480,6 +480,7 @@ async function seedOwnedFixtures(): Promise<void> {
   const credential = await insertGitCredential({ owner: BUILT_IN_USER_ID, name: 'gh', kind: 'https', secret: 'ghp_x' })
   await db.update(gitCredentials).set({ id: ID.credential }).where(eq(gitCredentials.id, credential.id))
   registerProvisioning({ workspaceId: ID.provisioning, projectId: ID.project, tool: 'claude', kind: 'create' })
+  failProvisioning(ID.provisioning, 'failed')
   await trackProjectAdd(
     { id: ID.projectAdd, owner: BUILT_IN_USER_ID, name: 'failed', remoteUrl: '', hosted: true },
     true,

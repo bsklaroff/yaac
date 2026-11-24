@@ -8,6 +8,7 @@ import { dismissProvisioning, listProvisioning } from '#domain/workspaces'
 import {
   clearAllProvisioningForTests,
   inFlightWorkspaceIds,
+  failProvisioning,
   provision,
   registerProvisioning,
 } from '#domain/workspaces/provisioning'
@@ -108,14 +109,19 @@ describe('dismissProvisioning', () => {
     await cleanupTempDir(tmpDir)
   })
 
-  it('lets only the project\'s owner drop an entry, and notifies', async () => {
+  it('lets only the project\'s owner drop a failed entry, and notifies', async () => {
+    const owner = { kind: 'local', userId: BUILT_IN_USER_ID } as const
     registerProvisioning({ ...entry('a'), projectId: DEMO_PROJECT_ID })
+    // One still provisioning stays, as a second retry's dismiss would find it.
+    await dismissProvisioning(owner, 'a')
+    expect(listProvisioning()).toHaveLength(1)
+    failProvisioning('a', 'boom')
     notify.mockClear()
     const teammate = { kind: 'tailnet', login: 'bob@example.com', name: 'bob', userId: 'b0b0b0b0-0000-4000-8000-000000000000' } as const
     await expect(dismissProvisioning(teammate, 'a')).rejects.toMatchObject({ code: 'FORBIDDEN' })
     expect(listProvisioning()).toHaveLength(1)
 
-    await dismissProvisioning({ kind: 'local', userId: BUILT_IN_USER_ID }, 'a')
+    await dismissProvisioning(owner, 'a')
     expect(listProvisioning()).toEqual([])
     expect(notify).toHaveBeenCalledTimes(1)
   })

@@ -52,6 +52,8 @@ import { ensureLifeStamped } from './trees'
  * base branch, or with none, at the commit it was created at. Config comes fresh from the
  * project. It attaches the volume it last
  * held, refusing with `VOLUME_HELD` if a running workspace has it now.
+ * A checkpoint it cannot restore refuses with `CHECKPOINT_UNRESTORABLE`
+ * unless `restoreNewest` is set.
  */
 export async function prepareRestart(
   principal: Actor,

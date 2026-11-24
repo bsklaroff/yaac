@@ -1021,8 +1021,30 @@ describe('prepareRestart', () => {
     const l2 = await lifeOf('wt-tree')
     await manifest('wt-tree', l2, '{ not a manifest')
     await expect(restart('wt-tree')).rejects.toThrow(new RegExp(`lives/${l2}/manifest.json is unreadable.*--restore-newest`))
+    // The failed restart's row carries the code the webapp offers the
+    // restart from the newest readable state on.
+    expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: 'wt-tree', errorCode: 'CHECKPOINT_UNRESTORABLE' })])
     await restartNewest('wt-tree')
     expect(await restoredFrom('wt-tree')).toMatchObject({ restore: `lives/${l1}/manifest.json`, restoreNewestReadable: true })
+
+    // A checkpoint the tree container finds it cannot read, once the pod
+    // is up, refuses the same way.
+    await stoppedWorkspace('wt-bad')
+    await manifest('wt-bad', await lifeOf('wt-bad'))
+    installDriver({
+      launch: async (spec) => {
+        const failed = path.join(ckpt('wt-bad'), 'lives', spec.tree?.life ?? '?', 'restore-failed.json')
+        await fs.mkdir(path.dirname(failed), { recursive: true })
+        await fs.writeFile(failed, JSON.stringify({ bundle: 'bundles/x.bundle', message: 'bad object' }))
+        return handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: spec.workspaceId, jobName: `yaac-${spec.workspaceId}` })
+      },
+      awaitReady: () => new Promise(() => { /* the restore never finishes */ }),
+    })
+    await expect(restart('wt-bad')).rejects.toThrow(/bundles\/x\.bundle is unreadable: bad object.*--restore-newest/)
+    expect(listProvisioning()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ workspaceId: 'wt-bad', errorCode: 'CHECKPOINT_UNRESTORABLE' }),
+    ]))
+    installDriver()
 
     // A first node-local life that saved nothing falls back to the import
     // of the files it had on the shared tier.
