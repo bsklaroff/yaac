@@ -222,16 +222,19 @@ describe('workspace trees on the node', () => {
     expect(usage.nodeDisks?.length).toBeGreaterThan(0)
     expect(usage.nodeDisks?.every((d) => d.error === undefined && d.totalBytes > 0), JSON.stringify(usage.nodeDisks)).toBe(true)
     // Other users of the disk move its free space during the suite, so
-    // write what crosses the floor now on the workspace's node, as the
+    // take what crosses the floor now on the workspace's node, as the
     // guard reads it, plus a margin.
     const { node } = await pod()
     const disk = usage.nodeDisks!.find((d) => d.node === node)
     if (!disk) throw new Error(`no disk reading for node ${String(node)}: ${JSON.stringify(usage.nodeDisks)}`)
     const fillMiB = Math.ceil(((disk.freeBytes - disk.stopBytes) / GiB + 0.75) * 1024)
     expect(fillMiB, 'the node freed too much disk since the suite started').toBeLessThan(6 * 1024)
-    // The stop it causes can kill the write, and the exec with it.
-    await sh(`dd if=/dev/zero of=/workspace/big.bin bs=1M count=${String(Math.max(fillMiB, 1100))} status=none || true`).catch(() => '')
-    // Gone, not just terminating: the stop's final pass over that write
+    // Allocated rather than written. Writing gigabytes fills the host's
+    // page cache, and on a host short of free memory that stalls the node
+    // long enough for netd's memory-pressure kill to take the workspace
+    // before the guard stops it (docs/cluster-setup.md "Memory pressure").
+    await sh(`fallocate -l ${String(Math.max(fillMiB, 1100))}M /workspace/big.bin`)
+    // Gone, not just terminating: the stop's final pass over that file
     // spends up to its whole grace period, and only then is the workspace
     // listed as stopped.
     await vi.waitFor(async () => {

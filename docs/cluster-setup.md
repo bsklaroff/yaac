@@ -859,7 +859,14 @@ all grow needs far more than its RAM. Four settings keep that safe.
   so netd kills its workspaces one at a time, 30s apart, until the node
   recovers or none is left; that cost is accepted so that a thrashing node
   is always relieved. Each install's netd on a shared node watches the
-  same pressure, so each may kill one of its own workspaces. A node where
+  same pressure, so each may kill one of its own workspaces. The stall
+  need not come from sandbox memory: a workspace writing gigabytes to disk
+  on a node short of free RAM fills the page cache, the kernel swaps other
+  sandboxes' cold pages out to hold it, and the host reads 10-15% for as
+  long as the write runs. netd kills on that reading too, and an install's
+  only workspace is picked however far under its request it is. To tell a
+  pressure kill from a crash, look for `memory pressure … killed <pod>` in
+  the log of the netd pod on the workspace's node. A node where
   netd is not running (not yet scheduled, or crash-looping) or whose
   kernel has PSI off (some distributions need `psi=1` on the kernel
   command line, and netd logs that once) gets no kill at all, only the
