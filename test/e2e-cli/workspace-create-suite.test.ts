@@ -586,9 +586,19 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const { stdout } = await execInJob(jobName, ['env'])
       expect(stdout).toContain('KITCHEN_SECRET=placeholder')
       expect(stdout).not.toContain('the-real-secret')
-      const { stdout: grepped } = await execInJob(jobName, [
-        'sh', '-c', 'grep -rl the-real-secret /workspace /home/yaac 2>/dev/null || true',
-      ])
+      // Every file on a mount is searched, and every file of the image's own
+      // filesystem changed after the pod was created, by ctime, which unlike
+      // mtime cannot be set back. An older one came from the image, which is
+      // built without project secrets; skipping those spares reading the
+      // gigabytes of tools the image keeps in the home dir, which takes over
+      // a minute under gVisor on a slow disk.
+      const pod = (await listWorkspacePods(idOf('kitchen'))).find((p) => p.workspaceId === workspaceId)!
+      const since = Math.floor(pod.createdAtMs / 1000) - 5
+      const { stdout: grepped } = await execInJob(jobName, ['sh', '-c', [
+        'set -- $(awk \'$2 ~ /^\\/(workspace|home\\/yaac)(\\/|$)/ { print $2 }\' /proc/mounts)',
+        '{ [ $# -eq 0 ] || grep -rlF the-real-secret "$@"',
+        `find /workspace /home/yaac -xdev -type f -newerct @${String(since)} -exec grep -lF the-real-secret {} +; } 2>/dev/null || true`,
+      ].join('; ')])
       expect(grepped.trim()).toBe('')
     }, 60_000)
 

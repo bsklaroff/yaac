@@ -8,6 +8,7 @@ import { kubectl } from '@yaac/test-utils/kubectl'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 import { k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
+import { NODE_LOCAL_NODE_ROOT } from '@yaac/server/drivers/k8s/substrate/storage-constants'
 import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
 import { assignTestGitCredential, registerTestProject, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
 import { requireCluster } from '@yaac/test-utils/setup'
@@ -22,7 +23,7 @@ const execFileAsync = promisify(execFile)
  * the tree container fills `/workspace` there with each checkout's `.git`
  * on the shared tier, checkpoints unsaved work, and a restart restores it,
  * after a clean stop or after the sandbox was killed and its tree salvaged.
- * Last, the full-node guard: its stop floor is set just under the host's
+ * Last, the full-node guard: its stop floor is set just under the node's
  * free space, so one workspace writing past it is stopped for it.
  *
  * One server and one project for the file; the cases share one workspace,
@@ -30,9 +31,20 @@ const execFileAsync = promisify(execFile)
  */
 const GiB = 1024 ** 3
 
-async function hostFreeGiB(): Promise<number> {
-  const s = await fs.statfs('/')
-  return (s.bavail * s.bsize) / GiB
+/**
+ * The least free space of any node's node-local root, read on each kind
+ * node. This install's trees go under that root, so it is the disk the guard
+ * measures, which need not be the host's `/`: a rig may keep its node
+ * containers' storage on a disk of its own.
+ */
+async function nodeFreeGiB(): Promise<number> {
+  const nodes = (await kubectl(['get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}'])).stdout.split(' ').filter(Boolean)
+  const free = await Promise.all(nodes.map(async (node) => {
+    const { stdout } = await execFileAsync('podman', ['exec', node, 'stat', '-f', '-c', '%a %S', NODE_LOCAL_NODE_ROOT])
+    const [blocks, size] = stdout.trim().split(' ').map(Number)
+    return (blocks * size) / GiB
+  }))
+  return Math.min(...free)
 }
 
 describe('workspace trees on the node', () => {
@@ -44,7 +56,6 @@ describe('workspace trees on the node', () => {
   const PROJECT_ID = crypto.randomUUID()
   const REMOTE = 'https://github.com/test-org/tree-demo.git'
   let workspaceId = ''
-  let stopFloorGiB = 0
 
   beforeAll(async () => {
     await requirePodman()
@@ -61,11 +72,10 @@ describe('workspace trees on the node', () => {
     await cloneRepo(path.join(mockGit.reposDir, 'tree-demo.git'), repoDir, null)
     await git(repoDir, ['remote', 'set-url', 'origin', REMOTE])
     // The guard stops a workspace once free space falls under the stop
-    // floor: set it 1.5 GiB under what the host has now, so the cases
-    // before the last never cross it. Trees and the host's podman store
-    // share this disk on kind.
-    const freeGiB = await hostFreeGiB()
-    stopFloorGiB = Math.max(0, freeGiB - 1.5)
+    // floor: set it 1.5 GiB under what the nodes have now, so the cases
+    // before the last never cross it.
+    const freeGiB = await nodeFreeGiB()
+    const stopFloorGiB = Math.max(0, freeGiB - 1.5)
     const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
     const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
     serverEnv = {
@@ -211,10 +221,14 @@ describe('workspace trees on the node', () => {
     const usage = await (await api('/server/usage')).json() as ResourceReport
     expect(usage.nodeDisks?.length).toBeGreaterThan(0)
     expect(usage.nodeDisks?.every((d) => d.error === undefined && d.totalBytes > 0), JSON.stringify(usage.nodeDisks)).toBe(true)
-    // Other users of the host disk move its free space during the suite,
-    // so write what crosses the floor now, plus a margin.
-    const fillMiB = Math.ceil((await hostFreeGiB() - stopFloorGiB + 0.75) * 1024)
-    expect(fillMiB, 'the host freed too much disk since the suite started').toBeLessThan(6 * 1024)
+    // Other users of the disk move its free space during the suite, so
+    // write what crosses the floor now on the workspace's node, as the
+    // guard reads it, plus a margin.
+    const { node } = await pod()
+    const disk = usage.nodeDisks!.find((d) => d.node === node)
+    if (!disk) throw new Error(`no disk reading for node ${String(node)}: ${JSON.stringify(usage.nodeDisks)}`)
+    const fillMiB = Math.ceil(((disk.freeBytes - disk.stopBytes) / GiB + 0.75) * 1024)
+    expect(fillMiB, 'the node freed too much disk since the suite started').toBeLessThan(6 * 1024)
     // The stop it causes can kill the write, and the exec with it.
     await sh(`dd if=/dev/zero of=/workspace/big.bin bs=1M count=${String(Math.max(fillMiB, 1100))} status=none || true`).catch(() => '')
     // Gone, not just terminating: the stop's final pass over that write
