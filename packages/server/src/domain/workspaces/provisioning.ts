@@ -295,11 +295,12 @@ export function removeProvisioning(workspaceId: string): void {
 
 /**
  * The user's "dismiss" on a failed entry; only its project's owner may.
- * Idempotent for an id with no entry.
+ * A no-op for an id with no entry or one still provisioning, so a retry
+ * that dismisses the failure first cannot drop another retry's live row.
  */
 export async function dismissProvisioning(principal: Actor, workspaceId: string): Promise<void> {
   const e = entries.get(workspaceId)
-  if (!e) return
+  if (e?.error === undefined) return
   await authorizeProject(principal, e.projectId)
   removeProvisioning(workspaceId)
 }

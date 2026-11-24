@@ -73,7 +73,7 @@ import { probePushAccess } from '@yaac/server/domain/git'
 import { stopWorkspace } from '@yaac/server/domain/workspaces/stop'
 import { addProject } from '@yaac/server/domain/projects/add'
 import { removeProject } from '@yaac/server/domain/workspaces/project-teardown'
-import { registerProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/domain/workspaces/provisioning'
+import { registerProvisioning, failProvisioning, listProvisioning, clearAllProvisioningForTests } from '@yaac/server/domain/workspaces/provisioning'
 import { authAgentHub } from '@yaac/server/domain/auth/tool-login'
 import { startFakeVendorOAuth } from '@yaac/test-utils/fake-vendor-oauth'
 
@@ -903,8 +903,9 @@ describe('write routes', () => {
   })
 
   describe('POST /workspace/provisioning/:id/dismiss', () => {
-    it('removes the registry entry and returns 204', async () => {
+    it('removes a failed registry entry and returns 204', async () => {
       registerProvisioning({ workspaceId: 'dz-1', projectId: DEMO, tool: 'claude', kind: 'create' })
+      failProvisioning('dz-1', 'failed')
       const client = makeTestApiClient(buildApp({ buildId: 'test' }))
       const res = await client.workspace.provisioning[':id'].dismiss.$post({ param: { id: 'dz-1' } })
       expect(res.status).toBe(204)

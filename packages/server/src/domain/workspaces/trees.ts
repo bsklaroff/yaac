@@ -160,7 +160,7 @@ export async function restoreFailure(projectId: string, workspaceId: string, lif
  * newest earlier life's, passing over only lives that have none. After
  * them comes the import of the workspace's files from the shared tier, if
  * there was one. A manifest that is there but unreadable refuses the
- * restart, unless `newestReadable` asks to pass over it too
+ * restart with `CHECKPOINT_UNRESTORABLE`, unless `newestReadable` asks to pass over it too
  * (docs/node-local-workspaces.md "Restore").
  */
 export async function restorePointer(
@@ -174,7 +174,7 @@ export async function restorePointer(
     if (m === 'absent') continue
     if (m === 'unreadable') {
       if (opts.newestReadable === true) continue
-      throw new ServerError('CONFLICT', `${workspaceId.slice(0, 8)}'s checkpoint ${LIVES_DIR}/${life}/${MANIFEST_FILE} is unreadable, `
+      throw new ServerError('CHECKPOINT_UNRESTORABLE', `${workspaceId.slice(0, 8)}'s checkpoint ${LIVES_DIR}/${life}/${MANIFEST_FILE} is unreadable, `
         + 'so work saved after the checkpoint before it would be missing. Restart with --restore-newest to restore the newest state that is readable')
     }
     return `${LIVES_DIR}/${life}/${MANIFEST_FILE}`

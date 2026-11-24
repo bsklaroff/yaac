@@ -146,6 +146,7 @@ describe('WorkspaceView around a create', () => {
     expect(server.called('POST /api/workspace/restart').map((c) => c.body)).toEqual([{ workspaceId: 'w1' }])
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart without volume' }))
+    await waitFor(() => expect(server.called('POST /api/workspace/restart')).toHaveLength(2))
     await waitFor(() => expect(useUiStore.getState().inFlightProvisions).toEqual([]))
     expect(server.called('POST /api/workspace/restart').map((c) => c.body).at(-1))
       .toEqual({ workspaceId: 'w1', volume: null })
@@ -156,6 +157,45 @@ describe('WorkspaceView around a create', () => {
     expect(useUiStore.getState().optimisticProvisioning[0]).not.toHaveProperty('error')
     expect(screen.queryByRole('button', { name: 'Restart without volume' })).toBeNull()
     expect(useUiStore.getState().selectedWorkspaceId).toBe('w1')
+  })
+
+  // A checkpoint refusal comes from inside the restart's run, so it is on
+  // the server's row. A retry dismisses that row before it restarts, so a
+  // retry refused before it registers a row of its own shows its refusal.
+  it('offers to restart from the newest readable checkpoint, showing the retry\'s own refusal', async () => {
+    const failed = creating({
+      kind: 'restart', prompt: undefined, groupId: 'g1', errorCode: 'CHECKPOINT_UNRESTORABLE',
+      error: 'the restart cannot restore its files: bundle missing',
+    })
+    const calls: string[] = []
+    server.route('POST /api/workspace/provisioning/w1/dismiss', () => {
+      calls.push('dismiss')
+      useUiStore.getState().receiveSnapshot({ ...snapshot, provisioning: [] })
+      return {}
+    })
+    server.route('POST /api/workspace/restart', ({ body }: FetchCall) => {
+      calls.push(`restart ${JSON.stringify(body)}`)
+      return (body as { volume?: null }).volume === null
+        ? { type: 'result', result: { workspaceId: 'w1' } }
+        : serverError('VOLUME_HELD', 'volume "db" is attached to running workspace abcd1234', 409)
+    })
+    function Pane(): JSX.Element {
+      const snap = useUiStore((s) => s.snapshot) ?? snapshot
+      const optimistic = useUiStore((s) => s.optimisticProvisioning)
+      return <WorkspaceView snapshot={snap} provisioning={mergeProvisioning(snap.provisioning, optimistic)} />
+    }
+    useUiStore.setState({ activeProjectId: 'proj', selectedWorkspaceId: 'w1' })
+    useUiStore.getState().receiveSnapshot({ ...snapshot, provisioning: [failed] })
+    renderWithClient(<Pane />)
+    expect(screen.queryByRole('button', { name: 'Restart without volume' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart from newest readable checkpoint' }))
+    expect(await screen.findByText(/attached to running workspace abcd1234/)).toBeTruthy()
+    expect(calls).toEqual(['dismiss', 'restart {"workspaceId":"w1","restoreNewest":true}'])
+    expect(screen.queryByRole('button', { name: 'Restart from newest readable checkpoint' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart without volume' }))
+    await waitFor(() => expect(calls.at(-1)).toBe('restart {"workspaceId":"w1","volume":null}'))
   })
 
   // Started from the new-workspace pane's bar for a pane, it opens that pane
