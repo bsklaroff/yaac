@@ -751,6 +751,10 @@ the error in its place and both panes mark their tree "Not up to date".
 
 - **Download** a file, or a folder as a zip, from its row's menu, or the
   whole workspace from the header or the menu of the tree's empty space.
+  An open file's pane has a download button too, which saves the pane's
+  unsaved text first so the file downloaded is the one shown; while that
+  text cannot be saved (a conflict, a failing save) it downloads nothing
+  and says why under the header, as it does for a refusal.
   The iPhone app's web view saves no downloads, so it offers none. The
   webapp asks the route's `check` first, so a refusal (a folder of too many
   files) shows above the tree; the browser then fetches it as a download of

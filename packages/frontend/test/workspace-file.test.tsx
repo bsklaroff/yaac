@@ -67,6 +67,8 @@ let fileAt: { path: string | null; rev: string | null }[]
 let others: Record<string, string>
 /** The paths read through the raw route. */
 let rawReads: string[]
+/** Saves and download checks, in the order they arrived. */
+let requests: string[]
 
 function respond(status: number, body: unknown): Response {
   const res = {
@@ -100,11 +102,16 @@ beforeEach(() => {
   binary = false
   others = {}
   rawReads = []
+  requests = []
   // hono hands the client's fetch a relative URL string.
   globalThis.fetch = vi.fn(async (input: string, init?: RequestInit) => {
     const url = new URL(input, 'http://localhost')
     if (url.pathname.endsWith('/changes')) {
       return changes ? respond(200, changes) : respond(409, { error: { code: 'CONFLICT', message: 'not running' } })
+    }
+    if (url.pathname.endsWith('/download')) {
+      requests.push(`download ${url.searchParams.get('path')}`)
+      return onDisk() ? respond(200, {}) : respond(404, { error: { code: 'NOT_FOUND', message: 'no such folder: tool.bin' } })
     }
     if (url.pathname.endsWith('/file-at')) {
       fileAt.push({ path: url.searchParams.get('path'), rev: url.searchParams.get('rev') })
@@ -113,6 +120,7 @@ beforeEach(() => {
     if (init?.method === 'PUT') {
       const body = JSON.parse(init.body as string) as Put
       puts.push(body)
+      requests.push(`put ${body.content}`)
       if (workspaceGone) return respond(404, { error: { code: 'NOT_FOUND', message: 'workspace w1 not found' } })
       const hold = holdPut
       holdPut = null
@@ -239,6 +247,39 @@ describe('WorkspaceFile', () => {
     expect(writeText).toHaveBeenCalledWith('src/deep/a.ts')
     expect(screen.getByRole('button', { name: 'Copy path' }).title).toBe('Copied')
     discardFileSavers([fileKey('w1', 'src/deep/a.ts')])
+  })
+
+  // The anchor's click is the browser's own download, which jsdom cannot
+  // follow, so the test reads which link it was handed.
+  // A binary file is not polled, so a refusal is the only word that it went.
+  it('downloads the file from the header, saving unsaved text first, and says why it did not', async () => {
+    const clicked: string[] = []
+    const spy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      clicked.push(this.getAttribute('href') ?? '')
+    })
+    onTestFinished(() => spy.mockRestore())
+    await mount('src/a.ts')
+    type('mine\n')
+    failPuts = 1
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    await tick(0)
+    expect(screen.getByRole('alert').textContent).toContain('Not downloaded: your edits are not saved yet.')
+    expect(requests).toEqual(['put mine\n'])
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    await tick(0)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(requests).toEqual(['put mine\n', 'put mine\n', 'download src/a.ts'])
+    expect(clicked).toEqual(['/api/workspace/w1/download?path=src%2Fa.ts'])
+    discardFileSavers([fileKey('w1', 'src/a.ts')])
+    cleanup()
+    binary = true
+    await mount('tool.bin')
+    screen.getByText('Binary file, not shown')
+    disk = null
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    await tick(0)
+    expect(screen.getByRole('alert').textContent).toContain('Not downloaded: no such folder: tool.bin')
+    expect(clicked).toHaveLength(1)
   })
 
   it('autosaves once, a second after the last of a burst of edits', async () => {
