@@ -405,8 +405,8 @@ export const env = {
    * `YAAC_SITE_DOMAIN` — the zone whose names are tailnet sites'
    * (docs/public-sites.md "Tailnet sites"), lowercased. `yaac cluster
    * install` sets it on the server Deployment, from `--site-domain` or the
-   * domain the tailnet tunnel's Secret records, and the server hands it to
-   * the egress proxy. Undefined when unset or empty.
+   * domain the tailnet tunnel's Secret records. Undefined when unset or
+   * empty.
    */
   get siteDomain(): string | undefined {
     const raw = process.env.YAAC_SITE_DOMAIN?.trim().toLowerCase()

@@ -17,7 +17,7 @@ import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import type { EgressAllowlist, SecretProxyRule } from '@yaac/shared/types'
-import type { EgressIdentity, PassContext, WorkspaceRegistration } from '#drivers/contract'
+import type { PassContext, WorkspaceRegistration } from '#drivers/contract'
 
 /**
  * A workspace's egress registration: the ConfigMap telling the proxy what
@@ -71,8 +71,6 @@ export interface ProxyRegistration {
   allowedHosts: string[]
   projectId: string
   owner: string
-  /** Stamped on the workspace's requests to a tailnet site. */
-  identity?: EgressIdentity
   upstreamRedirects?: Record<string, UpstreamRedirect>
 }
 
@@ -154,7 +152,6 @@ export function buildProxyRegistration(input: {
   allowlist: EgressAllowlist
   projectId: string
   owner: string
-  identity?: EgressIdentity
   secretRules: Record<string, SecretProxyRule>
   env?: NodeJS.ProcessEnv
 }): ProxyRegistration {
@@ -165,7 +162,6 @@ export function buildProxyRegistration(input: {
     allowedHosts: resolveAllowedHosts(input.allowlist),
     projectId: input.projectId,
     owner: input.owner,
-    ...(input.identity !== undefined ? { identity: input.identity } : {}),
     upstreamRedirects: parseUpstreamRedirectsEnv(env.YAAC_E2E_UPSTREAM_REDIRECTS),
   }
 }
@@ -193,7 +189,6 @@ export async function registerWorkspaceEgress(
     allowlist: reg.allowlist,
     projectId: reg.projectId,
     owner: reg.owner,
-    identity: reg.identity,
     secretRules: reg.proxySecretRules,
   })
   await applyProxyRegistration(reg.workspaceId, registration)

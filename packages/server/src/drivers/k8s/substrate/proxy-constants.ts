@@ -252,9 +252,8 @@ export const SITE_TUNNEL_CLOUDFLARE_METRICS_PORT = 2000
 export const SITE_ROUTER_PORT = 8080
 /**
  * The router's tailnet listener, which serves only tailnet sites and only
- * requests carrying a tailnet login: from the tailnet tunnel, and from the
- * egress proxy on a workspace owner's behalf (docs/public-sites.md
- * "Tailnet sites"). The proxy refuses any other dial to it.
+ * requests carrying a tailnet login, from the tailnet tunnel alone
+ * (docs/public-sites.md "Tailnet sites").
  */
 export const SITE_ROUTER_TAILNET_PORT = 8081
 /** The tailnet tunnel: tailscaled and tailgate in one pod, one tailnet device. */

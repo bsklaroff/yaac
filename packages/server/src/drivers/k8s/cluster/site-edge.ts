@@ -21,15 +21,13 @@
  * not a release, nor the router or the Cloudflare tunnel to the server, and
  * `yaac cluster check`'s `sites` gate dials them to prove it. The tailnet
  * tunnel may dial the server, which admits it only while the install names
- * a server name (install's `ensureServerDeployment`). The proxy is admitted to the
- * router's tailnet listener, the one way in from the cluster side.
+ * a server name (install's `ensureServerDeployment`).
  */
 import crypto from 'node:crypto'
 import {
   LABEL_SITE_ID,
   LABEL_WORKSPACE_ID,
   PRIORITY_CLASS_INFRA,
-  PROXY_APP_NAME,
   SERVER_APP_NAME,
   SERVER_POD_PORT,
   SITE_ROUTER_ADMIN_PORT,
@@ -190,8 +188,8 @@ function httpFilter(name: string, type: string, config: Record<string, unknown> 
  * which neither edge sets, so an app never believes one a caller chose
  * (docs/public-sites.md "Headers an app may trust"). Envoy 1.34 removes
  * request headers only by name, so this names the ones frameworks and auth
- * backends read. tailgate and the egress proxy also drop every
- * `X-Forwarded-*`, `Tailscale-*` and `CF-*` name by prefix.
+ * backends read. tailgate also drops every `X-Forwarded-*`, `Tailscale-*`
+ * and `CF-*` name by prefix.
  */
 const UNVOUCHED_HEADERS = [
   // A client's address.
@@ -480,9 +478,8 @@ function networkPolicy(name: string, app: string, spec: Record<string, unknown>)
  *    tailscaled's state Secret;
  *  - tailnet tunnel ingress: the node on its two health ports;
  *  - router ingress: the Cloudflare tunnel on the public port (by its
- *    current and its legacy label), the tailnet tunnel and the egress
- *    proxy (carrying workspaces' requests) on the tailnet port, and the
- *    node on admin;
+ *    current and its legacy label), the tailnet tunnel on the tailnet
+ *    port, and the node on admin;
  *  - router egress: DNS, and release pods (any `yaac.site-id`) on any port,
  *    which each site's own policy narrows to its port.
  */
@@ -524,7 +521,7 @@ function buildSiteEdgePolicies(
           ports: [tcp(SITE_ROUTER_PORT)],
         },
         {
-          from: [SITE_TUNNEL_TAILNET_APP_NAME, PROXY_APP_NAME].map((app) => ({ podSelector: { matchLabels: { app } } })),
+          from: [{ podSelector: { matchLabels: { app: SITE_TUNNEL_TAILNET_APP_NAME } } }],
           ports: [tcp(SITE_ROUTER_TAILNET_PORT)],
         },
         { from: nodes, ports: [tcp(SITE_ROUTER_ADMIN_PORT)] },

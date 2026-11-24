@@ -131,7 +131,6 @@ export async function prepareWorkspaceSubstrate(
     allowlist: intent.allowlist,
     projectId,
     owner: intent.owner,
-    identity: intent.identity,
     secretRules: intent.proxySecretRules,
   })
 

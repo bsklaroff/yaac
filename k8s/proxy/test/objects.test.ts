@@ -189,6 +189,8 @@ describe('decodeRegistration', () => {
       allowedHosts: ['api.example.com', 7],
       projectId: 'demo',
       owner: 'alice',
+      // A field the proxy does not read is dropped.
+      identity: { login: 'alice@example.com', name: 'Alice' },
       upstreamRedirects: {
         'api.anthropic.com': { host: 'mock', port: 8080, tls: false },
         'bad': { host: 'mock' },

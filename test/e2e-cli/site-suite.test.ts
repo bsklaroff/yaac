@@ -82,8 +82,6 @@ describe('yaac site (real CLI + real server)', () => {
   let repoPath = ''
   /** The project's second repo, linked in the folder `docs`, at its head. */
   let docsSha = ''
-  /** That repo's own project, which allows no tailnet site. */
-  let docsProjectId = ''
 
   const yaac = async (...args: string[]): Promise<string> => {
     const { stdout, stderr, exitCode } = await runYaac(serverEnv, ...args)
@@ -162,7 +160,6 @@ describe('yaac site (real CLI + real server)', () => {
     // project's id.
     await seedMockGitRepo(mockGit, DOCS, { files: { 'docs.md': '# docs\n' } })
     const docsId = randomUUID()
-    docsProjectId = docsId
     const docsPath = path.join(testEnv.dataDir, 'global', 'repos', docsId)
     await cloneRepo(path.join(mockGit.reposDir, `${DOCS}.git`), docsPath, null)
     await git(docsPath, ['remote', 'set-url', 'origin', `https://github.com/test-org/${DOCS}.git`])
@@ -449,9 +446,10 @@ describe('yaac site (real CLI + real server)', () => {
    * redeploys the file's server in tailnet mode with a site domain, which
    * refuses the loopback CLI the cases above use, so the CLI goes through a
    * stand-in for tailscale serve as alice, whom the built-in user, owner of
-   * the project, becomes. No tier has a tailnet, so tailscaled never runs: a
-   * workspace reaches the site through the egress proxy, and tailgate's
-   * image runs on its own beside a stand-in for tailscaled's local API.
+   * the project, becomes. No tier has a tailnet, so tailscaled never runs:
+   * tailgate's image runs on its own beside a stand-in for tailscaled's
+   * local API. A workspace, which is not on the tailnet, cannot reach the
+   * site at all.
    */
   describe('a tailnet site', () => {
     const HOST = 'srv.tailnet.ts.net'
@@ -461,7 +459,6 @@ describe('yaac site (real CLI + real server)', () => {
     let serve: http.Server | null = null
     let aliceEnv: NodeJS.ProcessEnv
     let routerIp = ''
-    let release = ''
     const as = async (...args: string[]): Promise<string> => {
       const { stdout, stderr, exitCode } = await runYaac(aliceEnv, ...args)
       if (exitCode !== 0) throw new Error(`yaac ${args.join(' ')} failed (exit ${exitCode}):\n${stderr}`)
@@ -510,9 +507,8 @@ describe('yaac site (real CLI + real server)', () => {
         apiVersion: 'v1', kind: 'Service', name: 'yaac-site-router', namespace: k8sNamespace(),
       })
       routerIp = router?.spec?.clusterIP ?? ''
-      // The zone is the owner's consent to send their login there; the
-      // router's exact address would admit a direct dial to it, but for
-      // its tailnet port.
+      // The widest a project can open toward the site: its zone, and the
+      // router's address exactly, which admits a non-public dial.
       await as('config', 'egress-allowlist', NAME, `*.${ZONE}`, routerIp)
     }, 360_000)
 
@@ -533,8 +529,7 @@ describe('yaac site (real CLI + real server)', () => {
       const deployed = await runYaac(aliceEnv, 'site', 'deploy', NAME, 'kanban', '--timeout', '10m', '--wait')
       expect(deployed.exitCode, deployed.stderr).toBe(0)
       const shown = await (await makeServerApiClient(server!, ALICE).site.show.$get({ query: { project: projectId, name: 'kanban' } })).json()
-      release = shown.live?.workspaceId ?? ''
-      expect(release).not.toBe('')
+      expect(shown.live?.workspaceId).toBeDefined()
 
       // The public listener has no virtual host for it.
       const router = await startKubectlForward({ namespace: k8sNamespace(), target: 'service/yaac-site-router', remotePort: 8080 })
@@ -547,38 +542,20 @@ describe('yaac site (real CLI + real server)', () => {
       }
     }, 900_000)
 
-    it('a workspace reaches it as its owner whatever it sends; a release, a project that has not allowed it and a direct dial to its listener are refused', async () => {
+    it('a workspace cannot reach it, by its name or by the router\'s tailnet listener, though its project allows both', async () => {
       const job = await workspaceOf(NAME, projectId)
-      // The proxy stamps the owner's login over whatever the workspace sent.
-      const seen = await vi.waitFor(async () => {
-        const r = await curlFrom(job, ['-H', "'Tailscale-User-Login: mallory@example.com'", '-H', "'X-Forwarded-For: 203.0.113.9'", `https://${SITE}/`])
-        expect(r.exit, r.out).toBe(0)
-        return JSON.parse(r.out) as Record<string, string>
-      }, { timeout: 120_000, interval: 2_000 })
-      expect(seen['tailscale-user-login']).toBe('alice@example.com')
-      expect(seen.host).toBe(SITE)
-      expect(seen['x-forwarded-for']).not.toContain('203.0.113.9')
+      // Wherever the name resolves, the dial never reaches the router: a public
+      // answer goes to the internet, and a private or tailnet one is dropped.
+      const byName = await curlFrom(job, [`https://${SITE}/`])
+      expect(byName.exit, byName.out).not.toBe(0)
+      expect(byName.out).not.toContain('alice@example.com')
 
-      // Plain HTTP would carry the login in the clear.
-      const plain = await curlFrom(job, [`http://${SITE}/`])
-      expect(plain.out).toContain(`use https://${SITE}/`)
-
-      // The router's address is allowed exactly, but not on its tailnet port.
+      // The proxy dials the router's address, which the allowlist admits
+      // exactly, but the egress policy drops it.
       const direct = await curlFrom(job, ['-v', '--proxytunnel', '--proxy', `http://${SSH_TUNNEL_SENTINEL}:${String(TUNNEL_INGRESS_PORT)}`,
-        '-H', `'Host: ${SITE}'`, '-H', "'Tailscale-User-Login: mallory@example.com'", `http://${routerIp}:8081/`])
+        '-H', `'Host: ${SITE}'`, '-H', "'Tailscale-User-Login: alice@example.com'", `http://${routerIp}:8081/`])
       expect(direct.exit).not.toBe(0)
-      expect(direct.out).toMatch(/CONNECT tunnel failed, response 403/)
-
-      // A release acts for no one.
-      const releaseJob = (await listWorkspacePods(projectId)).find((p) => p.workspaceId === release)?.jobName ?? ''
-      const fromRelease = await curlFrom(releaseJob, ['-o', '/dev/null', '-w', "'%{http_code}'", `https://${SITE}/`])
-      expect(fromRelease.out).toBe('403')
-
-      // Another project has not consented to send its owner's login there.
-      const other = await workspaceOf(DOCS, docsProjectId)
-      const refused = await curlFrom(other, [`https://${SITE}/`])
-      expect(refused.exit).not.toBe(0)
-      expect(refused.out).not.toContain('alice@example.com')
+      expect(direct.out).toMatch(/CONNECT tunnel failed, response 502/)
     }, 600_000)
 
     it('tailgate\'s image, as the global setup built it, answers the zone and stamps a user\'s request', async () => {

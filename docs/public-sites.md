@@ -232,13 +232,13 @@ tailnet's ACLs decide who reaches the tunnel, not which site: a grant to its
 tag on TCP 443 and 80 and on port 53 admits a user to all of them. Telling
 sites apart is the app's job.
 
-**Agents** reach a tailnet site at the same URL and act as their
-workspace's owner: the egress proxy carries the request to the router's
-8081 and stamps the project owner's login, if the project's allowlist names
-the host or the zone; `*` does not count (docs/workspace-egress.md "Tailnet sites",
-docs/multi-user.md "Credentials"). An app cannot tell a person's request
-from their agent's. A release has no identity, so its requests to a tailnet
-site are refused.
+**A workspace cannot reach a tailnet site.** Its agents, and a release,
+are not on the tailnet, and nothing in the cluster stands in for the
+tunnel: policy drops the egress proxy's dials to non-public addresses, and
+only the tailnet tunnel may dial the router's 8081 (docs/workspace-egress.md
+"Tailnet sites"). An agent that should use an internal app runs outside
+yaac, on a tailnet device with a user login, and comes in through the
+tunnel like a person.
 
 **Setup.**
 
@@ -264,7 +264,7 @@ it trusts them whoever wrote them. yaac vouches for these and no others:
 |---|---|---|
 | Both | `X-Forwarded-For`, `X-Forwarded-Proto` | the edge and the router |
 | Public | `CF-Connecting-IP` | Cloudflare |
-| Tailnet | `Tailscale-User-Login`, `Tailscale-User-Name` | tailgate, or the egress proxy for an agent |
+| Tailnet | `Tailscale-User-Login`, `Tailscale-User-Name` | tailgate |
 
 Each edge drops the headers that make the same kind of claim and that
 nothing in front of it sets. Otherwise an app that rebuilds its own URL
@@ -303,17 +303,14 @@ published on the public one by mistake sees no identity rather than one
 the internet chose. A Cloudflare zone that turns on `True-Client-IP` loses
 it; `CF-Connecting-IP` carries the same address.
 
-**The tailnet edge.** tailgate and the egress proxy's site route drop every
-`Tailscale-*`, `X-Forwarded-*` and `CF-*` header a caller sent before
-stamping their own, and every site request they forward crosses the
-router's tailnet listener, which drops the rest. (tailgate's requests for
-the install's server name go straight to the yaac server, which reads only
-the headers tailgate stamps.) A `CF-*` header means something only on the
-public edge, so an app written for that edge and published on the tailnet
-would otherwise believe a client address, or a Cloudflare Access user,
-that a tailnet caller chose. An agent's request, which the egress proxy
-forwards, sets neither forwarding header, so it reaches the app with the
-proxy's address in `X-Forwarded-For` and `X-Forwarded-Proto: http`.
+**The tailnet edge.** tailgate drops every `Tailscale-*`, `X-Forwarded-*`
+and `CF-*` header a caller sent before stamping its own, and every site
+request it forwards crosses the router's tailnet listener, which drops the
+rest. (tailgate's requests for the install's server name go straight to
+the yaac server, which reads only the headers tailgate stamps.) A `CF-*`
+header means something only on the public edge, so an app written for that
+edge and published on the tailnet would otherwise believe a client address,
+or a Cloudflare Access user, that a tailnet caller chose.
 
 `Host` is unchanged on both edges and still names the site.
 
@@ -342,9 +339,8 @@ that peer with the server's fronting).
   only from node addresses on its two health ports; tailnet traffic arrives
   inside connections tailscaled dialed out.
 - **Router**: ingress from Cloudflare tunnel pods on 8080, from tailnet
-  tunnel pods and the egress proxy (see "Agents") on 8081, and from node
-  addresses on its readiness port. Egress to DNS and to pods labelled
-  `yaac.site-id`.
+  tunnel pods on 8081, and from node addresses on its readiness port.
+  Egress to DNS and to pods labelled `yaac.site-id`.
 - **Per site**: pods labelled `yaac.site-id=<id>` admit router pods on the
   site's port. Every release of the site carries the label from launch, so
   the policy does not change across deploys. It is unioned with the
@@ -783,7 +779,7 @@ never overlap, so migrations never race. A rollback does not undo a schema.
   with "release of `<site>`" on its header, linking to the site.
 - **Modules**: `#domain/sites` (settings, publishing, the hostname rule,
   deploys, supervision, the `yaac-mama site` commands), `cluster/site-edge.ts` (every edge object), the `sites`
-  reconcile step, `k8s/tailgate`, and in `k8s/proxy` the site route.
+  reconcile step, and `k8s/tailgate`.
 
 ## Not yet
 
@@ -794,13 +790,10 @@ never overlap, so migrations never race. A rollback does not undo a schema.
   zone.
 - **A release's own egress allowlist.** A release uses its project's.
 - **Per-site access lists** for tailnet sites: which users may reach a site
-  (a router rule on the login) and which projects' workspaces may. One
-  device means the tailnet's ACLs cannot separate sites.
+  (a router rule on the login). One device means the tailnet's ACLs cannot
+  separate sites.
 - **`ts.net` names** for tailnet sites, which would need a Tailscale
   Service or operator proxy per site, a **second replica** of the tailnet
   tunnel (a second device and address), and **more than one site domain**.
-- **Marking agent requests** to a tailnet site with a header naming the
-  workspace. People and agents share one listener, so a person could send
-  it too; an app could use it to attribute, never to authorize.
 - **A stateful deploy with no gap**, which needs the state in a long-lived
   workspace that releases reach over the network.

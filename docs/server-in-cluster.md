@@ -386,8 +386,9 @@ a server name. The edge pods' egress (under the namespace's world-deny)
 reaches only Cloudflare on 7844, DNS and the router's public port (the
 Cloudflare tunnel), public addresses, DNS, the router's tailnet port, the
 server's API port and the apiserver (the tailnet tunnel), and pods labelled
-`yaac.site-id` (the router). The egress proxy is admitted to the router's
-tailnet port, which carries workspaces' requests to tailnet sites. `yaac
+`yaac.site-id` (the router). Nothing on the cluster side but the tailnet
+tunnel reaches the router's tailnet port: the egress proxy's egress names
+no edge pod, and its wide rule leaves out non-public addresses. `yaac
 cluster check`'s `sites` gate runs a probe pod labelled as each and fails if
 one reaches the server's API (bar the tailnet tunnel's while it fronts a
 server name), the proxy's control port or a workspace that is not a
