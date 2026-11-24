@@ -1,8 +1,12 @@
-import type { MiddlewareHandler } from 'hono'
+import type { HonoRequest, MiddlewareHandler } from 'hono'
 import { env } from '@yaac/shared/env'
-import type { AccessMode, Principal } from '@yaac/shared/types'
+import { ServerError } from '@yaac/shared/errors'
+import type { AccessMode, Delegate, Principal } from '@yaac/shared/types'
 import { namesWorkspace } from '@yaac/shared/workspace-hosts'
 import { BUILT_IN_USER_ID, seeTailnetUser } from '#db'
+import { personId } from '#domain/access'
+import { resolveProjectId } from '#domain/projects'
+import { resolveProjectWorkspace } from '#domain/workspaces'
 
 /** What `identify()` stores on the context for the routes after it. */
 export interface IdentityEnv {
@@ -185,6 +189,82 @@ export function identify(
       : { ...who, userId: await seeTailnetUser(who.login, who.name) })
     return next()
   }
+}
+
+/**
+ * Refuse a delegate a route that acts on the caller's own data (their
+ * sign-ins, settings, shortcuts, seen marks, the projects they add), before
+ * it validates anything (`personId`).
+ */
+export const personOnly: MiddlewareHandler<IdentityEnv> = async (c, next) => {
+  personId(c.get('principal'))
+  await next()
+}
+
+/**
+ * The gate in front of the API for a delegate (`delegateApp`): `resolve`
+ * answers who a request is from, and nothing is 401 UNAUTHENTICATED with
+ * `WWW-Authenticate: Bearer`; a resolver that can say more throws its own
+ * refusal. A delegate scoped to one project then reads only that project
+ * (`refuseScopedRead`), since reads carry no check of their own.
+ */
+export function delegateGate(resolve: (request: Request) => Promise<Delegate | undefined>): MiddlewareHandler<IdentityEnv> {
+  return async (c, next) => {
+    const delegate = await resolve(c.req.raw)
+    if (delegate === undefined) {
+      c.header('WWW-Authenticate', 'Bearer')
+      return c.json({ error: { code: 'UNAUTHENTICATED', message: 'this request carries no credential this server accepts' } }, 401)
+    }
+    c.set('principal', delegate)
+    if (delegate.projectId !== undefined) await refuseScopedRead(c.req, delegate.projectId, delegate.via.label)
+    return next()
+  }
+}
+
+/**
+ * Refuse a scoped delegate a request naming another project, and a read
+ * naming none (but `GET /whoami`), so it fails closed on a read route that
+ * names its project some way this does not see. A request names the
+ * project in its path (`/project/:projectId`), the workspace in its path
+ * (`/workspace/:id`), which is looked for in the delegate's own project
+ * alone, so one it cannot find there is not found whether or not another
+ * project has it, or its `project` query. A write that names its project
+ * only in its body is the verb's to check. Every route of a repo counts as
+ * a read.
+ */
+async function refuseScopedRead(req: HonoRequest, projectId: string, label: string): Promise<void> {
+  const [, , area, id] = req.path.split('/')
+  const project = (ref: string): Promise<string | undefined> => resolveProjectId(ref).catch(() => undefined)
+  const named = area === 'project' && id !== undefined ? await project(id)
+    : area === 'workspace' && id !== undefined ? await ownWorkspace(id, projectId)
+    : undefined
+  const query = req.query('project')
+  const target = named ?? (query !== undefined ? await project(query) ?? query : undefined)
+  // A repo may be linked to several projects, so a repo's routes (a
+  // clone's POST among them) name none it could read.
+  const read = req.method === 'GET' || req.method === 'HEAD' || area === 'repo'
+  if (target === undefined ? read && req.path !== '/api/whoami' : target !== projectId) {
+    throw new ServerError('FORBIDDEN', `${label} may read and act only in its own project`)
+  }
+}
+
+/** The `/workspace/<segment>` routes whose segment names no workspace. One
+ *  missing here is taken for a workspace id, which fails closed. */
+const WORKSPACE_ROUTES = new Set([
+  'list', 'list-stopped', 'create', 'rerun', 'restart', 'timeout', 'stop', 'delete', 'mark-death-seen',
+  'mark-waiting-seen', 'mark-all-deaths-seen', 'mama', 'git', 'queue', 'prompt', 'draft', 'group', 'provisioning',
+])
+
+/**
+ * `projectId`, when `id` names one of its workspaces (or one being made)
+ * by id or prefix; undefined for a segment that names a route rather than
+ * a workspace. An id it cannot find there is NOT_FOUND, as the route would
+ * answer, whether or not another project has it.
+ */
+async function ownWorkspace(id: string, projectId: string): Promise<string | undefined> {
+  if (WORKSPACE_ROUTES.has(id)) return undefined
+  await resolveProjectWorkspace(id, projectId, { provisioning: true })
+  return projectId
 }
 
 /**

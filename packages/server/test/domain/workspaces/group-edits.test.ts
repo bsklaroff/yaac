@@ -83,7 +83,7 @@ describe('moveWorkspaceToGroup', () => {
     await running('running')
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'stopped' })
     await recordWorkspaceStopped(PROJ, 'stopped')
-    const waiting = await queueWorkspace(local, PROJ, { prompt: 'waiting', group: 'Workers', mode: 'tui' }, 'user')
+    const waiting = await queueWorkspace(local, PROJ, { prompt: 'waiting', group: 'Workers', mode: 'tui' })
 
     await expect(moveWorkspaceToGroup(PROJ, 'running', groupId)).rejects.toMatchObject({
       code: 'CONFLICT', message: expect.stringMatching(/group "Workers" is at its workspace limit of 1 \(running or starting\)/) as string,
@@ -124,7 +124,7 @@ describe('setGroupWorkspaceLimit', () => {
     expect((await getWorkspaceRow(PROJ, 'm2'))?.stoppedAt).toBeUndefined()
 
     for (const prompt of ['first', 'second', 'third']) {
-      await queueWorkspace(local, PROJ, { prompt, group: groupId, mode: 'tui' }, 'user')
+      await queueWorkspace(local, PROJ, { prompt, group: groupId, mode: 'tui' })
     }
     // Two live already: room for one more only at three, however many
     // writes race to fill it, since a launch takes its slot before it claims.
@@ -163,9 +163,9 @@ describe('setGroupWorkspaceLimit', () => {
     })
     await setGroupWorkspaceLimit(PROJ, groupId, 2)
     await running('member', groupId)
-    await queueWorkspace(local, PROJ, { prompt: 'fails', group: groupId, mode: 'tui' }, 'user')
+    await queueWorkspace(local, PROJ, { prompt: 'fails', group: groupId, mode: 'tui' })
     await vi.waitFor(() => { expect(launched).toHaveLength(1) }, { timeout: 30_000 })
-    const next = await queueWorkspace(local, PROJ, { prompt: 'next', group: groupId, mode: 'tui' }, 'user')
+    const next = await queueWorkspace(local, PROJ, { prompt: 'next', group: groupId, mode: 'tui' })
     expect(launched).toHaveLength(1)
 
     fail()
@@ -180,7 +180,7 @@ describe('setGroupWorkspaceLimit', () => {
 describe('removeWorkspaceGroup', () => {
   it('moves what waits for room to the default list, where it launches', async () => {
     await running('member', groupId)
-    const waiting = await queueWorkspace(local, PROJ, { prompt: 'waiting', group: groupId, mode: 'tui' }, 'user')
+    const waiting = await queueWorkspace(local, PROJ, { prompt: 'waiting', group: groupId, mode: 'tui' })
 
     await removeWorkspaceGroup(PROJ, groupId)
     expect(await launchedPrompts(1)).toEqual(['waiting'])

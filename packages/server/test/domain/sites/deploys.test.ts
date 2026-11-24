@@ -59,10 +59,11 @@ import { repoDir } from '@yaac/shared/project-paths'
 import { _clearTerminatingForTests } from '#runtime/status/terminating'
 import type { RuntimeHandle, RuntimeSnapshot, SiteRoute, WorkspaceSpec } from '#drivers/contract'
 import type { SiteCommit } from '@yaac/shared/types'
+import { workspaceDelegate } from '#test/support/delegate'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const stranger = { kind: 'local', userId: '4101bef8-794f-4d98-8e95-dfb54850c68b' } as const
-const agent = { kind: 'workspace', workspaceId: 'w-agent', userId: BUILT_IN_USER_ID } as const
+const agent = workspaceDelegate(BUILT_IN_USER_ID, 'w-agent')
 
 const STEPS = {
   build: { run: 'pnpm build' },

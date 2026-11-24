@@ -1,8 +1,9 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
-import type { IdentityEnv } from '#api/http/web-auth'
+import { personOnly, type IdentityEnv } from '#api/http/web-auth'
 import { z } from 'zod'
 import { clearShortcutOverrides, getShortcutOverrides, setShortcutOverride } from '#db'
+import { personId } from '#domain/access'
 
 /** A keyboard chord: a physical key `code` plus the four modifier states.
  *  Mirrors the frontend `Chord`; validation lives here so the server needn't
@@ -16,17 +17,18 @@ const chordSchema = z.object({
 })
 
 export const shortcutsApp = new Hono<IdentityEnv>()
-  .get('/get', async (c) => c.json({ overrides: await getShortcutOverrides(c.get('principal').userId) }))
+  .use(personOnly)
+  .get('/get', async (c) => c.json({ overrides: await getShortcutOverrides(personId(c.get('principal'))) }))
   .post(
     '/set',
     zv('json', z.object({ id: z.string().min(1), chord: chordSchema })),
     async (c) => {
       const { id, chord } = c.req.valid('json')
-      await setShortcutOverride(c.get('principal').userId, id, chord)
+      await setShortcutOverride(personId(c.get('principal')), id, chord)
       return c.json({ ok: true })
     },
   )
   .post('/reset', async (c) => {
-    await clearShortcutOverrides(c.get('principal').userId)
+    await clearShortcutOverrides(personId(c.get('principal')))
     return c.json({ ok: true })
   })

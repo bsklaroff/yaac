@@ -68,7 +68,7 @@ describe('reconcileWorkspaceTimeouts', () => {
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'timed', deadline: past() })
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'later', deadline: new Date(Date.now() + 3_600_000) })
     await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'untimed' })
-    const child = await queueWorkspace(local, PROJ, { parent: 'timed', prompt: 'follow up', tool: 'claude' }, 'user')
+    const child = await queueWorkspace(local, PROJ, { parent: 'timed', prompt: 'follow up', tool: 'claude' })
 
     await reconcileWorkspaceTimeouts(running('timed', 'later', 'untimed'))
     expect(deregistered).toEqual(['timed'])

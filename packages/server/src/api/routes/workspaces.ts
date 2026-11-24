@@ -1,14 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import { Hono } from 'hono'
-import type { Context, MiddlewareHandler } from 'hono'
+import type { MiddlewareHandler } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { jsonBodyLimit, optionalProjectRef, projectRef, zv } from '#routes/validator'
 import { z } from 'zod'
-import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listProvisioning, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, downloadWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, runMamaCommand, mamaCaller, openSession, assertInteractive, addSteps, rerunStep, cancelStep, prepareRerun, listWorkspaceLogs, readWorkspaceLog, changeSessionAgentOptions, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceBase, setWorkspaceTimeout } from '#domain/workspaces'
+import { allowWorkspaceHost, claimDraft, keepScratchDirsInCheckout, discardDraftWorkspace, discardQueuedWorkspace, dismissProvisioning, dismissWorkspacePort, forwardWorkspacePort, getAcpStoredImage, getConversationTranscript, getWorkspaceBlockedHosts, getWorkspaceDetail, listActiveWorkspaces, listProvisioning, listStoppedWorkspaces, listWorkspaceGroups, markWaitingSeen, moveWorkspaceToGroup, removeWorkspaceGroup, setGroupWorkspaceLimit, prepareRestart, prepareStart, queueWorkspace, resolveGroup, resolveProjectWorkspace, resolveWorkspaceContainer, resolveWorkspaceId, resolveWorkspaceRecord, runQueuedWorkspace, saveDraftWorkspace, stopWorkspace, toConversationEntry, unforwardWorkspacePort, updateQueuedWorkspace, createWorkspaceFolder, deleteWorkspace, deleteWorkspaceEntry, downloadWorkspaceEntry, getWorkspaceChangeDiffs, getWorkspaceChanges, getWorkspaceComparison, getWorkspaceGitLog, listWorkspaceDir, readWorkspaceFile, readWorkspaceFileAtRev, readWorkspaceMedia, renameWorkspaceEntry, saveWorkspaceAttachment, uploadWorkspaceFile, writeWorkspaceFile, sendMessage, workspaceBundle, workspaceHistory, workspaceHistoryContent, workspaceRepoToken, workspaceSteps, openSession, assertInteractive, addSteps, rerunStep, cancelStep, prepareRerun, listWorkspaceLogs, readWorkspaceLog, changeSessionAgentOptions, closeSession, resumeSession, renameSession, type QueueStart, listQueuedWorkspaces, setWorkspaceBase, setWorkspaceTimeout } from '#domain/workspaces'
 import { createShellWindow, killWindowTerminal } from '#runtime/terminals'
 import {
   createWorkspaceGroup,
-  findWorkspaceByMamaToken,
   findWorkspaceRow,
   getQueuedWorkspaceRow,
   getRoutineRow,
@@ -22,16 +21,12 @@ import {
   renameWorkspaceGroup,
   setWorkspaceGroupPinned,
   setWorkspaceTitle,
-  type WorkspaceRow,
 } from '#db'
 import { streamProvisioned } from '#routes/provisioned-stream'
 import { withPreviews } from '#api/prompt-previews'
 import { requireDriverFeature } from '#api/http/driver-features'
-import type { IdentityEnv } from '#api/http/web-auth'
-import { authorizeProject } from '#domain/access'
-import { workspaceDriver } from '#drivers/driver'
-import { MAX_ICON_BYTES } from '#domain/projects'
-import { serveHostedRepo } from '#domain/repos'
+import { personOnly, type IdentityEnv } from '#api/http/web-auth'
+import { authorizeProject, isPerson, personId } from '#domain/access'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
@@ -42,7 +37,6 @@ import { MAX_TITLE_LENGTH, normalizeTitle } from '@yaac/shared/titles'
 import {
   draftWorkspaceSettingsSchema,
   MAX_LOG_COMMITS,
-  MAX_PROMPT_BYTES,
   agentOptionsSchema,
   queuedWorkspaceSettingsSchema,
   timeoutMinutesSchema,
@@ -119,108 +113,6 @@ async function sessionOf(workspaceIdOrPrefix: string, sessionId: string): Promis
 
 /** A full git object id, SHA-1 or SHA-256. */
 const GIT_OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
-
-/** Finds the row of the calling workspace a `yaac-mama` or hosted-git
- *  request is answered for. */
-type IdentifyCaller = (bearer: string, header: (name: string) => string | undefined)
-  => Promise<WorkspaceRow | undefined>
-
-/**
- * The largest yaac-mama request, checked before it is parsed: the larger of
- * a prompt of `MAX_PROMPT_BYTES` (at most that many UTF-16 units, each at
- * most 6 bytes of JSON as a `\uXXXX` escape) and `icon set`'s image of
- * `MAX_ICON_BYTES` as base64, plus room for the command and its args. What
- * the body may hold is each command's to check (`runMamaCommand`).
- */
-export const MAMA_BODY_LIMIT = Math.max(MAX_PROMPT_BYTES * 6, Math.ceil(MAX_ICON_BYTES / 3) * 4) + 64 * 1024
-
-/**
- * The endpoints a workspace calls: `yaac-mama`, and the remote of a project
- * the server hosts (docs/hosted-projects.md). Both ways in share these;
- * they differ only in how the caller is identified.
- *
- * `yaac-mama` ends in `runMamaCommand`, which holds the command allowlist.
- * Answers are JSON, except a file (`fetch`'s git bundle, `history`'s
- * transcripts, database or one file, a step's log from `logs`, the
- * project's icon from `icon-get`), sent as the body with the workspace it
- * is about, when there is one, in `x-yaac-workspace-id` (and a
- * conversation in `x-yaac-conversation-id`).
- */
-function mamaRoute(identifyCaller: IdentifyCaller) {
-  const callerOf = async (c: Context): Promise<WorkspaceRow> => {
-    const bearer = c.req.header('authorization')?.replace(/^Bearer\s+/i, '') ?? ''
-    const caller = await identifyCaller(bearer, (name) => c.req.header(name))
-    if (!caller) throw new ServerError('UNAUTHENTICATED', 'unknown or revoked yaac-mama credential')
-    // A site's release runs code that faces the internet, so it may not act
-    // on yaac at all (docs/public-sites.md); the proxy refuses it too.
-    if (caller.siteId !== undefined) throw new ServerError('FORBIDDEN', 'a public site\'s release may not call yaac')
-    return caller
-  }
-  const hostedGit = (pathInfo: string) => async (c: Context): Promise<Response> => {
-    const caller = await callerOf(c)
-    const repoId = (c.req.param('repo') ?? '').replace(/\.git$/, '')
-    return serveHostedRepo(repoId, c.req.raw, pathInfo, { kind: 'workspace', projectId: caller.projectId })
-  }
-  return new Hono().post(
-    '/mama',
-    jsonBodyLimit(MAMA_BODY_LIMIT, 'the yaac-mama request is too large'),
-    zv('json', z.object({
-      command: z.string().min(1).max(32),
-      args: z.record(z.string(), z.string()).optional(),
-      body: z.string().optional(),
-      /** The calling agent's session (`YAAC_SESSION_ID`), when it has one. */
-      session: z.string().max(64).optional(),
-    })),
-    async (c) => {
-      const caller = await callerOf(c)
-      const { command, args, body, session } = c.req.valid('json')
-      const outcome = await runMamaCommand(
-        await mamaCaller(caller, session),
-        { command, args: args ?? {}, body: body ?? '' },
-      )
-      if (!outcome.ok) return c.json({ error: outcome.error }, 422)
-      if ('output' in outcome) return c.json({ output: outcome.output })
-      return c.body(outcome.body, 200, {
-        'content-type': outcome.contentType,
-        ...(outcome.workspaceId !== undefined ? { 'x-yaac-workspace-id': outcome.workspaceId } : {}),
-        ...(outcome.conversationId !== undefined ? { 'x-yaac-conversation-id': outcome.conversationId } : {}),
-      })
-    },
-  )
-    .get('/git/:repo/info/refs', hostedGit('/info/refs'))
-    .post('/git/:repo/git-upload-pack', hostedGit('/git-upload-pack'))
-    .post('/git/:repo/git-receive-pack', hostedGit('/git-receive-pack'))
-}
-
-/**
- * Containerless workspaces call the API directly, identified by the bearer
- * token minted at create (their gitconfig sends it to a hosted remote), so
- * a request cannot claim to be another workspace.
- * This sits on top of the normal identity gate, which sees a loopback caller.
- * k8s workspaces get no token, which would put a server credential inside
- * the sandbox; their calls arrive through `mamaRelayApp`.
- */
-const mamaApp = mamaRoute(async (bearer) => {
-  if (workspaceDriver().kind !== 'containerless') {
-    throw new ServerError(
-      'NOT_SUPPORTED',
-      'This server runs workspaces in containers, whose yaac-mama calls the egress '
-      + 'proxy relays to a listener of their own.',
-    )
-  }
-  return findWorkspaceByMamaToken(bearer)
-})
-
-/**
- * The endpoint as the egress proxy relays it for a k8s workspace pod, on the
- * driver's own listener (`WorkspaceDriver.mamaRelay`). The proxy names the
- * caller it resolved from the pod's source IP in `x-yaac-workspace-id` and
- * proves it is the proxy with `authenticate`.
- */
-export function mamaRelayApp(authenticate: (bearer: string) => Promise<boolean>) {
-  return mamaRoute(async (bearer, header) =>
-    await authenticate(bearer) ? findWorkspaceRow(header('x-yaac-workspace-id') ?? '') : undefined)
-}
 
 export const workspaceApp = new Hono<IdentityEnv>()
   .get(
@@ -331,7 +223,8 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.volume !== undefined ? { volume: body.volume } : {}),
         // A user request, so its settings become the project's defaults.
         rememberDefaults: true,
-        claimSpare: true,
+        // A delegate keeps the id it named; a spare has its own.
+        claimSpare: isPerson(c.get('principal')),
         draft: {
           ...(body.draftId !== undefined ? { id: body.draftId } : {}),
           ...(body.draftOnFailure === true ? { onFailure: true } : {}),
@@ -425,13 +318,14 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // Open to every user, like the waiting mark below.
   .post(
     '/mark-death-seen',
+    personOnly,
     zv('json', z.object({
       projectId: projectRef,
       workspaceId: z.string().min(1),
     })),
     async (c) => {
       const { projectId, workspaceId } = c.req.valid('json')
-      await recordDeathSeen(projectId, workspaceId, c.get('principal').userId)
+      await recordDeathSeen(projectId, workspaceId, personId(c.get('principal')))
       return c.body(null, 204)
     },
   )
@@ -441,6 +335,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // no longer the session's.
   .post(
     '/mark-waiting-seen',
+    personOnly,
     zv('json', z.object({
       sessionId: z.uuid(),
       waitingSinceMs: z.number().int().nonnegative(),
@@ -453,21 +348,29 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // The same for every death in a project ("mark all as read").
   .post(
     '/mark-all-deaths-seen',
+    personOnly,
     zv('json', z.object({ projectId: projectRef })),
     async (c) => {
       const { projectId } = c.req.valid('json')
-      await recordAllDeathsSeen(projectId, c.get('principal').userId)
+      await recordAllDeathsSeen(projectId, personId(c.get('principal')))
       return c.body(null, 204)
     },
   )
   // Queued workspaces (docs/queued-workspaces.md): create requests that run
   // when their parent (a workspace or another entry) stops naturally. Plain
   // JSON rather than a provisioning stream, since queueing is fast and a "Run
-  // now" reports progress through its provisioning row. No permission ceiling
-  // applies here; that only limits agents (`yaac-mama queue`).
+  // now" reports progress through its provisioning row. A delegate's entries
+  // are held to its ceiling by the verbs.
   // Every project's queued workspaces not launching, oldest first: the
   // snapshot's feed, for the CLI.
-  .get('/queue/list', async (c) => c.json(await listQueuedWorkspaces()))
+  .get(
+    '/queue/list',
+    zv('query', z.object({ project: optionalProjectRef })),
+    async (c) => {
+      const { project } = c.req.valid('query')
+      return c.json((await listQueuedWorkspaces()).filter((e) => project === undefined || e.projectId === project))
+    },
+  )
   .post(
     '/queue/create',
     zv('json', z.object({
@@ -489,7 +392,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
       const request = { ...rest, ...(start !== undefined ? { start } : {}) }
       const principal = c.get('principal')
       const draft = await claimDraft(principal, project, fromDraft)
-      return c.json(await draft.run(() => queueWorkspace(principal, project, request, 'user', draft.generatedTitle(request.prompt))))
+      return c.json(await draft.run(() => queueWorkspace(principal, project, request, draft.generatedTitle(request.prompt))))
     },
   )
   .post(
@@ -510,7 +413,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
       const { id, startAt, startIn, ...rest } = c.req.valid('json')
       const start = startOf({ startAt, startIn })
       const patch = { ...rest, ...(start !== undefined ? { start } : {}) }
-      return c.json(await updateQueuedWorkspace(c.get('principal'), id, patch, 'user'))
+      return c.json(await updateQueuedWorkspace(c.get('principal'), id, patch))
     },
   )
   .post(
@@ -576,7 +479,6 @@ export const workspaceApp = new Hono<IdentityEnv>()
       return c.body(null, 204)
     },
   )
-  .route('/', mamaApp)
   // Sidebar-group routes. All take an explicit project rather than
   // resolving a container, since members may be stopped workspaces. The
   // writes go straight to `#db`, so each checks the project's owner first,
@@ -599,11 +501,16 @@ export const workspaceApp = new Hono<IdentityEnv>()
       // group starts empty and pinned (as with `yaac group create`).
       workspaceId: z.string().min(1).optional(),
       name: z.string().min(1).max(MAX_TITLE_LENGTH),
+      // Answer the group already of that name, if one is, rather than make
+      // another (`yaac-mama group create`).
+      reuse: z.literal(true).optional(),
     })),
     async (c) => {
-      const { projectId, workspaceId, name } = c.req.valid('json')
-      await authorizeProject(c.get('principal'), projectId)
-      const group = await createWorkspaceGroup(projectId, name, workspaceId ?? null)
+      const { projectId, workspaceId, name, reuse } = c.req.valid('json')
+      await authorizeProject(c.get('principal'), projectId, 'delegate')
+      const group = reuse === true
+        ? await resolveGroup(projectId, name, { create: true })
+        : await createWorkspaceGroup(projectId, name, workspaceId ?? null)
       // Return the stored name, which the store normalizes (whitespace
       // collapsed, length capped).
       return c.json({ groupId: group.groupId, name: group.name })
@@ -661,9 +568,11 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { projectId, groupId, workspaceLimit } = c.req.valid('json')
-      await authorizeProject(c.get('principal'), projectId)
-      await setGroupWorkspaceLimit(projectId, groupId, workspaceLimit)
-      return c.body(null, 204)
+      await authorizeProject(c.get('principal'), projectId, 'delegate')
+      // By id, or by a name no other group has.
+      const group = await resolveGroup(projectId, groupId)
+      await setGroupWorkspaceLimit(projectId, group.groupId, workspaceLimit)
+      return c.json({ groupId: group.groupId, name: group.name })
     },
   )
   // File a workspace under a group given by id or name (`yaac group move`,
@@ -681,7 +590,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
     })),
     async (c) => {
       const { projectId, workspaceId, group, create } = c.req.valid('json')
-      await authorizeProject(c.get('principal'), projectId)
+      await authorizeProject(c.get('principal'), projectId, 'delegate')
       // Accept an id or unique prefix (what every surface prints). The
       // membership write matches exactly, so an unresolved prefix would
       // silently file nothing.
@@ -690,8 +599,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ? null
         : await resolveGroup(projectId, group, { create: create ?? false })
       await moveWorkspaceToGroup(projectId, resolved, target?.groupId ?? null)
-      // Include the name, since the caller may have passed an id.
-      return c.json({ groupId: target?.groupId ?? null, name: target?.name ?? null })
+      // Include the name, since the caller may have passed an id, and the
+      // workspace's id, since it may have passed a prefix.
+      return c.json({ groupId: target?.groupId ?? null, name: target?.name ?? null, workspaceId: resolved })
     },
   )
   // Drop a failed provisioning entry (successful ones clear themselves).
@@ -719,9 +629,10 @@ export const workspaceApp = new Hono<IdentityEnv>()
       const row = await findWorkspaceRow(await resolveWorkspaceId(c.req.param('id')))
       if (!row) throw new ServerError('NOT_FOUND', `workspace ${c.req.param('id')} not found`)
       const { projectId, workspaceId } = row
-      await authorizeProject(c.get('principal'), projectId)
+      await authorizeProject(c.get('principal'), projectId, 'delegate')
       await setWorkspaceTitle(projectId, workspaceId, c.req.valid('json').title)
-      return c.body(null, 204)
+      // The title as stored, normalized.
+      return c.json({ workspaceId, title: (await findWorkspaceRow(workspaceId))?.title ?? null })
     },
   )
   // Keep scratch dirs git tracks in the workspace's checkout: the badge's
@@ -1168,6 +1079,58 @@ export const workspaceApp = new Hono<IdentityEnv>()
   // `offset`, with where to ask from next, so a client follows a log still
   // being written. Kept after a stop, so a stopped workspace answers too.
   .get('/:id/logs', async (c) => c.json(await listWorkspaceLogs(c.get('principal'), c.req.param('id'))))
+  // Its steps of every life, with their states and log sizes, and where it
+  // stands (`yaac-mama status` and `logs`). Any user may read them.
+  .get('/:id/steps', async (c) => c.json(await workspaceSteps(c.req.param('id'))))
+  // Message its agent (`yaac workspace send`): its first open session, or
+  // the one named, as if its user typed it.
+  .post(
+    '/:id/send',
+    zv('json', z.object({
+      message: queuedSettings.prompt,
+      session: z.string().min(1).max(64).optional(),
+      conversation: z.string().min(1).max(256).optional(),
+    })),
+    async (c) => {
+      const { message, session, conversation } = c.req.valid('json')
+      return c.json(await sendMessage(c.get('principal'), c.req.param('id'), {
+        message, ...(session !== undefined ? { session } : {}), ...(conversation !== undefined ? { conversation } : {}),
+      }))
+    },
+  )
+  // A git bundle of its branches in its checkout of a repo, for another
+  // workspace to fetch (`yaac-mama fetch`).
+  .get(
+    '/:id/bundle',
+    zv('query', z.object({ repo: z.string().min(1) })),
+    async (c) => {
+      const { workspaceId, bundle } = await workspaceBundle(c.req.param('id'), c.req.valid('query').repo)
+      return c.body(bundle, 200, { 'content-type': 'application/x-git-bundle', 'x-yaac-workspace-id': workspaceId })
+    },
+  )
+  // Its conversations and their files (`yaac-mama history`), and one
+  // conversation's transcripts or one file of it.
+  .get(
+    '/:id/history',
+    zv('query', z.object({ conversation: z.string().min(1).max(256).optional() })),
+    async (c) => c.json(await workspaceHistory(c.req.param('id'), c.req.valid('query').conversation)),
+  )
+  .get(
+    '/:id/history/:conversationId',
+    zv('query', z.object({ file: z.string().min(1).max(512).optional() })),
+    async (c) => {
+      const { workspaceId, body, contentType } = await workspaceHistoryContent(c.req.param('id'), c.req.param('conversationId'), c.req.valid('query').file)
+      return c.body(body, 200, { 'content-type': contentType, 'x-yaac-workspace-id': workspaceId })
+    },
+  )
+  // The GH_TOKEN that stands for one of its project's repos, for the
+  // workspace itself (`yaac-mama as-repo`).
+  // The repo goes in the query, since a checkout's path may hold a `/`.
+  .get(
+    '/:id/gh-token',
+    zv('query', z.object({ repo: z.string().min(1).max(512) })),
+    async (c) => c.json({ token: await workspaceRepoToken(c.get('principal'), c.req.param('id'), c.req.valid('query').repo) }),
+  )
   .get(
     '/:id/logs/:life/:file',
     zv('query', z.object({ offset: z.coerce.number().int().min(0).optional() })),

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { workspaceDriver } from '#drivers/driver'
-import { createWorkspace, resolveCreate, type WorkspaceCreateResult } from './create'
+import { createWorkspace, refuseUnsignedTool, resolveCreate, type WorkspaceCreateResult } from './create'
 import { saveDraftWorkspace } from './drafts'
 import { ownedGroup, resolveGroup } from './groups'
 import { readGroupRoom, refuseFullGroup } from './group-limits'
@@ -15,7 +15,7 @@ import { tryClaimPrewarmed } from './prewarm'
 import { volumeForLaunch } from './volumes'
 import { VOLUME_NEED } from './steps'
 import { modelDisplayName } from '#domain/auth'
-import { authorizeProject, type Actor } from '#domain/access'
+import { authorizeProject, isPerson, requireWithinCeiling, type Actor } from '#domain/access'
 import { assertWorkflowRepos, resolveWorkflow, workflowLaunch } from '#domain/projects'
 import { getProjectRow, getWorkflow, listWorkspaceRepos, recordProjectCreate, storeWorkflow, type LaunchSpec } from '#db'
 import { resolveStart, storedSelection, type StartRequest, type WorkspaceStart } from './checkouts'
@@ -122,11 +122,72 @@ export async function prepareStart(
   principal: Actor,
   request: StartWorkspaceRequest,
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
+  await authorizeProject(principal, request.projectId, 'delegate')
+  return await withLaunchSlot(principal, () => prepareAuthorizedStart(principal, request))
+}
+
+/** The most launches one delegate may have provisioning at once, creates
+ *  and restarts together. */
+export const MAX_DELEGATE_LAUNCHES = 8
+
+/** Launches still provisioning, by the delegate that asked for them. */
+const delegateLaunches = new Map<string, number>()
+
+/**
+ * Prepare a launch holding one of a delegate's launch slots, which its run
+ * gives back once it settles, and a refusal at once; CONFLICT when all are
+ * taken. Taken before `prepare` awaits anything, so concurrent requests
+ * cannot all pass the check. Anyone else launches without one.
+ */
+export async function withLaunchSlot<T>(
+  actor: Actor,
+  prepare: () => Promise<ProvisionRun<T>>,
+): Promise<ProvisionRun<T>> {
+  if (actor.kind !== 'delegate') return await prepare()
+  const key = `${actor.via.kind}:${actor.via.id}`
+  const taken = delegateLaunches.get(key) ?? 0
+  if (taken >= MAX_DELEGATE_LAUNCHES) {
+    throw new ServerError('CONFLICT', `too many workspaces starting at once for ${actor.via.label} (max ${MAX_DELEGATE_LAUNCHES} provisioning)`)
+  }
+  delegateLaunches.set(key, taken + 1)
+  const release = (): void => {
+    const n = (delegateLaunches.get(key) ?? 1) - 1
+    if (n <= 0) delegateLaunches.delete(key)
+    else delegateLaunches.set(key, n)
+  }
+  let run: ProvisionRun<T>
+  try {
+    run = await prepare()
+  } catch (err) {
+    release()
+    throw err
+  }
+  return async (onProgress) => {
+    try {
+      return await run(onProgress)
+    } finally {
+      release()
+    }
+  }
+}
+
+/** Whether a start brings steps of its own, which run commands as the
+ *  workspace does. */
+export function bringsSteps(steps: unknown): boolean {
+  return typeof steps === 'object' && steps !== null && Object.keys(steps).length > 0
+}
+
+async function prepareAuthorizedStart(
+  principal: Actor,
+  request: StartWorkspaceRequest,
+): Promise<ProvisionRun<WorkspaceCreateResult>> {
   const { projectId, workspaceId, prompt, generatedTitle } = request
-  await authorizeProject(principal, projectId)
   if ([request.steps, request.workflow, request.workflowId].filter((g) => g !== undefined).length > 1) {
     throw new ServerError('VALIDATION', 'name steps or a workflow, not both')
   }
+  // Otherwise an agent in `plan` could run anything by starting a
+  // workspace with it as a step (docs/workspace-steps.md "Permissions").
+  if (bringsSteps(request.steps)) requireWithinCeiling(principal, 'bypass', 'steps it starts a workspace with run commands as the workspace does')
   const project = await getProjectRow(projectId)
   if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
   const start = resolveStart(project, request)
@@ -172,7 +233,8 @@ export async function prepareStart(
     ...(request.effort !== undefined ? { effort: request.effort } : {}),
     ...(request.mode !== undefined ? { mode: request.mode } : {}),
     ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
-  })
+  }, principal)
+  if (setup !== undefined) await refuseUnsignedTool(principal, projectId, setup.tool)
   const session = setup === undefined
     ? undefined
     : { ...setup, cwd: start.cwd, id: request.sessionId ?? randomUUID(), ...(prompt !== undefined ? { prompt } : {}) }
@@ -191,7 +253,7 @@ export async function prepareStart(
   // provisioning row takes the slot (docs/workspace-groups.md).
   const room = await readGroupRoom(projectId, groupId)
   refuseFullGroup(room, workspaceId)
-  if (request.rememberDefaults && setup !== undefined) {
+  if (request.rememberDefaults && isPerson(principal) && setup !== undefined) {
     // Only the named fields, so a resolved default never overwrites a pick.
     // What it starts with resolved from the last create's where unnamed, so
     // recording it changes only what this one named.

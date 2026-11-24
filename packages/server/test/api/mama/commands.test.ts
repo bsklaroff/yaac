@@ -23,9 +23,9 @@ vi.mock('#domain/workspaces/cleanup', () => ({
 import type * as createModule from '#domain/workspaces/create'
 import { createWorkspace } from '#domain/workspaces/create'
 import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
-import { eq } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { closeDb, getDb } from '#db/client'
-import { repos } from '#db/schema'
+import { repos, sessions } from '#db/schema'
 import { listWorkspaceRepos, updateProjectRepo } from '#db/repo-store'
 import { ghTokenPlaceholder } from '@yaac/shared/tool-auth'
 import { createWorkspaceGroup, listWorkspaceGroupRows, setWorkspaceGroupLimit } from '#db/group-store'
@@ -33,9 +33,10 @@ import { getProjectWorkspaceRows, recordWorkspaceCreated, recordWorkspaceStopped
 import { listQueuedWorkspaceRows } from '#db/queued-workspace-store'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { _clearListActiveInflightForTests } from '#domain/workspaces/list'
-import { answerSiteCommands, createRoutine, createVolume, listProvisioning, listRoutines, mamaCaller, queueWorkspace, runMamaCommand, setRoutinePaused } from '#domain/workspaces'
-import type { MamaCaller } from '#domain/workspaces/mama'
-import { SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE } from '#domain/workspaces/spawn-policy'
+import { callingWorkspace, createRoutine, createVolume, listProvisioning, listRoutines, queueWorkspace, setRoutinePaused } from '#domain/workspaces'
+import { runMamaCommand, type MamaCaller } from '#api/mama/commands'
+import { callerAs } from '#test/support/mama'
+import { MAX_DELEGATE_LAUNCHES } from '#domain/workspaces/start'
 import { recordProjectCreate } from '#db/project-store'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
 import { MAX_TITLE_LENGTH } from '@yaac/shared/titles'
@@ -79,21 +80,31 @@ import path from 'node:path'
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 
 /** The calling workspace, as the transport identifies it. */
-const CALLER = { workspaceId: 'caller-workspace', projectId: PROJ, tool: 'codex' } as const
+const CALLER = { workspaceId: 'caller-workspace', projectId: PROJ } as const
 
-/** A caller as the transport resolves it: its posture and agent mode from
- *  its first session. */
-async function callerFor(over: Partial<MamaCaller> = {}): Promise<MamaCaller> {
-  const workspaceId = over.workspaceId ?? CALLER.workspaceId
-  const [session] = await listWorkspaceSessions(workspaceId)
-  return {
-    ...CALLER,
-    workspaceId,
-    principal: { kind: 'workspace', workspaceId, userId: BUILT_IN_USER_ID },
-    permissionMode: session?.permissionMode ?? 'bypass',
-    mode: session?.mode ?? 'tui',
-    ...over,
+/** What a caller's calling session runs, for `callerFor` to set. */
+type CallerPosture = Partial<Pick<SessionRow, 'tool' | 'model' | 'permissionMode' | 'mode'>>
+
+/**
+ * A caller as the endpoint resolves it (`callingWorkspace`). A posture named in
+ * `over` is set on each of the workspace's open sessions, so it is what
+ * the caller's calling session runs; `tool: undefined` closes them, for a
+ * caller with no session. A named `permissionMode` is its ceiling either
+ * way.
+ */
+async function callerFor(
+  over: CallerPosture & { workspaceId?: string; sessionId?: string } = {},
+): Promise<MamaCaller> {
+  const { workspaceId = CALLER.workspaceId, sessionId, ...posture } = over
+  const db = await getDb()
+  const open = and(eq(sessions.workspaceId, workspaceId), isNull(sessions.closedAt))
+  if ('tool' in posture && posture.tool === undefined) {
+    for (const s of await listWorkspaceSessions(workspaceId)) await closeSessionRow(s.id)
+  } else if (Object.keys(posture).length > 0) {
+    await db.update(sessions).set(posture).where(open)
   }
+  const delegate = await callingWorkspace({ workspaceId, projectId: PROJ }, sessionId)
+  return callerAs(posture.permissionMode === undefined ? delegate : { ...delegate, ceiling: posture.permissionMode })
 }
 
 /** A workspace as a create leaves it: its row, and a session (claude in a
@@ -165,82 +176,6 @@ const output = async (
   if (!('output' in outcome)) throw new Error('expected text, got a file')
   return outcome.output
 }
-
-describe('mamaCaller', () => {
-  const at = { workspaceId: 'caller-workspace', projectId: PROJ }
-
-  // A session's agent says which session it runs in; anything else in the
-  // workspace (a user's shell, an agent claiming a session it is not) is
-  // held to the strictest of the workspace's open sessions.
-  it("holds a session's agent to its own session's posture, and anyone else to the strictest open one", async () => {
-    const loose = await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { tool: 'codex', mode: 'acp', permissionMode: 'bypass' })
-    const plan = await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'plan' })
-    const edits = await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'accept-edits' })
-    const elsewhere = await created({ projectId: PROJ, workspaceId: 'other-workspace' }, { permissionMode: 'bypass' })
-
-    expect(await mamaCaller(at, loose.id)).toEqual({
-      ...at,
-      principal: { kind: 'workspace', workspaceId: 'caller-workspace', userId: BUILT_IN_USER_ID },
-      sessionId: loose.id,
-      tool: 'codex',
-      permissionMode: 'bypass',
-      mode: 'acp',
-    })
-    const strictest = { tool: 'claude', permissionMode: 'plan', mode: 'tui' }
-    for (const claimed of [undefined, 'not-a-session', elsewhere.id]) {
-      const caller = await mamaCaller(at, claimed)
-      expect(caller, String(claimed)).toMatchObject(strictest)
-      expect(caller).not.toHaveProperty('sessionId')
-    }
-    // A closed session no longer counts as the caller's.
-    await closeSessionRow(loose.id)
-    expect(await mamaCaller(at, loose.id)).not.toHaveProperty('sessionId')
-
-    // With none open, the strictest closed in this life still holds, so an
-    // agent's detached child keeps its ceiling after the agent is gone.
-    await closeSessionRow(edits.id)
-    await closeSessionRow(plan.id)
-    expect(await mamaCaller(at, undefined)).toMatchObject(strictest)
-
-    // A posture this build does not rank counts as the strictest, wherever
-    // it falls among the others.
-    await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
-    const unranked = await insertSession(PROJ, 'caller-workspace', {
-      cwd: '',
-      tool: 'claude', mode: 'tui', permissionMode: 'dontAsk' as PermissionMode,
-    })
-    await insertSession(PROJ, 'caller-workspace', { cwd: '', tool: 'claude', mode: 'tui', permissionMode: 'plan' })
-    expect((await mamaCaller(at, undefined)).permissionMode).toBe('dontAsk')
-    expect((await mamaCaller(at, unranked.id)).sessionId).toBe(unranked.id)
-  })
-
-  it('falls back to what a create would resolve for a workspace with no session', async () => {
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
-    await recordProjectCreate(PROJ, 'codex', { permissionMode: 'read-only', mode: 'acp' })
-    const caller = await mamaCaller(at, undefined)
-    expect(caller).toMatchObject({ tool: 'codex', permissionMode: 'read-only', mode: 'acp' })
-    expect(caller).not.toHaveProperty('sessionId')
-  })
-})
-
-describe('answerSiteCommands', () => {
-  it('hands the site commands to what is registered, refusing them while nothing is', async () => {
-    expect(await run('site-list')).toEqual({ ok: false, error: 'this server serves no sites: it has no sandbox to put between the internet and its host' })
-    const answer = vi.fn((_caller: MamaCaller, request: { command: string; args: Record<string, string> }) =>
-      Promise.resolve({ ok: true as const, output: `${request.command} ${request.args.name ?? ''}` }))
-    answerSiteCommands(answer)
-    try {
-      expect(await output('site-deploy', '', { name: 'shop', refs: '["main"]' })).toBe('site-deploy shop')
-      expect(answer.mock.calls[0][0]).toMatchObject({ projectId: PROJ })
-      // Options are checked here first, as for every command.
-      expect(await run('site-stop', '', { name: 'shop', port: '1' }))
-        .toEqual({ ok: false, error: 'site-stop does not take \'--port\' (expected: --name)' })
-      expect(answer).toHaveBeenCalledTimes(1)
-    } finally {
-      answerSiteCommands(undefined as unknown as Parameters<typeof answerSiteCommands>[0])
-    }
-  })
-})
 
 describe('runMamaCommand', () => {
   it('refuses a command outside the allowlist, naming what is allowed', async () => {
@@ -515,7 +450,11 @@ describe('runMamaCommand', () => {
         await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: PROJ, workspaceId: id, repoId: PROJ, startCommit: commit })
       }
       await recordWorkspaceStopped(PROJ, 'old-rel')
-      await updateSite(site.id, { liveWorkspaceId: 'live-rel', deployWorkspaceId: 'next-rel', deployPhase: 'building', published: true, hostname: 'shop.example.com' })
+      await updateSite(site.id, {
+        liveWorkspaceId: 'live-rel', releaseCommits: { [PROJ]: 'a'.repeat(40) }, liveSince: new Date(),
+        deployWorkspaceId: 'next-rel', deployCommits: { [PROJ]: 'b'.repeat(40) }, deployStartedAt: new Date(), deployPhase: 'building',
+        published: true, hostname: 'shop.example.com',
+      })
       running = ['caller-workspace', 'live-rel', 'next-rel', 'at-commit'].map((id) => podFor(id))
 
       const text = await output('list')
@@ -549,7 +488,7 @@ describe('runMamaCommand', () => {
    */
   describe('create', () => {
     beforeEach(async () => {
-      await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'auto', mode: 'tui' })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { tool: 'codex', permissionMode: 'auto', mode: 'tui' })
     })
 
     /** What the detached creates were asked for, once `n` of them have been. */
@@ -563,7 +502,7 @@ describe('runMamaCommand', () => {
      *  beside the workspace's. */
     const spawn = async (
       args: Record<string, string>,
-      caller: Partial<MamaCaller> = {},
+      caller: Parameters<typeof callerFor>[0] = {},
     ): Promise<{ ok: false; error: string } | (Parameters<typeof createWorkspace>[1] & Partial<SessionLaunchSettings>)> => {
       vi.mocked(createWorkspace).mockClear()
       const outcome = await runMamaCommand(await callerFor(caller), { command: 'create', args, body: 'do it' })
@@ -667,10 +606,13 @@ describe('runMamaCommand', () => {
 
     // The caller's tool is reported only when it is one yaac knows.
     it('picks the caller\'s tool, else the project\'s last agent, else claude', async () => {
-      expect(await spawn({}, { tool: undefined })).toMatchObject({ tool: 'claude' })
+      expect(await spawn({})).toMatchObject({ tool: 'codex' })
+      // A caller with no session has no tool of its own.
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'bare-caller' })
+      expect(await spawn({}, { workspaceId: 'bare-caller' })).toMatchObject({ tool: 'claude' })
       await recordProjectCreate(PROJ, 'pi', {})
       await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'k' })
-      expect(await spawn({}, { tool: undefined, permissionMode: 'bypass' })).toMatchObject({ tool: 'pi' })
+      expect(await spawn({}, { workspaceId: 'bare-caller', permissionMode: 'bypass' })).toMatchObject({ tool: 'pi' })
     })
 
     it('checks a named effort on a custom endpoint model against the levels the endpoint lists', async () => {
@@ -701,7 +643,7 @@ describe('runMamaCommand', () => {
     it('inherits the caller\'s posture, stepping down to the most the tool has', async () => {
       await setToolCredential(BUILT_IN_USER_ID, 'opencode', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'k' })
       await setToolCredential(BUILT_IN_USER_ID, 'pi', { kind: 'api-key', provider: 'openrouter', savedAt: 'x', apiKey: 'k' })
-      const posture = async (permissionMode: MamaCaller['permissionMode'], args: Record<string, string> = {}): Promise<unknown> => {
+      const posture = async (permissionMode: PermissionMode, args: Record<string, string> = {}): Promise<unknown> => {
         const result = await spawn(args, { permissionMode })
         return 'ok' in result ? result : result.permissionMode
       }
@@ -725,18 +667,19 @@ describe('runMamaCommand', () => {
       exec.mockResolvedValue({ stdout: '', stderr: '' })
       running = [podFor('caller-workspace')]
       await recordProjectCreate(PROJ, 'claude', { model: 'claude-sonnet-4-6' })
+      await callerFor({ tool: 'claude' })
       const [session] = await listWorkspaceSessions('caller-workspace')
       await applyWorkspaceEvent({
         type: 'session-reported', projectId: PROJ, workspaceId: 'caller-workspace', sessionId: session.id,
         model: 'claude-opus-4-7[1m]',
       })
-      const caller = await mamaCaller({ workspaceId: 'caller-workspace', projectId: PROJ }, session.id)
-      expect(caller).toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]' })
+      const caller = await callerFor({ sessionId: session.id })
 
-      expect(await spawn({}, caller)).toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]' })
-      expect(await spawn({ model: 'opus' }, caller)).toMatchObject({ model: 'opus' })
+      const claimed = { sessionId: session.id }
+      expect(await spawn({}, claimed)).toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]' })
+      expect(await spawn({ model: 'opus' }, claimed)).toMatchObject({ model: 'opus' })
       // Another tool takes its own default, not a claude model.
-      expect(await spawn({ tool: 'codex' }, caller)).toMatchObject({ tool: 'codex', model: FALLBACK_MODELS.codex })
+      expect(await spawn({ tool: 'codex' }, claimed)).toMatchObject({ tool: 'codex', model: FALLBACK_MODELS.codex })
       // A session opened in a running workspace inherits it too, but a
       // resumed conversation keeps its own.
       const as = async (command: string, args: Record<string, string>, body = 'x'): Promise<string> => {
@@ -759,7 +702,7 @@ describe('runMamaCommand', () => {
     })
 
     it('grants a named posture up to the caller\'s own, and refuses anything else loudly', async () => {
-      const at = async (permissionMode: MamaCaller['permissionMode'], asked: string, args: Record<string, string> = { tool: 'claude' }): Promise<unknown> => {
+      const at = async (permissionMode: PermissionMode, asked: string, args: Record<string, string> = { tool: 'claude' }): Promise<unknown> => {
         const result = await spawn({ ...args, 'permission-mode': asked }, { permissionMode })
         return 'ok' in result ? result : result.permissionMode
       }
@@ -787,7 +730,7 @@ describe('runMamaCommand', () => {
       expect(await at('auto', 'manual', {})).toEqual({ ok: false, error: "codex has no 'manual' permission mode" })
       // A caller mode this build does not know (written by another build)
       // cannot be ranked, so nothing is granted.
-      const unknown = 'dontAsk' as MamaCaller['permissionMode']
+      const unknown = 'dontAsk' as PermissionMode
       for (const args of [{ tool: 'claude', 'permission-mode': 'bypass' }, { tool: 'claude' }] as Array<Record<string, string>>) {
         expect(await spawn(args, { permissionMode: unknown })).toEqual({
           ok: false, error: "the caller's ceiling 'dontAsk' is not a permission mode this server knows",
@@ -849,8 +792,8 @@ describe('runMamaCommand', () => {
       // slot back.
       expect((await run('create', 'x', { tool: 'opencode' })).ok).toBe(false)
 
-      const decisions = await Promise.all(Array.from({ length: 2 * SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE }, () => run('create', 'x')))
-      expect(decisions.filter((d) => d.ok)).toHaveLength(SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE)
+      const decisions = await Promise.all(Array.from({ length: 2 * MAX_DELEGATE_LAUNCHES }, () => run('create', 'x')))
+      expect(decisions.filter((d) => d.ok)).toHaveLength(MAX_DELEGATE_LAUNCHES)
       expect(decisions.find((d) => !d.ok)).toMatchObject({ error: expect.stringContaining('too many workspaces starting at once') as unknown })
 
       // Each slot comes back once its create settles.
@@ -926,7 +869,7 @@ describe('runMamaCommand', () => {
     await created({ projectId: PROJ, workspaceId: 'loose-sibling', baseBranch: 'main' }, { permissionMode: 'bypass' })
     const entry = await queueWorkspace(local, PROJ, {
       parent: 'loose-sibling', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
-    }, 'user')
+    })
     const refused: Array<[string, Record<string, string>]> = [
       ['create', { 'permission-mode': 'bypass', group: 'Typo-A' }],
       ['queue', { 'parent-workspace': 'nope', group: 'Typo-B' }],
@@ -1031,14 +974,14 @@ describe('runMamaCommand', () => {
       const id = await output('queue', 'worker task', { group: 'Workers', branch: 'main' })
       const row = (await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === id)
       // The caller's tool, as create picks it, not any workspace's settings.
-      expect(row).toMatchObject({ tool: CALLER.tool, mode: (await callerFor()).mode, groupId: workers.groupId })
+      expect(row).toMatchObject({ tool: 'claude', mode: 'tui', groupId: workers.groupId })
       expect(row?.parentWorkspaceId).toBeUndefined()
       await settle()
       expect(vi.mocked(createWorkspace)).not.toHaveBeenCalled()
 
       const listed = await output('list')
       expect(listed).toContain('waiting for room in "Workers":')
-      expect(listed).toMatch(new RegExp(`\\n  ${id.slice(0, 8)}  codex  waiting for room  worker task`))
+      expect(listed).toMatch(new RegExp(`\\n  ${id.slice(0, 8)}  claude  waiting for room  worker task`))
       expect(listed).toMatch(/Groups: .*Workers \(limit 1\)/)
     })
 
@@ -1109,7 +1052,7 @@ describe('runMamaCommand', () => {
       // rewrite its prompt, and the mode is not silently lowered.
       const entry = await queueWorkspace(local, PROJ, {
         parent: 'loose-sibling', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
-      }, 'user')
+      })
       const refused = await run('edit-queued', 'agent wrote this', { queued: entry.id })
       expect(refused.ok).toBe(false)
       if (!refused.ok) expect(refused.error).toContain("more permissive than the caller's ceiling")
@@ -1123,7 +1066,7 @@ describe('runMamaCommand', () => {
     it('refuses what it cannot find, a no-op, a cycle, and another project\u2019s entry', async () => {
       const foreign = await queueWorkspace(local, OTHER, {
         parent: 'foreign-workspace', prompt: 'theirs', tool: 'claude',
-      }, 'user')
+      })
       const id = await output('queue', 'mine', { ...ME, tool: 'claude' })
       const child = await output('queue', 'after mine', { 'parent-workspace': id })
       const refusals: Array<[string, Record<string, string>]> = [
@@ -1177,9 +1120,9 @@ describe('runMamaCommand', () => {
       const id = await output('queue', 'step 2', { 'parent-workspace': 'caller-workspace', tool: 'claude' })
       const above = await queueWorkspace(local, PROJ, {
         parent: 'caller-workspace', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
-      }, 'user')
+      })
       expect(await run('run-queued', '', { queued: above.id })).toEqual({
-        ok: false, error: expect.stringContaining("runs in permission mode 'bypass', more than the caller's ceiling") as string,
+        ok: false, error: expect.stringContaining("permission mode 'bypass' is more permissive than workspace caller-w's ceiling") as string,
       })
 
       const workers = await createWorkspaceGroup(PROJ, 'Workers', null)
@@ -1208,11 +1151,11 @@ describe('runMamaCommand', () => {
       // The user queued this above the caller; discarding it starts nothing.
       const above = await queueWorkspace(local, PROJ, {
         parent: 'caller-workspace', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
-      }, 'user')
+      })
       const child = await output('queue', 'after it', { 'parent-workspace': above.id, tool: 'claude' })
       const foreign = await queueWorkspace(local, OTHER, {
         parent: 'foreign-workspace', prompt: 'theirs', tool: 'claude',
-      }, 'user')
+      })
       for (const args of [{}, { queued: 'nope' }, { queued: foreign.id }] as Array<Record<string, string>>) {
         expect((await run('delete-queued', '', args)).ok, JSON.stringify(args)).toBe(false)
       }
@@ -1246,14 +1189,14 @@ describe('runMamaCommand', () => {
       const group = (await listWorkspaceGroupRows(PROJ)).find((g) => g.name === 'Nightly triage')
       // The caller's tool and mode, its own posture, and a group named after it.
       expect(await routineOf(id)).toMatchObject({
-        projectId: PROJ, name: 'Nightly triage', tool: CALLER.tool, model: 'opus', mode: (await callerFor()).mode,
+        projectId: PROJ, name: 'Nightly triage', tool: 'claude', model: 'opus', mode: 'tui',
         permissionMode: 'accept-edits', timeZone: 'America/New_York', timeoutMinutes: 120, groupId: group?.groupId,
       })
 
       const listed = await output('list')
       expect(listed).toContain('Routines (each starts a fresh workspace on its cron schedule):')
       expect(listed).toMatch(new RegExp(
-        `\\n${id.slice(0, 8)}\\s+codex\\s+Nightly triage\\s+0 9 \\* \\* 1-5 \\(America/New_York\\)\\s+.*after 2h\\s+triage new issues`))
+        `\\n${id.slice(0, 8)}\\s+claude\\s+Nightly triage\\s+0 9 \\* \\* 1-5 \\(America/New_York\\)\\s+.*after 2h\\s+triage new issues`))
       expect(await output('list', id.slice(0, 8))).toContain(`Prompt of ${id.slice(0, 8)}:\n  triage new issues`)
 
       const refusals: Array<[string, Record<string, string>]> = [
@@ -1276,9 +1219,9 @@ describe('runMamaCommand', () => {
       const theirs = await createRoutine(local, PROJ, {
         name: 'Weekly', cron: '0 6 * * 1', prompt: 'user wrote this', tool: 'claude', permissionMode: 'bypass',
         branch: 'main', timeout: 60,
-      }, 'user')
+      })
       const short = theirs.id.slice(0, 8)
-      const above = "runs in permission mode 'bypass', more than the caller's ceiling"
+      const above = "permission mode 'bypass' is more permissive than workspace caller-w's ceiling"
       for (const command of ['routine-run', 'routine-resume']) {
         expect(await run(command, '', { routine: short })).toEqual({
           ok: false, error: expect.stringContaining(above) as string,
@@ -1322,7 +1265,7 @@ describe('runMamaCommand', () => {
       await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'foreign-workspace', repos: [{ repoId: OTHER, path: '', baseBranch: 'main' }] })
       const foreign = await createRoutine(local, OTHER, {
         name: 'Theirs', cron: '@daily', prompt: 'theirs', tool: 'claude', branch: 'main',
-      }, 'user')
+      })
       expect(await output('list')).not.toContain('Theirs')
       for (const command of ['routine-edit', 'routine-pause', 'routine-resume', 'routine-run', 'routine-delete']) {
         for (const args of [{}, { routine: 'nope' }, { routine: foreign.id }] as Array<Record<string, string>>) {
@@ -1401,14 +1344,15 @@ describe('runMamaCommand', () => {
     }
 
     it('answers the placeholder that stands for a GitHub repo\'s token, only while the project\'s link allows it', async () => {
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', repos: [{ repoId: PROJ, path: 'nested/app' }] })
       expect(await run('as-repo', '', { repo: 'demo' })).toEqual({
         ok: false, error: 'demo is not an https GitHub repo, so it has no token gh could use',
       })
       await (await getDb()).update(repos).set({ remoteUrl: 'https://github.com/acme/demo.git' }).where(eq(repos.id, PROJ))
 
       // By its folder in the project, its id, or its checkout's path here.
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', repos: [{ repoId: PROJ, path: 'app' }] })
-      for (const repo of ['demo', PROJ, 'app']) expect(await output('as-repo', '', { repo })).toBe(ghTokenPlaceholder(PROJ))
+      for (const repo of ['demo', PROJ, 'nested/app']) expect(await output('as-repo', '', { repo })).toBe(ghTokenPlaceholder(PROJ))
+      expect(await run('as-repo', '', { repo: '.' })).toEqual({ ok: false, error: 'this project has no repo "."' })
 
       await link({ ghToken: false })
       expect(await run('as-repo', '', { repo: 'demo' })).toEqual({ ok: false, error: "this project does not allow demo's token as GH_TOKEN" })
@@ -1607,7 +1551,7 @@ describe('runMamaCommand', () => {
     it('starts a non-interactive workspace on its own steps at a commit, only for a caller at bypass', async () => {
       await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'accept-edits' })
       expect(await run('create', '', { 'non-interactive': '1', steps: STEPS })).toEqual({
-        ok: false, error: expect.stringContaining('only a caller at bypass may ask for') as string,
+        ok: false, error: expect.stringContaining("run commands as the workspace does: permission mode 'bypass' is more permissive") as string,
       })
       expect(await run('create', '', { 'no-steps': '1', 'no-agent': '1' })).toMatchObject({ ok: true })
 
@@ -1665,7 +1609,7 @@ describe('runMamaCommand', () => {
       })
       const strict = await callerFor({ permissionMode: 'plan' })
       expect(await runMamaCommand(strict, { command: 'create', body: '', args: { workspace: 'caller-workspace', run: '["true"]' } }))
-        .toMatchObject({ ok: false, error: expect.stringContaining('only a caller at bypass') as string })
+        .toMatchObject({ ok: false, error: expect.stringContaining("run commands as the workspace does: permission mode 'bypass'") as string })
     })
 
     it('reruns a non-interactive workspace at its start commit, refusing any other', async () => {
@@ -1789,6 +1733,11 @@ describe('runMamaCommand', () => {
       await recordWorkspaceStopped(PROJ, 'lost-workspace')
       await created({ projectId: OTHER, workspaceId: 'foreign-workspace' }, { permissionMode: 'manual' })
       await recordWorkspaceStopped(OTHER, 'foreign-workspace')
+      // Two whose ids share a prefix, which names neither.
+      for (const twin of ['twin-a', 'twin-b']) {
+        await created({ projectId: PROJ, workspaceId: twin }, { permissionMode: 'manual' })
+        await recordWorkspaceStopped(PROJ, twin)
+      }
       // Recorded as `manual`, but pi has only `bypass`, which its session
       // would come back in.
       await created({ projectId: PROJ, workspaceId: 'pi-workspace' }, { permissionMode: 'manual' })
@@ -1813,21 +1762,18 @@ describe('runMamaCommand', () => {
         return outcome.error
       }
 
-      expect(await refusal('caller')).toBe('restart cannot restart this workspace itself')
+      expect(await refusal('caller')).toBe('workspace caller-w cannot restart this workspace itself')
       expect(await refusal('running')).toBe('workspace running- is not stopped')
       expect(await refusal('restarting')).toBe('workspace restarti is running; only a stopped one can be restarted')
-      expect(await refusal('bypass')).toBe("bypass-w's claude agent runs in permission mode 'bypass', more than the "
-        + "caller's ceiling ('accept-edits'); only one at or below it can be restarted")
-      expect(await refusal('pi-work')).toBe("pi-works's pi agent would come back in permission mode 'bypass', "
-        + "the nearest pi has to 'manual', more than the caller's ceiling ('accept-edits'); only one at or below it "
-        + 'can be restarted')
-      expect(await refusal('handpi')).toBe("handpi-w's pi agent would come back in permission mode 'bypass', "
-        + "the nearest pi has to 'manual', more than the caller's ceiling ('accept-edits'); only one at or below it "
-        + 'can be restarted')
-      expect(await refusal('bare')).toBe("bare-wor's claude agent runs in permission mode 'bypass', more than the "
-        + "caller's ceiling ('accept-edits'); only one at or below it can be restarted")
+      const above = "permission mode 'bypass' is more permissive than workspace caller-w's ceiling ('accept-edits')"
+      expect(await refusal('bypass')).toBe(`bypass-w's claude agent: ${above}`)
+      expect(await refusal('pi-work')).toBe(`pi-works's pi agent, back in the nearest mode pi has to 'manual': ${above}`)
+      expect(await refusal('handpi')).toBe(`handpi-w's pi agent, back in the nearest mode pi has to 'manual': ${above}`)
+      expect(await refusal('bare')).toBe(`bare-wor's claude agent: ${above}`)
       expect(await refusal('opencode')).toContain('opencode is not signed in for this project\'s owner')
+      expect(await refusal('twin')).toBe("'twin' matches more than one workspace in this project — use a longer prefix")
       expect(await refusal('lost')).toContain('the history of Claude Code conversation lost-conv is gone')
+      // Another project's workspace, by id: the gate finds it in none of its own.
       expect(await refusal('foreign-workspace')).toBe(`no workspace 'foreign-workspace' in ${PROJ}`)
       expect(await run('restart')).toEqual({ ok: false, error: 'restart needs a workspace id' })
       expect(listProvisioning()).toEqual([])
@@ -1841,7 +1787,7 @@ describe('runMamaCommand', () => {
         await gate
         return { workspaceId: opts.workspaceId, jobName: 'j', forwardedPorts: [] }
       })
-      for (let i = 1; i < SPAWN_MAX_IN_FLIGHT_PER_WORKSPACE; i++) expect(await run('create', 'x')).toMatchObject({ ok: true })
+      for (let i = 1; i < MAX_DELEGATE_LAUNCHES; i++) expect(await run('create', 'x')).toMatchObject({ ok: true })
       expect((await run('restart', '', { workspace: 'sibling' })).ok).toBe(true)
       expect(await run('create', 'x')).toMatchObject({ ok: false, error: expect.stringContaining('too many workspaces') as unknown })
       release()
@@ -1984,12 +1930,12 @@ describe('runMamaCommand', () => {
 
       // A message is as good as a prompt, so the caller's posture caps it:
       // the session's, and its agent's latest report.
-      expect(await refusal('go', { workspace: 'bypass' })).toContain('more than the caller\'s own')
+      expect(await refusal('go', { workspace: 'bypass' })).toContain("is more permissive than workspace caller-w's ceiling")
       setLiveAgents(PROJ, 'sibling-workspace', [
         { handle: first.window, tool: 'claude', conversationId: 'first-conv', reportedMode: 'bypassPermissions' },
         { handle: second.window, tool: 'claude', conversationId: 'second-conv', reportedMode: 'mystery' },
       ])
-      expect(await refusal('go', { workspace: 'sibling' })).toContain('runs in permission mode \'bypass\'')
+      expect(await refusal('go', { workspace: 'sibling' })).toContain("permission mode 'bypass' is more permissive")
       expect(await refusal('go', { workspace: 'sibling', conversation: 'second' })).toContain('cannot tell which permission mode')
       _resetWorkspaceStatusStoreForTests()
 
@@ -1997,7 +1943,7 @@ describe('runMamaCommand', () => {
       await recordWorkspaceStopped(PROJ, 'stopped-workspace')
       expect(await refusal('go', { workspace: 'stopped' }))
         .toBe('workspace stopped- is stopped; restart it with yaac-mama restart stopped-, then send once it is running')
-      expect(await refusal('go', { workspace: 'foreign-workspace' })).toContain('no workspace')
+      expect(await refusal('go', { workspace: 'foreign-workspace' })).toBe(`no workspace 'foreign-workspace' in ${PROJ}`)
       expect(await refusal('go', { workspace: 'sibling', conversation: 'nope' })).toBe("no open conversation 'nope' in sibling- (see: yaac-mama list)")
       expect(await refusal('go', { workspace: 'sibling', agent: 'nope' })).toBe("no running agent 'nope' in sibling- (see: yaac-mama list)")
       expect(await refusal('  ', { workspace: 'sibling' })).toContain('needs a message')
@@ -2316,6 +2262,8 @@ describe('runMamaCommand', () => {
 
   describe('fetch', () => {
     beforeAll(async () => { setPeerReaderEntry(await buildPeerReader()) })
+    // The caller runs, as one calling always does.
+    beforeEach(() => { running = [podFor('caller-workspace')] })
 
     it('bundles a stopped sibling\'s branches by short id, and nothing of another project\'s', async () => {
       // The caller fetches into its one checkout, of the project's repo.
@@ -2392,9 +2340,11 @@ describe('runMamaCommand', () => {
       expect(listing).toMatch(/claude-conv\s+claude\s+tui\s+yes\s+.*\s2\s+20 B\s+write the report/)
       expect(listing).toMatch(/opencode-conv\s+opencode\s+tui\s+yes\s+.*\s1\s+6 B/)
 
-      // A prefix names a conversation; its transcripts print main first.
-      expect((await file(await run('history', '', { workspace: 'sibling', conversation: 'claude' }))).toString())
-        .toBe('{"main":1}\n{"sub":1}\n')
+      // A prefix names a conversation; its transcripts print main first,
+      // streamed through rather than held.
+      const transcripts = await run('history', '', { workspace: 'sibling', conversation: 'claude' })
+      expect(transcripts).toMatchObject({ body: expect.any(ReadableStream) as unknown })
+      expect((await file(transcripts)).toString()).toBe('{"main":1}\n{"sub":1}\n')
 
       // Every file is named under its conversation, and handed out as is.
       expect(await output('history', '', { workspace: 'sibling', files: '1' }))

@@ -60,11 +60,12 @@ const NO_DRAFT: DraftClaim = { generatedTitle: () => undefined, run: (fn) => fn(
  * Claim draft `id` (none if undefined) for one create or queue. A draft
  * already claimed is a `CONFLICT` and one that is gone is `NOT_FOUND`, so
  * a second tab, a retry or a double click cannot make two workspaces from
- * one draft. A caller who does not own the project is refused even with no
- * draft, since the create and queue routes claim before anything else.
+ * one draft. A caller who may not create in the project is refused even
+ * with no draft, since the create and queue routes claim before anything
+ * else; a draft is its owner's in person.
  */
 export async function claimDraft(principal: Actor, projectId: string, id: string | undefined): Promise<DraftClaim> {
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, id === undefined ? 'delegate' : 'owner')
   if (id === undefined) return NO_DRAFT
   if (launching.has(id)) throw new ServerError('CONFLICT', `draft workspace ${id} is already being created from`)
   launching.add(id)

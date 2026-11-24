@@ -6,16 +6,16 @@
  * so runs never overlap.
  *
  * Settings are resolved when the routine is saved, as a queued entry's are,
- * so what the UI shows is what each run launches with. An agent's writes
- * (`yaac-mama routine …`) are held to its permission mode, as its queue
- * writes are (`QueueSource`). A routine that runs a workflow
+ * so what the UI shows is what each run launches with. A delegate's writes
+ * are held to its ceiling, as its queue writes are, and so are its resumes
+ * and runs of one. A routine that runs a workflow
  * (docs/workflows.md) approves, when a person saves it, the commit or branch
  * it runs on; an agent's must find that approved already.
  */
 import { randomUUID } from 'node:crypto'
 import { ownedGroup } from './groups'
-import { resolveParentlessSettings, runQueuedWorkspace, type QueueSource, type SavedStart } from './queued-workspaces'
-import { authorizeProject, type Actor } from '#domain/access'
+import { resolveParentlessSettings, runQueuedWorkspace, type SavedStart } from './queued-workspaces'
+import { authorizeProject, requireWithinCeiling, type Actor } from '#domain/access'
 import { approveWorkflowStart } from '#domain/projects'
 import { modelDisplayName } from '#domain/auth'
 import {
@@ -56,11 +56,10 @@ export async function createRoutine(
   principal: Actor,
   projectId: string,
   request: RoutineSettings,
-  source: QueueSource,
 ): Promise<RoutineEntry> {
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, 'delegate')
   // With no group named, the routine's runs go in a group of its own.
-  const fields = await resolveRoutine(principal, projectId, request.group === undefined ? { ...request, group: null } : request, source)
+  const fields = await resolveRoutine(principal, projectId, request.group === undefined ? { ...request, group: null } : request)
   const id = randomUUID()
   const groupId = request.group === undefined ? await ownedGroup(projectId, { kind: 'routine', id }, fields.name) : fields.groupId
   const row = await insertRoutine(projectId, { ...fields, ...(groupId !== undefined ? { groupId } : {}) },
@@ -79,7 +78,6 @@ export async function updateRoutine(
   principal: Actor,
   id: string,
   patch: Partial<RoutineSettings>,
-  source: QueueSource,
 ): Promise<RoutineEntry> {
   const row = await routineFor(principal, id)
   const retooled = patch.tool !== undefined && patch.tool !== row.tool
@@ -112,7 +110,7 @@ export async function updateRoutine(
       : !retooled && patch.model === undefined && row.effort !== undefined ? { effort: row.effort } : {}),
     ...(retooled ? patch.agentOptions !== undefined ? { agentOptions: patch.agentOptions } : {}
       : { agentOptions: { ...row.agentOptions, ...patch.agentOptions } }),
-  }, source, { repos: row.repos, nested: row.nested, cwd: row.cwd }, row)
+  }, { repos: row.repos, nested: row.nested, cwd: row.cwd }, row)
   const rescheduled = fields.cron !== row.cron || fields.timeZone !== row.timeZone
   const updated = await updateRoutineRow(id, fields,
     rescheduled && !row.paused ? nextTick(fields.cron, fields.timeZone, new Date()) : undefined)
@@ -124,6 +122,7 @@ export async function updateRoutine(
  *  are not caught up). */
 export async function setRoutinePaused(principal: Actor, id: string, paused: boolean): Promise<RoutineEntry> {
   const row = await routineFor(principal, id)
+  if (!paused) requireWithinCeiling(principal, row.permissionMode, `routine ${id.slice(0, 8)}`)
   const updated = await setRoutinePausedRow(id, paused, paused ? null : nextTick(row.cron, row.timeZone, new Date()))
   if (!updated) throw new ServerError('NOT_FOUND', `no routine ${id}`)
   return (await toEntries([updated]))[0]
@@ -136,6 +135,7 @@ export async function setRoutinePaused(principal: Actor, id: string, paused: boo
  */
 export async function runRoutineNow(principal: Actor, id: string): Promise<{ workspaceId: string }> {
   const row = await routineFor(principal, id)
+  requireWithinCeiling(principal, row.permissionMode, `routine ${id.slice(0, 8)}`)
   const now = new Date()
   const entry = await insertRun(row, now, nextTick(row.cron, row.timeZone, now))
   if (!entry) throw new ServerError('NOT_FOUND', `no routine ${id}`)
@@ -251,7 +251,7 @@ async function discardUnlaunchedRuns(routineId: string): Promise<void> {
 async function routineFor(principal: Actor, id: string): Promise<RoutineRow> {
   const row = await getRoutineRow(id)
   if (!row) throw new ServerError('NOT_FOUND', `no routine ${id}`)
-  await authorizeProject(principal, row.projectId)
+  await authorizeProject(principal, row.projectId, 'delegate')
   return row
 }
 
@@ -274,7 +274,6 @@ async function resolveRoutine(
   principal: Actor,
   projectId: string,
   request: RoutineSettings,
-  source: QueueSource,
   own?: RepoSelection,
   kept?: SavedStart,
 ): Promise<RoutineFields> {
@@ -300,7 +299,7 @@ async function resolveRoutine(
     ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     ...(request.branch !== undefined ? { branch: request.branch } : {}),
     ...(request.group !== undefined ? { group: request.group } : {}),
-  }, source, own, kept)
+  }, own, kept)
   const fields: RoutineFields = {
     name,
     cron,

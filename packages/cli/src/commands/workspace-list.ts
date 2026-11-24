@@ -36,7 +36,7 @@ export async function workspaceList(
   const [result, { groups }, queued, { timeZone }, target] = await Promise.all([
     api.workspace.list.$get({ query: {} }),
     api.workspace.group.list.$get({ query: {} }),
-    api.workspace.queue.list.$get(),
+    api.workspace.queue.list.$get({ query: {} }),
     api.config['time-zone'].$get(),
     resolveServerTarget(),
   ])

@@ -1921,6 +1921,12 @@ export interface StoppedWorkspaceEntry {
   sessions: SessionEntry[]
   /** Every conversation the workspace hosted. */
   conversations: ConversationEntry[]
+  /** Its checkouts, as a running workspace's are listed; the server always
+   *  sends them. */
+  repos?: WorkspaceRepo[]
+  /** The timeout it last ran with, which a restart keeps unless it names
+   *  another (docs/routines.md "Timeouts"). */
+  timeoutMinutes?: number
   /** Why the workspace died, when the reaper (not the user) stopped it. */
   deathReason?: WorkspaceDeathReason
   /** Evidence accompanying `deathReason` (exit code, eviction message, …). */
@@ -2733,11 +2739,34 @@ export type AccessMode = 'local' | 'tailnet'
  * reached the server directly (loopback, or a nested server's direct path)
  * and is the install's built-in user. `tailnet` came through `tailscale
  * serve`, which stamped the tailnet user's login and display name on it.
- * `userId` is the caller's `users` row.
+ * A `delegate` acts for a user without being them (docs/multi-user.md
+ * "Authorization"). `userId` is the `users` row it acts as or for.
  */
 export type Principal =
   | { kind: 'local'; userId: string }
   | { kind: 'tailnet'; userId: string; login: string; name: string }
+  | Delegate
+
+/**
+ * Something acting for a user, within limits, that is not that person: a
+ * workspace's `yaac-mama` call. It passes only the checks made at the
+ * `delegate` level, in its one project if it has one, and starts or
+ * messages nothing more permissive than its ceiling.
+ */
+export interface Delegate {
+  kind: 'delegate'
+  /** The user it acts for. */
+  userId: string
+  /** That user's login, for logs; null for a local install's one user. */
+  login: string | null
+  /** What is acting: a stable id, a few words for logs and refusals, and
+   *  for a workspace the session that says it is asking. */
+  via: { kind: 'workspace'; id: string; label: string; sessionId?: string }
+  /** The one project it may read or act in; absent, any its user may. */
+  projectId?: string
+  /** The most permissive mode anything it starts or messages may run in. */
+  ceiling: PermissionMode
+}
 
 /** A user's install-wide role (docs/multi-user.md "Roles"): an `admin`
  *  publishes sites and sets roles; a `member` does neither. */
@@ -2950,7 +2979,8 @@ export const MAX_MODEL_LENGTH = 128
  * in-workspace `yaac-mama` command.
  *
  * This list is the allowlist, enforced where requests are answered
- * (`runMamaCommand`), so no transport can widen it.
+ * (`runMamaCommand` in `#api/mama`), so no transport can widen it. What a
+ * command may do is its routes' to decide, as for any delegate.
  *
  * `stop` is allowed because a stop is reversible: the checkout, row, title,
  * group and conversation are kept, so it can be restarted. `restart` only

@@ -6,6 +6,7 @@ import { readBuildId } from '@yaac/shared/build-id'
 import { ServerError } from '@yaac/shared/errors'
 import { feedbackKeyPath, feedbackUrlPath } from '@yaac/shared/project-paths'
 import type { Principal } from '@yaac/shared/types'
+import { personId } from '#domain/access'
 import { getGitIdentity } from '#db'
 import { workspaceDriver } from '#drivers/driver'
 import { inlineImages } from '#lib/images'
@@ -72,7 +73,7 @@ export function feedbackHost(): string | null {
  */
 async function sender(principal: Principal): Promise<{ source: 'tailscale' | 'git'; email: string; name: string } | null> {
   if (principal.kind === 'tailnet') return { source: 'tailscale', email: principal.login, name: principal.name }
-  const git = await getGitIdentity(principal.userId)
+  const git = await getGitIdentity(personId(principal))
   return git && { source: 'git', ...git }
 }
 

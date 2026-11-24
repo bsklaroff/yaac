@@ -13,7 +13,7 @@ import { formatCommits } from '@yaac/shared/steps'
  */
 export async function workspaceRunQueued(idOrPrefix: string, opts: { yes?: boolean } = {}): Promise<void> {
   const token = idOrPrefix.trim().toLowerCase()
-  const matches = (await api.workspace.queue.list.$get()).filter((e) => e.id.startsWith(token))
+  const matches = (await api.workspace.queue.list.$get({ query: {} })).filter((e) => e.id.startsWith(token))
   if (matches.length === 0) throw new Error(`No queued workspace "${idOrPrefix}".`)
   if (matches.length > 1) throw new Error(`"${idOrPrefix}" matches more than one queued workspace; use a longer prefix.`)
   const [entry] = matches

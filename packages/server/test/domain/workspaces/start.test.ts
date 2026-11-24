@@ -29,6 +29,7 @@ import {
   saveDraftWorkspace,
   stopWorkspace,
 } from '#domain/workspaces'
+import { MAX_DELEGATE_LAUNCHES } from '#domain/workspaces/start'
 import { _clearTerminatingForTests } from '#runtime/status/terminating'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import { clearPrewarmStateForTests, refreshing } from '#domain/workspaces/prewarm'
@@ -92,6 +93,7 @@ import {
   recordAccessMode,
   seeTailnetUser,
   setToolCredential,
+  insertSession,
   type SessionRow,
 } from '#db'
 import { getProjectRow, recordProjectCreate, setProjectConfig } from '#db/project-store'
@@ -110,6 +112,8 @@ import {
   type WorkspaceSpec,
 } from '#drivers/contract'
 import type { AgentTool } from '@yaac/shared/types'
+import type { Actor } from '#domain/access'
+import { workspaceDelegate } from '#test/support/delegate'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -306,10 +310,10 @@ describe('prepareStart', () => {
 
   /** A start as the create route makes one, with no spare unless asked. */
   async function start(
-    over: Partial<StartWorkspaceRequest> & { onProgress?: (message: string) => void } = {},
+    over: Partial<StartWorkspaceRequest> & { onProgress?: (message: string) => void; actor?: Actor } = {},
   ): Promise<WorkspaceCreateResult> {
-    const { onProgress, ...request } = over
-    const run = await prepareStart(local, {
+    const { onProgress, actor = local, ...request } = over
+    const run = await prepareStart(actor, {
       projectId: DEMO_PROJECT_ID,
       workspaceId: randomUUID(),
       mode: 'tui',
@@ -386,7 +390,7 @@ describe('prepareStart', () => {
     /** What a start resolved to, as its session records it. The create
      *  stops at its first runtime call after opening the session. */
     const settled = async (
-      over: Partial<StartWorkspaceRequest> = {},
+      over: Partial<StartWorkspaceRequest> & { actor?: Actor } = {},
       driver: Partial<WorkspaceDriver> = {},
     ): Promise<SessionRow> => {
       const workspaceId = randomUUID()
@@ -456,6 +460,56 @@ describe('prepareStart', () => {
       await expect(start({ tool: 'claude', model: 'claude-opus-4-5', effort: 'low' }))
         .rejects.toThrow(/has no effort setting/)
       expect(listProvisioning()).toHaveLength(shown)
+    })
+
+    // docs/permission-modes.md "A spawned workspace's posture".
+    it("holds a delegate's start to its ceiling, taking after its calling session, and refuses a tool no one signed in to", async () => {
+      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { permissionMode: 'bypass', mode: 'acp' })
+      await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'caller' })
+      await insertSession(DEMO_PROJECT_ID, 'caller', { cwd: '', tool: 'codex', mode: 'tui', model: 'gpt-5.5', permissionMode: 'auto' })
+      await saveToolAuth('codex', 'k')
+      await saveToolAuth('claude', 'k')
+      const agent = workspaceDelegate(BUILT_IN_USER_ID, 'caller', { projectId: DEMO_PROJECT_ID, ceiling: 'auto' })
+      // Unnamed, the calling session's tool, model and agent mode, and the
+      // ceiling rather than the project's remembered posture.
+      expect(await settled({ actor: agent, mode: undefined })).toMatchObject({ tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'auto' })
+      // Another tool takes the ceiling, stepped down to what the tool has.
+      expect(await settled({ actor: agent, tool: 'claude' })).toMatchObject({ tool: 'claude', permissionMode: 'auto' })
+      expect(await settled({ actor: { ...agent, ceiling: 'plan' }, tool: 'codex' })).toMatchObject({ permissionMode: 'read-only' })
+      await expect(start({ actor: agent, tool: 'claude', permissionMode: 'bypass' }))
+        .rejects.toThrow(/permission mode 'bypass' is more permissive than the caller's ceiling \('auto'\)/)
+      await expect(start({ actor: agent, tool: 'opencode' })).rejects.toThrow(/opencode is not signed in for this project's owner/)
+      // Its settings are never remembered as the project's.
+      await settled({ actor: agent, tool: 'claude', permissionMode: 'manual', rememberDefaults: true })
+      expect((await getProjectRow(DEMO_PROJECT_ID))?.createDefaults.claude?.permissionMode).toBe('bypass')
+    })
+
+    it('starts a workspace on steps of a delegate\'s own only at bypass, its own project only', async () => {
+      const steps = { build: { run: 'make' } }
+      await expect(start({ actor: workspaceDelegate(BUILT_IN_USER_ID, 'caller', { ceiling: 'accept-edits' }), steps }))
+        .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining("run commands as the workspace does: permission mode 'bypass'") as string })
+      await expect(start({ actor: workspaceDelegate(BUILT_IN_USER_ID, 'caller', { projectId: 'elsewhere' }) }))
+        .rejects.toMatchObject({ code: 'FORBIDDEN' })
+      expect(listProvisioning()).toEqual([])
+    })
+
+    it("caps a delegate's launches in flight, against concurrent requests, giving a slot back as each settles", async () => {
+      const agent = workspaceDelegate(BUILT_IN_USER_ID, 'caller')
+      const prepare = (actor: Actor = agent): Promise<unknown> => prepareStart(actor, {
+        projectId: DEMO_PROJECT_ID, workspaceId: randomUUID(), noSession: true, rememberDefaults: false, claimSpare: false,
+      })
+      const runs = await Promise.allSettled(Array.from({ length: MAX_DELEGATE_LAUNCHES + 2 }, () => prepare()))
+      expect(runs.filter((r) => r.status === 'fulfilled')).toHaveLength(MAX_DELEGATE_LAUNCHES)
+      expect(runs.find((r) => r.status === 'rejected')).toMatchObject({ reason: { code: 'CONFLICT', message: expect.stringContaining('workspace caller') as string } })
+      // A person, and another delegate, have their own.
+      await expect(prepare(local)).resolves.toBeTypeOf('function')
+      await expect(prepare(workspaceDelegate(BUILT_IN_USER_ID, 'other'))).resolves.toBeTypeOf('function')
+      // A run that settles gives its slot back, failed or not.
+      installDriver({ prepareImage: () => Promise.reject(new Error('stop here')) })
+      const [first] = runs as Array<PromiseFulfilledResult<(p?: unknown) => Promise<unknown>>>
+      await expect(first.value()).rejects.toThrow('stop here')
+      await expect(prepare()).resolves.toBeTypeOf('function')
+      await expect(prepare()).rejects.toMatchObject({ code: 'CONFLICT' })
     })
 
     it('refuses a named posture the agent lacks, under either UI, naming the ones it has', async () => {
@@ -629,7 +683,7 @@ describe('prepareStart', () => {
       expect((await getProjectRow(DEMO_PROJECT_ID))?.lastTool).toBeUndefined()
 
       // The failure frees its slot, and what waits for room takes it.
-      const waiting = await queueWorkspace(local, DEMO_PROJECT_ID, { prompt: 'waiting', group: groupId, mode: 'tui' }, 'user')
+      const waiting = await queueWorkspace(local, DEMO_PROJECT_ID, { prompt: 'waiting', group: groupId, mode: 'tui' })
       installDriver({ prepareImage: () => { installDriver(); throw new Error('no image') } })
       await expect(failing()).rejects.toThrow('no image')
       await vi.waitFor(async () => { expect((await listQueuedWorkspaces()).map((e) => e.id)).not.toContain(waiting.id) })

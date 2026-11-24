@@ -45,7 +45,7 @@ beforeEach(async () => {
   vi.setSystemTime(now - 10 * DAY_MS)
   for (const id of ['wt-old', 'wt-old-parent', 'wt-ran-since']) await stopped(PROJ, id)
   await stopped(OTHER, 'wt-other-old')
-  await queueWorkspace(local, PROJ, { parent: 'wt-old-parent', prompt: 'next', tool: 'claude' }, 'user')
+  await queueWorkspace(local, PROJ, { parent: 'wt-old-parent', prompt: 'next', tool: 'claude' })
   vi.setSystemTime(Date.now() + 1)
   await recordWorkspaceLife(PROJ, 'wt-ran-since', { at: new Date() })
   vi.setSystemTime(now - 2 * DAY_MS)

@@ -106,7 +106,7 @@ export async function sessionLaunches(
       ...(resume ? { resumes: conversationId } : {}),
       ...(opening !== undefined ? { opening } : {}),
       // `YAAC_SESSION_ID` tells the agent's own commands which session they
-      // run in, which `yaac-mama` reports (`mamaCaller`).
+      // run in, which `yaac-mama` reports (`callingWorkspace`).
       // The window options carry its agent options (`agentOptionsCmd`).
       // A session in a checkout whose repo's token may be `GH_TOKEN` takes
       // that one, from the variable the launch left it in.

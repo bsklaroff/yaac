@@ -1,5 +1,5 @@
 import { getRepo, listRepoShares, type RepoRow } from '#db'
-import type { Actor } from '#domain/access'
+import { personId, type Actor } from '#domain/access'
 import { ServerError } from '@yaac/shared/errors'
 import { isUuid } from '#lib/uuid'
 
@@ -14,7 +14,7 @@ import { isUuid } from '#lib/uuid'
 export async function ownRepo(principal: Actor, repoId: string): Promise<RepoRow> {
   const repo = isUuid(repoId) ? await getRepo(repoId) : undefined
   if (!repo) throw new ServerError('NOT_FOUND', `repo ${repoId} not found`)
-  if (principal.kind !== 'system' && principal.userId !== repo.owner) {
+  if (principal.kind !== 'system' && personId(principal) !== repo.owner) {
     throw new ServerError('FORBIDDEN', 'only the owner of this repo may do that')
   }
   return repo

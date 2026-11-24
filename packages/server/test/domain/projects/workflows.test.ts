@@ -28,13 +28,13 @@ import {
   projectRepoIds,
   removeRunSecret,
   resolveWorkflow,
-  savedByPerson,
   setInitWorkflows,
   setRunSecret,
   showWorkflow,
   workflowLaunch,
   workflowSpec,
 } from '#domain/projects'
+import { workspaceDelegate } from '#test/support/delegate'
 
 /**
  * Workflows above the store: their repos and the init flag, anyone who may
@@ -44,7 +44,7 @@ import {
  */
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
-const agent = { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const
+const agent = workspaceDelegate(BUILT_IN_USER_ID, 'w1')
 const server = { kind: 'system' } as const
 const CI = { test: { run: ['pnpm test'] } }
 /** A graph an agent writes, which no person wrote. */
@@ -219,16 +219,6 @@ describe('listWorkflowSummaries', () => {
     const [summary] = await listWorkflowSummaries()
     expect(summary).toMatchObject({ projectId: DEMO_PROJECT_ID, name: 'relay', steps: CI, secrets: ['P8_KEY'], repos: [], init: false })
     expect(summary).not.toHaveProperty('approvedBranches')
-  })
-})
-
-describe('savedByPerson', () => {
-  it('answers whether a person saved an unattended start, which by itself approves nothing', async () => {
-    await relay()
-    expect(savedByPerson(agent)).toBe(false)
-    expect(savedByPerson(server)).toBe(false)
-    expect(savedByPerson(local)).toBe(true)
-    expect((await listProjectWorkflows(DEMO_PROJECT_ID))[0].approvedBranches).toEqual([])
   })
 })
 

@@ -25,6 +25,7 @@ import { scopeToUser } from '#commands/api'
 import { selectionOptions } from '#commands/repo-selection'
 import { workspaceList } from '#commands/workspace-list'
 import { workspaceRename } from '#commands/workspace-rename'
+import { workspaceSend } from '#commands/workspace-send'
 import { workspaceStop } from '#commands/workspace-stop'
 import { workspaceDelete } from '#commands/workspace-delete'
 import { workspaceRunQueued } from '#commands/workspace-run-queued'
@@ -566,6 +567,16 @@ workspace
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .argument('<title>', 'New title (quote it if it has spaces)')
   .action(workspaceRename)
+
+workspace
+  .command('send')
+  .description('Message a running workspace\'s agent as if you typed it: its first agent, or the one --agent or --conversation names')
+  .argument('<workspace-id>', 'Workspace ID or unique prefix')
+  .option('-p, --prompt <text>', 'The message; - reads it from stdin')
+  .option('--prompt-file <file>', 'Read the message from a file')
+  .option('--agent <id>', 'The running agent to send to, by ID or unique prefix')
+  .option('--conversation <id>', 'The conversation whose session to send to, by ID or unique prefix')
+  .action(workspaceSend)
 
 workspace
   .command('stop')

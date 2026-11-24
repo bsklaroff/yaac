@@ -215,6 +215,13 @@ yaac workspace
     -n, --num <n>               With -s, show at most n (default 25)
     -a, --all                   With -s, show all
   rename <workspace-id> <title>
+  send <workspace-id>           Message a running workspace's agent as if you
+                                typed it, headed with who sent it: its first
+                                agent, unless one is named
+    -p, --prompt <text>         The message (- reads it from stdin)
+    --prompt-file <file>        Read the message from a file
+    --agent <id>                The running agent to send to
+    --conversation <id>         The conversation whose agent to send to
   stop <workspace-id>           Tear down the runtime; keep the checkout and diff
     --agent                     <id> names an agent: stop only it (sessions.md)
   delete <workspace-id>         Delete a stopped workspace's checkout and history,

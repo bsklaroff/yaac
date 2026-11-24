@@ -38,18 +38,19 @@ import {
   updateProjectRepoLink,
 } from '#domain/projects'
 import { previewWorkspaceRetention, removeProject, setWorkspaceRetention } from '#domain/workspaces'
-import { pushCredentialsToRuntime } from '#domain/auth'
+import { authEntryEndpoint, authEntryProvider, loadToolAuthEntry, modelsForTool, pushCredentialsToRuntime } from '#domain/auth'
+import { AGENT_TOOLS } from '@yaac/shared/types'
 import { serveHostedRepo } from '#domain/repos'
-import { setProjectOrder } from '#db'
+import { getProjectRow, setProjectOrder } from '#db'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
 import { projectBuildDir } from '#lib/build-dirs'
 import { DEFAULT_ALLOWED_HOSTS, missingCriticalHosts } from '@yaac/shared/allowed-hosts'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_PROJECT_REPOS } from '@yaac/shared/types'
 import { buildFilesApp } from '#routes/build-files'
-import { authorizeProject } from '#domain/access'
+import { authorizeProject, personId } from '#domain/access'
 import { requireDriverFeature } from '#api/http/driver-features'
-import type { IdentityEnv } from '#api/http/web-auth'
+import { personOnly, type IdentityEnv } from '#api/http/web-auth'
 
 /**
  * Send a project's changed secrets to running workspaces, which resolve
@@ -92,9 +93,10 @@ export const projectApp = new Hono<IdentityEnv>()
   // The caller's own projects, in the order their project list shows them.
   .put(
     '/order',
+    personOnly,
     zv('json', z.object({ projectIds: z.array(z.uuid()) })),
     async (c) => {
-      await setProjectOrder(c.get('principal').userId, c.req.valid('json').projectIds)
+      await setProjectOrder(personId(c.get('principal')), c.req.valid('json').projectIds)
       return c.body(null, 204)
     },
   )
@@ -107,6 +109,7 @@ export const projectApp = new Hono<IdentityEnv>()
   // it is adding, to follow the add in the snapshot's `projectAdds`.
   .post(
     '/add',
+    personOnly,
     zv('json', z.intersection(
       z.union([
         z.object({
@@ -132,7 +135,7 @@ export const projectApp = new Hono<IdentityEnv>()
           ...(body.fork !== undefined ? { fork: body.fork } : {}),
           ...(body.upstream !== undefined ? { upstream: body.upstream } : {}),
         }
-      const result = await addProject(source, c.get('principal').userId, projectId)
+      const result = await addProject(source, personId(c.get('principal')), projectId)
       await pushCredentialsToRuntime()
       return c.json(result)
     },
@@ -141,10 +144,11 @@ export const projectApp = new Hono<IdentityEnv>()
   // (docs/hosted-projects.md).
   .post(
     '/create',
+    personOnly,
     zv('json', z.object({ name: z.string().min(1).max(200), projectId: z.uuid().optional() })),
     async (c) => {
       const { name, projectId } = c.req.valid('json')
-      return c.json(await createHostedProject(name, c.get('principal').userId, projectId))
+      return c.json(await createHostedProject(name, personId(c.get('principal')), projectId))
     },
   )
   // Clear a failed add from `projectAdds`.
@@ -157,13 +161,36 @@ export const projectApp = new Hono<IdentityEnv>()
   // local repo.
   .post(
     '/register',
+    personOnly,
     zv('json', z.object({ id: z.uuid(), name: z.string().min(1), remoteUrl: z.string().min(1) })),
     async (c) => {
       const { id, name, remoteUrl } = c.req.valid('json')
-      return c.json(await registerStagedProject(id, name, remoteUrl, c.get('principal').userId))
+      return c.json(await registerStagedProject(id, name, remoteUrl, personId(c.get('principal'))))
     },
   )
   .get('/:projectId', async (c) => c.json(await getProjectDetail(await resolveProjectId(c.req.param('projectId')))))
+  // Which agent tools the project's owner is signed in to, and each one's
+  // models, which a workspace of it cannot tell for itself (`yaac-mama
+  // models`). A user's sign-ins are their own, so only the owner and their
+  // delegates may read them.
+  .get('/:projectId/models', async (c) => {
+    const projectId = await resolveProjectId(c.req.param('projectId'))
+    await authorizeProject(c.get('principal'), projectId, 'delegate')
+    const owner = (await getProjectRow(projectId))?.owner
+    if (owner === undefined) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
+    return c.json({
+      tools: await Promise.all(AGENT_TOOLS.map(async (tool) => {
+        const auth = await loadToolAuthEntry(owner, tool)
+        if (!auth) return { tool, auth: null, models: [] }
+        const provider = authEntryProvider(auth)
+        return {
+          tool,
+          auth: { kind: auth.kind, ...(provider !== undefined ? { provider } : {}) },
+          models: modelsForTool(tool, provider, authEntryEndpoint(auth)),
+        }
+      })),
+    })
+  })
   // The repos the project links (docs/project-repos.md): link one by its
   // remote (taken as a project add takes it), by the id of a repo its owner
   // may use, or as a new repo yaac hosts, under `dir` (by default the repo's

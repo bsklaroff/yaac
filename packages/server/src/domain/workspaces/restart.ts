@@ -1,6 +1,6 @@
 import { tearingDown, teardownForRestart } from './cleanup'
-import { prepareStart, startOf } from './start'
-import { createWorkspace, type WorkspaceCreateResult } from './create'
+import { prepareStart, startOf, withLaunchSlot } from './start'
+import { createWorkspace, refuseUnsignedTool, type WorkspaceCreateResult } from './create'
 import { resolveWorkspaceId } from './resolve'
 import { provision, type ProvisionRun } from './provisioning'
 import { readGroupRoom, refuseFullGroup } from './group-limits'
@@ -14,20 +14,34 @@ import {
   listWorkspaceSessions,
   setWorkspaceVolume,
   type SessionLaunchSettings,
+  type WorkspaceRow,
 } from '#db'
-import { authorizeProject, type Actor } from '#domain/access'
+import { authorizeProject, requireWithinCeiling, type Actor } from '#domain/access'
 import { serverLog } from '#lib/log'
 import { workspaceDriver } from '#drivers/driver'
 import { ServerError } from '@yaac/shared/errors'
-import { defaultPermissionMode } from '@yaac/shared/types'
+import {
+  defaultPermissionMode,
+  isRankedPermissionMode,
+  launchablePermissionMode,
+  type AgentTool,
+  type Delegate,
+  type PermissionMode,
+} from '@yaac/shared/types'
 import { ensureLifeStamped } from './trees'
 
 /**
  * Check a restart of a workspace id or prefix, running or stopped, and
  * register its provisioning row, filed under the workspace's group so it
- * keeps its place in the sidebar. Refuses a caller who does not own it, a
- * group at its workspace limit, and with `stoppedOnly` a workspace that is
- * running.
+ * keeps its place in the sidebar. Refuses a caller who does not own it and
+ * a group at its workspace limit.
+ *
+ * A delegate restarts only a stopped workspace, never its own, since
+ * tearing a running one down would end whatever turn its agent is in; and
+ * only one whose sessions all come back within its ceiling, each in its
+ * recorded posture or the nearest its tool has (`launchablePermissionMode`),
+ * on tools its user is signed in to. Its restarts count against its launch
+ * slots, as its creates do (`withLaunchSlot`).
  *
  * The run tears down any running unit (keeping the checkout) and launches a
  * new one that brings back each of its open sessions in its own window,
@@ -48,7 +62,7 @@ export async function prepareRestart(
    *  (docs/workspace-volumes.md). `restoreNewest`: restore the newest
    *  readable state if its last checkpoint is unreadable, and give up files
    *  left on a node that cannot be saved, rather than refuse. */
-  opts: { stoppedOnly?: boolean; deadline?: Date; volume?: string | null; restoreNewest?: boolean } = {},
+  opts: { deadline?: Date; volume?: string | null; restoreNewest?: boolean } = {},
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
   // The runtime is asked directly, never skipped when unreachable: a unit
   // this missed would keep running beside the relaunch.
@@ -62,7 +76,7 @@ export async function prepareRestart(
       : `No workspace found matching "${idOrPrefix}". Run "yaac workspace list -s" to see stopped workspaces.`)
   }
   const { projectId, workspaceId } = row
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, 'delegate')
   // A restart would reuse a checkout its run may have changed
   // (docs/workspace-steps.md "Non-interactive workspaces").
   if (row.nonInteractive) {
@@ -75,14 +89,43 @@ export async function prepareRestart(
     throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is a site's release; `
       + 'start the site with `yaac site start`')
   }
-  if (unit && opts.stoppedOnly === true) {
-    throw new ServerError('CONFLICT', `workspace ${workspaceId.slice(0, 8)} is running; only a stopped one can be restarted`)
+  if (principal.kind === 'delegate') await checkDelegateRestart(principal, row, unit !== undefined)
+  return await withLaunchSlot(principal, () => prepareAuthorizedRestart(principal, row, unit?.jobName, opts))
+}
+
+/** What holds a delegate's restart back (`prepareRestart`). */
+async function checkDelegateRestart(principal: Delegate, row: WorkspaceRow, running: boolean): Promise<void> {
+  const { projectId, workspaceId } = row
+  const short = workspaceId.slice(0, 8)
+  if (principal.via.kind === 'workspace' && principal.via.id === workspaceId) {
+    throw new ServerError('VALIDATION', `${principal.via.label} cannot restart this workspace itself`)
   }
-  const jobName = unit?.jobName
+  if (row.stoppedAt === undefined) throw new ServerError('CONFLICT', `workspace ${short} is not stopped`)
+  if (running) throw new ServerError('CONFLICT', `workspace ${short} is running; only a stopped one can be restarted`)
+  const sessions: Array<{ tool: AgentTool; permissionMode: PermissionMode }> = [
+    ...await listWorkspaceSessions(workspaceId),
+    ...await terminalConversationSessions(projectId, workspaceId, row.cwd),
+  ]
+  for (const s of sessions) {
+    const launched = isRankedPermissionMode(s.permissionMode) ? launchablePermissionMode(s.tool, s.permissionMode) : s.permissionMode
+    requireWithinCeiling(principal, launched, launched === s.permissionMode
+      ? `${short}'s ${s.tool} agent`
+      : `${short}'s ${s.tool} agent, back in the nearest mode ${s.tool} has to '${s.permissionMode}'`)
+  }
+  for (const tool of new Set(sessions.map((s) => s.tool))) await refuseUnsignedTool(principal, projectId, tool)
+}
+
+async function prepareAuthorizedRestart(
+  principal: Actor,
+  row: WorkspaceRow,
+  jobName: string | undefined,
+  opts: { deadline?: Date; volume?: string | null; restoreNewest?: boolean },
+): Promise<ProvisionRun<WorkspaceCreateResult>> {
+  const { projectId, workspaceId } = row
   // With nothing running or shutting down, nothing can still write history,
   // so a lost one is refused before the provisioning row exists: a plain
   // error rather than a failed row.
-  const settled = !unit && !tearingDown(workspaceId)
+  const settled = jobName === undefined && !tearingDown(workspaceId)
     && await workspaceDriver().findForTeardown(workspaceId) === undefined
   if (settled) await planSessionResumes(projectId, workspaceId, await listWorkspaceSessions(workspaceId))
   // A stopped workspace takes a slot in its group again; a running one
@@ -143,7 +186,7 @@ export async function prepareRestart(
  * nothing else would bring it back. It takes the posture of the workspace's
  * first session, else the driver's default for its tool.
  */
-export async function terminalConversationSessions(
+async function terminalConversationSessions(
   projectId: string,
   workspaceId: string,
   cwd: string,
@@ -176,7 +219,7 @@ export async function prepareRerun(
 ): Promise<ProvisionRun<WorkspaceCreateResult>> {
   const row = await findWorkspaceRow(await resolveWorkspaceId(idOrPrefix))
   if (!row) throw new ServerError('NOT_FOUND', `No workspace found matching "${idOrPrefix}"`)
-  await authorizeProject(principal, row.projectId)
+  await authorizeProject(principal, row.projectId, 'delegate')
   if (!row.nonInteractive) {
     throw new ServerError('CONFLICT', `workspace ${row.workspaceId.slice(0, 8)} is not a non-interactive workspace to rerun`)
   }

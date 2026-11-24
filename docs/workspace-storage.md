@@ -564,7 +564,7 @@ it can delete the checkout. Under containerless there is no isolation at all.
 
 ### Reading another workspace's history
 
-`yaac-mama history` (`#domain/workspaces`, `history-export.ts`) hands a
+`yaac-mama history` (`#domain/workspaces`, `peer-reads.ts`) hands a
 workspace's conversations to another workspace of the same project, running or
 stopped: a listing, one conversation's JSONL transcripts concatenated, or its
 files one at a time (a standalone project image may carry a GNU tar, which

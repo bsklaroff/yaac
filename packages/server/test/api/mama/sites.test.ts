@@ -4,7 +4,10 @@
  * for a person. The sites feature runs for real against the fake driver.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { publishSite, runSiteCommand } from '#domain/sites'
+import { publishSite } from '#domain/sites'
+import type { MamaOutcome } from '#api/mama/commands'
+import { runSiteCommand } from '#api/mama/sites'
+import { callerAs } from '#test/support/mama'
 import { createWorkflow } from '#domain/projects'
 import { BUILT_IN_USER_ID, findSiteByName, updateSite } from '#db'
 import { closeDb } from '#db/client'
@@ -13,16 +16,10 @@ import { git } from '@yaac/test-utils/git'
 import { repoDir } from '@yaac/shared/project-paths'
 import { installFakeWorkspaceDriver, resetWorkspaceDriver } from '#test/support/fake-driver'
 import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
-import type { MamaCaller, MamaOutcome } from '#domain/workspaces'
+import { workspaceDelegate } from '#test/support/delegate'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
-const caller: MamaCaller = {
-  workspaceId: 'w-agent',
-  principal: { kind: 'workspace', workspaceId: 'w-agent', userId: BUILT_IN_USER_ID },
-  projectId: DEMO_PROJECT_ID,
-  permissionMode: 'bypass',
-  mode: 'tui',
-}
+const caller = callerAs(workspaceDelegate(BUILT_IN_USER_ID, 'w-agent', { projectId: DEMO_PROJECT_ID }))
 
 let tmpDir: string
 

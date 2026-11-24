@@ -7,7 +7,7 @@ import {
 } from '#db'
 import { ServerError } from '@yaac/shared/errors'
 import type { AdminEntry, UserRole } from '@yaac/shared/types'
-import type { Actor } from './authorize'
+import { isPerson, personId, type Actor } from './authorize'
 
 /*
  * Install roles (docs/multi-user.md "Roles"): an admin publishes sites and
@@ -16,13 +16,13 @@ import type { Actor } from './authorize'
  */
 
 /**
- * Refuse with FORBIDDEN unless `actor` is an admin. The server passes; a
- * workspace's yaac-mama call never does, so an admin's agent does not act
- * with the role.
+ * Refuse with FORBIDDEN unless `actor` is an admin in person. The server
+ * passes; a delegate never does, so an admin's agent does not act with the
+ * role.
  */
 export async function requireAdmin(actor: Actor, what = 'do that'): Promise<void> {
   if (actor.kind === 'system') return
-  if (actor.kind !== 'workspace' && (await getUser(actor.userId))?.role === 'admin') return
+  if (isPerson(actor) && (await getUser(personId(actor)))?.role === 'admin') return
   throw new ServerError('FORBIDDEN', `only an admin of this yaac install may ${what}`)
 }
 

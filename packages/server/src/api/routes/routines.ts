@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { projectRef, zv } from '#routes/validator'
+import { optionalProjectRef, projectRef, zv } from '#routes/validator'
 import {
   createRoutine,
   deleteRoutine,
@@ -21,7 +21,14 @@ import { ROUTINE_RUNS_PAGE_MAX, routineSettingsSchema } from '@yaac/shared/types
  */
 export const routineApp = new Hono<IdentityEnv>()
   // Every project's routines: the snapshot's feed, for the CLI.
-  .get('/list', async (c) => c.json(await listRoutines()))
+  .get(
+    '/list',
+    zv('query', z.object({ project: optionalProjectRef })),
+    async (c) => {
+      const { project } = c.req.valid('query')
+      return c.json((await listRoutines()).filter((r) => project === undefined || r.projectId === project))
+    },
+  )
   .get(
     '/runs',
     zv('query', z.object({
@@ -39,7 +46,7 @@ export const routineApp = new Hono<IdentityEnv>()
     zv('json', routineSettingsSchema.extend({ project: projectRef })),
     async (c) => {
       const { project, ...request } = c.req.valid('json')
-      return c.json(await createRoutine(c.get('principal'), project, request, 'user'))
+      return c.json(await createRoutine(c.get('principal'), project, request))
     },
   )
   .post(
@@ -47,7 +54,7 @@ export const routineApp = new Hono<IdentityEnv>()
     zv('json', routineSettingsSchema.partial().extend({ id: z.string().min(1) })),
     async (c) => {
       const { id, ...patch } = c.req.valid('json')
-      return c.json(await updateRoutine(c.get('principal'), id, patch, 'user'))
+      return c.json(await updateRoutine(c.get('principal'), id, patch))
     },
   )
   .post(

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { Hono } from 'hono'
-import { MAMA_BODY_LIMIT, mamaRelayApp, workspaceApp } from '#routes/workspaces'
+import { workspaceApp } from '#routes/workspaces'
 import { toErrorBody } from '#api/http/errors'
 import { insertQueuedWorkspace } from '#db/queued-workspace-store'
 import { insertDraftWorkspace } from '#db/draft-workspace-store'
@@ -10,7 +10,6 @@ import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-st
 import { recordConversations } from '#db/conversation-store'
 import { insertSession } from '#db/session-store'
 import { clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
-import { MAX_ICON_BYTES } from '#domain/projects'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import {
@@ -28,11 +27,6 @@ const app = new Hono()
     return c.json(body, status as 400 | 401 | 404 | 413 | 500)
   })
   .route('/', workspaceApp)
-  // A relay whose proxy never authenticates: a request that reaches it got
-  // past the body limit and validation, and is refused as 401.
-  .route('/relay', mamaRelayApp(() => Promise.resolve(false)))
-  // A relay whose proxy authenticates, naming the caller it was given.
-  .route('/proxied', mamaRelayApp(() => Promise.resolve(true)))
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 /** A prompt of the maximum size, multibyte throughout: 20 bytes a repeat,
@@ -49,48 +43,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await closeDb()
   await cleanupTempDir(tmpDir)
-})
-
-describe('POST /mama', () => {
-  const post = (body: string): Promise<Response> => Promise.resolve(app.request('/relay/mama', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body,
-  }))
-  /** A queue envelope whose prompt is JSON-escaped as `\uXXXX` per UTF-16 unit, the largest
-   *  any client can send it. */
-  const envelope = (prompt: string): string => JSON.stringify({
-    command: 'queue',
-    args: { 'parent-workspace': 'a'.repeat(36), tool: 'claude', title: 't'.repeat(500) },
-    body: '__BODY__',
-  }).replace('__BODY__', Array.from({ length: prompt.length }, (_, n) =>
-    `\\u${prompt.charCodeAt(n).toString(16).padStart(4, '0')}`).join(''))
-
-  // What a body may hold is each command's to check (`runMamaCommand`); an
-  // unauthenticated caller shows a request got past the size limit.
-  it('lets through the largest request a prompt or an icon makes, however it is escaped, and no more', async () => {
-    // One byte a character, so the most characters to escape.
-    const maximal = envelope('a'.repeat(MAX_PROMPT_BYTES))
-    expect(Buffer.byteLength(maximal)).toBeGreaterThan(MAX_PROMPT_BYTES * 6)
-    expect((await post(maximal)).status).toBe(401)
-    // A raw multibyte prompt passes the same way.
-    expect((await post(JSON.stringify({ command: 'queue', body: LONG }))).status).toBe(401)
-    // An icon goes as base64, well past the prompt cap.
-    const icon = Buffer.alloc(MAX_ICON_BYTES).toString('base64')
-    expect((await post(JSON.stringify({ command: 'icon-set', body: icon }))).status).toBe(401)
-    expect((await post(JSON.stringify({ command: 'queue', body: ' '.repeat(MAMA_BODY_LIMIT) }))).status).toBe(413)
-  })
-
-  // A site's release faces the internet, so it may not act on yaac, nor
-  // reach a hosted remote (docs/public-sites.md).
-  it('refuses a public site\'s release, for yaac-mama and hosted git alike', async () => {
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'rel-1', siteId: '0b3a8d3c-1c1e-4d65-9a43-6f0f1e7b2c11' })
-    const headers = { 'content-type': 'application/json', authorization: 'Bearer x', 'x-yaac-workspace-id': 'rel-1' }
-    const mama = await app.request('/proxied/mama', { method: 'POST', headers, body: JSON.stringify({ command: 'list' }) })
-    expect(mama.status).toBe(403)
-    expect(await mama.json()).toMatchObject({ error: { message: expect.stringContaining('may not call yaac') as unknown } })
-    expect((await app.request(`/proxied/git/${PROJ}.git/info/refs?service=git-upload-pack`, { headers })).status).toBe(403)
-  })
 })
 
 describe('GET /prompt', () => {

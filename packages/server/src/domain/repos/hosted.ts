@@ -10,7 +10,7 @@ import {
 } from '#db'
 import { hostedDefaultBranch, resolveRemoteRef, serveGitHttp, setHostedDefaultBranch, setOriginHead } from '#domain/git'
 import { isUuid } from '#lib/uuid'
-import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
+import { authorizeProject, personId, systemPrincipal, type Actor } from '#domain/access'
 import { serverLog } from '#lib/log'
 import { moveToTrash } from '#lib/trash'
 import { fetchRepoOrigin } from './origin'
@@ -102,7 +102,7 @@ export async function serveHostedRepo(
         throw new ServerError('FORBIDDEN', `${link?.dir ?? repo.remoteUrl} is read-only in this project`)
       }
     }
-  } else if (push && caller.principal.kind !== 'system' && !await canUseRepo(caller.principal.userId, repo)) {
+  } else if (push && caller.principal.kind !== 'system' && !await canUseRepo(personId(caller.principal), repo)) {
     throw new ServerError('FORBIDDEN', 'only the owner of this repo, or a user it is shared with, may push to it')
   }
   if (push && holds.has(repo.id)) throw new ServerError('CONFLICT', holds.get(repo.id) as string)

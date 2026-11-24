@@ -8,7 +8,7 @@ import { workspaceDriver } from '#drivers/driver'
 import { KEEPER_WINDOW, WorkspaceExecError, type RuntimeSnapshot, type WorkspaceWindow } from '#drivers/contract'
 import { constants as C } from 'node:fs'
 import path from 'node:path'
-import { authorizeProject, systemPrincipal, type Actor } from '#domain/access'
+import { authorizeProject, requireWithinCeiling, systemPrincipal, type Actor } from '#domain/access'
 import { assertWorkflowRepos, projectRepoIds, resolveWorkflow } from '#domain/projects'
 import {
   applyWorkspaceEvent,
@@ -179,7 +179,11 @@ export async function addSteps(
   idOrPrefix: string,
   add: { steps: unknown; repos?: string[] } | { workflow: string },
 ): Promise<WorkspaceStep[]> {
-  const workspace = await resolveWorkspaceContainer(idOrPrefix, { requireRunning: true, owner: principal })
+  const workspace = await resolveWorkspaceContainer(idOrPrefix, { requireRunning: true, owner: principal, level: 'delegate' })
+  // Commands of the caller's own run as the workspace does, so only a
+  // delegate at `bypass` may hand it some (docs/workspace-steps.md
+  // "Permissions"). A named workflow is the project's, as on a start.
+  if (!('workflow' in add)) requireWithinCeiling(principal, 'bypass', 'steps it adds run commands as the workspace does')
   await assertInteractive(workspace.workspaceId)
   const live = await liveWorkspace(workspace)
   if (live === undefined) throw new ServerError('CONFLICT', `workspace ${workspace.workspaceId.slice(0, 8)} is not running`)
@@ -581,6 +585,6 @@ export function volumeUsers(steps: Array<Pick<StepRow, 'workflowName' | 'name' |
 export async function authorizeWorkspace(principal: Actor, workspaceId: string): Promise<WorkspaceRow> {
   const row = await findWorkspaceRow(workspaceId)
   if (row === undefined) throw new ServerError('NOT_FOUND', `no workspace ${workspaceId}`)
-  await authorizeProject(principal, row.projectId)
+  await authorizeProject(principal, row.projectId, 'delegate')
   return row
 }

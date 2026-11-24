@@ -372,6 +372,24 @@ export default tseslint.config(
     },
   ]),
 
+  // A caller's user id is read only through `personId` in #domain/access,
+  // which refuses a delegate (docs/multi-user.md "Authorization"), so no
+  // route or verb can hand a delegate its user's account. Matched by name,
+  // as no-process-env is; the route matrix is the check that no route
+  // slipped past it.
+  {
+    files: ['packages/server/src/**/*.ts'],
+    rules: {
+      'no-restricted-syntax': ['error', 'ImportExpression', ...[
+        "MemberExpression[property.name='userId'][object.name=/^(principal|actor)$/]",
+        "MemberExpression[property.name='userId'][object.property.name=/^(principal|actor)$/]",
+        "MemberExpression[property.name='userId'][object.callee.property.name='get'][object.arguments.0.value='principal']",
+        "VariableDeclarator[init.name=/^(principal|actor)$/] > ObjectPattern > Property[key.name='userId']",
+        "VariableDeclarator[init.callee.property.name='get'][init.arguments.0.value='principal'] > ObjectPattern > Property[key.name='userId']",
+      ].map((selector) => ({ selector, message: 'Read a caller\'s user id with personId from #domain/access, which refuses a delegate.' }))],
+    },
+  },
+
   // process.env may only be read in @yaac/shared's env.ts, which centralizes
   // every yaac variable's default and validation. Sanctioned reads elsewhere
   // carry an inline `eslint-disable-next-line no-process-env`.

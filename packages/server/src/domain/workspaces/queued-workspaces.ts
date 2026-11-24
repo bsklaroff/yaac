@@ -26,13 +26,14 @@ import {
 } from './provisioning'
 import { resolveWorkspace } from './resolve'
 import { workspaceDriver } from '#drivers/driver'
-import { checkStartCommits, checkStartSteps, prepareStart, startOf } from './start'
+import { bringsSteps, checkStartCommits, checkStartSteps, prepareStart, startOf } from './start'
 import { resolveStart, storedSelection, type StartRequest } from './checkouts'
 import { toStoppedEntries } from './stopped-list'
 import { customEndpointFor, modelDisplayName, modelEfforts } from '#domain/auth'
-import { authorizeProject, isProjectHeld, systemPrincipal, type Actor } from '#domain/access'
+import { authorizeProject, isPerson, isProjectHeld, requireWithinCeiling, systemPrincipal, type Actor } from '#domain/access'
+import { delegateSession } from './calling-session'
 import { getDefaultBranch } from '#domain/git'
-import { ApprovalRequiredError, approveContent, assertWorkflowRepos, resolveWorkflow, savedByPerson } from '#domain/projects'
+import { ApprovalRequiredError, approveContent, assertWorkflowRepos, resolveWorkflow } from '#domain/projects'
 import {
   claimQueuedLaunch,
   deleteQueuedWorkspace,
@@ -140,13 +141,6 @@ export interface QueueRequest {
   group?: string | null
 }
 
-/**
- * Who is queueing. The user is unconstrained; an agent (`yaac-mama queue`)
- * may start nothing more permissive than itself, so it carries its own
- * recorded posture as the ceiling.
- */
-export type QueueSource = 'user' | { ceiling: PermissionMode }
-
 /** A resolved parent and the settings it supplies as defaults (absent when
  *  not yet known, or with no parent). */
 interface ParentInfo {
@@ -168,15 +162,24 @@ const launching = new Set<string>()
 // A failed create or restart frees a slot that no stop reports.
 onProvisionFailed((projectId) => { void startWaitingWorkspaces(projectId) })
 
+/**
+ * Refuse a delegate below `bypass` steps of its own for an entry: they run
+ * commands as the workspace does, and the entry launches as the server, so
+ * its start cannot check them (docs/workspace-steps.md "Permissions").
+ */
+function refuseOwnSteps(principal: Actor, steps: unknown): void {
+  if (bringsSteps(steps)) requireWithinCeiling(principal, 'bypass', 'steps it queues a workspace with run commands as the workspace does')
+}
+
 /** Queue a create request under a workspace or another entry. */
 export async function queueWorkspace(
   principal: Actor,
   projectId: string,
   request: QueueRequest,
-  source: QueueSource,
   generatedTitle?: string,
 ): Promise<QueuedWorkspaceEntry> {
-  await authorizeProject(principal, projectId)
+  await authorizeProject(principal, projectId, 'delegate')
+  refuseOwnSteps(principal, request.steps)
   if (request.parent != null && request.start !== undefined) {
     throw new ServerError('VALIDATION', 'a queued workspace waits on a parent or starts at a time, not both')
   }
@@ -189,7 +192,7 @@ export async function queueWorkspace(
   const settings = await resolveSettings(principal, projectId, parent, {
     ...request,
     ...(parent.pointer === null ? { group: parent.groupId ?? null } : {}),
-  }, source)
+  })
   const row = await insertQueuedWorkspace(projectId, parent.pointer, settings,
     generatedTitle !== undefined ? { generatedTitle } : {})
   const [entry] = await toEntries([row])
@@ -217,7 +220,7 @@ async function startTime(projectId: string, start: QueueStart): Promise<Date> {
  * Edit a queued entry's fields or parent. A new tool without a model or
  * permission mode re-resolves those, and a stored effort the new tool or
  * model lacks is re-resolved too, as are the agent options of a new tool. A parent that would form a cycle is
- * refused. An agent's edit is held to its ceiling, counting the stored
+ * refused. A delegate's edit is held to its ceiling, counting the stored
  * permission mode as requested. A routine's run is not edited: it starts
  * with its routine's settings, so the routine is what changes.
  */
@@ -225,9 +228,9 @@ export async function updateQueuedWorkspace(
   principal: Actor,
   id: string,
   patch: Partial<QueueRequest>,
-  source: QueueSource,
 ): Promise<QueuedWorkspaceEntry> {
   const row = await editableRow(principal, id)
+  refuseOwnSteps(principal, patch.steps)
   if (row.routineId !== undefined) {
     throw new ServerError('CONFLICT', 'a routine\'s run starts with its routine\'s settings; edit the routine instead')
   }
@@ -278,7 +281,7 @@ export async function updateQueuedWorkspace(
     ...(retooled ? patch.agentOptions !== undefined ? { agentOptions: patch.agentOptions } : {}
       : { agentOptions: { ...row.agentOptions, ...patch.agentOptions } }),
     timeout: patch.timeout !== undefined ? patch.timeout : row.timeoutMinutes ?? null,
-  }, source, selectionOf(row), row)
+  }, selectionOf(row), row)
   const updated = await updateQueuedWorkspaceRow(id, {
     ...settings,
     ...(patch.parent !== undefined || patch.start !== undefined ? { parent: parent.pointer } : {}),
@@ -324,6 +327,7 @@ export async function runQueuedWorkspace(
   approve?: { workflowId: string; commits: Array<{ dir: string; commit: string }> },
 ): Promise<{ workspaceId: string }> {
   const row = await editableRow(principal, id)
+  requireWithinCeiling(principal, row.permissionMode, `queued workspace ${id.slice(0, 8)}`)
   if (approve !== undefined) {
     const request = row.approvalRequest
     if (request === undefined) throw new ServerError('CONFLICT', 'that queued workspace awaits no approval')
@@ -586,7 +590,7 @@ async function nextRunOf(row: QueuedWorkspaceRow): Promise<Date | undefined> {
 async function editableRow(principal: Actor, id: string): Promise<QueuedWorkspaceRow> {
   const row = await getQueuedWorkspaceRow(id)
   if (!row) throw new ServerError('NOT_FOUND', `no queued workspace ${id}`)
-  await authorizeProject(principal, row.projectId)
+  await authorizeProject(principal, row.projectId, 'delegate')
   if (row.launchWorkspaceId !== undefined || launching.has(id)) throw launchingConflict()
   return row
 }
@@ -778,8 +782,9 @@ function settingsOf(entry: QueuedWorkspaceRow): Omit<ParentInfo, 'pointer'> {
  * is what the entry starts with now, which it keeps where the edit names
  * nothing else, and `kept` the workflow and start it was saved with.
  *
- * An unattended start of a named workflow is checked as `savedByPerson`
- * when its workflow or start changes, and keeps who saved it otherwise, so
+ * An unattended start of a named workflow is saved as a person's (one
+ * whose launch approves what it runs) only by a person, when its workflow
+ * or start changes, and keeps who saved it otherwise, so
  * an edit of only its title approves nothing (docs/workflows.md
  * "Approvals"). Groups are resolved last, so a refused save makes none.
  */
@@ -788,13 +793,14 @@ async function resolveSettings(
   projectId: string,
   parent: ParentInfo,
   request: Omit<QueueRequest, 'parent' | 'start'>,
-  source: QueueSource,
   own?: RepoSelection,
   kept?: SavedStart,
 ): Promise<QueuedWorkspaceSettings> {
   const project = await getProjectRow(projectId)
   if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-  const tool = request.tool ?? parent.tool ?? project.lastTool ?? 'claude'
+  // With no parent to take after, a delegate's entry takes after its
+  // calling session, as its creates do (`resolveCreate`).
+  const tool = request.tool ?? parent.tool ?? (await delegateSession(principal))?.tool ?? project.lastTool ?? 'claude'
   const sameTool = tool === parent.tool
   // The UI mode is not tool-specific, so it is borrowed whatever the tool.
   // With the parent's tool unknown, borrow the permission mode (checked
@@ -803,14 +809,15 @@ async function resolveSettings(
   const mode = request.mode ?? parent.mode
   const inherited = compatible ? parent.permissionMode : undefined
 
-  // An agent's permission mode is capped at its own (`agentPermissionMode`).
+  // A delegate's permission mode is capped at its ceiling
+  // (`agentPermissionMode`), and with none named takes the parent's.
   let permissionMode = request.permissionMode
-  if (source !== 'user') {
+  if (principal.kind === 'delegate') {
     const resolved = agentPermissionMode(
       tool,
-      source.ceiling,
+      principal.ceiling,
       request.permissionMode,
-      parent.permissionMode ?? source.ceiling,
+      parent.permissionMode ?? principal.ceiling,
     )
     if (!resolved.ok) throw new ServerError('VALIDATION', resolved.error)
     permissionMode = resolved.permissionMode
@@ -830,7 +837,7 @@ async function resolveSettings(
     ...(request.model !== undefined
       ? { model: request.model }
       : sameTool && parent.model !== undefined ? { model: parent.model } : {}),
-  })
+  }, principal)
   if (setup.model === undefined) {
     throw new ServerError('VALIDATION', `no model is known for ${setup.tool}; pick one`)
   }
@@ -855,7 +862,7 @@ async function resolveSettings(
   const changed = kept === undefined || kept.namedWorkflowId !== named?.id || kept.nonInteractive !== (unattended !== undefined)
     || JSON.stringify(kept.repos) !== JSON.stringify(selection.repos)
   const personSaved = unattended === undefined ? false
-    : changed ? savedByPerson(principal)
+    : changed ? isPerson(principal)
     : kept.personSaved === true
   // An unattended run of a named workflow goes in the workflow's own group
   // unless it names one.
@@ -895,18 +902,17 @@ export interface SavedStart {
 
 /**
  * Settings for an entry with no parent to inherit from (a routine's runs):
- * the request's, else the project's create defaults. An agent's posture
+ * the request's, else the project's create defaults. A delegate's posture
  * defaults to its ceiling.
  */
 export async function resolveParentlessSettings(
   principal: Actor,
   projectId: string,
   request: Omit<QueueRequest, 'parent' | 'start'>,
-  source: QueueSource,
   own?: RepoSelection,
   kept?: SavedStart,
 ): Promise<QueuedWorkspaceSettings> {
-  return await resolveSettings(principal, projectId, { pointer: { startAt: new Date() } }, request, source, own, kept)
+  return await resolveSettings(principal, projectId, { pointer: { startAt: new Date() } }, request, own, kept)
 }
 
 /** Wire entries, flagging the ones whose parent workspace is gone. */

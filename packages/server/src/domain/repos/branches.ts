@@ -2,6 +2,8 @@ import { getDefaultBranch, isGitAuthError, listRemoteBranches } from '#domain/gi
 import { fetchRepoOrigin } from './origin'
 import { repoDir } from '@yaac/shared/project-paths'
 import { ServerError } from '@yaac/shared/errors'
+import { getRepo } from '#db'
+import { isUuid } from '#lib/uuid'
 
 export interface RepoBranches {
   /** Remote-tracking branch names (no `origin/` prefix), newest-committed
@@ -19,9 +21,10 @@ export interface RepoBranches {
  * `refresh` fetches first so a just-pushed branch appears; the frontend shows
  * the fast list, then refreshes in the background. A branch passed via the
  * CLI or `yaac-mama --branch` need not be listed, since create fetches and
- * validates it.
+ * validates it. Any user may read them; an unknown repo is NOT_FOUND.
  */
 export async function getRepoBranches(repoId: string, opts: { refresh?: boolean } = {}): Promise<RepoBranches> {
+  if (!isUuid(repoId) || !await getRepo(repoId)) throw new ServerError('NOT_FOUND', `repo ${repoId} not found`)
   const repo = repoDir(repoId)
 
   if (opts.refresh) {

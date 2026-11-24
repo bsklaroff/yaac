@@ -3,12 +3,13 @@ import { existsSync } from 'node:fs'
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { denyBrowserCors, requestLogger } from '#api/http/auth'
-import { fetchSiteCheck, hostHeaderCheck, identify, originHeaderCheck, type IdentityEnv } from '#api/http/web-auth'
+import { delegateGate, fetchSiteCheck, hostHeaderCheck, identify, originHeaderCheck, personOnly, type IdentityEnv } from '#api/http/web-auth'
 import { registerStaticRoutes } from '#api/http/static'
 import { toErrorBody } from '#api/http/errors'
 import { projectApp } from '#routes/projects'
 import { repoApp } from '#routes/repos'
-import { mamaRelayApp, workspaceApp } from '#routes/workspaces'
+import { workspaceApp } from '#routes/workspaces'
+import { mamaApp, mamaRelayApp, type MamaDispatch } from '#api/mama/endpoint'
 import { authApp } from '#routes/auth'
 import { shortcutsApp } from '#routes/shortcuts'
 import { configApp } from '#routes/config'
@@ -24,7 +25,7 @@ import { submitFeedback } from '#domain/feedback'
 import { workspaceDriver } from '#drivers/driver'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
-import type { AccessMode, Whoami } from '@yaac/shared/types'
+import type { AccessMode, Delegate, Whoami } from '@yaac/shared/types'
 import { listUsers } from '#db'
 import { z } from 'zod'
 import { errorText, serverLog } from '#lib/log'
@@ -72,10 +73,7 @@ export function buildApp(deps: ServerAppDeps) {
 
   app.onError(errorResponse)
 
-  app.notFound((c) => c.json(
-    { error: { code: 'NOT_FOUND', message: `no route ${c.req.method} ${c.req.path}` } },
-    404,
-  ))
+  app.notFound(noRoute)
 
   // Serve the built SPA when present (production). In dev, Vite serves it.
   const frontendDir = path.join(PACKAGE_ROOT, 'frontend')
@@ -84,7 +82,31 @@ export function buildApp(deps: ServerAppDeps) {
   }
 
   app.route('/api', apiRoutes(isReady, access, deps.buildId))
+  app.route('/api/workspace', mamaApp(mamaDispatch(deps)))
   return app
+}
+
+/**
+ * The API's HTTP routes for a delegate alone (docs/multi-user.md
+ * "Authorization"), behind `delegateGate`, which admits only the delegate
+ * `resolve` answers for a request. No route is public, `/api/health`
+ * included; it serves no WebSocket route and no SPA, runs none of the
+ * browser guards and never answers `local`. yaac-mama's commands reach the
+ * routes through it in the server process.
+ */
+export function delegateApp(resolve: (request: Request) => Promise<Delegate | undefined>, deps: ServerAppDeps) {
+  const app = new Hono<IdentityEnv>()
+  app.use('*', requestLogger())
+  app.onError(errorResponse)
+  app.notFound(noRoute)
+  app.use('*', delegateGate(resolve))
+  app.route('/api', apiRoutes(deps.isReady ?? (() => true), deps.access ?? (() => 'local'), deps.buildId))
+  return app
+}
+
+/** The answer for a path no route serves. */
+function noRoute(c: Context): Response {
+  return c.json({ error: { code: 'NOT_FOUND', message: `no route ${c.req.method} ${c.req.path}` } }, 404)
 }
 
 /** The wire form of a thrown error. An unexpected one is logged with its
@@ -103,12 +125,28 @@ function errorResponse(err: Error, c: Context): Response {
  * egress proxy themselves, so none of the API's gates apply
  * (docs/workspace-egress.md).
  */
-export function buildMamaRelayApp(authenticate: (bearer: string) => Promise<boolean>) {
+export function buildMamaRelayApp(authenticate: (bearer: string) => Promise<boolean>, deps: ServerAppDeps) {
   const app = new Hono()
   app.use('*', requestLogger())
   app.onError(errorResponse)
-  app.route('/api/workspace', mamaRelayApp(authenticate))
+  app.route('/api/workspace', mamaRelayApp(authenticate, mamaDispatch(deps)))
   return app
+}
+
+/**
+ * How yaac-mama's commands reach the routes as the calling workspace's
+ * delegate: in memory, through one `delegateApp`, which knows each request's
+ * delegate by the request itself, so nothing outside this process can claim
+ * one.
+ */
+export function mamaDispatch(deps: ServerAppDeps): MamaDispatch {
+  const delegates = new WeakMap<Request, Delegate>()
+  const app = delegateApp((request) => Promise.resolve(delegates.get(request)), deps)
+  return (delegate) => async (input, init) => {
+    const request = new Request(input, init)
+    delegates.set(request, delegate)
+    return await app.fetch(request)
+  }
 }
 
 /** A feedback body: its images base64-encoded, plus room for the words. */
@@ -149,6 +187,7 @@ function apiRoutes(
     })
     .post(
       '/feedback',
+      personOnly,
       jsonBodyLimit(FEEDBACK_BODY_LIMIT, 'the feedback\'s images are over the 5 MB limit'),
       zv('json', z.object({
         message: z.string().trim().min(1).max(10_000),

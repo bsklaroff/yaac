@@ -423,8 +423,8 @@ against the `yaac-proxy-auth` Secret. That listener serves nothing else, so
 the server's ingress policy can admit the proxy to it without admitting the
 proxy, and the workspace traffic it forwards, to the API
 (docs/server-in-cluster.md "The ingress policy is the wall"). The server
-alone decides what a command may do (`runMamaCommand`); the proxy checks
-nothing about it.
+alone decides what a command may do (`runMamaCommand`, on the API's routes
+as the workspace's delegate); the proxy checks nothing about it.
 
 The same relay carries a pod's git to the remote of a project the server
 hosts, at `http://yaac.internal/api/workspace/git/<project id>.git`

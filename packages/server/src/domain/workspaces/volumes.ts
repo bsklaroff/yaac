@@ -194,7 +194,7 @@ export async function volumeForLaunch(
     const id = (await findWorkspaceRow(workspaceId))?.volumeId
     row = id !== undefined ? await getVolumeRow(id) : undefined
   }
-  if (row && actor.kind === 'workspace') {
+  if (row && actor.kind === 'delegate') {
     const live = (await listVolumeSites(row.id)).find((site) => site.published)
     if (live !== undefined) {
       throw new ServerError('FORBIDDEN', `volume "${row.name}" holds the data of published site "${live.name}", `

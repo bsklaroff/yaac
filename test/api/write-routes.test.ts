@@ -18,6 +18,7 @@ import { getRepo, linkProjectRepo } from '@yaac/server/db/repo-store'
 import { repos } from '@yaac/server/db/schema'
 import { eq } from 'drizzle-orm'
 import { insertSession } from '@yaac/server/db/session-store'
+import { recordConversations } from '@yaac/server/db/conversation-store'
 import { listWorkspaceGroups } from '@yaac/server/domain/workspaces/groups'
 import { getQueuedWorkspaceRow, listQueuedWorkspaceRows } from '@yaac/server/db/queued-workspace-store'
 import { setDraftWorkspaceTitle } from '@yaac/server/db/draft-workspace-store'
@@ -1010,7 +1011,7 @@ describe('write routes', () => {
     // What the egress proxy sends for a k8s workspace pod: its own secret,
     // and the caller it resolved from the pod's source IP.
     const relay = async (bearer: string, workspaceId: string, body: string): Promise<Response> =>
-      await buildMamaRelayApp((b) => Promise.resolve(b === 'proxy-secret')).request('/api/workspace/mama', {
+      await buildMamaRelayApp((b) => Promise.resolve(b === 'proxy-secret'), { buildId: 'test' }).request('/api/workspace/mama', {
         method: 'POST',
         headers: {
           'authorization': `Bearer ${bearer}`,
@@ -1046,7 +1047,7 @@ describe('write routes', () => {
   // setting.
   describe('hosted repos', () => {
     const relayGit = async (repoId: string, workspaceId: string, bearer = 'proxy-secret'): Promise<Response> =>
-      await buildMamaRelayApp((b) => Promise.resolve(b === 'proxy-secret'))
+      await buildMamaRelayApp((b) => Promise.resolve(b === 'proxy-secret'), { buildId: 'test' })
         .request(`/api/workspace/git/${repoId}.git/info/refs?service=git-upload-pack`, {
           headers: { 'authorization': `Bearer ${bearer}`, 'x-yaac-workspace-id': workspaceId },
         })
@@ -1324,7 +1325,11 @@ describe('write routes', () => {
           method: 'POST', body: JSON.stringify({ projectId: DEMO, groupId, workspaceLimit }),
         })))
 
-      expect((await setLimit(1)).status).toBe(204)
+      // It answers the group it set, which may have been named rather than
+      // given by id.
+      const set = await setLimit(1)
+      expect(set.status).toBe(200)
+      expect(await set.json()).toEqual({ groupId, name: 'Release' })
       // A create in flight there holds the one slot.
       registerProvisioning({ workspaceId: 'creating', projectId: DEMO, tool: 'claude', kind: 'create', groupId })
       expect(await listWorkspaceGroups(DEMO)).toEqual([expect.objectContaining({ groupId, workspaceLimit: 1 })])
@@ -1337,7 +1342,7 @@ describe('write routes', () => {
       expect(((await move.json()) as { error: { message: string } }).error.message)
         .toContain('group "Release" is at its workspace limit of 1 (running or starting)')
 
-      expect((await setLimit(null)).status).toBe(204)
+      expect((await setLimit(null)).status).toBe(200)
       expect((await listWorkspaceGroups(DEMO))[0]).not.toHaveProperty('workspaceLimit')
     })
 
@@ -1459,7 +1464,7 @@ describe('write routes', () => {
         const res = await post('create', { project: DEMO, prompt: 'p', ...(group !== undefined ? { group } : {}) })
         expect(res.status, String(group)).toBe(400)
       }
-      expect((await client().workspace.group['set-limit'].$post({ json: { projectId: DEMO, groupId, workspaceLimit: 1 } })).status).toBe(204)
+      expect((await client().workspace.group['set-limit'].$post({ json: { projectId: DEMO, groupId, workspaceLimit: 1 } })).status).toBe(200)
 
       // A branch, since the fixture project has no clone to read a default from.
       const waiting = await (await post('create', { project: DEMO, prompt: 'p', group: 'workers', branch: 'main' })).json() as { id: string }
@@ -1510,7 +1515,7 @@ describe('write routes', () => {
       })))
       const tokyo = await json<{ startAt: string }>(post('workspace/queue/create', { ...base, startAt: '2099-03-04T09:30' }))
       expect(tokyo.startAt).toBe('2099-03-04T00:30:00.000Z')
-      expect((await (await client().workspace.queue.list.$get()).json()).map((e) => e.startAt))
+      expect((await (await client().workspace.queue.list.$get({ query: {} })).json()).map((e) => e.startAt))
         .toEqual([utc.startAt, tokyo.startAt])
 
       expect((await post('workspace/queue/create', { ...base, startAt: '10:00', startIn: 5 })).status).toBe(400)
@@ -1533,7 +1538,7 @@ describe('write routes', () => {
         .not.toHaveProperty('groupId')
       expect(await json(post('routine/pause', { id: created.id }))).toMatchObject({ paused: true, nextRuns: [] })
       expect(await json(post('routine/resume', { id: created.id }))).toMatchObject({ paused: false })
-      expect((await (await client().routine.list.$get()).json()).map((r) => r.id)).toEqual([created.id])
+      expect((await (await client().routine.list.$get({ query: {} })).json()).map((r) => r.id)).toEqual([created.id])
       expect(await json(buildApp({ buildId: 'test' }).request(`/api/routine/runs?id=${created.id}`))).toEqual({ runs: [] })
       expect((await post('routine/delete', { id: created.id })).status).toBe(204)
       expect((await post('routine/delete', { id: created.id })).status).toBe(404)
@@ -1998,5 +2003,34 @@ describe('write routes', () => {
     expect(projectDir('never')).toContain('never')
     expect(claudeDir('never')).toContain('claude')
     expect(codexDir('never')).toContain('codex')
+  })
+
+  // What yaac-mama's commands gained a route for (`#api/mama`), as a
+  // person meets them; test/api/mama/ drives them as a workspace's delegate.
+  describe('the routes yaac-mama reads and sends through', () => {
+    it("answers a stopped workspace's steps and conversations, and refuses to message it", async () => {
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'peer-ws' })
+      await recordWorkspaceStopped(DEMO, 'peer-ws')
+      await recordConversations(DEMO, 'peer-ws', [{ tool: 'claude', conversationId: 'c1', firstPrompt: 'hi' }])
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+
+      expect(await (await client.workspace[':id'].steps.$get({ param: { id: 'peer' } })).json())
+        .toMatchObject({ workspaceId: 'peer-ws', stopped: true, lives: [] })
+      expect(await (await client.workspace[':id'].history.$get({ param: { id: 'peer-ws' }, query: {} })).json())
+        .toMatchObject({ workspaceId: 'peer-ws', conversations: [{ conversationId: 'c1', firstPrompt: 'hi', files: [] }] })
+      const unsent = await client.workspace[':id'].send.$post({ param: { id: 'peer-ws' }, json: { message: 'hello' } })
+      expect(unsent.status).toBe(409)
+      expect(await unsent.text()).toContain('workspace peer-ws is stopped')
+      // It has no checkout to bundle, and its repo's token is its own alone.
+      expect((await client.workspace[':id'].bundle.$get({ param: { id: 'peer-ws' }, query: { repo: DEMO } })).status).toBe(404)
+      expect((await client.workspace[':id']['gh-token'].$get({ param: { id: 'peer-ws' }, query: { repo: 'demo' } })).status).toBe(403)
+    })
+
+    it('names the tools a project\'s owner is signed in to, with their models', async () => {
+      await setToolCredential(BUILT_IN_USER_ID, 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
+      const { tools } = await (await makeTestApiClient(buildApp({ buildId: 'test' })).project[':projectId'].models.$get({ param: { projectId: DEMO } })).json()
+      expect(tools.find((t) => t.tool === 'claude')).toMatchObject({ auth: { kind: 'api-key' }, models: expect.arrayContaining([expect.objectContaining({ id: expect.any(String) as string })]) as unknown })
+      expect(tools.find((t) => t.tool === 'codex')).toEqual({ tool: 'codex', auth: null, models: [] })
+    })
   })
 })

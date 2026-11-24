@@ -198,9 +198,10 @@ show each running workspace's open sessions under it.
 
 Every session's launch exports `YAAC_SESSION_ID`, and `yaac-mama` sends it
 with each request. The server takes it only as one of the calling
-workspace's open sessions (`mamaCaller`). The caller's ceiling (what it may
-start or message, docs/permission-modes.md) is then that session's
-posture. A call from outside any session, such as a user's shell, gets the
+workspace's open sessions (`callingWorkspace`). The ceiling of the delegate
+it acts as (what it may start or message, docs/permission-modes.md) is then
+that session's posture, and what it starts without naming a tool, model or
+agent mode takes that session's. A call from outside any session, such as a user's shell, gets the
 strictest posture among the workspace's open sessions; with none open,
 among those closed during its current life, since an agent's detached
 child can outlive its session; and with neither, what a create would

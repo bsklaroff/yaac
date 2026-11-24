@@ -141,7 +141,8 @@ name back at the old graph is the old spec again.
 **Who saw the content.** Each workflow row records whether a person wrote
 that content or was shown it and approved it (`personWritten`). A person
 saving a workflow's steps (the webapp's form, `yaac workflow create`, or
-`edit --file`) writes it; an agent's `yaac-mama workflow create|edit` does
+`edit --file`) writes it; a delegate's (an agent's `yaac-mama workflow
+create|edit`, or any other's, docs/multi-user.md "Authorization") does
 not, and nor does a person's edit that gives an agent's steps secrets or
 repos without sending the steps, since the person was not shown them.
 Content an agent wrote stays the agent's until a person writes the same
@@ -155,9 +156,9 @@ content a person saw, never of what an agent put behind a name meanwhile:
 - A person queuing a named workflow to run unattended later (a scheduled
   or queued create) marks the entry (`queued_workspaces.personSaved`), and
   its launch approves each commit it runs, as their own launch would. It
-  approves no branch: a one-off run is not a standing setup. An agent's
-  queue, or an agent's edit of the entry's workflow or start, clears the
-  mark, and its launch waits for a review where it needs one.
+  approves no branch: a one-off run is not a standing setup. A delegate's
+  queue, or its edit of the entry's workflow or start, clears the mark,
+  and its launch waits for a review where it needs one.
 - A person launching a workflow non-interactively by hand (webapp, CLI,
   API) approves each commit it runs.
 - A person deploying a site, publishing one, or setting a site to follow

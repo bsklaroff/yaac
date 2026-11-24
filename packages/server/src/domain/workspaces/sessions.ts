@@ -4,7 +4,7 @@
  * gives every open session of a running workspace a window.
  */
 import { workspaceDriver } from '#drivers/driver'
-import { authorizeProject, type Actor } from '#domain/access'
+import { authorizeProject, isPerson, type AccessLevel, type Actor } from '#domain/access'
 import {
   applyWorkspaceEvent,
   closeSessionRow,
@@ -25,7 +25,7 @@ import { isWorkspaceTerminating, readWorkspaceWindows } from '#runtime/status'
 import { agentOptionsCmd, tmuxCmd, windowTarget } from '#runtime/agents'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
-import { resolveCreate } from './create'
+import { refuseUnsignedTool, resolveCreate } from './create'
 import { launchSessions, launching, respawnSession } from './session-launch'
 import { inFlightWorkspaceIds } from './provisioning'
 import { claiming } from './prewarm'
@@ -76,7 +76,8 @@ async function heldTitle(resumed: ConversationLinkRow | undefined): Promise<stri
 
 /**
  * Open a session in a running workspace and launch its window. Its settings
- * resolve as a create's (`resolveCreate`). Answers with the row once its
+ * resolve as a create's (`resolveCreate`), a delegate's held to its
+ * ceiling. Answers with the row once its
  * window is launched; its agent coming up is the session's own business,
  * and one that dies is left exited.
  */
@@ -85,7 +86,7 @@ export async function openSession(
   workspaceIdOrPrefix: string,
   request: OpenSessionRequest,
 ): Promise<SessionRow> {
-  const workspace = await resolveWorkspaceContainer(workspaceIdOrPrefix, { requireRunning: true, owner: principal })
+  const workspace = await resolveWorkspaceContainer(workspaceIdOrPrefix, { requireRunning: true, owner: principal, level: 'delegate' })
   const { projectId, workspaceId, jobName } = workspace
   await assertInteractive(workspaceId)
   const resumed = request.resume === undefined
@@ -106,8 +107,9 @@ export async function openSession(
     ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     ...(resumed !== undefined ? { tool: resumed.tool, mode: resumed.mode } : {}),
     ...(resumed?.model !== undefined && request.model === undefined ? { model: resumed.model } : {}),
-  })
-  if (request.rememberDefaults === true) {
+  }, principal)
+  await refuseUnsignedTool(principal, projectId, setup.tool)
+  if (request.rememberDefaults === true && isPerson(principal)) {
     await recordProjectCreate(projectId, setup.tool, {
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
@@ -161,12 +163,12 @@ async function sessionCwd(
 }
 
 /** An open session the caller owns, with its workspace. */
-async function ownedSession(principal: Actor, sessionId: string): Promise<SessionRow> {
+async function ownedSession(principal: Actor, sessionId: string, level: AccessLevel = 'owner'): Promise<SessionRow> {
   const session = await getSessionRow(sessionId)
   if (session === undefined || session.closedAt !== undefined) {
     throw new ServerError('NOT_FOUND', `no running agent ${sessionId}`)
   }
-  await authorizeProject(principal, session.projectId)
+  await authorizeProject(principal, session.projectId, level)
   return session
 }
 
@@ -175,7 +177,7 @@ async function ownedSession(principal: Actor, sessionId: string): Promise<Sessio
  * The workspace keeps running, with no agent if this was its last session.
  */
 export async function closeSession(principal: Actor, sessionId: string): Promise<SessionRow> {
-  const session = await ownedSession(principal, sessionId)
+  const session = await ownedSession(principal, sessionId, 'delegate')
   await closeSessionRow(session.id)
   const unit = await workspaceDriver().find(session.workspaceId).catch(() => undefined)
   if (unit?.running === true) {

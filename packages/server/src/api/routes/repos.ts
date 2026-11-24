@@ -5,8 +5,8 @@ import { z } from 'zod'
 import {
   assignRepoCredential,
   getRepoBranches,
-  ownRepo,
   listRepoSummaries,
+  ownRepo,
   probeRepoPushAccess,
   removeKeptHostedRepo,
   serveHostedRepo,
@@ -30,7 +30,6 @@ import {
 } from '#domain/workspaces'
 import { allowRepoHostWhereLinked } from '#domain/projects'
 import { pushCredentialsToRuntime } from '#domain/auth'
-import { systemPrincipal } from '#domain/access'
 import type { IdentityEnv } from '#api/http/web-auth'
 
 /*
@@ -137,9 +136,7 @@ export const repoApp = new Hono<IdentityEnv>()
     '/:repoId/branches',
     zv('query', z.object({ refresh: z.string().optional() })),
     async (c) => {
-      // Any user may read; this only answers an unknown repo as missing.
-      const { id } = await ownRepo(systemPrincipal, c.req.param('repoId'))
-      return c.json(await getRepoBranches(id, { refresh: c.req.valid('query').refresh === '1' }))
+      return c.json(await getRepoBranches(c.req.param('repoId'), { refresh: c.req.valid('query').refresh === '1' }))
     },
   )
   // A hosted repo's remote, for the user's own git: `git clone

@@ -219,7 +219,9 @@ snapshot omits it while its provisioning row stands in for it.
 ## Surfaces
 
 - **Routes** (`/workspace/queue/{create,update,discard,run}`) take and return
-  JSON. They are the user's, so no permission ceiling applies.
+  JSON. A person's requests have no permission ceiling; the verbs hold a
+  delegate's to its own (docs/permission-modes.md), whichever route it
+  comes through. `yaac-mama`'s commands below are requests to them.
 - **Snapshot.** `queuedWorkspaces` (entries not launching, oldest first) and
   `heldWorkspaces` (stopped rows that entries wait on, in a slimmer shape
   than the stopped listing, which is too slow for a snapshot).
@@ -231,7 +233,7 @@ snapshot omits it while its provisioning row stands in for it.
   names an existing group with a workspace limit; the route
   (`/workspace/queue/create`) has the same rule. It takes every option `yaac-mama create` does and
   prints the entry id, so an agent can script a chain. Its permission mode
-  defaults to the parent's and is capped at the caller's own
+  defaults to the parent's and is capped at the delegate's ceiling
   (docs/permission-modes.md). `yaac-mama list` shows entries indented under
   their parents, and those with none under the group they wait in. A
   stopped parent is accepted, with a note on stderr that the

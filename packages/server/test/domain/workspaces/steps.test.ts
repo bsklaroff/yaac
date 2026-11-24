@@ -30,6 +30,7 @@ import { DEMO_PROJECT_ID, seedProject } from '@yaac/test-utils/project-fixture'
 import { KEEPER_WINDOW, WorkspaceExecError, type RuntimeHandle, type RuntimeSnapshot, type WorkspaceWindow } from '#drivers/contract'
 import { terminalLogDir } from '@yaac/shared/project-paths'
 import { lifeDirName, parseStepGraph } from '@yaac/shared/steps'
+import { workspaceDelegate } from '#test/support/delegate'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const WS = 'w1'
@@ -369,6 +370,18 @@ describe('onReleaseStepChanged', () => {
 })
 
 describe('addSteps', () => {
+  // Commands of a delegate's own run as the workspace does, so only one at
+  // bypass may hand them over; a named workflow is the project's.
+  it("adds a delegate's own commands only at bypass, and a named workflow's at any ceiling", async () => {
+    await startLife({ install: { run: 'pnpm install' } })
+    const strict = workspaceDelegate(BUILT_IN_USER_ID, 'w-agent', { ceiling: 'plan' })
+    await expect(addSteps(strict, WS, { steps: { x: { run: 'y' } } }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN', message: expect.stringContaining("permission mode 'bypass' is more permissive") as string })
+    expect((await addSteps(workspaceDelegate(BUILT_IN_USER_ID, 'w-agent'), WS, { steps: { x: { run: 'y' } } }))[0].name).toBe('_added-1.x')
+    await createWorkflow(local, DEMO_PROJECT_ID, { name: 'lint', steps: { lint: { run: 'pnpm lint' } } })
+    expect((await addSteps(strict, WS, { workflow: 'lint' }))[0].name).toBe('lint.lint')
+  })
+
   it('adds steps that run once, each a workflow of its own, after the steps they need, refusing a bad graph', async () => {
     await startLife({ install: { run: 'pnpm install' } })
     listed()

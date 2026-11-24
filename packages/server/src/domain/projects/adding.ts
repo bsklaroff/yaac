@@ -7,7 +7,7 @@
  */
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { getProjectRow } from '#db'
-import type { Actor } from '#domain/access'
+import { personId, type Actor } from '#domain/access'
 import { ServerError } from '@yaac/shared/errors'
 import type { GitProgress, ProjectAddEntry } from '@yaac/shared/types'
 
@@ -104,7 +104,7 @@ export async function trackProjectAdd<T>(
 export function dismissProjectAdd(principal: Actor, id: string): void {
   const e = entries.get(id)
   if (e?.error === undefined) return
-  if (principal.kind !== 'system' && principal.userId !== e.owner) {
+  if (principal.kind !== 'system' && personId(principal) !== e.owner) {
     throw new ServerError('FORBIDDEN', 'only the owner of this project may do that')
   }
   entries.delete(id)

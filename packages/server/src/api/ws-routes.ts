@@ -2,7 +2,7 @@ import { upgradeWebSocket } from '@hono/node-server'
 import type { Context, Hono, MiddlewareHandler } from 'hono'
 import type { IdentityEnv } from '#api/http/web-auth'
 import type { EventHub, WsLike } from '#api/events'
-import { authorizeProject } from '#domain/access'
+import { authorizeProject, personId } from '#domain/access'
 import { authAgentHub } from '#domain/auth'
 import { assertInteractive, observeConversation, recordOrigin, resolveWorkspaceContainer } from '#domain/workspaces'
 import { findWorkspaceRow } from '#db'
@@ -158,7 +158,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
   // The desktop auth daemon on each user's machine keeps one outbound socket
   // here, as that user, and catches their sign-ins' loopback redirects.
   app.get('/api/agent/sign-in', upgradeWebSocket((c) => {
-    const owner = (c as Context<IdentityEnv>).get('principal').userId
+    const owner = personId((c as Context<IdentityEnv>).get('principal'))
     return {
       onOpen: (_evt, ws) => {
         const raw = rawOf(ws)

@@ -181,13 +181,13 @@ workspace deletes its record too, so the history holds only runs whose
 workspaces still exist: with a project's stopped-workspace retention set,
 it reaches back only that many days.
 
-**Agents make routines on the queue's terms.** `yaac-mama routine
-create|edit|pause|resume|run|delete` reach the same functions as the
-routes, with the calling session's permission mode as the ceiling
-(`QueueSource`), as for a queue write: a routine an agent makes or edits
-launches at most as permissively as that agent, one already above it is
-refused until the edit lowers it, and resume and run (which set runs off)
-are refused for it. Pause only restrains, and delete loses a prompt, a
+**Delegates make routines on the queue's terms.** `yaac-mama routine
+create|edit|pause|resume|run|delete` go through the routine routes as the
+workspace's delegate, and the verbs hold any delegate to its ceiling
+(docs/permission-modes.md), as for a queue write: a routine a delegate
+makes or edits launches at most as permissively as its ceiling, one
+already above it is refused until the edit lowers it, and resume and run
+(which set runs off) are refused for it. Pause only restrains, and delete loses a prompt, a
 schedule and the run history the routine lists, but no running work and
 no run's workspace, so neither is held to the ceiling. A routine
 keeps starting unattended agents after whatever made it is gone, which is

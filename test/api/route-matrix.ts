@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { buildApp } from '@yaac/server/main/server'
+import { buildApp, delegateApp } from '@yaac/server/main/server'
 import { workspaceDriver } from '@yaac/server/drivers/driver'
 import { closeDb, getDb } from '@yaac/server/db/client'
 import { draftWorkspaces, gitCredentials, queuedWorkspaces, routines, sessions } from '@yaac/server/db/schema'
@@ -15,7 +15,7 @@ import { registerImageBuild } from '@yaac/server/drivers/k8s/images/image-builds
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
 import { asTailnet } from '@yaac/test-utils/api'
 import { cleanupTempDir, createTempDataDir } from '@yaac/test-utils/setup'
-import type { DriverKind } from '@yaac/shared/types'
+import type { Delegate, DriverKind } from '@yaac/shared/types'
 
 /**
  * Every route the server registers, and what each driver answers for it.
@@ -26,9 +26,13 @@ import type { DriverKind } from '@yaac/shared/types'
  * does not name.
  *
  * Each row also states who may call it (`access`), which
- * `assertNonOwnerRefused` checks as a second user against a server holding
- * another user's project. Otherwise it checks only the status a caller gets
- * from a server with no projects or workspaces. Behavior is covered by
+ * `describeNonOwner` checks as a second user against a server holding
+ * another user's project, and `describeDelegate` as delegates of that
+ * project's owner through `delegateApp`: one with no project of its own,
+ * which only `delegate` and the uncaller-scoped `reader` rows admit, and
+ * one scoped to another project, which no `reader` or `delegate` row
+ * admits. Otherwise it checks only the status a caller gets from a server
+ * with no projects or workspaces. Behavior is covered by
  * `write-routes.test.ts` and the e2e tiers.
  *
  * `routes-k8s.test.ts` and `routes-containerless.test.ts` each run
@@ -41,12 +45,14 @@ type Expected = number | number[]
 
 /**
  * Who may call a route (docs/multi-user.md "Authorization"). `public`
- * never consults the caller; `reader` is any user; `owner` is the owner of
- * what the route names, refused to anyone else with 403; `admin` is an
- * admin of the install (and the owner of what the route names, if
- * anything), refused to a member with 403.
+ * never consults the caller; `reader` is any user, and a delegate in its
+ * own project; `delegate` is the owner of what the route names or a
+ * delegate of theirs; `owner` is that owner in person, refused to anyone
+ * else with 403; `admin` is an admin of the install in person (and the
+ * owner of what the route names, if anything), refused to a member with
+ * 403.
  */
-type Access = 'public' | 'reader' | 'owner' | 'admin'
+type Access = 'public' | 'reader' | 'delegate' | 'owner' | 'admin'
 
 interface RouteCase {
   method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -58,8 +64,9 @@ interface RouteCase {
   request?: string
   body?: unknown
   access: Access
-  /** An `owner` route that acts only on the caller's own data, so there is
-   *  nothing of another user's for the non-owner check to name. */
+  /** A route that acts only on the caller's own data, so there is nothing
+   *  of another user's for the non-owner check to name, and a delegate,
+   *  which has no data of its own, is refused. */
   callerScoped?: true
   /** Why the two drivers differ; required whenever they do. */
   why?: string
@@ -109,7 +116,7 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/whoami', access: 'reader', k8s: 200, containerless: 200 },
   // Off when YAAC_FEEDBACK_URL is empty (docs/feedback.md), as the test
   // setup sets it so no test reaches yaac.dev.
-  { method: 'POST', path: '/api/feedback', body: { message: 'x' }, access: 'reader', k8s: UNSUPPORTED, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/feedback', body: { message: 'x' }, access: 'reader', callerScoped: true, k8s: UNSUPPORTED, containerless: UNSUPPORTED },
 
   // ── repos ─────────────────────────────────────────────────────────────
   { method: 'GET', path: '/api/repo/list', access: 'reader', k8s: 200, containerless: 200 },
@@ -153,8 +160,8 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete?days=30`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/workspace-auto-delete', request: `${P}/workspace-auto-delete`, body: { days: 30 }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/icon', request: `${P}/icon`, access: 'reader', k8s: MISSING, containerless: MISSING },
-  { method: 'PUT', path: '/api/project/:projectId/icon', request: `${P}/icon`, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'DELETE', path: '/api/project/:projectId/icon', request: `${P}/icon`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'PUT', path: '/api/project/:projectId/icon', request: `${P}/icon`, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'DELETE', path: '/api/project/:projectId/icon', request: `${P}/icon`, access: 'delegate', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/kept-ignored-paths', request: `${P}/kept-ignored-paths`, body: { paths: ['.env'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/init-workflows', request: `${P}/init-workflows`, body: { workflows: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'PUT', path: '/api/project/:projectId/scratch-dirs', request: `${P}/scratch-dirs`, body: { dirs: [] }, access: 'owner', k8s: MISSING, containerless: MISSING },
@@ -180,6 +187,8 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'DELETE', path: '/api/project/:projectId/run-secrets/:id', request: `${P}/run-secrets/abc`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/allowlist', request: `${P}/allowlist`, access: 'reader', why: 'mediates no egress', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'PUT', path: '/api/project/:projectId/allowlist', request: `${P}/allowlist`, body: { hosts: [], defaults: true }, access: 'owner', why: 'mediates no egress', k8s: MISSING, containerless: UNSUPPORTED },
+  // Which tools its owner is signed in to, for an agent that cannot tell.
+  { method: 'GET', path: '/api/project/:projectId/models', request: `${P}/models`, access: 'delegate', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/project/:projectId/skills', request: `${P}/skills`, access: 'reader', k8s: OK_OR_MISSING, containerless: OK_OR_MISSING },
   { method: 'GET', path: '/api/project/:projectId/skills/body', request: `${P}/skills/body?path=x`, access: 'reader', k8s: [200, 400, 404], containerless: [200, 400, 404] },
 
@@ -225,17 +234,17 @@ const ROUTE_MATRIX: RouteCase[] = [
   // ── workspaces: the driver-neutral half ────────────────────────────────
   { method: 'GET', path: '/api/workspace/list', access: 'reader', k8s: [200, 503], containerless: 200 },
   { method: 'GET', path: '/api/workspace/list-stopped', access: 'reader', k8s: 200, containerless: 200 },
-  { method: 'POST', path: '/api/workspace/create', body: { project: ID.project }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/create', body: { project: ID.project }, access: 'delegate', k8s: MISSING, containerless: MISSING },
   // An unknown workspace is a plain 404; later failures travel in the
   // NDJSON stream.
-  { method: 'POST', path: '/api/workspace/restart', body: { workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/rerun', body: { workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/restart', body: { workspaceId: ID.workspace }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/rerun', body: { workspaceId: ID.workspace }, access: 'delegate', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/timeout', body: { workspaceId: ID.workspace, timeout: 30 }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/stop', body: { workspaceId: ID.workspace }, access: 'owner', k8s: [404, 503], containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/stop', body: { workspaceId: ID.workspace }, access: 'delegate', k8s: [404, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/delete', body: { workspaceId: ID.workspace }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/mark-death-seen', body: { projectId: ID.project, workspaceId: ID.workspace }, access: 'reader', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/mark-waiting-seen', body: { sessionId: ID.session, waitingSinceMs: 0 }, access: 'reader', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/mark-all-deaths-seen', body: { projectId: ID.project }, access: 'reader', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/mark-death-seen', body: { projectId: ID.project, workspaceId: ID.workspace }, access: 'reader', callerScoped: true, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/mark-waiting-seen', body: { sessionId: ID.session, waitingSinceMs: 0 }, access: 'reader', callerScoped: true, k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/mark-all-deaths-seen', body: { projectId: ID.project }, access: 'reader', callerScoped: true, k8s: MISSING, containerless: MISSING },
   // The in-workspace command channel, authenticated by the calling
   // workspace's own credential rather than a user. Containerless answers 401
   // because the matrix sends no workspace bearer token.
@@ -251,10 +260,10 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/git/:repo/git-receive-pack', request: `/api/workspace/git/${ID.project}.git/git-receive-pack`, access: 'public',
     why: 'the egress proxy relays a pod\'s git to the yaac-mama listener', k8s: UNSUPPORTED, containerless: 401 },
   { method: 'GET', path: '/api/workspace/queue/list', access: 'reader', k8s: 200, containerless: 200 },
-  { method: 'POST', path: '/api/workspace/queue/create', body: { project: ID.project, parent: ID.workspace, prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/queue/update', body: { id: ID.queued, prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/queue/discard', body: { id: ID.queued }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/queue/run', body: { id: ID.queued }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/queue/create', body: { project: ID.project, parent: ID.workspace, prompt: 'p' }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/queue/update', body: { id: ID.queued, prompt: 'p' }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/queue/discard', body: { id: ID.queued }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/queue/run', body: { id: ID.queued }, access: 'delegate', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/prompt', request: `/api/workspace/prompt?id=${ID.queued}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   // ── volumes (docs/workspace-volumes.md) ──────────────────────────────
   { method: 'GET', path: '/api/volume/list', request: `/api/volume/list?project=${ID.project}`, access: 'reader', why: 'volumes are cluster storage', k8s: MISSING, containerless: UNSUPPORTED },
@@ -268,42 +277,42 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/site/edge', access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: 200, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/site/list', request: `/api/site/list?project=${ID.project}`, access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/site/show', request: `/api/site/show?project=${ID.project}&name=s`, access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/create', body: { project: ID.project, name: 's', port: 3000, workflow: 'w', repos: [{ repo: 'r', branch: 'main' }] }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/edit', body: { project: ID.project, name: 's', port: 3001 }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/create', body: { project: ID.project, name: 's', port: 3000, workflow: 'w', repos: [{ repo: 'r', branch: 'main' }] }, access: 'delegate', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/edit', body: { project: ID.project, name: 's', port: 3001 }, access: 'delegate', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/site/publish', body: { project: ID.project, name: 's', hostname: 's.example.com' }, access: 'admin', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   { method: 'POST', path: '/api/site/unpublish', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/delete', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/deploy', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/stop', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
-  { method: 'POST', path: '/api/site/start', body: { project: ID.project, name: 's' }, access: 'owner', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/delete', body: { project: ID.project, name: 's' }, access: 'delegate', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/deploy', body: { project: ID.project, name: 's' }, access: 'delegate', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/stop', body: { project: ID.project, name: 's' }, access: 'delegate', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
+  { method: 'POST', path: '/api/site/start', body: { project: ID.project, name: 's' }, access: 'delegate', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },
   // ── routines (docs/routines.md) ───────────────────────────────────────
   { method: 'GET', path: '/api/workflow/list', request: `/api/workflow/list?project=${ID.project}`, access: 'reader', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workflow/show', request: `/api/workflow/show?project=${ID.project}&name=w`, access: 'reader', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workflow/create', body: { project: ID.project, name: 'w', steps: {} }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workflow/edit', body: { project: ID.project, name: 'w', steps: {} }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workflow/delete', body: { project: ID.project, name: 'w' }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workflow/create', body: { project: ID.project, name: 'w', steps: {} }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workflow/edit', body: { project: ID.project, name: 'w', steps: {} }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workflow/delete', body: { project: ID.project, name: 'w' }, access: 'delegate', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/routine/list', access: 'reader', k8s: 200, containerless: 200 },
   { method: 'GET', path: '/api/routine/runs', request: `/api/routine/runs?id=${ID.routine}`, access: 'reader', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/routine/create', body: { project: ID.project, name: 'n', cron: '@daily', prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/routine/update', body: { id: ID.routine, name: 'n' }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/routine/pause', body: { id: ID.routine }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/routine/resume', body: { id: ID.routine }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/routine/run', body: { id: ID.routine }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/routine/delete', body: { id: ID.routine }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/create', body: { project: ID.project, name: 'n', cron: '@daily', prompt: 'p' }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/update', body: { id: ID.routine, name: 'n' }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/pause', body: { id: ID.routine }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/resume', body: { id: ID.routine }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/run', body: { id: ID.routine }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/routine/delete', body: { id: ID.routine }, access: 'delegate', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/draft/save', body: { project: ID.project, prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/draft/discard', body: { id: ID.draft }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/group/list', access: 'reader', k8s: 200, containerless: 200 },
-  { method: 'POST', path: '/api/workspace/group/create', body: { projectId: ID.project, name: 'g' }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/group/move', body: { projectId: ID.project, workspaceId: ID.workspace, group: null }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/group/create', body: { projectId: ID.project, name: 'g' }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/group/move', body: { projectId: ID.project, workspaceId: ID.workspace, group: null }, access: 'delegate', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/group/rename', body: { projectId: ID.project, groupId: ID.group, name: 'g' }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/group/set-pinned', body: { projectId: ID.project, groupId: ID.group, pinned: true }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/group/set-limit', body: { projectId: ID.project, groupId: ID.group, workspaceLimit: 2 }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/group/set-limit', body: { projectId: ID.project, groupId: ID.group, workspaceLimit: 2 }, access: 'delegate', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/group/delete', body: { projectId: ID.project, groupId: ID.group }, access: 'owner', k8s: MISSING, containerless: MISSING },
   // Idempotent for an id with no entry.
   { method: 'POST', path: '/api/workspace/provisioning/:id/dismiss', request: `/api/workspace/provisioning/${ID.provisioning}/dismiss`, access: 'owner', k8s: 204, containerless: 204 },
   { method: 'POST', path: '/api/workspace/:id/keep-scratch-dirs', request: `${W}/keep-scratch-dirs`, body: { paths: ['target'] }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/:id/base', request: `${W}/base`, body: { branch: 'main' }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/:id/title', request: `${W}/title`, body: { title: 't' }, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/base', request: `${W}/base`, body: { branch: 'main' }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/title', request: `${W}/title`, body: { title: 't' }, access: 'delegate', k8s: MISSING, containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id', request: W, access: 'reader', k8s: [404, 503], containerless: MISSING },
   { method: 'GET', path: '/api/workspace/:id/conversations', request: `${W}/conversations`, access: 'reader', k8s: MISSING, containerless: MISSING },
   // Reads recorded state and host files, so both drivers agree. Its 501 is
@@ -311,8 +320,8 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'GET', path: '/api/workspace/:id/conversations/:conversationId/transcript', request: `${W}/conversations/c1/transcript`, access: 'reader', k8s: MISSING, containerless: MISSING },
   // A session is opened in a running workspace; the others act on one of
   // its sessions, running or not.
-  { method: 'POST', path: '/api/workspace/:id/sessions', request: `${W}/sessions`, body: { tool: 'claude', prompt: 'p' }, access: 'owner', k8s: MISSING, containerless: MISSING },
-  { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/close', request: `${W}/sessions/${ID.session}/close`, access: 'owner', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/sessions', request: `${W}/sessions`, body: { tool: 'claude', prompt: 'p' }, access: 'delegate', k8s: MISSING, containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/close', request: `${W}/sessions/${ID.session}/close`, access: 'delegate', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/resume', request: `${W}/sessions/${ID.session}/resume`, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/agent-options', request: `${W}/sessions/${ID.session}/agent-options`, body: { idleCompaction: true }, access: 'owner', k8s: MISSING, containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/sessions/:sessionId/title', request: `${W}/sessions/${ID.session}/title`, body: { title: 't' }, access: 'owner', k8s: MISSING, containerless: MISSING },
@@ -341,11 +350,19 @@ const ROUTE_MATRIX: RouteCase[] = [
   { method: 'POST', path: '/api/workspace/:id/terminals/close', request: `${W}/terminals/close`, body: { target: 'window:@1' }, access: 'owner', k8s: [404, 409, 503], containerless: MISSING },
   // Steps (docs/workspace-steps.md) run under both drivers, so both answer
   // alike; the steps routes need a running workspace, the logs only a row.
-  { method: 'POST', path: '/api/workspace/:id/steps', request: `${W}/steps`, body: { steps: { a: { run: 'true' } } }, access: 'owner', k8s: [404, 409, 503], containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/steps', request: `${W}/steps`, body: { steps: { a: { run: 'true' } } }, access: 'delegate', k8s: [404, 409, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/steps/:name/rerun', request: `${W}/steps/a/rerun`, access: 'owner', k8s: [404, 409, 503], containerless: MISSING },
   { method: 'POST', path: '/api/workspace/:id/steps/:name/cancel', request: `${W}/steps/a/cancel`, access: 'owner', k8s: [404, 409, 503], containerless: MISSING },
-  { method: 'GET', path: '/api/workspace/:id/logs', request: `${W}/logs`, access: 'owner', k8s: [404, 503], containerless: MISSING },
-  { method: 'GET', path: '/api/workspace/:id/logs/:life/:file', request: `${W}/logs/2026-11-03T01-00-00.000Z/a.log`, access: 'owner', k8s: [404, 503], containerless: MISSING },
+  // What another workspace's agent reads of it, and a message to its
+  // agent; its repo's GH_TOKEN is the workspace's own alone.
+  { method: 'GET', path: '/api/workspace/:id/steps', request: `${W}/steps`, access: 'reader', k8s: [404, 503], containerless: MISSING },
+  { method: 'POST', path: '/api/workspace/:id/send', request: `${W}/send`, body: { message: 'hi' }, access: 'delegate', k8s: [404, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/bundle', request: `${W}/bundle?repo=${ID.project}`, access: 'reader', k8s: [404, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/history', request: `${W}/history`, access: 'reader', k8s: [404, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/history/:conversationId', request: `${W}/history/c1`, access: 'reader', k8s: [404, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/gh-token', request: `${W}/gh-token?repo=demo`, access: 'delegate', k8s: [404, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/logs', request: `${W}/logs`, access: 'delegate', k8s: [404, 503], containerless: MISSING },
+  { method: 'GET', path: '/api/workspace/:id/logs/:life/:file', request: `${W}/logs/2026-11-03T01-00-00.000Z/a.log`, access: 'delegate', k8s: [404, 503], containerless: MISSING },
 
   // ── workspaces: egress and the port relay ──────────────────────────────
   // The feature guard runs before the id lookup, so the refusal doesn't
@@ -475,8 +492,8 @@ async function seedOwnedFixtures(): Promise<void> {
 
 /**
  * Every route as a teammate, a member, against a server holding another
- * user's project (`seedOwnedFixtures`): an `owner` or `admin` route refuses
- * with 403, unless
+ * user's project (`seedOwnedFixtures`): a `delegate`, `owner` or `admin`
+ * route refuses with 403, unless
  * this substrate refuses the feature first, and a `reader` route admits
  * them. Caller-scoped routes act on the caller's own data, so they are
  * skipped, except that another user's git credential must read as missing.
@@ -484,23 +501,12 @@ async function seedOwnedFixtures(): Promise<void> {
  */
 function describeNonOwner(kind: DriverKind): void {
   describe(`every route as a non-owner, ${kind}`, () => {
-    let tmpDir: string
     const app = (): ReturnType<typeof buildApp> => buildApp({ buildId: 'matrix', access: () => 'tailnet' })
 
-    beforeAll(async () => {
-      vi.stubEnv('YAAC_ALLOWED_HOSTS', TAILNET_HOST)
-      await closeDb()
-      tmpDir = await createTempDataDir()
-      await seedOwnedFixtures()
-    })
-    afterAll(async () => {
-      vi.unstubAllEnvs()
-      clearAllProvisioningForTests()
-      await closeDb()
-      await cleanupTempDir(tmpDir)
-    })
+    beforeAll(() => { vi.stubEnv('YAAC_ALLOWED_HOSTS', TAILNET_HOST) })
+    afterAll(() => { vi.unstubAllEnvs() })
 
-    for (const route of ROUTE_MATRIX.filter((r) => (r.access === 'owner' || r.access === 'admin') && !r.callerScoped)) {
+    for (const route of ROUTE_MATRIX.filter((r) => ['delegate', 'owner', 'admin'].includes(r.access) && !r.callerScoped)) {
       const want = (kind === 'k8s' ? route.k8s : route.containerless) === UNSUPPORTED ? UNSUPPORTED : 403
       it(`${label(route)} refuses another user's (${String(want)})`, async () => {
         const res = await requestRoute(app(), route, asTeammate())
@@ -518,6 +524,72 @@ function describeNonOwner(kind: DriverKind): void {
     it('admits a non-owner to every reader route', async () => {
       for (const route of ROUTE_MATRIX.filter((r) => r.access === 'reader')) {
         const res = await requestRoute(app(), route, asTeammate())
+        expect([401, 403], `${label(route)} → ${String(res.status)}`).not.toContain(res.status)
+      }
+    })
+  })
+}
+
+/** A delegate of the fixtures' owner, as `callingWorkspace` builds one,
+ *  scoped to `projectId` when given. */
+function ownersDelegate(projectId?: string): Delegate {
+  return {
+    kind: 'delegate',
+    userId: BUILT_IN_USER_ID,
+    login: null,
+    // The fixtures' workspace itself, whose own repo token it may ask for.
+    via: { kind: 'workspace', id: ID.workspace, label: `workspace ${ID.workspace.slice(0, 8)}` },
+    ...(projectId !== undefined ? { projectId } : {}),
+    ceiling: 'bypass',
+  }
+}
+
+/**
+ * Every route as a delegate of the owner of everything `ID` names, through
+ * `delegateApp` (`seedOwnedFixtures`). With no project of its own it is
+ * refused every `owner`, `admin` and caller-scoped route with 403 (or the
+ * substrate's 501), and admitted to every other `reader` and `delegate`
+ * route. Scoped to another project, it is refused every `reader` and
+ * `delegate` route, which is what catches a read that names its project
+ * some way the gate does not see; `/whoami` names no project and answers
+ * it.
+ */
+function describeDelegate(kind: DriverKind): void {
+  describe(`every route as the owner's delegate, ${kind}`, () => {
+    const app = (delegate: Delegate): ReturnType<typeof delegateApp> =>
+      delegateApp(() => Promise.resolve(delegate), { buildId: 'matrix' })
+    const unsupported = (route: RouteCase): boolean => (kind === 'k8s' ? route.k8s : route.containerless) === UNSUPPORTED
+
+    for (const route of ROUTE_MATRIX.filter((r) => r.access === 'owner' || r.access === 'admin' || r.callerScoped)) {
+      const want = unsupported(route) && !route.callerScoped ? UNSUPPORTED : 403
+      it(`${label(route)} refuses it (${String(want)})`, async () => {
+        const res = await requestRoute(app(ownersDelegate()), route)
+        expect(res.status, await res.text()).toBe(want)
+      })
+    }
+
+    // A workspace it cannot find in its own project is not found, whether
+    // or not another project has it, so it learns nothing of the others.
+    it('refuses one scoped to another project every reader and delegate route', async () => {
+      const elsewhere = ownersDelegate('0f1e2d3c-4b5a-4968-8776-655443322110')
+      for (const route of ROUTE_MATRIX.filter((r) => (r.access === 'delegate' || r.access === 'reader') && r.path !== '/api/whoami')) {
+        const res = await requestRoute(app(elsewhere), route)
+        const refusal = route.path.startsWith('/api/workspace/:id') ? 404 : 403
+        expect(unsupported(route) ? [refusal, UNSUPPORTED] : [refusal], `${label(route)} → ${String(res.status)}`).toContain(res.status)
+      }
+      expect((await requestRoute(app(elsewhere), ROUTE_MATRIX.find((r) => r.path === '/api/whoami')!)).status).toBe(200)
+    })
+
+    it('answers a request it resolves no delegate for with 401 and a Bearer challenge', async () => {
+      const res = await delegateApp(() => Promise.resolve(undefined), { buildId: 'matrix' }).request('/api/health')
+      expect(res.status).toBe(401)
+      expect(res.headers.get('www-authenticate')).toBe('Bearer')
+    })
+
+    // Last, since what it admits really runs (a queued entry is discarded).
+    it('admits it to every delegate route and every reader route not caller-scoped', async () => {
+      for (const route of ROUTE_MATRIX.filter((r) => (r.access === 'delegate' || r.access === 'reader') && !r.callerScoped)) {
+        const res = await requestRoute(app(ownersDelegate()), route)
         expect([401, 403], `${label(route)} → ${String(res.status)}`).not.toContain(res.status)
       }
     })
@@ -556,5 +628,22 @@ export function defineRouteSuite(kind: DriverKind): void {
     }
   })
 
-  describeNonOwner(kind)
+  // One server holding the built-in user's project for both (the build
+  // feed's ids run on across a process, so it is seeded once).
+  describe(`every route against another user's project, ${kind}`, () => {
+    let tmpDir: string
+    beforeAll(async () => {
+      await closeDb()
+      tmpDir = await createTempDataDir()
+      await seedOwnedFixtures()
+    })
+    afterAll(async () => {
+      clearAllProvisioningForTests()
+      await closeDb()
+      await cleanupTempDir(tmpDir)
+    })
+
+    describeNonOwner(kind)
+    describeDelegate(kind)
+  })
 }

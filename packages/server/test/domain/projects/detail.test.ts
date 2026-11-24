@@ -5,6 +5,7 @@ import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { getProjectDetail, assertProjectExists, resolveProjectId } from '#domain/projects'
 import { ServerError } from '@yaac/shared/errors'
 import { recordTestProject } from '@yaac/test-utils/project-fixture'
+import { BUILT_IN_USER_ID, setTimeZone } from '#db'
 
 const FOO = 'acbd18db-4cc2-485c-8def-654fccc4a4d8'
 const NOPE = '4101bef8-794f-4d98-8e95-dfb54850c68b'
@@ -46,8 +47,12 @@ describe('getProjectDetail', () => {
       addedAt: '2026-01-01T00:00:00.000Z',
       repos: [{ id: FOO, dir: 'demo', remoteUrl: 'https://example.com/foo', hosted: false }],
       workspaceCount: 2,
+      ownerTimeZone: 'UTC',
     })
     expect((await getProjectDetail(NOPE)).repos).toEqual([])
+    // Its owner's zone, once they set one.
+    await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', true)
+    expect((await getProjectDetail(FOO)).ownerTimeZone).toBe('Asia/Tokyo')
   })
 
   // An unreachable substrate counts zero rather than throwing, so a project

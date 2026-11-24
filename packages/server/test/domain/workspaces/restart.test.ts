@@ -70,6 +70,8 @@ import type { ServerError } from '@yaac/shared/errors'
 import { BUILT_IN_USER_ID } from '#db'
 import { createWorkflow, editWorkflow, resolveWorkflow, setRunSecret } from '#domain/projects'
 import { FALLBACK_MODELS } from '@yaac/shared/tool-providers'
+import { workspaceDelegate } from '#test/support/delegate'
+import { setToolCredential } from '#db/tool-credential-store'
 
 /** The caller of every user-caused write here. */
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -207,6 +209,23 @@ afterEach(async () => {
 })
 
 describe('prepareRestart', () => {
+  it('restarts for a delegate only a stopped workspace, not its own, whose sessions come back within its ceiling', async () => {
+    await setToolCredential(BUILT_IN_USER_ID, 'claude', { kind: 'api-key', savedAt: 'x', apiKey: 'k' })
+    await stoppedWorkspace('wt-loose', { permissionMode: 'bypass' })
+    await stoppedWorkspace('wt-edits', { permissionMode: 'accept-edits' })
+    await created('wt-live', { permissionMode: 'accept-edits' })
+    const agent = workspaceDelegate(BUILT_IN_USER_ID, 'wt-self', { ceiling: 'accept-edits' })
+    await expect(prepareRestart(agent, 'wt-loose')).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: "wt-loose's claude agent: permission mode 'bypass' is more permissive than workspace wt-self's ceiling ('accept-edits')",
+    })
+    await expect(prepareRestart(agent, 'wt-live')).rejects.toThrow('workspace wt-live is not stopped')
+    await expect(prepareRestart(workspaceDelegate(BUILT_IN_USER_ID, 'wt-edits'), 'wt-edits')).rejects.toThrow(/cannot restart this workspace itself/)
+    expect(listProvisioning()).toEqual([])
+    await (await prepareRestart(agent, 'wt-edits'))()
+    expect(calls).toContain('launch wt-edits')
+  })
+
   it('tears down the live unit while marked in flight, relaunches every open session, and clears the stop', async () => {
     await stoppedWorkspace('wt-1', { tool: 'codex' })
     await history('wt-1', 'claude', 'conv-2')
@@ -1097,7 +1116,7 @@ describe('prepareRerun', () => {
     await editWorkflow(local, DEMO_PROJECT_ID, 'relay', { steps: { other: { run: 'true' } }, secrets: ['P8_KEY'] })
 
     // An agent's rerun: the same revision on the same commit, so it gets them.
-    const agent = { kind: 'workspace', workspaceId: 'w1', userId: BUILT_IN_USER_ID } as const
+    const agent = workspaceDelegate(BUILT_IN_USER_ID, 'w1')
     await (await prepareRerun(agent, 'wf-1', { workspaceId: 'wf-2' }))()
     expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'wf-2')).toMatchObject({ workflowId: first, workflowName: 'relay' })
     expect(runSecrets).toEqual([['P8_KEY'], ['P8_KEY']])
