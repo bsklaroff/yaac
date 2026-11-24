@@ -91,7 +91,7 @@ describe('workspace trees on the node', () => {
     await setTestGitIdentity(serverEnv)
     await registerTestProject(server, PROJECT_ID, 'tree-demo', REMOTE)
     await assignTestGitCredential(server, 'tree-demo', 'fake-ghp-token')
-  }, 600_000)
+  })
 
   afterAll(async () => {
     await server?.stop()

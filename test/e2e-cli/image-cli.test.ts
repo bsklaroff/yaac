@@ -1,13 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type RunYaacOptions, type YaacTestEnv } from '#support/cli'
 import type { SpawnedServer } from '@yaac/test-utils/api'
-import { createTestRepo, requireCluster } from '@yaac/test-utils/setup'
+import { createTestRepo, requireCluster, TEST_IMAGE_PREFIX } from '@yaac/test-utils/setup'
 import { kubectl } from '@yaac/test-utils/kubectl'
 import { addTestProject, cleanupWorkspaceJobs, requirePodman } from '#support/cluster'
 import { k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
+import { registryPodHost } from '@yaac/server/drivers/k8s/cluster/registry'
 import { STOCK_IMAGE_ID, type ImageBuild, type ImageSummary, type QueuedWorkspaceEntry } from '@yaac/shared/types'
 
 /**
@@ -21,11 +22,21 @@ import { STOCK_IMAGE_ID, type ImageBuild, type ImageSummary, type QueuedWorkspac
  * and `rm` runs last. Every Dockerfile is a small layer on the stock image
  * with a per-run nonce, since the registry outlives a run and a tag it
  * already holds builds nothing.
+ *
+ * A build pulls the stock image into a fresh builder pod, minutes each,
+ * so what the builder itself enforces is checked on builds the commands
+ * start anyway (docs/image-builds.md): a host the allowlist refused is
+ * recorded on the build, a later revision reads the steps it shares with
+ * an earlier one from the project's cache, and the source policy refuses
+ * another project's image as a parent.
  */
 
 const NONCE = crypto.randomBytes(4).toString('hex')
 const layer = (...steps: string[]): string => ['ARG BASE_IMAGE', 'FROM ${BASE_IMAGE}', ...steps, ''].join('\n')
-const COPYING = layer(`RUN echo tiny-${NONCE}`, 'COPY conf/a.txt /tmp/a.txt')
+/** A step the project's allowlist refuses: curl fails, the step carries
+ *  on, and the build records the host. */
+const REFUSED_FETCH = `RUN curl -sS -m 20 -o /dev/null https://example.org/ || echo refused-${NONCE}`
+const COPYING = layer(`RUN echo tiny-${NONCE}`, REFUSED_FETCH, 'COPY conf/a.txt /tmp/a.txt')
 
 let testEnv: YaacTestEnv
 let server: SpawnedServer
@@ -49,6 +60,16 @@ const api = async <T>(route: string): Promise<T> =>
   await (await fetch(`http://127.0.0.1:${String(server.lock.port)}/api${route}`)).json() as T
 const tinyId = async (): Promise<string> =>
   (await api<ImageSummary[]>(`/image/project/${projectId}`)).find((i) => i.name === 'tiny')!.id
+/** The image's last build of `revision` once it has ended, and its log. */
+const settled = async (revision: number): Promise<{ build: ImageBuild; log: string }> => {
+  const id = await tinyId()
+  const build = await vi.waitFor(async () => {
+    const found = (await api<ImageBuild[]>(`/image/builds?imageId=${id}`)).find((b) => b.revisionNumber === revision && b.layer === 'project')
+    expect(found?.status, `revision ${String(revision)}'s build`).toMatch(/^(succeeded|failed|cancelled)$/)
+    return found!
+  }, { timeout: 600_000, interval: 1_000 })
+  return { build, log: (await api<{ text: string }>(`/image/builds/${build.id}/log?offset=0`)).text }
+}
 
 beforeAll(async () => {
   await requirePodman()
@@ -68,7 +89,7 @@ beforeAll(async () => {
   await fs.writeFile(path.join(ctx, 'conf', 'a.txt'), 'alpha\n')
   await fs.writeFile(path.join(ctx, 'skip', 'big.bin'), 'not shipped\n')
   await fs.writeFile(path.join(ctx, '.containerignore'), 'skip\n')
-}, 600_000)
+})
 
 afterAll(async () => {
   await server.stop()
@@ -126,14 +147,24 @@ describe('yaac image (real CLI + real server)', () => {
     expect(await refused('workspace', 'create', 'demo', '--prompt', 'later', '--start-in', '2h', '--await-build'))
       .toContain('--await-build waits for a create now')
 
+    // Revision 2's build ran the refused fetch, and pushed its steps to the
+    // project's cache.
+    const second = await settled(2)
+    expect(second.build, `${second.build.error ?? ''}\n${second.log}`).toMatchObject({ status: 'succeeded' })
+    expect(second.build.blockedHosts).toContain('example.org')
+
     // A save starts a build; the create waits for it rather than launching
-    // the revision built before.
-    expect((await ok('image', 'edit', 'demo', 'tiny', '--file', '-', { stdin: layer(`RUN echo awaited-${NONCE}`) })).stdout)
+    // the revision built before. Revision 3 is revision 2 and one step more,
+    // so its builder pod reads the shared steps from the cache.
+    const awaited = layer(`RUN echo tiny-${NONCE}`, REFUSED_FETCH, 'COPY conf/a.txt /tmp/a.txt', `RUN echo awaited-${NONCE}`)
+    expect((await ok('image', 'edit', 'demo', 'tiny', '--file', '-', { stdin: awaited })).stdout)
       .toContain('Saved tiny as revision 3.')
     const created = await ok('workspace', 'create', 'demo', '--no-agent', '--no-repos', '--use-image', 'tiny', '--await-build')
     const workspaceId = /Workspace ([0-9a-f-]{36}) is running/.exec(created.stdout)?.[1] ?? ''
     const build = (await api<ImageBuild[]>(`/image/builds?imageId=${id}`)).find((b) => b.revisionNumber === 3 && b.status === 'succeeded')
     expect(build, 'a succeeded build of the awaited revision').toBeDefined()
+    expect(build!.cachedSteps).toBeGreaterThanOrEqual(2)
+    expect((await api<{ text: string }>(`/image/builds/${build!.id}/log?offset=0`)).text).toContain('CACHED')
     const { stdout: images } = await kubectl(['get', 'job', '-n', k8sNamespace(), `yaac-${workspaceId}`,
       '-o', 'jsonpath={.spec.template.spec.containers[*].image}'])
     expect(images).toContain(build!.tag)
@@ -155,11 +186,17 @@ describe('yaac image (real CLI + real server)', () => {
     expect((await ok('image', 'logs', buildId)).stdout).toContain(`tiny-${NONCE}`)
     expect((await ok('image', 'logs', buildId, '--follow')).stdout).toContain(`Build ${buildId} succeeded.`)
 
-    const failing = await ok('image', 'edit', 'demo', 'tiny', '--file', '-', { stdin: layer(`RUN echo failing-${NONCE} && exit 3`) })
+    // The source policy admits only a build's own parent from the registry,
+    // so another project's image cannot be read through FROM; the build
+    // fails there, before pulling anything.
+    const stolen = `FROM ${registryPodHost()}/${TEST_IMAGE_PREFIX}-proj-${crypto.randomUUID()}:0000000000000000\nRUN echo ${NONCE}\n`
+    const failing = await ok('image', 'edit', 'demo', 'tiny', '--file', '-', { stdin: stolen })
     const failedId = /yaac image logs (\S+) --follow/.exec(failing.stdout)?.[1] ?? ''
     const followed = await yaac('image', 'logs', failedId, '--follow')
     expect(followed.exitCode).not.toBe(0)
     expect(followed.stderr).toContain(`Build ${failedId} failed`)
+    const failed = await api<ImageBuild>(`/image/builds/${failedId}`)
+    expect(`${failed.error ?? ''}\n${followed.stdout}`).toMatch(/denied/i)
   }, 900_000)
 
   it('restore saves an old revision anew, and default prints and sets the project default', async () => {

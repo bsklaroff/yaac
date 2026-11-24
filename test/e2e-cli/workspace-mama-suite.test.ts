@@ -20,16 +20,17 @@ import {
   type MockGit,
 } from '#support/mock-remotes'
 import { collectSnapshots } from '@yaac/test-utils/events-ws'
-import type { SessionEntry } from '@yaac/shared/types'
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 /**
  * The in-workspace command channel: a workspace pod runs `yaac-mama`, whose
  * request travels over HTTP egress to the proxy's magic host, which relays
- * it to the server. The server runs it against the caller's project: creating a sibling
- * with a prompt, listing workspaces, managing groups, stopping, and finding
- * and restarting a stopped one.
+ * it to the server. What a pod and the proxy change is checked here: the
+ * read-only script, the relay's allowlist, the caller named by its pod, the
+ * hosted git relay, and spawning, stopping and restarting siblings and
+ * itself. What each command does is the same under containerless, whose
+ * tier and `api/mama` unit tests cover the rest.
  */
 describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () => {
   const NAME = 'spawner'
@@ -51,8 +52,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
 
     testEnv = await createYaacTestEnv()
 
-    mockLLM = await startMockLLM()
-    mockGit = await startMockGit()
+    ;[mockLLM, mockGit] = await Promise.all([startMockLLM(), startMockGit()])
     const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
     const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
     serverEnv = {
@@ -98,7 +98,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     if (pods.length !== 1) throw new Error(`expected 1 workspace pod, found ${pods.length}`)
     jobA = pods[0].jobName
     callerWorkspaceId = pods[0].workspaceId
-  }, 300_000)
+  })
 
   afterAll(async () => {
     if (server) await server.stop()
@@ -112,13 +112,11 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
 
   /**
    * Run yaac-mama in workspace A and return its exit code and output
-   * (execInJob would throw and retry on a non-zero exit). An exec runs in
-   * no session; `asSession` speaks as one, as its agent's commands do.
+   * (execInJob would throw and retry on a non-zero exit).
    */
-  async function runMama(args: string, asSession?: string): Promise<{ exitCode: number; output: string }> {
-    const env = asSession !== undefined ? `YAAC_SESSION_ID=${asSession} ` : ''
+  async function runMama(args: string): Promise<{ exitCode: number; output: string }> {
     const { stdout } = await execInJob(jobA, [
-      'sh', '-c', `${env}yaac-mama ${args} 2>&1; echo "EXIT:$?"`,
+      'sh', '-c', `yaac-mama ${args} 2>&1; echo "EXIT:$?"`,
     ], { timeout: 120_000 })
     const m = /\nEXIT:(\d+)\s*$/.exec(stdout) ?? /^EXIT:(\d+)\s*$/.exec(stdout)
     if (!m) throw new Error(`no exit marker in output:\n${stdout}`)
@@ -185,10 +183,10 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(sawRow).toBe(true)
 
     let spawned: PodInfo | undefined
-    for (let i = 0; i < 120 && !spawned?.running; i++) {
+    for (let i = 0; i < 480 && !spawned?.running; i++) {
       const pods = await listWorkspacePods(PROJECT_ID)
       spawned = pods.find((p) => p.workspaceId === newWorkspaceId)
-      if (!spawned?.running) await sleep(1000)
+      if (!spawned?.running) await sleep(250)
     }
     expect(spawned?.running).toBe(true)
     expect(spawned?.projectId).toBe(PROJECT_ID)
@@ -203,12 +201,12 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     // The row is replaced by the workspace, never both at once
     // (buildSnapshot hides the workspace while its row exists).
     let handedOff = false
-    for (let i = 0; i < 180 && !handedOff; i++) {
+    for (let i = 0; i < 720 && !handedOff; i++) {
       const snap = sub.latest()
       handedOff = snap !== null
         && snap.workspaces.some((s) => s.workspaceId === newWorkspaceId)
         && !snap.provisioning.some((p) => p.workspaceId === newWorkspaceId)
-      if (!handedOff) await sleep(1000)
+      if (!handedOff) await sleep(250)
     }
     expect(handedOff).toBe(true)
     expect(sub.latest()?.workspaces.find((s) => s.workspaceId === newWorkspaceId)?.title).toBe('Spawned by e2e')
@@ -217,7 +215,7 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     // The prompt is pasted into the agent's pane; poll while claude boots.
     let pane = ''
     let found = false
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 240; i++) {
       try {
         const { stdout } = await execInJob(spawned!.jobName, [
           'sh', '-c',
@@ -228,14 +226,14 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
       } catch {
         // pod/tmux not ready yet
       }
-      await sleep(1000)
+      await sleep(250)
     }
     if (!found) console.error('final spawned pane:\n' + pane)
     expect(found).toBe(true)
 
     // Check the flags claude was launched with, not what its TUI shows.
     let startCmd = ''
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 240; i++) {
       try {
         const { stdout } = await execInJob(spawned!.jobName, [
           'sh', '-c',
@@ -246,80 +244,10 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
       } catch {
         // pod/tmux not ready yet
       }
-      await sleep(1000)
+      await sleep(250)
     }
     expect(startCmd).toContain('claude --permission-mode plan --model claude-opus-4-8')
   }, 420_000)
-
-  it('lists the project\u2019s workspaces, marking the caller and its group', async () => {
-    // Relies on the spawn above: both workspaces up, the sibling in its group.
-    const { exitCode, output } = await runMama('list')
-    expect(exitCode).toBe(0)
-    expect(output).toMatch(/WORKSPACE\s+TOOL\s+STATUS\s+GROUP\s+TITLE\s+PROMPT/)
-    // The caller's own row is marked so an agent can find itself.
-    expect(output).toContain('(you)')
-    expect(output).toContain('release train')
-    expect(output).toContain('Groups: release train')
-  }, 120_000)
-
-  it('lists workspaces as JSON, with the caller marked and group and title set', async () => {
-    const { exitCode, output } = await runMama('list --json')
-    expect(exitCode).toBe(0)
-    const rows = JSON.parse(output) as Array<{ id: string; status: string; group: string | null; you: boolean }>
-    expect(rows.filter((r) => r.you)).toHaveLength(1)
-    expect(rows.some((r) => r.status === 'running' && r.group === 'release train')).toBe(true)
-    const bad = await runMama('list --json --stopped')
-    expect(bad.exitCode).not.toBe(0)
-  }, 120_000)
-
-  it('makes a group and files a workspace into it, by name and short id', async () => {
-    const made = await runMama('group create "review queue"')
-    expect(made.exitCode).toBe(0)
-    expect(made.output).toContain('review queue')
-
-    // Idempotent, so an agent need not check first.
-    const again = await runMama('group create "review queue"')
-    expect(again.exitCode).toBe(0)
-
-    // Move the caller, by the 8-char prefix `list` prints.
-    const listed = await runMama('list')
-    const selfShortId = /^([0-9a-f]{8}) \(you\)/m.exec(listed.output)?.[1]
-    expect(selfShortId).toBeTruthy()
-
-    const moved = await runMama(`group move ${selfShortId!} "review queue"`)
-    expect(moved.exitCode).toBe(0)
-    expect(moved.output).toContain('review queue')
-
-    const after = await runMama('list')
-    expect(after.output).toMatch(new RegExp(`${selfShortId!}[^\\n]*review queue`))
-
-    // By group id (what the ambiguity error suggests), the output still
-    // names the group.
-    const groupId = /\(([0-9a-f-]{36})\)/.exec(made.output)?.[1]
-    expect(groupId).toBeTruthy()
-    const byId = await runMama(`group move ${selfShortId!} ${groupId!}`)
-    expect(byId.exitCode).toBe(0)
-    expect(byId.output).toContain('"review queue"')
-    expect(byId.output).not.toContain(groupId!)
-
-    // No group moves it back to the default list; the group remains.
-    const out = await runMama(`group move ${selfShortId!}`)
-    expect(out.exitCode).toBe(0)
-    expect(out.output).toContain('out of its group')
-    const restored = await runMama('list')
-    expect(restored.output).toContain('Groups: ')
-    expect(restored.output).toMatch(new RegExp(`${selfShortId!}[^\\n]*\\(you\\)`))
-  }, 180_000)
-
-  it('renames itself through the proxy relay, with no workspace named', async () => {
-    const { exitCode, output } = await runMama('rename "driving the mama e2e"')
-    expect(exitCode).toBe(0)
-    expect(output).toContain('driving the mama e2e')
-
-    // The caller is identified by source pod IP.
-    const listed = await runMama('list')
-    expect(listed.output).toContain('(you)')
-  }, 120_000)
 
   it('names the caller by its pod, whatever identity the request claims', async () => {
     // The proxy drops a workspace's own Authorization and caller header, so
@@ -337,52 +265,13 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
 
     // And the server's mama listener is out of a pod's reach.
     const direct = await execInJob(jobA, ['sh', '-c',
-      `curl -sS --max-time 10 -o /dev/null -w 'HTTP:%{http_code}' `
+      `curl -sS --connect-timeout 2 --max-time 10 -o /dev/null -w 'HTTP:%{http_code}' `
         + `http://${SERVER_MAMA_SERVICE_NAME}.${k8sNamespace()}.svc.cluster.local:${SERVER_MAMA_PORT}`
         + '/api/workspace/mama 2>&1; echo "EXIT:$?"',
     ], { timeout: 120_000 })
     expect(direct.stdout).not.toContain('EXIT:0')
   }, 240_000)
 
-  it('surfaces the server rejection for a model value outside the safe charset', async () => {
-    // `;` survives the script but fails the server's MODEL_RE check, so the
-    // error round trip is tested without provisioning anything.
-    const { exitCode, output } = await runMama('create --model "opus;rm" "x"')
-    expect(exitCode).toBe(1)
-    expect(output).toContain('invalid model')
-    expect(output).toContain('HTTP 422')
-  }, 120_000)
-
-  it('surfaces the server rejection for an unknown tool', async () => {
-    const { exitCode, output } = await runMama('create --tool bogus "x"')
-    expect(exitCode).toBe(1)
-    expect(output).toContain('bogus')
-    expect(output).toContain('HTTP 422')
-  }, 120_000)
-
-  it('reports which tools the host can authenticate, and their model ids', async () => {
-    // Only claude.json is seeded, so only claude is configured; its model
-    // ids come from the built-in catalog.
-    const { exitCode, output } = await runMama('models')
-    expect(exitCode).toBe(0)
-    expect(output).toContain('this workspace runs: claude')
-    expect(output).toContain('claude-opus-4-8')
-    expect(output).toMatch(/codex\s+not configured/)
-    expect(output).not.toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/m)
-  }, 120_000)
-
-  it('--help prints usage without touching the proxy', async () => {
-    const { exitCode, output } = await runMama('--help')
-    expect(exitCode).toBe(0)
-    expect(output).toContain('Usage:')
-    expect(output).toContain('yaac-mama create')
-    expect(output).toContain('--group <name>')
-  }, 120_000)
-
-  // A project yaac hosts (docs/hosted-projects.md): its pods reach the
-  // remote at yaac.internal, which the proxy relays to the server's mama
-  // listener like a yaac-mama call, naming the pod. The server lets a pod
-  // push to its own project's remote and refuses every other project's.
   it('relays a pod\'s git to its hosted remote, and refuses another project\'s pod', async () => {
     const created = await runYaac(serverEnv, 'project', 'create', 'mama-hosted')
     expect(created.exitCode, created.stderr).toBe(0)
@@ -419,138 +308,6 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     }
   }, 300_000)
 
-  /** Retry `attempt` while its refusal says the agent is not up yet. */
-  async function onceUp(attempt: () => Promise<{ exitCode: number; output: string }>, notYet: string) {
-    let result = await attempt()
-    for (let i = 0; i < 60 && result.exitCode !== 0 && result.output.includes(notYet); i++) {
-      await sleep(1000)
-      result = await attempt()
-    }
-    return result
-  }
-
-  // Sessions (docs/sessions.md): agents beside the caller's own, in its
-  // workspace, and a workspace with none.
-  it('opens, messages, closes and resumes sessions of its own workspace, never messaging its own', async () => {
-    const opened = await runMama('create --workspace "$YAAC_WORKSPACE_ID" --tool claude --ui-mode tui "review the README"')
-    expect(opened.exitCode, opened.output).toBe(0)
-    const sessionId = opened.output.trim()
-    expect(sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
-
-    const listed = await runMama('list')
-    expect(listed.output).toMatch(/WORKSPACE\s+AGENT\s+TOOL\s+STATUS\s+TITLE/)
-    expect(listed.output).toContain(sessionId.slice(0, 8))
-    // As that session, it is marked as the caller.
-    expect((await runMama('list', sessionId)).output).toContain(`${sessionId.slice(0, 8)} (you)`)
-
-    const sub = collectSnapshots(server!.lock.port)
-    await sub.opened
-    const sessions = (): SessionEntry[] =>
-      sub.latest()?.workspaces.find((w) => w.workspaceId === callerWorkspaceId)?.sessions ?? []
-    let lead: string | undefined
-    for (let i = 0; i < 150 && lead === undefined; i++) {
-      lead = sessions().find((s) => s.sessionId !== sessionId)?.sessionId
-      if (lead === undefined) await sleep(200)
-    }
-    expect(lead).toBeDefined()
-    // Only a conversation its agent has reported can be resumed after a
-    // close, and claude can be slow to start under gVisor.
-    for (let i = 0; i < 600 && sessions().find((s) => s.sessionId === sessionId)?.conversationId === undefined; i++) {
-      await sleep(200)
-    }
-    sub.ws.close()
-    expect(sessions().find((s) => s.sessionId === sessionId)?.conversationId).toBe(sessionId)
-
-    // A session never messages itself, but may message its sibling.
-    const self = await runMama(`send --agent ${sessionId} "$YAAC_WORKSPACE_ID" "hello me"`, sessionId)
-    expect(self.exitCode).toBe(1)
-    expect(self.output).toContain(`no running agent '${sessionId}'`)
-    const sent = await onceUp(
-      () => runMama(`send --agent ${lead!.slice(0, 8)} "$YAAC_WORKSPACE_ID" "from your sibling"`, sessionId),
-      'has no conversation yet',
-    )
-    expect(sent.exitCode, sent.output).toBe(0)
-    expect(sent.output).toContain(`Sent to ${callerWorkspaceId.slice(0, 8)}'s claude agent ${lead!.slice(0, 8)}`)
-
-    // Bare, stop --agent stops the asking agent; the workspace runs on.
-    const closed = await runMama('stop --agent', sessionId)
-    expect(closed.exitCode, closed.output).toBe(0)
-    expect(closed.output).toContain(`Stopped agent ${sessionId.slice(0, 8)}; its conversations stay in `)
-    expect(closed.output).toContain('keeps running.')
-    expect((await listWorkspacePods(PROJECT_ID)).find((p) => p.jobName === jobA)?.running).toBe(true)
-
-    // claude's conversation is its session's id, so it comes back by that.
-    const resumed = await onceUp(
-      () => runMama(`create --workspace "$YAAC_WORKSPACE_ID" --resume ${sessionId}`),
-      'has no conversation',
-    )
-    expect(resumed.exitCode, resumed.output).toBe(0)
-    expect(resumed.output.trim()).not.toBe(sessionId)
-    const refused = await runMama(`create --resume ${sessionId}`)
-    expect(refused.exitCode).toBe(1)
-    expect(refused.output).toContain('--resume needs --workspace')
-  }, 300_000)
-
-  it('starts a workspace with no agent, which takes no prompt', async () => {
-    const refused = await runMama('create --no-agent "do something"')
-    expect(refused.exitCode).toBe(1)
-    expect(refused.output).toContain('--no-agent takes no prompt')
-
-    const created = await runMama('create --no-agent --title "No agent"')
-    expect(created.exitCode, created.output).toBe(0)
-    const workspaceId = created.output.trim()
-    let pod: PodInfo | undefined
-    for (let i = 0; i < 180 && !pod?.running; i++) {
-      pod = (await listWorkspacePods(PROJECT_ID)).find((p) => p.workspaceId === workspaceId)
-      if (!pod?.running) await sleep(1000)
-    }
-    expect(pod?.running).toBe(true)
-    const shown = await runMama(`list ${workspaceId.slice(0, 8)}`)
-    expect(shown.output).toMatch(new RegExp(`^${workspaceId.slice(0, 8)}\\s+-\\s`, 'm'))
-    const stopped = await runMama(`stop ${workspaceId.slice(0, 8)}`)
-    expect(stopped.exitCode, stopped.output).toBe(0)
-  }, 300_000)
-
-  // An agent writes the project's workflows and builds its sites; a person
-  // publishes one, and from then on the agent's deploy of it waits for the
-  // person, and it may not take it down (docs/workflows.md "Approvals").
-  it('writes a workflow, builds an unpublished site, and asks a person to deploy it once published', async () => {
-    const serve = { server: { run: 'node -e "require(\'http\').createServer((q, s) => s.end(\'ok\')).listen(3000)"', service: true } }
-    const encoded = Buffer.from(JSON.stringify(serve)).toString('base64')
-    await execInJob(jobA, ['sh', '-c', `echo ${encoded} | base64 -d > /tmp/serve.json`])
-    const created = await runMama('workflow create serve --file /tmp/serve.json')
-    expect(created.exitCode, created.output).toBe(0)
-    expect(created.output).toContain('workflow serve: steps server')
-    const edited = await runMama('workflow edit serve --init')
-    expect(edited.output).toContain('; init')
-    expect((await runMama('workflow edit serve --no-init')).exitCode).toBe(0)
-
-    const site = await runMama(`site create shop --port 3000 --admin-port 3001 --workflow serve --repo ${NAME}@main --deploy-timeout 20m`)
-    expect(site.exitCode, site.output).toBe(0)
-    expect(site.output).toContain('created site shop, unpublished')
-    expect((await runMama('site list')).output).toMatch(/^shop\s+unpublished\s+port 3000/m)
-    expect((await runMama('site show shop')).output).toContain('; deploy timeout 20m')
-    expect((await runMama('site edit shop --no-admin-port --deploy-timeout 2h')).exitCode).toBe(0)
-    expect((await runMama('site show shop')).output).toContain(`workflow serve; repos ${NAME}@main; deploy timeout 2h`)
-
-    const published = await runYaac(serverEnv, 'site', 'publish', NAME, 'shop', '--hostname', 'shop.example.test')
-    expect(published.exitCode, published.stderr).toBe(0)
-    const asked = await runMama('site deploy shop')
-    expect(asked.exitCode, asked.output).toBe(0)
-    expect(asked.output).toContain('needs a person\'s approval')
-    expect((await runYaac(serverEnv, 'site', 'show', NAME, 'shop')).stdout).toMatch(/requested\s+\S+, asked by the agent of workspace \S+, awaiting your approval/)
-    for (const verb of ['stop', 'delete']) {
-      const refused = await runMama(`site ${verb} shop`)
-      expect(refused.exitCode, verb).toBe(1)
-      expect(refused.output).toContain('only a person may')
-    }
-    expect((await runMama('site start shop')).output).toContain('only a person may')
-
-    expect((await runYaac(serverEnv, 'site', 'unpublish', NAME, 'shop')).exitCode).toBe(0)
-    expect((await runMama('site delete shop')).output).toContain('deleted site shop')
-    expect((await runMama('workflow delete serve')).output).toContain('deleted workflow serve')
-  }, 300_000)
-
   // The destructive cases run last.
 
   it('stops the sibling it spawned, and the stop is a stop and not a delete', async () => {
@@ -564,10 +321,10 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
 
     // Teardown is detached, so the pod goes after the reply.
     let gone = false
-    for (let i = 0; i < 120 && !gone; i++) {
+    for (let i = 0; i < 480 && !gone; i++) {
       const pods = await listWorkspacePods(PROJECT_ID)
       gone = !pods.some((p) => p.workspaceId === spawnedWorkspaceId)
-      if (!gone) await sleep(1000)
+      if (!gone) await sleep(250)
     }
     expect(gone).toBe(true)
 
@@ -616,44 +373,29 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(restarted.exitCode, restarted.output).toBe(0)
     expect(restarted.output).toContain(`Restarting ${shortId}`)
     let back: PodInfo | undefined
-    for (let i = 0; i < 180 && !back?.running; i++) {
+    for (let i = 0; i < 720 && !back?.running; i++) {
       back = (await listWorkspacePods(PROJECT_ID)).find((p) => p.workspaceId === spawnedWorkspaceId)
-      if (!back?.running) await sleep(1000)
+      if (!back?.running) await sleep(250)
     }
     expect(back?.running).toBe(true)
     // Its session comes back in the posture it had.
     let startCmd = ''
-    for (let i = 0; i < 60 && !startCmd.includes('--permission-mode'); i++) {
+    for (let i = 0; i < 240 && !startCmd.includes('--permission-mode'); i++) {
       startCmd = await execInJob(back!.jobName, ['sh', '-c',
         `tmux -S ${CONTAINER_TMUX_SOCK} list-panes -s -t yaac -F "#{window_name} #{pane_start_command}" 2>&1 | grep '^claude-'`,
       ], { timeout: 10_000 }).then((r) => r.stdout, () => '')
-      if (!startCmd.includes('--permission-mode')) await sleep(1000)
+      if (!startCmd.includes('--permission-mode')) await sleep(250)
     }
     expect(startCmd).toContain('--permission-mode plan')
   }, 420_000)
 
-  it('stops ITSELF when no workspace is named, starting what it queued after itself', async () => {
+  // Queuing after itself, and the queued start a stop sets off, are the
+  // same under containerless, which checks them.
+  it('stops ITSELF when no workspace is named', async () => {
     // A running workspace is never restarted from here, itself least of all.
     const self = await runMama('restart "$YAAC_WORKSPACE_ID"')
     expect(self.exitCode).toBe(1)
     expect(self.output).toContain('cannot restart this workspace itself')
-
-    // Queue a follow-up under the caller's id, edit it, then let the
-    // caller's own stop start it.
-    const queued = await runMama('queue --parent-workspace "$YAAC_WORKSPACE_ID" "draft follow-up"')
-    expect(queued.exitCode).toBe(0)
-    expect(queued.output.trim()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
-    const edited = await runMama(
-      `edit-queued --title "Follow-up" ${queued.output.trim().slice(0, 8)} "follow-up from queue e2e"`)
-    expect(edited.exitCode).toBe(0)
-    expect(edited.output).toContain('follow-up from queue e2e')
-    const dropped = await runMama('queue --parent-workspace "$YAAC_WORKSPACE_ID" "dropped follow-up"')
-    const discarded = await runMama(`delete-queued ${dropped.output.trim().slice(0, 8)}`)
-    expect(discarded.exitCode).toBe(0)
-    expect(discarded.output).toContain(`Discarded queued workspace ${dropped.output.trim().slice(0, 8)}.`)
-    const listedQueue = await runMama('list')
-    expect(listedQueue.output).toContain('follow-up from queue e2e')
-    expect(listedQueue.output).not.toContain('dropped follow-up')
 
     // A self-stop tears down the pod its reply travels through, so assert
     // that the workspace went away, not what printed. Not via `runMama`,
@@ -661,10 +403,10 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     await execInJob(jobA, ['sh', '-c', 'yaac-mama stop 2>&1'], { timeout: 60_000 }).catch(() => undefined)
 
     let gone = false
-    for (let i = 0; i < 120 && !gone; i++) {
+    for (let i = 0; i < 480 && !gone; i++) {
       const pods = await listWorkspacePods(PROJECT_ID)
       gone = !pods.some((p) => p.jobName === jobA)
-      if (!gone) await sleep(1000)
+      if (!gone) await sleep(250)
     }
     expect(gone).toBe(true)
 
@@ -672,14 +414,5 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     const listed = await runYaac(serverEnv, 'workspace', 'list', '--stopped')
     expect(listed.exitCode).toBe(0)
     expect(listed.stdout).toContain(callerWorkspaceId.slice(0, 8))
-
-    // The queued workspace started: a pod that is neither caller nor sibling.
-    let child: PodInfo | undefined
-    for (let i = 0; i < 180 && !child?.running; i++) {
-      const pods = await listWorkspacePods(PROJECT_ID)
-      child = pods.find((p) => p.workspaceId !== callerWorkspaceId && p.workspaceId !== spawnedWorkspaceId)
-      if (!child?.running) await sleep(1000)
-    }
-    expect(child?.running).toBe(true)
   }, 420_000)
 })

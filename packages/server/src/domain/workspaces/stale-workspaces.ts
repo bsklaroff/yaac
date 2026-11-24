@@ -40,16 +40,21 @@ export function _clearMissingPodTimersForTests(): void {
  * A stale unit still marked prewarmed, a stray one included, goes to
  * `reapSpare` instead, which deletes its files before its unit: a spare has
  * no row, so once the unit is gone nothing says the files were a spare's.
+ *
+ * A unit skipped for being in its startup grace asks for a pass the moment
+ * it leaves it (`wakeAt`), since no event may come by then: a pod that dies
+ * young, a sandbox killed outright, is otherwise reaped only on the resync.
  */
-export async function reconcileStaleWorkspaces(view: RuntimeSnapshot): Promise<void> {
+export async function reconcileStaleWorkspaces(view: RuntimeSnapshot, wakeAt: (atMs: number) => void): Promise<void> {
   // Read fresh each pass. A stale set could miss a new create and destroy
   // uncommitted work.
   const desired = await desiredWorkspaces()
   const pods = await view.workspaces()
   const nowMs = Date.now()
   const graceMs = testEnv.startingGraceMs
-  const { running, stale: staleAll, indeterminate, terminating } =
+  const { running, stale: staleAll, indeterminate, terminating, graceEndsAtMs } =
     await classifyWorkspaces(pods, nowMs, probeTmuxLiveness, graceMs)
+  if (graceEndsAtMs !== null) wakeAt(graceEndsAtMs)
 
   // Workspaces still being created are exempt from every sweep, whatever
   // their age: reaping mid-create would delete dirs the pod is about to

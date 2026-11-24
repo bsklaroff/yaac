@@ -23,7 +23,6 @@ import { nodeLocalNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sour
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_CLIS, promptFits } from '@yaac/shared/types'
 import type { ProjectConfig, ProjectSummary, ResourceReport, SessionEntry } from '@yaac/shared/types'
-import { KEEPER_WINDOW } from '@yaac/server/drivers/contract'
 import {
   startMockLLM,
   startMockGit,
@@ -32,7 +31,6 @@ import {
   type MockLLM,
   type MockGit,
 } from '#support/mock-remotes'
-import { collectSnapshots } from '@yaac/test-utils/events-ws'
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
@@ -53,9 +51,13 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  * Every workspace is stopped once the cases that read it are done. A
  * workspace's memory request (docs/cluster-setup.md "What a workspace
  * reserves") lets a 16 GB node schedule only a handful at once, and the
- * rest would sit Pending.
+ * rest would sit Pending. A case that needs only some running workspace
+ * opens another agent in one, which costs no request.
  *
- * Not covered here: a full opencode turn through the mock LLM.
+ * What the CLI and server do alike under both drivers (steps, agents in a
+ * running workspace, repo layout, launch flags) is covered once, by the
+ * containerless tier; the cases here are the ones a pod, the proxy or the
+ * node changes. Not covered here: a full opencode turn through the mock LLM.
  */
 
 const execFileAsync = promisify(execFile)
@@ -133,8 +135,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     const futureExpSeconds = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
 
-    mockLLM = await startMockLLM()
-    mockGit = await startMockGit()
+    ;[mockLLM, mockGit] = await Promise.all([startMockLLM(), startMockGit()])
 
     // Redirect every host the tools touch at startup. A missing claude or
     // statsig host makes claude exit; `auth.openai.com` covers codex's
@@ -736,26 +737,6 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       }
     }, 60_000)
 
-    it('refuses to tunnel onto a port the workspace does not forward', async () => {
-      // 10300 is streamd, which is listening, so the refusal comes from the
-      // tunnel's port check.
-      const local = await freeLocalPort()
-      const stray = startForwardCli(workspaceId, '--port', `10300:${local}`)
-      try {
-        await stray.ready(1)
-        await expect(httpGet(`http://127.0.0.1:${local}/`)).rejects.toThrow()
-        expect(stray.output()).toMatch(/dial failed/)
-      } finally {
-        await stray.stop()
-      }
-    }, 60_000)
-
-    it('refuses a session it cannot resolve, rather than binding nothing forever', async () => {
-      const { stdout, stderr, exitCode } = await runYaac(serverEnv, 'forward', 'no-such-session')
-      expect(exitCode).not.toBe(0)
-      expect(`${stdout}${stderr}`).toMatch(/no-such-session|not found/i)
-    }, 30_000)
-
     // The review pane's data: the in-pod script finds the fork point and
     // snapshots the checkout into a separate index.
     it('reports committed and uncommitted workspace changes on /workspace/:id/changes', async () => {
@@ -879,17 +860,6 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(gone.trim()).toBe('gone')
     }, 120_000)
 
-    // An unknown base is a client error, not a server fault.
-    it('answers 400 for a ?base= ref that resolves nowhere', async () => {
-      const res = await fetch(
-        `${base}/api/workspace/${workspaceId}/changes?base=no-such-branch`,
-      )
-      expect(res.status).toBe(400)
-      const body = await res.json() as { error: { code: string; message: string } }
-      expect(body.error.code).toBe('VALIDATION')
-      expect(body.error.message).toContain('no-such-branch')
-    }, 30_000)
-
     it('relay accepts sequential requests while the event loop stays responsive', async () => {
       // A blocked event loop would let only the first request through.
       await startHttpServerInContainer(jobName, 8084, '127.0.0.1', 'sequential')
@@ -927,7 +897,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         const ports = (await kitchenSession()).unforwardedPorts
         expect(ports).toContain(port)
         return ports
-      }, { timeout: 120_000, interval: 1000 })
+      }, { timeout: 120_000, interval: 250 })
     }
 
     it('detects unforwarded listeners, never surfacing denylisted or forwarded ports', async () => {
@@ -1193,6 +1163,18 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 120_000)
 
     it('writes a command over the PTY WebSocket and reads its output back', async () => {
+      /**
+       * Type `line` until `expected` comes back. A shell still starting can
+       * drop what was typed before it read its terminal, so the line is
+       * typed again every two seconds rather than after a fixed wait.
+       */
+      const typeUntil = async (ws: WebSocket, output: () => string, line: string, expected: string): Promise<void> => {
+        let polls = 0
+        await vi.waitFor(() => {
+          if (polls++ % 8 === 0) ws.send(Buffer.from(`${line}\r`))
+          expect(output()).toContain(expected)
+        }, { timeout: 30_000, interval: 250 })
+      }
       // The webapp's terminal path: create a shell window (the "+" button),
       // attach over the WS, and round-trip a command.
       const createRes = await fetch(
@@ -1208,9 +1190,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           + `?id=${workspaceId}&target=${encodeURIComponent(shell.target)}&cols=100&rows=30`,
       )
       await opened
-      await sleep(3000) // let the shell start and paint its prompt
-      ws.send(Buffer.from('echo WS_ROUNDTRIP_$((40 + 2))\r'))
-      await vi.waitFor(() => expect(binary()).toContain('WS_ROUNDTRIP_42'), { timeout: 15_000, interval: 500 })
+      await typeUntil(ws, binary, 'echo WS_ROUNDTRIP_$((40 + 2))', 'WS_ROUNDTRIP_42')
       ws.close()
 
       // target=native, used by `yaac workspace attach`. The tmux prefix
@@ -1237,9 +1217,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       let shellClosed = false
       rawShell.ws.on('close', () => { shellClosed = true })
       await rawShell.opened
-      await sleep(3000)
-      rawShell.ws.send(Buffer.from('echo RAW_SHELL_$((20 + 3))\r'))
-      await vi.waitFor(() => expect(rawShell.binary()).toContain('RAW_SHELL_23'), { timeout: 15_000, interval: 500 })
+      await typeUntil(rawShell.ws, rawShell.binary, 'echo RAW_SHELL_$((20 + 3))', 'RAW_SHELL_23')
       rawShell.ws.send(Buffer.from('exit\r'))
       await vi.waitFor(() => expect(shellClosed, 'exit did not close the raw shell attach').toBe(true),
         { timeout: 15_000, interval: 100 })
@@ -1325,12 +1303,14 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const setTitle = (title: string): Promise<{ stdout: string }> => execInJob(jobName, [
         'tmux', '-S', CONTAINER_TMUX_SOCK, 'select-pane', '-t', 'yaac:claude.0', '-T', title,
       ])
+      // The listing's status, which `workspace list` prints; the CLI's
+      // rendering of it is read once, after the kill below.
       const waitForListStatus = (expected: 'running' | 'waiting', timeout: number): Promise<void> =>
         vi.waitFor(async () => {
-          const { stdout } = await runYaac(serverEnv, 'workspace', 'list', 'kitchen')
-          const row = stdout.split('\n').find((l) => l.includes('kitchen') && !l.startsWith('WORKSPACE'))
-          if (!row?.includes(expected)) throw new Error(`status is not ${expected}; list:\n${stdout}`)
-        }, { timeout, interval: 500 })
+          const { workspaces } = await (await fetch(`${base}/api/workspace/list?project=kitchen`)).json() as
+            { workspaces: Array<{ workspaceId: string; status: string }> }
+          expect(workspaces.find((w) => w.workspaceId === workspaceId)?.status).toBe(expected)
+        }, { timeout, interval: 250 })
 
       await setTitle('✳ marker-idle')
       await waitForListStatus('waiting', 20_000)
@@ -1447,324 +1427,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 360_000)
   })
 
-  describe('provisioning hand-off + no scratch dirs + npmCache false', () => {
-    it('a webapp create with a client id yields a real session of that id, and the provisioning row drops on hand-off', async () => {
-      // Also covers an empty scratch-dirs list and npmCache: false. The cache
-      // exists, so only the project setting keeps this pod off it.
-      await ensureNpmCache()
-      await setupProject('no-scratch', {
-        scratchDirs: [],
-        config: { npmCache: false },
-      })
-      const workspaceId = randomUUID()
-      onTestFinished(() => stopWorkspace(workspaceId))
-
-      const sub = collectSnapshots(server!.lock.port)
-      await sub.opened
-
-      // Not awaited, to observe the in-flight row.
-      const createDone = fetch(`${base}/api/workspace/create`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ project: 'no-scratch', tool: 'claude', mode: 'tui', workspaceId }),
-      }).then((r) => r.text())
-
-      await vi.waitFor(() => expect(sub.latest()?.provisioning.find((p) => p.workspaceId === workspaceId))
-        .toMatchObject({ kind: 'create', projectId: idOf('no-scratch') }), { timeout: 20_000, interval: 200 })
-
-      const ndjson = await createDone
-      expect(ndjson).toContain('"type":"result"')
-      expect(ndjson).not.toContain('"type":"error"')
-
-      // The workspace has the client-supplied id...
-      const list = await (await fetch(`${base}/api/workspace/list?project=no-scratch`)).json() as
-        { workspaces: Array<{ workspaceId: string }> }
-      expect(list.workspaces.some((s) => s.workspaceId === workspaceId)).toBe(true)
-
-      // ...and replaces the provisioning row; buildSnapshot never shows
-      // both.
-      await vi.waitFor(() => {
-        const snap = sub.latest()
-        expect(snap?.workspaces.some((s) => s.workspaceId === workspaceId)).toBe(true)
-        expect(snap?.provisioning.some((p) => p.workspaceId === workspaceId)).toBe(false)
-      }, { timeout: 20_000, interval: 200 })
-      sub.ws.close()
-
-      // No redirect, so no node_modules at all.
-      const pod = await findWorkspacePod('no-scratch')
-      await expect(execInJob(pod.jobName, [
-        'test', '-e', '/workspace/node_modules',
-      ])).rejects.toThrow()
-
-      // npmCache: false uses npmjs, and the pod lacks the label the cache's
-      // policy admits.
-      const { stdout: registry } = await execInJob(pod.jobName, ['pnpm', 'config', 'get', 'registry'])
-      expect(registry.trim()).toBe('https://registry.npmjs.org/')
-      const { stdout: dial } = await execInJob(pod.jobName, [
-        'sh', '-c',
-        `curl -s -o /dev/null -m 5 -w '%{http_code}' http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/-/ping || true`,
-      ])
-      expect(dial.trim()).toBe('000')
-    }, 240_000)
-  })
-
-  /**
-   * Sessions (docs/sessions.md), through the CLI: a workspace started with
-   * none, then agents opened in it with `--workspace`, listed, attached to,
-   * closed and resumed. One workspace serves every case, in order; it is
-   * stopped only once they are done.
-   */
-  describe('sessions', () => {
-    const NAME = 'sessions'
-    let workspaceId = ''
-    let jobName = ''
-
-    /** The workspace's tmux windows. */
-    const windows = async (): Promise<string[]> => (await execInJob(jobName, [
-      'tmux', '-S', CONTAINER_TMUX_SOCK, 'list-windows', '-t', 'yaac', '-F', '#{window_name}',
-    ])).stdout.trim().split('\n')
-
-    /** The workspace's open sessions, oldest first. */
-    const sessions = async (): Promise<SessionEntry[]> => {
-      const res = await fetch(`${base}/api/workspace/list?project=${NAME}`)
-      const { workspaces } = await res.json() as { workspaces: Array<{ workspaceId: string; sessions: SessionEntry[] }> }
-      return workspaces.find((w) => w.workspaceId === workspaceId)?.sessions ?? []
-    }
-
-    const yaac = async (...args: string[]): Promise<string> => {
-      const { stdout, stderr, exitCode } = await runYaac(serverEnv, ...args)
-      if (exitCode !== 0) throw new Error(`yaac ${args.join(' ')} failed (exit ${exitCode}):\n${stderr}`)
-      return stdout
-    }
-
-    beforeAll(async () => {
-      await skipClaudeOnboarding(await setupProject(NAME))
-      const stdout = await yaac('workspace', 'create', NAME, '--no-agent')
-      // With no session to attach to, it names the workspace instead.
-      workspaceId = /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
-      expect(workspaceId).not.toBe('')
-      jobName = (await findWorkspacePod(NAME)).jobName
-    }, 240_000)
-
-    afterAll(() => stopWorkspace(workspaceId))
-
-    it('starts a workspace with no agent: no agent window, and none listed', async () => {
-      expect(await windows()).toEqual([KEEPER_WINDOW])
-      expect(await sessions()).toEqual([])
-      const row = (await yaac('workspace', 'list')).split('\n').find((l) => l.startsWith(workspaceId.slice(0, 8)))
-      // No tool, and a session count of 0.
-      expect(row).toMatch(/\s-\s+\S+\s+0\b/)
-    })
-
-    it('opens sessions in the running workspace with --workspace, each in a window of its own, listed under AGENT', async () => {
-      await yaac('workspace', 'create', '--workspace', workspaceId.slice(0, 8), '--tool', 'claude', '--mode', 'tui', '--prompt', 'say hi')
-      await yaac('workspace', 'create', '--workspace', workspaceId, '--tool', 'codex', '--mode', 'tui')
-      const [claude, codex] = await sessions()
-      expect([claude, codex]).toMatchObject([
-        { tool: 'claude', mode: 'tui', prompt: 'say hi' },
-        { tool: 'codex', mode: 'tui' },
-      ])
-      await vi.waitFor(async () => {
-        expect(await windows()).toEqual(expect.arrayContaining([claude.window, codex.window]))
-      }, { timeout: 30_000, interval: 500 })
-
-      const listed = await yaac('workspace', 'list')
-      expect(listed).toMatch(/WORKSPACE\s+AGENT\s+TOOL\s+MODE\s+STATUS\s+TITLE/)
-      for (const s of [claude, codex]) {
-        expect(listed).toMatch(new RegExp(`${workspaceId.slice(0, 8)}\\s+${s.sessionId.slice(0, 8)}\\s+${s.tool}`))
-      }
-    })
-
-    // e2e runs have no TTY, so only a refusal, which comes before the
-    // terminal is touched, can be checked here.
-    it('refuses to attach to a session the workspace does not have', async () => {
-      const { stderr, exitCode } = await runYaac(serverEnv, 'workspace', 'attach', '--agent', 'ffffffff', workspaceId)
-      expect(exitCode).not.toBe(0)
-      expect(stderr).toContain(`Workspace ${workspaceId} has no running agent "ffffffff".`)
-    })
-
-    it('stops one agent with stop --agent, killing its window and leaving the workspace running', async () => {
-      const codex = (await sessions()).find((s) => s.tool === 'codex')!
-      expect(await yaac('workspace', 'stop', '--agent', codex.sessionId.slice(0, 8))).toContain(
-        `Agent ${codex.sessionId} stopped; its conversations stay in workspace ${workspaceId}'s history. The workspace keeps running.`,
-      )
-      expect((await sessions()).map((s) => s.tool)).toEqual(['claude'])
-      await vi.waitFor(async () => { expect(await windows()).not.toContain(codex.window) }, { timeout: 15_000, interval: 500 })
-      expect((await findWorkspacePod(NAME)).running).toBe(true)
-    })
-
-    // claude's conversation is the session's own id, recorded once its
-    // pane names it. Closed, it comes back as a new session with --resume.
-    it('opens a session on an earlier conversation with --resume', async () => {
-      const [claude] = await sessions()
-      const conversationId = await vi.waitFor(async () => {
-        const res = await fetch(`${base}/api/workspace/${workspaceId}/conversations`)
-        const recorded = (await res.json() as Array<{ conversationId: string; sessionId?: string }>)
-          .find((c) => c.sessionId === claude.sessionId)
-        expect(recorded).toBeDefined()
-        return recorded!.conversationId
-      }, { timeout: 60_000, interval: 1_000 })
-      await yaac('workspace', 'stop', '--agent', claude.sessionId)
-      expect(await yaac('workspace', 'conversations', workspaceId)).toMatch(new RegExp(`${conversationId}\\s+claude\\s+ended`))
-
-      await yaac('workspace', 'create', '--workspace', workspaceId, '--resume', conversationId)
-      const [resumed] = await sessions()
-      expect(resumed).toMatchObject({ tool: 'claude', conversationId })
-      expect(resumed.sessionId).not.toBe(claude.sessionId)
-      await vi.waitFor(async () => { expect(await windows()).toContain(resumed.window) }, { timeout: 30_000, interval: 500 })
-    }, 120_000)
-  })
-
   // `yaac volume`, `workspace create --volume` and `workspace restart
   // --volume/--no-volume` (docs/workspace-volumes.md), on workspaces with no
   // session, so no agent runs. kind's volumes are directories of the
   // `yaac-volumes` claim; a byo cluster's own claims are covered by the
   // unit and apiserver tiers.
-  /**
-   * A workspace's steps (docs/workspace-steps.md) on one interactive
-   * workspace started at a commit with its own graph, then the
-   * non-interactive runs, each a workspace of its own. The steps that end a
-   * workspace run last.
-   */
-  describe('steps', () => {
-    const NAME = 'steps'
-    let workspaceId = ''
-    let jobName = ''
-    let sha = ''
-
-    const yaac = async (...args: string[]): Promise<string> => {
-      const { stdout, stderr, exitCode } = await runYaac(serverEnv, ...args)
-      if (exitCode !== 0) throw new Error(`yaac ${args.join(' ')} failed (exit ${exitCode}):\n${stderr}`)
-      return stdout
-    }
-
-    /** A step's state as the listing has it. */
-    const stateOf = async (id: string, name: string): Promise<string | undefined> => {
-      const res = await fetch(`${base}/api/workspace/list?project=${NAME}`)
-      const { workspaces } = await res.json() as { workspaces: Array<{ workspaceId: string; steps?: Array<{ name: string; state: string }> }> }
-      // By full name, or bare while one workflow has the step.
-      return workspaces.find((w) => w.workspaceId === id)?.steps?.find((s) => s.name === name || s.name.endsWith(`.${name}`))?.state
-    }
-    const waitForState = (id: string, name: string, state: string): Promise<void> =>
-      vi.waitFor(async () => { expect(await stateOf(id, name)).toBe(state) }, { timeout: 60_000, interval: 500 })
-
-    /** A steps file in the scratch dir. */
-    const stepsFile = async (file: string, graph: object): Promise<string> => {
-      const at = path.join(testEnv.scratchDir, file)
-      await fs.writeFile(at, JSON.stringify(graph))
-      return at
-    }
-
-    beforeAll(async () => {
-      await setupProject(NAME, { files: { 'version.txt': 'one\n' } })
-      sha = (await git(path.join(testEnv.dataDir, 'global', 'repos', idOf(NAME)), ['rev-parse', 'HEAD'])).trim()
-      const graph = await stepsFile('steps.json', {
-        install: { run: ['echo installed', 'touch /tmp/installed'] },
-        web: { run: 'sleep 600', service: true, needs: ['install'], ready: 'test -f /tmp/installed' },
-        after: { run: 'echo after-web', needs: ['web'] },
-      })
-      const stdout = await yaac('workspace', 'create', NAME, '--no-agent', '--steps', graph, '--commit', sha)
-      workspaceId = /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
-      expect(workspaceId).not.toBe('')
-      jobName = (await findWorkspacePod(NAME)).jobName
-    }, 240_000)
-
-    afterAll(() => stopWorkspace(workspaceId))
-
-    it('runs --steps in order of their needs, at the --commit it names', async () => {
-      await waitForState(workspaceId, 'install', 'succeeded')
-      await waitForState(workspaceId, 'web', 'ready')
-      await waitForState(workspaceId, 'after', 'succeeded')
-      const head = (await execInJob(jobName, ['git', '-C', '/workspace', 'rev-parse', 'HEAD'])).stdout.trim()
-      expect(head).toBe(sha)
-    }, 120_000)
-
-    it('adds a step with step add, run in one shell after what it needs, and prints its log', async () => {
-      const name = (await yaac('workspace', 'step', 'add', workspaceId, '--run', 'export WORD=two', '--run', 'echo one $WORD',
-        '--name', 'extra', '--needs', 'install')).trim()
-      expect(name).toBe('_added-1.extra')
-      await waitForState(workspaceId, 'extra', 'succeeded')
-      expect(await yaac('workspace', 'logs', workspaceId, 'extra')).toContain('one two')
-      expect(await yaac('workspace', 'logs', workspaceId, 'extra', '--raw', '--life', '1')).toContain('one two')
-      const listed = await yaac('workspace', 'logs', workspaceId)
-      for (const file of ['_steps.install.log', `${name}.log`, `${name}.events`]) expect(listed).toContain(file)
-      // A default name, printed in full for whoever reruns or cancels it.
-      const unnamed = (await yaac('workspace', 'step', 'add', workspaceId, '--run', 'true')).trim()
-      expect(unnamed).toBe('_added-2.run')
-      await waitForState(workspaceId, unnamed, 'succeeded')
-    }, 120_000)
-
-    it('adds a --service gated on --ready, cancels it, and reruns a finished step', async () => {
-      await yaac('workspace', 'step', 'add', workspaceId, '--run', 'sleep 600', '--service', '--ready', 'true', '--name', 'svc')
-      await waitForState(workspaceId, 'svc', 'ready')
-      expect(await yaac('workspace', 'step', 'cancel', workspaceId, 'svc')).toContain('Cancelled')
-      await waitForState(workspaceId, 'svc', 'cancelled')
-      expect(await yaac('workspace', 'step', 'rerun', workspaceId, 'extra')).toContain('Rerunning')
-      await waitForState(workspaceId, 'extra', 'succeeded')
-      const ready = await runYaac(serverEnv, 'workspace', 'step', 'add', workspaceId, '--run', 'true', '--ready', 'true')
-      expect(ready.exitCode).not.toBe(0)
-      expect(ready.stderr).toContain('--ready goes with --service')
-    }, 120_000)
-
-    it('starts a workspace with --no-steps in place of the project\'s init workflows', async () => {
-      const init = await stepsFile('steps-init.json', { marker: { run: 'touch /tmp/init-marker' } })
-      await yaac('workflow', 'create', NAME, 'init', '--file', init, '--init')
-      const stdout = await yaac('workspace', 'create', NAME, '--no-agent', '--no-steps')
-      const bare = /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
-      try {
-        const pod = await findWorkspacePod(NAME, new Set([workspaceId]))
-        // Nothing but the keeper, and no step ever listed.
-        await new Promise((resolve) => setTimeout(resolve, 3_000))
-        const windows = (await execInJob(pod.jobName, ['tmux', '-S', CONTAINER_TMUX_SOCK, 'list-windows', '-t', 'yaac',
-          '-F', '#{window_name}'])).stdout.trim().split('\n')
-        expect(windows).toEqual([KEEPER_WINDOW])
-        expect(await stateOf(bare, 'marker')).toBeUndefined()
-      } finally {
-        await stopWorkspace(bare)
-        await yaac('workflow', 'delete', NAME, 'init')
-      }
-    }, 240_000)
-
-    it('runs --non-interactive --steps untouched, refusing changes, and --wait exits as the steps ended', async () => {
-      const ok = await stepsFile('ci-ok.json', { check: { run: 'echo ci-ok' } })
-      const passed = await runYaac(serverEnv, 'workspace', 'create', NAME, '--non-interactive', '--steps', ok, '--wait')
-      expect(passed.exitCode, passed.stderr).toBe(0)
-      expect(passed.stdout).toContain('Its steps succeeded.')
-      const ranId = /Non-interactive workspace (\S+) is running/.exec(passed.stdout)?.[1] ?? ''
-      // Its logs outlive it.
-      expect(await yaac('workspace', 'logs', ranId, 'check')).toContain('ci-ok')
-      // Rerun, never restart.
-      const restart = await runYaac(serverEnv, 'workspace', 'restart', ranId)
-      expect(restart.exitCode).not.toBe(0)
-      expect(restart.stderr).toContain('rerun')
-      const rerun = await runYaac(serverEnv, 'workspace', 'rerun', ranId, '--wait')
-      expect(rerun.exitCode, rerun.stderr).toBe(0)
-      expect(rerun.stdout).toContain('Its steps succeeded.')
-      const debug = await runYaac(serverEnv, 'workspace', 'rerun', ranId, '--interactive')
-      expect(debug.exitCode, debug.stderr).toBe(0)
-      await stopWorkspace(/Workspace (\S+) is running/.exec(debug.stdout)?.[1] ?? '')
-
-      const bad = await stepsFile('ci-bad.json', { check: { run: 'exit 3' } })
-      const failed = await runYaac(serverEnv, 'workspace', 'create', NAME, '--non-interactive', '--steps', bad, '--wait')
-      expect(failed.exitCode).not.toBe(0)
-      expect(failed.stdout).toContain('Its steps failed')
-
-      const slow = await stepsFile('ci-slow.json', { check: { run: 'sleep 600' } })
-      const running = await yaac('workspace', 'create', NAME, '--non-interactive', '--steps', slow)
-      const runningId = /Non-interactive workspace (\S+) is running/.exec(running)?.[1] ?? ''
-      try {
-        await waitForState(runningId, 'check', 'running')
-        const added = await runYaac(serverEnv, 'workspace', 'step', 'add', runningId, '--run', 'true')
-        expect(added.exitCode).not.toBe(0)
-        expect(added.stderr).toContain('non-interactive')
-        const cancelled = await runYaac(serverEnv, 'workspace', 'step', 'cancel', runningId, 'check')
-        expect(cancelled.exitCode).not.toBe(0)
-      } finally {
-        await stopWorkspace(runningId)
-      }
-    }, 600_000)
-  })
-
   describe('volumes', () => {
     const NAME = 'volume-demo'
     let first = ''
@@ -1854,11 +1521,16 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     let jobName = ''
     let workspaceId = ''
 
+    // The project also turns off scratch dirs and the npm cache, which no
+    // codex case depends on, so the cache's policy is checked without a pod
+    // of its own.
     beforeAll(async () => {
-      const projectPath = await setupProject('codex-demo')
+      const projectPath = await setupProject('codex-demo', { scratchDirs: [], config: { npmCache: false } })
       // With a codex dir, create writes a placeholder ChatGPT-mode
       // auth.json (writeProjectCodexPlaceholder) so codex skips its login.
       await fs.mkdir(path.join(projectPath, 'codex'), { recursive: true })
+      // The cache exists, so only the project setting keeps this pod off it.
+      await ensureNpmCache()
       const created = await createWorkspace('codex-demo', '--tool', 'codex')
       jobName = created.jobName
       workspaceId = (await findWorkspacePod('codex-demo')).workspaceId
@@ -1870,6 +1542,18 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await execInJob(jobName, ['test', '-d', '/home/yaac/.claude'])
       await execInJob(jobName, ['test', '-f', '/home/yaac/.claude.json'])
       await execInJob(jobName, ['test', '-d', '/home/yaac/.codex'])
+    }, 60_000)
+
+    it('has no node_modules with no scratch dirs, and with npmCache off uses npmjs and cannot dial the cache', async () => {
+      await expect(execInJob(jobName, ['test', '-e', '/workspace/node_modules'])).rejects.toThrow()
+      const { stdout: registry } = await execInJob(jobName, ['pnpm', 'config', 'get', 'registry'])
+      expect(registry.trim()).toBe('https://registry.npmjs.org/')
+      // The pod lacks the label the cache's policy admits.
+      const { stdout: dial } = await execInJob(jobName, [
+        'sh', '-c',
+        `curl -s -o /dev/null --connect-timeout 2 -w '%{http_code}' http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/-/ping || true`,
+      ])
+      expect(dial.trim()).toBe('000')
     }, 60_000)
 
     it('boots codex-cli and round-trips a prompt through the mock LLM', async () => {
@@ -2122,8 +1806,6 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     }, 300_000)
   })
 
-  /** --prompt, --model, --effort, --permission-mode and --branch on one
-   *  workspace. */
   /**
    * A project with several repos (docs/project-repos.md): which of them a
    * workspace starts with, where each checkout sits under /workspace, where
@@ -2131,7 +1813,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
    * routine forms of the options are in workspace-cli.test.ts, and the
    * proxy's use of each repo's credential in proxy-credentials-suite.test.ts.
    */
-  describe('a project with several repos (--repo, --no-repos, --nested, --cwd)', () => {
+  describe('a project with several repos (--repo, --cwd)', () => {
     const NAME = 'multi-app'
     const LIB = 'multi-lib'
     let jobName = ''
@@ -2234,53 +1916,27 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await yaac('project', 'repo', 'gh-token', NAME, NAME, 'on')
       expect(await mama('/workspace', 'as-repo nope -- true')).toMatch(/has no repo "nope".*EXIT:1$/s)
     }, 180_000)
-
-    it('--no-nested puts a lone repo at the workspace root, and --no-repos starts an empty workspace', async () => {
-      const known = new Set([workspaceId])
-      const start = async (...args: string[]): Promise<PodInfo> => {
-        await yaac('workspace', 'create', NAME, '--no-agent', ...args)
-        const pod = await findWorkspacePod(NAME, known)
-        known.add(pod.workspaceId)
-        return pod
-      }
-      const flat = await start('--repo', 'lib', '--no-nested')
-      try {
-        expect(await listed(flat.workspaceId)).toMatchObject({ cwd: '', repos: [{ repoId: idOf(LIB), path: '' }] })
-        expect(await inPod(flat.jobName, 'git -C /workspace config remote.origin.url')).toBe(`https://github.com/test-org/${LIB}.git`)
-        expect(await inPod(flat.jobName, 'printenv YAAC_CHECKOUTS')).toBe('.')
-      } finally {
-        await stopWorkspace(flat.workspaceId)
-      }
-      const empty = await start('--no-repos')
-      try {
-        expect(await listed(empty.workspaceId)).toMatchObject({ cwd: '', repos: [] })
-        expect(await inPod(empty.jobName, 'ls -A /workspace')).toBe('')
-        expect(await inPod(empty.jobName, 'echo "[${YAAC_CHECKOUTS-unset}][${GH_TOKEN-unset}]"')).toBe('[][unset]')
-      } finally {
-        await stopWorkspace(empty.workspaceId)
-      }
-    }, 480_000)
   })
 
-  describe('create-time overrides (--prompt, --model, --effort, --branch)', () => {
-    const NAME = 'overridden'
+  /**
+   * Prompts on one workspace, as they reach the model through the proxy: the
+   * create's own, then a brief near the cap, multibyte, from a file and from
+   * stdin, each opening another agent in it. A brief travels into the pod
+   * over the exec stream's stdin, to the agent as its launch argument. The
+   * flags beside a prompt (`--model`, `--effort`, `--branch`) launch the same
+   * under both drivers, so the containerless tier checks them.
+   */
+  describe('prompts', () => {
+    const NAME = 'prompted'
     let jobName = ''
     let workspaceId = ''
-    let createStdout = ''
     const marker = 'summarize the pinned issues'
+    const brief = (tag: string): string => `${tag}\n${'Pläase ✓ the 🙂 "brief" line\n'.repeat(3_800)}${tag} ends`
 
     beforeAll(async () => {
-      await skipClaudeOnboarding(await setupProject(NAME, {
-        extraBranches: { dev: { 'dev-only.txt': 'dev content\n' } },
-      }))
-
-      const created = await createWorkspace(
-        NAME, '--tool', 'claude', '--prompt', marker, '--model', 'claude-opus-4-8', '--effort', 'xhigh',
-        '--permission-mode', 'accept-edits', '--branch', 'dev',
-      )
-      jobName = created.jobName
+      await skipClaudeOnboarding(await setupProject(NAME))
+      jobName = (await createWorkspace(NAME, '--tool', 'claude', '--prompt', marker)).jobName
       workspaceId = (await findWorkspacePod(NAME)).workspaceId
-      createStdout = created.stdout
     }, 240_000)
 
     afterAll(() => stopWorkspace(workspaceId))
@@ -2294,63 +1950,33 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           `tmux -S ${CONTAINER_TMUX_SOCK} capture-pane -t yaac:claude -p -S - -E - 2>&1`,
         ])
         if (!pane.includes(marker) || !pane.includes('Hello from mock')) throw new Error(`final pane:\n${pane}`)
-      }, { timeout: 120_000, interval: 1000 })
+      }, { timeout: 120_000, interval: 500 })
     }, 240_000)
 
-    it('launches claude with the requested --model, --effort and --permission-mode', async () => {
-      // Check the flags claude was launched with, not what its TUI shows.
-      const { stdout: startCmd } = await execInJob(jobName, [
-        'sh', '-c',
-        `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}"`,
+    it('hands an agent the whole of a long prompt from a file or stdin, and leaves stdin unattached', async () => {
+      const dir = path.join(testEnv.dataDir, `brief-${randomUUID().slice(0, 8)}`)
+      await fs.mkdir(dir, { recursive: true })
+      await fs.writeFile(path.join(dir, 'brief.md'), brief('from-file'))
+      expect(Buffer.byteLength(brief('from-file'))).toBeGreaterThan(120 * 1024)
+      expect(promptFits(brief('from-stdin'))).toBe(true)
+      // The file is relative to the CLI's working directory.
+      const [fromFile, fromStdin] = await Promise.all([
+        runYaac(serverEnv, 'workspace', 'create', '--workspace', workspaceId, '--tool', 'claude', '--mode', 'tui',
+          '--prompt-file', 'brief.md', { cwd: dir }),
+        runYaac(serverEnv, 'workspace', 'create', '--workspace', workspaceId, '--tool', 'claude', '--mode', 'tui',
+          '--prompt', '-', { stdin: brief('from-stdin') }),
       ])
-      expect(startCmd).toContain(
-        'claude --permission-mode acceptEdits --model claude-opus-4-8 --effort xhigh',
-      )
-    }, 60_000)
-
-    // The server knows each model's levels (docs/effort-levels.md), so one
-    // the model lacks is refused before anything starts.
-    it('refuses an --effort the model does not have', async () => {
-      const bad = await runYaac(
-        serverEnv, 'workspace', 'create', NAME, '--tool', 'claude', '--model', 'claude-opus-4-6', '--effort', 'xhigh',
-      )
-      expect(bad.exitCode).not.toBe(0)
-      expect(bad.stdout + bad.stderr).toContain('claude-opus-4-6 has no "xhigh" effort')
-    }, 60_000)
-
-
-    it('--branch lands on the requested branch and tracks it', async () => {
-      // The prewarmed path is in workspace-prewarm.test.ts.
-      expect(createStdout).toContain('Creating workspace from dev...')
-
-      const { stdout: upstream } = await execInJob(jobName, [
-        'git', '-C', '/workspace', 'rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}',
-      ])
-      expect(upstream.trim()).toBe('origin/dev')
-      const { stdout: devFile } = await execInJob(jobName, ['cat', '/workspace/dev-only.txt'])
-      expect(devFile).toBe('dev content\n')
-    }, 60_000)
-
-    it('--branch rejects a branch missing from origin, leaving no pod and no checkout', async () => {
-      // The checkout dir is staged before provisioning, and its row is
-      // rolled back on failure, so no later sweep would find a leftover dir.
-      // Counted, since the server picks the id.
-      const workspacesRoot = path.join(testEnv.dataDir, 'global', 'projects', idOf(NAME), 'workspaces')
-      const ls = async (dir: string): Promise<string[]> =>
-        (await fs.readdir(dir).catch((): string[] => [])).sort()
-      const checkoutsBefore = await ls(workspacesRoot)
-      const podsBefore = (await listWorkspacePods(idOf(NAME))).length
-
-      const bad = await runYaac(serverEnv, 'workspace', 'create', NAME, '--branch', 'ghost')
-      expect(bad.exitCode).not.toBe(0)
-      expect(bad.stdout + bad.stderr).toContain('branch "ghost" not found on origin')
-      expect((await listWorkspacePods(idOf(NAME))).length).toBe(podsBefore)
-
-      // Polled: removal waits for the checkout step to settle, so it cannot
-      // run before a still-fetching checkout lands.
-      await vi.waitFor(async () => expect(await ls(workspacesRoot)).toEqual(checkoutsBefore),
-        { timeout: 5_000, interval: 100 })
-    }, 60_000)
+      for (const run of [fromFile, fromStdin]) expect(run.exitCode, `${run.stdout}\n${run.stderr}`).toBe(0)
+      await vi.waitFor(async () => {
+        const sent = (await mockLLM!.transcript())
+          .filter((e) => e.method === 'POST' && e.url.startsWith('/v1/messages'))
+          .map((e) => JSON.stringify(JSON.parse(e.body)))
+        for (const tag of ['from-file', 'from-stdin']) {
+          expect(sent.some((body) => body.includes(JSON.stringify(brief(tag)).slice(1, -1)))).toBe(true)
+        }
+      }, { timeout: 120_000, interval: 500 })
+      expect(fromStdin.stdout).toMatch(/attach with `yaac workspace attach --agent [0-9a-f-]{36} [0-9a-f-]{36}`/)
+    }, 180_000)
 
     // Last, since it deletes the workspace.
     it('deletes the stopped workspace past a root-owned dir its sudo left, through a root pod', async () => {
@@ -2362,72 +1988,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await vi.waitFor(async () => {
         deleted = await runYaac(serverEnv, 'workspace', 'delete', workspaceId, '--yes')
         expect(deleted.stderr).not.toMatch(/still stopping/)
-      }, { timeout: 120_000, interval: 2000 })
+      }, { timeout: 120_000, interval: 1000 })
       expect(deleted.exitCode, deleted.stderr).toBe(0)
       await expect(fs.lstat(checkout)).rejects.toThrow()
       workspaceId = ''
     }, 240_000)
-  })
-  /**
-   * A prompt near the cap, multibyte, from a file and from stdin. It reaches
-   * the agent whole: into the pod over the exec stream's stdin, to the agent
-   * as its launch argument, and on to the model.
-   */
-  describe('long prompts (--prompt-file, --prompt -)', () => {
-    const brief = (tag: string): string => `${tag}\n${'Pläase ✓ the 🙂 "brief" line\n'.repeat(3_800)}${tag} ends`
-    const workspaceIds: string[] = []
-    const outputs: Record<string, string> = {}
-
-    beforeAll(async () => {
-      const dir = path.join(testEnv.dataDir, `brief-${randomUUID().slice(0, 8)}`)
-      await fs.mkdir(dir, { recursive: true })
-      await fs.writeFile(path.join(dir, 'brief.md'), brief('from-file'))
-      expect(Buffer.byteLength(brief('from-file'))).toBeGreaterThan(120 * 1024)
-      expect(promptFits(brief('from-stdin'))).toBe(true)
-      await Promise.all(['brief-file', 'brief-stdin'].map(async (name) => skipClaudeOnboarding(await setupProject(name))))
-      // Relative to the CLI's working directory.
-      const runs = await Promise.all([
-        runYaac(serverEnv, 'workspace', 'create', 'brief-file', '--tool', 'claude', '--mode', 'tui',
-          '--prompt-file', 'brief.md', { cwd: dir }),
-        runYaac(serverEnv, 'workspace', 'create', 'brief-stdin', '--tool', 'claude', '--mode', 'tui',
-          '--prompt', '-', { stdin: brief('from-stdin') }),
-      ])
-      for (const [i, name] of ['brief-file', 'brief-stdin'].entries()) {
-        const { stdout, stderr, exitCode } = runs[i]
-        if (exitCode !== 0) throw new Error(`${name} create failed (exit ${exitCode})\nstdout:\n${stdout}\nstderr:\n${stderr}`)
-        outputs[name] = stdout
-        workspaceIds.push((await findWorkspacePod(name)).workspaceId)
-      }
-    }, 240_000)
-
-    afterAll(() => Promise.all(workspaceIds.map((id) => stopWorkspace(id))))
-
-    it('hands the agent the whole prompt, and leaves stdin unattached', async () => {
-      await vi.waitFor(async () => {
-        const sent = (await mockLLM!.transcript())
-          .filter((e) => e.method === 'POST' && e.url.startsWith('/v1/messages'))
-          .map((e) => JSON.stringify(JSON.parse(e.body)))
-        for (const tag of ['from-file', 'from-stdin']) {
-          expect(sent.some((body) => body.includes(JSON.stringify(brief(tag)).slice(1, -1)))).toBe(true)
-        }
-      }, { timeout: 120_000, interval: 1000 })
-      expect(outputs['brief-stdin']).toMatch(/attach with `yaac workspace attach --agent [0-9a-f-]{36} [0-9a-f-]{36}`/)
-    }, 180_000)
-
-    it('refuses a prompt given twice, or one that is empty or unreadable, before creating anything', async () => {
-      const refused = async (opts: { stdin?: string }, ...args: string[]): Promise<string> => {
-        const { stderr, exitCode } = await runYaac(serverEnv, 'workspace', 'create', 'brief-file', ...args, opts)
-        expect(exitCode).not.toBe(0)
-        return stderr
-      }
-      const empty = path.join(testEnv.dataDir, `empty-${randomUUID().slice(0, 8)}.md`)
-      await fs.writeFile(empty, '')
-      expect(await refused({}, '--prompt', 'x', '--prompt-file', empty)).toContain('not both')
-      expect(await refused({}, '--prompt-file', empty)).toContain(`The prompt from ${empty} is empty.`)
-      expect(await refused({}, '--prompt-file', `${empty}.missing`)).toContain('Cannot read the prompt from')
-      expect(await refused({ stdin: '' }, '--prompt', '-')).toContain('The prompt from stdin is empty.')
-      expect((await listWorkspacePods(idOf('brief-file'))).length).toBe(1)
-    }, 60_000)
   })
 
   describe('agent mode (--mode acp)', () => {
@@ -2509,12 +2074,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it('carries a message from the pane through to the agent, and records it', async () => {
       // Pane to server to acpd to agent, checked in acpd's record so it does
       // not depend on the agent's reply.
-      const { ws, opened } = openWs(
+      const { ws, text, opened } = openWs(
         `ws://127.0.0.1:${server!.lock.port}/api/acp/attach`
           + `?id=${workspaceId}&session=${encodeURIComponent(conversationId)}`,
       )
       await opened
-      await sleep(1000)
+      // The server's `hello` says the attach is set up to take a prompt.
+      await vi.waitFor(() => expect(text.length).toBeGreaterThan(0), { timeout: 15_000, interval: 100 })
       // The image travels inline as an ACP image block.
       ws.send(JSON.stringify({
         type: 'prompt',
@@ -2567,30 +2133,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(stdout.trim()).toBe(E2E_PNG.toString('base64'))
     }, 60_000)
 
-    it('serves the conversation over /acp/attach', async () => {
-      const { ws, text, opened } = openWs(
-        `ws://127.0.0.1:${server!.lock.port}/api/acp/attach`
-          + `?id=${workspaceId}&session=${encodeURIComponent(conversationId)}`,
-      )
-      await opened
-      // `hello` carries the event log a chat pane renders on attach.
-      await vi.waitFor(() => expect(text.length).toBeGreaterThan(0), { timeout: 15_000, interval: 500 })
-      ws.close()
-      const hello = JSON.parse(text[0]) as {
-        type: string
-        conversationId?: string
-        events?: unknown[]
-      }
-      expect(hello.type).toBe('hello')
-      expect(hello.conversationId).toBe(conversationId)
-      expect(Array.isArray(hello.events)).toBe(true)
-    }, 60_000)
-
     /**
-     * The other adapters, using the real pinned binaries. Only the
-     * handshake runs: by then the launch command, the conversation id and the
-     * posture are all settled. These are claims about upstream packages that a
-     * version bump could break, which unit tests check only against tables.
+     * The other adapters, using the real pinned binaries, each an agent of
+     * its own in this pod. Only the handshake runs: by then the launch
+     * command, the conversation id and the posture are all settled. These
+     * are claims about upstream packages that a version bump could break,
+     * which unit tests check only against tables.
      */
     const REAL_ADAPTERS: Array<{
       tool: 'codex' | 'opencode' | 'pi' | 'omp'
@@ -2647,31 +2195,43 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     it.each(REAL_ADAPTERS)('drives $tool through its real adapter',
       async ({ tool, posture, launch, modeId, method, defaultModeId }) => {
-        // Exclude existing pods to find the new one.
-        const older = new Set((await listWorkspacePods(idOf(NAME))).map((p) => p.workspaceId))
-        await createWorkspace(
-          NAME, '--tool', tool, '--mode', 'acp', '--permission-mode', posture,
+        const opened = await runYaac(
+          serverEnv, 'workspace', 'create', '--workspace', workspaceId, '--tool', tool, '--mode', 'acp', '--permission-mode', posture,
         )
-        const { jobName: job, workspaceId: adapterWorkspace } = await findWorkspacePod(NAME, older)
-        onTestFinished(() => stopWorkspace(adapterWorkspace))
-        const { stdout: startCmd } = await execInJob(job, [
+        expect(opened.exitCode, `${opened.stdout}\n${opened.stderr}`).toBe(0)
+        const sessionId = /\(agent ([0-9a-f-]{36})\)/.exec(opened.stdout)?.[1]
+        expect(sessionId, opened.stdout).toBeDefined()
+        onTestFinished(async () => { await runYaac(serverEnv, 'workspace', 'stop', '--agent', sessionId!) })
+        const { window } = await vi.waitFor(async () => {
+          const { workspaces } = await (await fetch(`${base}/api/workspace/list?project=${NAME}`)).json() as
+            { workspaces: Array<{ workspaceId: string; sessions: SessionEntry[] }> }
+          const session = workspaces.find((w) => w.workspaceId === workspaceId)?.sessions.find((x) => x.sessionId === sessionId)
+          expect(session).toBeDefined()
+          return session!
+        }, { timeout: 30_000, interval: 250 })
+        const { stdout: startCmd } = await execInJob(jobName, [
           'sh', '-c',
-          `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:${tool} "#{pane_start_command}"`,
+          `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:${window} "#{pane_start_command}"`,
         ])
         expect(startCmd).toContain('/opt/yaac/acpd/main.js')
         for (const fragment of launch) expect(startCmd).toContain(fragment)
 
         // A `session/new` reply with an id means the adapter started and
         // accepted yaac declining the `fs/*` and `terminal/*` capabilities.
-        // The create returns before the handshake, whose posture and model
-        // calls follow that reply, so the record is read until they land.
+        // The agent opens before the handshake, whose conversation id names
+        // the record, and whose posture and model calls follow that reply,
+        // so the record is read until they land.
         const recorded = await vi.waitFor(async () => {
-          const { stdout } = await execInJob(job, ['sh', '-c', 'cat /home/yaac/.yaac-acp/*.jsonl 2>/dev/null || true'])
+          const conversations = await (await fetch(`${base}/api/workspace/${workspaceId}/conversations`)).json() as
+            Array<{ conversationId: string; sessionId?: string }>
+          const conversationOf = conversations.find((c) => c.sessionId === sessionId)?.conversationId
+          expect(conversationOf, 'no conversation recorded for the agent yet').toBeDefined()
+          const { stdout } = await execInJob(jobName, ['sh', '-c', `cat /home/yaac/.yaac-acp/${conversationOf!}.jsonl 2>/dev/null || true`])
           expect(stdout).toContain('"sessionId"')
           if (modeId !== undefined) expect(stdout).toContain(`"modeId":"${modeId}"`)
           if (method !== undefined) expect(stdout).toContain(method)
           return stdout
-        }, { timeout: 180_000, interval: 2000 })
+        }, { timeout: 180_000, interval: 1000 })
         expect(recorded).toContain('"method":"initialize"')
         // An unrouted call gets "Method not found" and is otherwise silent.
         expect(recorded).not.toContain('-32601')
@@ -2679,21 +2239,6 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           expect(recorded).toContain(`"currentModeId":"${defaultModeId}"`)
         }
       }, 600_000)
-
-    // A posture the tool lacks would otherwise be a launch flag that silently
-    // does nothing.
-    it('refuses a posture the tool does not have', async () => {
-      await setupProject('no-posture')
-      const podsBefore = (await listWorkspacePods(idOf('no-posture'))).length
-      // pi has no permission system, so no `plan`.
-      const noPlan = await runYaac(
-        serverEnv, 'workspace', 'create', 'no-posture',
-        '--tool', 'pi', '--permission-mode', 'plan',
-      )
-      expect(noPlan.exitCode).not.toBe(0)
-      expect(noPlan.stdout + noPlan.stderr).toMatch(/pi has no "plan" permission mode/)
-      expect((await listWorkspacePods(idOf('no-posture'))).length).toBe(podsBefore)
-    }, 120_000)
 
     // Under acp the posture is not a launch flag but a `session/set_mode`
     // call after the handshake.
@@ -2723,15 +2268,6 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(reply, `no reply to session/set_mode in:\n${recorded}`).toBeDefined()
       expect(reply?.error).toBeUndefined()
     }, 180_000)
-
-    // commander rejects values outside the enum before calling the server.
-    it('rejects an unknown --permission-mode at the CLI', async () => {
-      const bad = await runYaac(
-        serverEnv, 'workspace', 'create', 'no-posture', '--permission-mode', 'yolo',
-      )
-      expect(bad.exitCode).not.toBe(0)
-      expect(bad.stdout + bad.stderr).toMatch(/Allowed choices are bypass, auto, accept-edits/)
-    }, 60_000)
   })
 
   /**
@@ -2747,9 +2283,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     const BOB = asTailnet('bob@example.com', HOST)
     const BOB_KEY = 'sk-ant-fake-bob-key'
     const BOB_PROJECT = 'bobs'
-    /** alice's acp workspace from the describe above, and its conversation. */
+    /** alice's acp workspace from the describe above. */
     let aliceWorkspace = ''
-    let aliceSession = ''
     let aliceJob = ''
     let bobJob = ''
 
@@ -2782,9 +2317,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           && w.conversations.some((a) => a.mode === 'acp'))
         if (!found) throw new Error(`no running claude acp workspace: ${JSON.stringify(listed)}`)
         return found
-      }, { timeout: 60_000, interval: 1000 })
+      }, { timeout: 60_000, interval: 250 })
       aliceWorkspace = acp.workspaceId
-      aliceSession = acp.conversations.find((a) => a.mode === 'acp')!.conversationId
       aliceJob = (await listWorkspacePods(idOf('acped'))).find((p) => p.workspaceId === aliceWorkspace)!.jobName
 
       await skipClaudeOnboarding(await setupProject(BOB_PROJECT, { headers: BOB }))
@@ -2817,133 +2351,5 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await vi.waitFor(async () => expect(await keySeenFrom(bobJob)).toBe(BOB_KEY), { timeout: 30_000, interval: 1000 })
       expect(await keySeenFrom(aliceJob)).toBe('sk-ant-fake-real-key')
     }, 120_000)
-
-    it('lets bob read alice\'s transcript, but not attach to or write her workspace', async () => {
-      const sessions = await as(BOB, `/workspace/${aliceWorkspace}/conversations`)
-      expect(sessions.status).toBe(200)
-      expect((await sessions.json() as Array<{ conversationId: string }>).map((s) => s.conversationId))
-        .toContain(aliceSession)
-      const transcript = await as(BOB, `/workspace/${aliceWorkspace}/conversations/${aliceSession}/transcript`)
-      expect(transcript.status).toBe(200)
-      expect((await transcript.json() as { events: unknown[] }).events.length).toBeGreaterThan(0)
-
-      const attach = (who: Record<string, string>): Promise<number> => new Promise((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${server!.lock.port}/api/acp/attach`
-          + `?id=${aliceWorkspace}&session=${encodeURIComponent(aliceSession)}`, { headers: who })
-        ws.once('open', () => { ws.close(); resolve(101) })
-        ws.once('unexpected-response', (_req, res) => { ws.terminate(); resolve(res.statusCode ?? 0) })
-        ws.once('error', reject)
-      })
-      expect(await attach(BOB)).toBe(403)
-      expect(await attach(ALICE)).toBe(101)
-
-      const save = await as(BOB, `/workspace/${aliceWorkspace}/file`, {
-        method: 'PUT', body: JSON.stringify({ path: 'from-bob.txt', content: 'hi', baseVersion: null }),
-      })
-      expect(save.status).toBe(403)
-      const { stdout } = await execInJob(aliceJob, ['sh', '-c', 'ls /workspace/from-bob.txt 2>&1 || true'])
-      expect(stdout).toContain('No such file')
-    }, 120_000)
-
-    /**
-     * The CLI's environment as `who`: a loopback proxy that plays tailscale
-     * serve, adding `who`'s identity to every request. Closed when the test
-     * ends.
-     */
-    async function cliAs(who: Record<string, string>): Promise<NodeJS.ProcessEnv> {
-      const proxy = http.createServer((req, res) => {
-        const upstream = http.request({
-          host: '127.0.0.1', port: server!.lock.port, path: req.url, method: req.method,
-          headers: { ...req.headers, ...who },
-        }, (up) => {
-          res.writeHead(up.statusCode ?? 502, up.headers)
-          up.pipe(res)
-        })
-        req.pipe(upstream)
-      })
-      await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve))
-      onTestFinished(() => new Promise<void>((resolve) => { proxy.close(() => resolve()) }))
-      return { ...serverEnv, YAAC_SERVER_URL: `http://127.0.0.1:${String((proxy.address() as net.AddressInfo).port)}` }
-    }
-
-    // Last in the file: it stops bob's workspace.
-    it('scopes the CLI to the caller\'s projects, and to a teammate\'s with --user', async () => {
-      const [alice, bob] = await Promise.all([cliAs(ALICE), cliAs(BOB)])
-      const bobWorkspace = (await findWorkspacePod(BOB_PROJECT)).workspaceId
-
-      // Alice's hosted project, whose repo she shares with bob, who links it
-      // into a project of his own under the same name.
-      expect((await runYaac(alice, 'project', 'create', 'shared-app')).exitCode).toBe(0)
-      const projects = await (await as(ALICE, '/project/list')).json() as Array<{ name: string; repos: Array<{ id: string }> }>
-      const repoId = projects.find((p) => p.name === 'shared-app')!.repos[0].id
-      const shared = await runYaac(alice, 'repo', 'share', 'shared-app/shared-app', 'bob@example.com')
-      expect(shared.exitCode, shared.stderr).toBe(0)
-      expect(shared.stdout).toContain(`Repo ${repoId.slice(0, 8)} is now shared with bob@example.com`)
-      // The table cuts its last column to the terminal's width, so only the
-      // start of the login is sure to show.
-      expect((await runYaac(alice, 'repo', 'list')).stdout).toMatch(new RegExp(`${repoId.slice(0, 8)}.*with bob@`))
-      expect((await runYaac(bob, 'repo', 'list')).stdout).toMatch(new RegExp(`${repoId.slice(0, 8)}.*by alice@`))
-      // Only its owner shares it on.
-      expect((await runYaac(bob, 'repo', 'share', repoId, 'alice@example.com')).exitCode).not.toBe(0)
-      expect((await runYaac(bob, 'project', 'create', 'shared-app')).exitCode).toBe(0)
-      const linked = await runYaac(bob, 'project', 'repo', 'add', 'shared-app', '--repo-id', repoId, '--dir', 'upstream')
-      expect(linked.exitCode, linked.stderr).toBe(0)
-      expect(linked.stdout).toContain(`Project "shared-app" now links repo ${repoId} in the folder upstream.`)
-
-      const own = await runYaac(alice, 'project', 'list')
-      expect(own.stdout).toContain('acped')
-      expect(own.stdout).not.toContain(BOB_PROJECT)
-      // Before or after the command, by login or display name.
-      for (const args of [['--user', 'bob@example.com', 'project', 'list'], ['project', 'list', '--user', 'bob']]) {
-        const bobs = await runYaac(alice, ...args)
-        expect(bobs.stdout).toContain(BOB_PROJECT)
-        expect(bobs.stdout).toContain('shared-app')
-        expect(bobs.stdout).not.toContain('acped')
-      }
-
-      // The name picks each caller's own project; in bob's, --repo names
-      // alice's repo beside his own.
-      for (const [env, who, repo] of [[alice, 'alice', []], [bob, 'bob', ['--repo', 'upstream']]] as const) {
-        const dir = path.join(testEnv.scratchDir, `shared-app-${who}`)
-        const cloned = await runYaac(env, 'project', 'clone', 'shared-app', dir, ...repo)
-        expect(cloned.exitCode, cloned.stderr).toBe(0)
-        expect((await git(dir, ['remote', 'get-url', 'origin'])).trim()).toContain(`/api/repo/${repoId}/git`)
-      }
-
-      // Unsharing ends bob's use of the repo; his project keeps its link.
-      const unshared = await runYaac(alice, 'repo', 'unshare', repoId, 'bob')
-      expect(unshared.exitCode, unshared.stderr).toBe(0)
-      expect(unshared.stdout).toContain(`Repo ${repoId.slice(0, 8)} is no longer shared with bob`)
-      expect((await runYaac(bob, 'repo', 'list')).stdout).not.toContain(repoId.slice(0, 8))
-      expect((await runYaac(bob, 'project', 'repo', 'list', 'shared-app')).stdout).toMatch(/upstream\s+\S+\s+\(none needed\)/)
-
-      const group = await as(BOB, '/workspace/group/create', {
-        method: 'POST', body: JSON.stringify({ projectId: idOf(BOB_PROJECT), name: 'bob-group' }),
-      })
-      expect(group.status).toBe(200)
-      expect((await runYaac(alice, 'group', 'list')).stdout).not.toContain('bob-group')
-      expect((await runYaac(alice, 'group', 'list', '--user', 'bob@example.com')).stdout).toContain('bob-group')
-
-      const id8 = bobWorkspace.slice(0, 8)
-      expect((await runYaac(alice, 'workspace', 'list')).stdout).not.toContain(id8)
-      expect((await runYaac(alice, 'workspace', 'list', BOB_PROJECT, '--user', 'bob@example.com')).stdout).toContain(id8)
-      const notMine = await runYaac(alice, 'workspace', 'list', BOB_PROJECT)
-      expect(notMine.exitCode).toBe(1)
-      expect(notMine.stderr).toContain(`You have no project ${BOB_PROJECT}; pass --user <user> for a teammate's.`)
-      // A full id names anyone's project.
-      expect((await runYaac(alice, 'workspace', 'list', idOf(BOB_PROJECT))).stdout).toContain(id8)
-
-      const nobody = await runYaac(alice, '--user', 'carol@example.com', 'project', 'list')
-      expect(nobody.exitCode).toBe(1)
-      expect(nobody.stderr).toContain('No user "carol@example.com" on this server')
-
-      // The stopped listing pages through the scoped user's projects alone.
-      expect((await as(BOB, '/workspace/stop', { method: 'POST', body: JSON.stringify({ workspaceId: bobWorkspace }) })).status)
-        .toBe(200)
-      await vi.waitFor(async () => {
-        expect((await runYaac(alice, 'workspace', 'list', '-s', '--user', 'bob@example.com')).stdout).toContain(id8)
-      }, { timeout: 60_000, interval: 2000 })
-      expect((await runYaac(alice, 'workspace', 'list', '-s')).stdout).not.toContain(id8)
-    }, 180_000)
   })
 })

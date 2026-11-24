@@ -535,6 +535,13 @@ export interface PassContext {
    * import, so they are passed down.
    */
   terminating: (workspaceId: string) => boolean
+  /**
+   * Run this step again at `atMs`, for work it skipped that only time
+   * makes due, such as a unit still in its startup grace. Otherwise
+   * nothing would run it before the next resync. The earliest request
+   * since the step's last wake stands.
+   */
+  wakeAt: (atMs: number) => void
 }
 
 /**

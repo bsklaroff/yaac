@@ -198,8 +198,8 @@ yaac and report the results in its review:
 Skip only what the submitter already ran: the PR description's verification
 list says what that is, so name those items in the prompt as already done.
 Only genuinely host-only checks stay deferred, and the reviewer names them as
-such: the k8s tiers (`api-k8s`, `e2e`, `e2e-cli`) and anything else that
-needs a cluster.
+such: the k8s tiers (`e2e`, `e2e-cli`) and anything else that needs a
+cluster. `api-k8s` needs none and runs in the workspace.
 
 ### 4. Spawn it
 

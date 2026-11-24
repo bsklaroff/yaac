@@ -69,13 +69,17 @@ RUN case "$(dpkg --print-architecture)" in \
     tar -xzf /tmp/llama.tar.gz -C /home/yaac/.cache/yaac/llama-cpp && rm /tmp/llama.tar.gz && \
     chown -R yaac:0 /home/yaac && chmod -R g=u /home/yaac
 
-COPY . /opt/yaac/
 # Install cli.js's unbundled externals (checked at build time by
 # scripts/check-cli-externals.ts) exactly as the shipped lockfile pins them.
-# No install scripts, as pnpm runs none for these packages.
+# No install scripts, as pnpm runs none for these packages. A layer of its
+# own, ahead of the bundle, so a build whose dependencies are unchanged
+# reuses it.
+COPY package.json npm-shrinkwrap.json /opt/yaac/
 RUN cd /opt/yaac && npm ci --omit=dev --ignore-scripts --no-audit --no-fund && \
     npm cache clean --force && \
-    chown -R yaac:0 /opt/yaac && chmod -R g=u /opt/yaac && \
+    chown -R yaac:0 /opt/yaac && chmod -R g=u /opt/yaac
+COPY . /opt/yaac/
+RUN find /opt/yaac -path /opt/yaac/node_modules -prune -o -exec chown yaac:0 {} + -exec chmod g=u {} + && \
     chmod 0755 /opt/yaac/dockerfiles/server-entrypoint.sh
 
 USER yaac

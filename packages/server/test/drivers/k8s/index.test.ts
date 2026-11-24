@@ -38,6 +38,7 @@ describe('createK8sDriver', () => {
       keptImageTags: () => Promise.reject(new Error('no builds')),
       pinnedImages: () => Promise.resolve([]),
       terminating: () => false,
+      wakeAt: () => {},
     }
     const { prePool, maintenance } = createK8sDriver().reconcileSteps()
     for (const step of [...prePool, ...maintenance]) {

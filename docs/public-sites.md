@@ -127,10 +127,12 @@ Envoy trusts the tunnel in front (cloudflared or tailgate) as one hop, and
 hands the app the client address that hop vouches for (see "Headers an app
 may trust").
 
-The kubelet can take up to about a minute to deliver a ConfigMap change,
-so a newly published site routes within a minute. Only publishing,
-unpublishing and deleting a site change the table; a deploy changes the
-Service's selector.
+The kubelet rewrites a mounted ConfigMap on its own periodic sync, about a
+minute apart, but at once for a pod that has just changed. So after each
+write of the table the server stamps every router replica with its hash
+(annotation `yaac.site-routes-hash`), and a newly published site routes
+within a second or two. Only publishing, unpublishing and deleting a site
+change the table; a deploy changes the Service's selector.
 
 ## Tailnet sites
 

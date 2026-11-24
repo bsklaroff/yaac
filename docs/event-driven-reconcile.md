@@ -40,6 +40,12 @@ time:
   with half a resync of slack, so no step throttles itself. The first
   pass after start is a resync. The k8s informers do not depend on it: each
   relists itself (below).
+- **A step's own wake.** A step that skipped work only time makes due asks
+  to run again then (`PassContext.wakeAt`), which marks its own triggers
+  dirty at that moment, or runs a resync for a step with none. The stale
+  reaper does this for a unit still in its 60 s startup grace: a pod that
+  dies young sends no further event, so without it the pod would sit dead
+  until the next resync.
 
 There is no poll lane: every source has an event, and the resync makes a
 lost event cost latency rather than correctness. Passes never overlap,

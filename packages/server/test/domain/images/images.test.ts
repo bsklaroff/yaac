@@ -456,14 +456,18 @@ describe('imageForCreate', () => {
     const launched = await imageForCreate({ projectId: DEMO_PROJECT_ID, imageId: id })
     expect(launched).toMatchObject({ imageId: id, revisionId: built.id })
     expect((await getProjectRow(DEMO_PROJECT_ID))?.lastImageId).toBe(id)
-    // Waiting for the revision being built joins that build.
-    const waited = imageForCreate({ projectId: DEMO_PROJECT_ID, imageId: id, awaitBuild: true, remember: false })
+    // Waiting for the revision being built joins that build, and reports
+    // progress once it has: a build that ended first would not be joined.
+    const joined = vi.fn()
+    const waited = imageForCreate({ projectId: DEMO_PROJECT_ID, imageId: id, awaitBuild: true, remember: false, onProgress: joined })
+    await settles(() => { expect(joined).toHaveBeenCalledTimes(1) })
     saveBuild.settle({ ok: true, blockedHosts: [] })
     expect((await waited).revisionId).not.toBe(built.id)
     // A failed build fails the create that waited on it.
     await saveImage(owner, id, { dockerfile: `${LAYERED}RUN false\n`, files: {} })
     const failing = await nextRequest()
-    const waitedFail = imageForCreate({ projectId: DEMO_PROJECT_ID, imageId: id, awaitBuild: true })
+    const waitedFail = imageForCreate({ projectId: DEMO_PROJECT_ID, imageId: id, awaitBuild: true, onProgress: joined })
+    await settles(() => { expect(joined).toHaveBeenCalledTimes(2) })
     failing.settle({ ok: false, error: 'exit code 1', blockedHosts: [] })
     await expect(waitedFail).rejects.toThrow(/the image build failed: exit code 1/)
   })

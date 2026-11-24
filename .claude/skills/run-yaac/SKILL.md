@@ -124,9 +124,9 @@ workspace survives) and clean up with `yaac workspace stop <id>`.
 ```bash
 pnpm lint                                   # the one typecheck entry point
 pnpm vitest run --project unit:server <file>
-pnpm test:api-containerless                 # no cluster needed
+pnpm test:api                              # both drivers, no cluster needed
 pnpm vitest run --project e2e-containerless
-pnpm test:api-k8s / test:e2e / test:e2e-cli # need a cluster (below)
+pnpm test:e2e / test:e2e-cli                # need a cluster (below)
 ```
 
 The k8s tiers run against whatever cluster `kubectl` points at, isolating

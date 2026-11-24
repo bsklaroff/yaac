@@ -6,8 +6,9 @@ import type { StaleWorkspaceInfo } from '@yaac/shared/types'
 
 /**
  * Split workspaces into those to show as active and those to tear down;
- * the rest (omitted) are still in the startup grace window. Production
- * passes `testEnv.startingGraceMs` as `graceMs`.
+ * the rest (omitted) are still in the startup grace window, which
+ * `graceEndsAtMs` says the first of them leaves. Production passes
+ * `testEnv.startingGraceMs` as `graceMs`.
  */
 export async function classifyWorkspaces(
   workspaces: RuntimeHandle[],
@@ -19,11 +20,13 @@ export async function classifyWorkspaces(
   stale: StaleWorkspaceInfo[]
   indeterminate: RuntimeHandle[]
   terminating: RuntimeHandle[]
+  graceEndsAtMs: number | null
 }> {
   const running: RuntimeHandle[] = []
   const stale: StaleWorkspaceInfo[] = []
   const indeterminate: RuntimeHandle[] = []
   const terminating: RuntimeHandle[] = []
+  let graceEndsAtMs: number | null = null
   for (const p of workspaces) {
     // A terminating workspace is shown as "terminating…" and already being
     // torn down, so it is neither probed nor reaped.
@@ -49,7 +52,10 @@ export async function classifyWorkspaces(
     }
 
     const ageMs = p.createdAtMs > 0 ? nowMs - p.createdAtMs : Infinity
-    if (ageMs < graceMs) continue
+    if (ageMs < graceMs) {
+      graceEndsAtMs = Math.min(graceEndsAtMs ?? Infinity, p.createdAtMs + graceMs)
+      continue
+    }
 
     // Record the cause while the evidence exists: a zombie's runtime is
     // healthy (only tmux died); a stopped one has a derived cause.
@@ -62,7 +68,7 @@ export async function classifyWorkspaces(
       deathCause: zombie ? { reason: 'agent-exited' } : p.deathCause,
     })
   }
-  return { running, stale, indeterminate, terminating }
+  return { running, stale, indeterminate, terminating, graceEndsAtMs }
 }
 
 /**
