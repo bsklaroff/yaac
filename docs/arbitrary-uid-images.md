@@ -16,40 +16,53 @@ OpenShift requires the same pattern of every image it runs.
 same shape) creates the user like this:
 
 ```dockerfile
-RUN userdel -r ubuntu 2>/dev/null; useradd -m -u 1000 -g 0 -s /bin/zsh yaac && \
+RUN userdel -r ubuntu 2>/dev/null; groupadd -o -g 0 yaac && \
+    useradd -m -u 1000 -g 0 -s /bin/zsh yaac && \
     echo 'yaac ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers && \
     chmod -R g=u /home/yaac && \
     chgrp 0 /etc/passwd && chmod g=u /etc/passwd
 ```
 
-Four things make this work:
+What makes this work, so that an ordinary Dockerfile built on the image is
+correct with nothing written:
 
 - **Primary group 0.** The user's primary group, not just the home
   directory's, is 0. So every file a later layer creates while running as
-  `yaac` is already group 0, with no fix-up step. That covers
-  `Dockerfile.tools`, a project's `Dockerfile.yaac` and a user's
-  `Dockerfile.user`.
-- **`umask 002` on every `RUN` that runs as `yaac`.** Group ownership is not
-  enough; the group also needs write permission. The umask cannot be set
-  once for the whole build, because podman builds OCI-format images, which
-  ignore the `SHELL` directive. So each step sets it. `dockerfiles.test.ts`
-  checks every shipped Dockerfile and fails on a `yaac` step without it.
-  That test is the only safeguard: a step that forgets still builds, and
-  still works on a uid-1000 Linux host.
+  `yaac` is already group 0. Group 0 is also named `yaac`, so
+  `chown yaac:yaac` and `COPY --chown=yaac:yaac` give a file the ids a pod
+  needs.
+- **`umask 002` from the base image.** Group ownership is not enough; the
+  group also needs write permission. `Dockerfile.default` sets `SHELL` to a
+  wrapper (`/usr/local/bin/yaac-run`) that applies `umask 002` and runs the
+  step, and BuildKit carries a parent's `SHELL` into the images built on
+  it, so every shell-form `RUN` in the trusted chain, a project's image and
+  a user's gets it. The trusted chain is built with BuildKit for this
+  reason: an image podman pushes has an OCI config, which has no `SHELL`
+  (docs/image-builds.md "The trusted chain").
 - **A group-writable `/etc/passwd`**, for the runtime half below.
-- **Fixing modes an installer chose itself.** The umask only covers files
-  the shell creates. A tool that sets its own modes is not covered: the
-  Claude installer creates `~/.claude/sessions` as 0700, which only uid
-  1000 can write, and the agent rewrites it every session. So the step that
-  runs such an installer fixes what it wrote, using `find` rather than a
-  list of paths, so a changed layout fails the build instead of silently
-  becoming unwritable.
+- **The normalize step.** After a Dockerfile's last instruction the builder
+  runs one more step (`NORMALIZE_STEP`), as root through the `sudo` the base
+  image grants `yaac`: everything under `/home/yaac` goes to `yaac`, group
+  0, with the owner's bits for the group, and so does any file `yaac` owns
+  elsewhere, so a `COPY --chown=yaac … /app` is writable at any uid. It
+  covers what the umask cannot: an installer that picks its own modes, an
+  exec-form `RUN`, a Dockerfile with its own `SHELL`, and a `COPY` into the
+  home directory with no `--chown`, which Docker writes as root whatever
+  `USER` says. It touches only the paths that need it and prints them with
+  their size. A standalone image with no `sudo` gets the step as its own
+  user, which fixes what that user owns and reports the rest.
 
-When adding anything later, fix permissions **in the step that creates the
-files**, never in a separate step. `chgrp -R`/`chmod -R` in a new layer
-copies every file it touches into that layer. For the Playwright browser
-tree alone that is about 1 GB, which is why that tree's permissions are set
-inside its install step.
+Fixing a file in a later layer copies it, so the normalize step costs the
+size of what it fixes, and the printed size is how a large one gets
+noticed: `--chown` on the `COPY`, or fixing modes in the step that wrote
+the files, avoids the copy. The shipped Dockerfiles do the latter, and the
+trusted chain's builds end with the normalize step too, so a shipped step
+that leaves files without group write shows in the install log rather than
+in every project's image. Scratch their steps leave in `/tmp` (Node's
+compile cache, mktemp dirs) is deleted at the end instead of fixed.
+`chgrp -R`/`chmod -R` in a separate step copies
+every file it touches; for the Playwright browser tree alone that is about
+1 GB, which is why that tree's permissions are set inside its install step.
 
 ### Group write is not ownership
 
@@ -103,9 +116,9 @@ If the write fails, the script warns and carries on: most of a workspace
 works without the entry, and a pod that will not start is worse. On a
 uid-1000 host the rewrite changes nothing.
 
-`/etc/group` is left alone. With primary group 0 there is no `yaac` group
-to update, and the host gid simply shows as whichever image group has that
-number.
+`/etc/group` is left alone. Its `yaac` entry is a second name for gid 0,
+which does not move with the running uid, and the host gid simply shows as
+whichever image group has that number.
 
 ## Verifying a change
 

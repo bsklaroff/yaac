@@ -45,16 +45,13 @@ import {
   _mainRegistryGcSettledForTests,
   _resetMainRegistryGcForTests,
 } from '#drivers/k8s/images/main-registry-gc'
-import { REGISTRY_UPSTREAM_IMAGE, registryHost, registryTagState, resolveImageChain } from '#drivers/k8s/cluster'
-import { USER_DOCKERFILE, userBuildDir } from '#lib/build-dirs'
+import { REGISTRY_UPSTREAM_IMAGE, registryHost, registryTagState, resolveTrustedLayers } from '#drivers/k8s/cluster'
 import type * as registryModule from '#drivers/k8s/cluster/registry'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 const DAY_MS = 24 * 60 * 60_000
 const DEMO = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
-/** The projects' owner, whose Dockerfile.user tops each chain. */
-const OWNER = 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d'
 const USER = `yaac-user-${DEMO}`
 const CACHE = `yaac-buildcache-${DEMO}`
 const hex = (c: string): string => c.repeat(16)
@@ -161,11 +158,15 @@ function stage(f: Fixture = {}): void {
   }
 }
 
+/** What GC reads from above: no pinned image and no kept build. */
+const readers = (
+  pinned: string[] = [],
+  kept: () => Promise<string[]> = () => Promise.resolve([]),
+): Parameters<typeof reconcileMainRegistryGc>[1] => ({ pinnedImages: () => Promise.resolve(pinned), keptImageTags: kept })
+
 /** Drive one reconcile and wait out the detached pass it starts. */
-async function runPass(pinned: string[] = []): Promise<void> {
-  await reconcileMainRegistryGc([DEMO], {
-    projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve(pinned),
-  })
+async function runPass(pinned: string[] = [], kept: string[] = []): Promise<void> {
+  await reconcileMainRegistryGc([DEMO], readers(pinned, () => Promise.resolve(kept)))
   await _mainRegistryGcSettledForTests()
 }
 
@@ -195,14 +196,16 @@ afterEach(async () => {
 
 describe('reconcileMainRegistryGc', () => {
   it('retires what nothing live names, keeps every live and recent tag, then collects', async () => {
-    const { layers } = await resolveImageChain(DEMO, OWNER)
-    const [wantedBase, wantedTools] = layers.map((l) => l.tag)
+    const { base, tools } = await resolveTrustedLayers()
+    const [wantedBase, wantedTools] = [base.tag, tools.tag]
     for (const [tag, age] of [
-      // A project image: one generation a running pod names, two newest kept.
+      // A user image: one generation a running pod names, one an image
+      // keeps. Nothing else is kept, newest or not.
       [`${USER}:${hex('1')}`, 40], [`${USER}:${hex('2')}`, 30],
       [`${USER}:${hex('3')}`, 20], [`${USER}:${hex('4')}`, 10],
       [`${USER}:${hex('5')}`, 1],
-      // The project's current chain, older than two newer builds elsewhere.
+      // The trusted chain this server launches, though older than two
+      // others.
       [wantedBase, 50], [`yaac-base:${hex('b')}`, 60],
       [`yaac-base:${hex('c')}`, 5], [`yaac-base:${hex('d')}`, 4], [wantedTools, 50],
       // A stopped server: only its scaled-to-zero Deployment template names
@@ -215,30 +218,32 @@ describe('reconcileMainRegistryGc', () => {
       ['yaac-registry2:0123456789ab', 300], ['envoyproxy/envoy:1.34-45d37d848802', 300],
       ['podman-stable:v5.5', 300],
       [`myapp:${hex('7')}`, 300],
-      // Step cache entries expire after the cache TTL.
-      [`${CACHE}:${'a'.repeat(64)}`, 30], [`${CACHE}:${'b'.repeat(64)}`, 1],
+      // Only each layer's newest cache window is ever read again. A tag of
+      // any other shape is the podman builder's per-step cache.
+      [`${CACHE}:project-2041`, 1], [`${CACHE}:project-2042`, 30], [`${CACHE}:user-2041`, 30],
+      [`${CACHE}:${'b'.repeat(64)}`, 1],
     ] as const) await pushTag(tag, age)
     stage({ pods: [ref(`${USER}:${hex('2')}`)], scaledToZero: [ref(`yaac-server:${hex('e')}`)] })
 
-    await runPass()
+    await runPass([], [`${USER}:${hex('4')}`])
 
     expect(await survivors()).toEqual([
       'envoyproxy/envoy:1.34-45d37d848802',
       `myapp:${hex('7')}`,
       'podman-stable:v5.5',
       `yaac-base:${hex('c')}`, `yaac-base:${hex('d')}`,
-      `${CACHE}:${'b'.repeat(64)}`,
+      `${CACHE}:project-2042`, `${CACHE}:user-2041`,
       'yaac-registry2:0123456789ab',
       `yaac-server:${hex('0')}`, `yaac-server:${hex('e')}`, `yaac-server:${hex('f')}`,
       `yaac-test-base:${hex('8')}`, `yaac-test-base:${hex('9')}`, `yaac-test-base:${hex('a')}`,
-      `${USER}:${hex('2')}`, `${USER}:${hex('4')}`, `${USER}:${hex('5')}`,
+      `${USER}:${hex('2')}`, `${USER}:${hex('4')}`,
       wantedBase, wantedTools,
     ].sort())
     // Untagging frees no disk until garbage-collect runs. The collect has
     // an in-container timeout, since killing the exec client would not
     // stop it.
     expect(execs.find((a) => a.includes('garbage-collect'))?.[0]).toBe('timeout')
-    expect(logged('retired 4 stale tag(s) and collected their blobs')).toBe(true)
+    expect(logged('retired 6 stale tag(s) and collected their blobs')).toBe(true)
   })
 
   // A stopped site starts again, and a dead release is replaced, at the
@@ -258,12 +263,12 @@ describe('reconcileMainRegistryGc', () => {
     const stillRunning = 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5'
     const justAdded = 'd2e3f4a5-b6c7-4d8e-9f0a-b1c2d3e4f5a6'
     for (const tag of [
-      `yaac-proj-${DEMO}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:${'a'.repeat(64)}`,
+      `yaac-proj-${DEMO}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:project-1`,
       // A removed project's repos.
       `yaac-proj-${gone}:${hex('1')}`, `yaac-user-${gone}:${hex('1')}`,
-      `yaac-buildcache-${gone}:${'a'.repeat(64)}`,
+      `yaac-buildcache-${gone}:project-1`,
       // Named by slug, from before projects had ids.
-      `yaac-user-demo:${hex('1')}`, `yaac-buildcache-demo:${'a'.repeat(64)}`,
+      `yaac-user-demo:${hex('1')}`, 'yaac-buildcache-demo:project-1',
       // The retired nestable layer, which no chain names any more.
       `yaac-nestable:${hex('1')}`,
       // Removed, but a pod still uses its image.
@@ -278,10 +283,12 @@ describe('reconcileMainRegistryGc', () => {
     await fs.utimes(path.join(reposDir(), `yaac-proj-${justAdded}`), now, now)
     stage({ pods: [ref(`yaac-proj-${stillRunning}:${hex('1')}`)] })
 
-    await runPass()
+    // The live project's images keep their builds, and the new project's
+    // build is in progress.
+    await runPass([], [`yaac-proj-${DEMO}:${hex('1')}`, `${USER}:${hex('1')}`, `yaac-proj-${justAdded}:${hex('1')}`])
 
     expect(await survivors()).toEqual([
-      `yaac-proj-${DEMO}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:${'a'.repeat(64)}`,
+      `yaac-proj-${DEMO}:${hex('1')}`, `${USER}:${hex('1')}`, `${CACHE}:project-1`,
       `yaac-proj-${stillRunning}:${hex('1')}`,
       `yaac-test-user-${gone}:${hex('1')}`, `yaac-test-proj-${gone}:${hex('1')}`,
       `yaac-tools:${hex('1')}`,
@@ -292,20 +299,17 @@ describe('reconcileMainRegistryGc', () => {
     expect(logged('retired 6 stale tag(s) and collected their blobs')).toBe(true)
   })
 
-  it('retires no generation while any project\'s chain cannot be resolved', async () => {
+  it('retires no generation while the builds to keep cannot be read', async () => {
     for (const [tag, age] of [
       [`yaac-tools:${hex('a')}`, 30], [`yaac-tools:${hex('9')}`, 20], [`yaac-tools:${hex('8')}`, 10],
       [`${CACHE}:${'a'.repeat(64)}`, 30],
     ] as const) await pushTag(tag, age)
-    // A Dockerfile.user mid-edit makes every project's chain fail to
-    // resolve, so no generation is known to be live.
-    await fs.mkdir(userBuildDir(OWNER), { recursive: true })
-    await fs.writeFile(path.join(userBuildDir(OWNER), USER_DOCKERFILE), 'FROM ubuntu\n')
     stage()
 
-    await runPass()
+    await reconcileMainRegistryGc([DEMO], readers([], () => Promise.reject(new Error('db down'))))
+    await _mainRegistryGcSettledForTests()
 
-    // The step cache does not depend on chains, so it is still swept.
+    // The step cache does not depend on builds, so it is still swept.
     expect(await survivors()).toEqual([
       `yaac-tools:${hex('8')}`, `yaac-tools:${hex('9')}`, `yaac-tools:${hex('a')}`,
     ])
@@ -328,7 +332,8 @@ describe('reconcileMainRegistryGc', () => {
           // Still used by a pod: kept.
           [ref(`${USER}:${hex('1')}`)],
           [ref(`yaac-server:${hex('c')}`)],
-          // Still in the registry: kept warm for the next create.
+          // An image's kept build, still in the registry: kept warm for
+          // the next create.
           [ref(`${USER}:${hex('5')}`)],
           // Not yaac generations: a mirror and the node's own image.
           [ref('podman-stable:v5.5')],
@@ -338,7 +343,7 @@ describe('reconcileMainRegistryGc', () => {
       ],
     })
 
-    await runPass()
+    await runPass([], [`${USER}:${hex('5')}`])
 
     const pods = prunePods()
     expect(pods.map((p) => p.spec.nodeName)).toEqual(['n1'])
@@ -428,10 +433,10 @@ describe('reconcileMainRegistryGc', () => {
 
     // Reconcile steps run in sequence, so this returns while the collect
     // runs, and a tick meanwhile does not start a second pass.
-    await reconcileMainRegistryGc([DEMO], { projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
+    await reconcileMainRegistryGc([DEMO], readers())
     await reachedCollect
     const before = execs.length
-    await reconcileMainRegistryGc([DEMO], { projectOwner: () => Promise.resolve(OWNER), pinnedImages: () => Promise.resolve([]) })
+    await reconcileMainRegistryGc([DEMO], readers())
     expect(execs).toHaveLength(before)
 
     release()

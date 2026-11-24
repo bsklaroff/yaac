@@ -26,6 +26,7 @@ import { ensureDataDir } from '@yaac/shared/project-paths'
 import { TmpDirRefusal } from '@yaac/shared/paths'
 import { startReconciler } from '#main/reconciler'
 import { setWorkspaceDriver, workspaceDriver, workspacesSandboxed } from '#drivers/driver'
+import { failInterruptedBuilds, importLegacyBuildDirs } from '#domain/images'
 import { importProjectConfigFiles, pushProjectSecrets } from '#domain/projects'
 import { backfillSiteBranches } from '#domain/sites'
 import { moveLegacyMainClones } from '#domain/repos'
@@ -253,6 +254,11 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   await moveLegacyMainClones()
   // Reads the main clones, so after they are where they belong.
   await backfillSiteBranches()
+  // Build dirs become images (docs/legacy-compat-shims.md "Build dirs").
+  await importLegacyBuildDirs()
+  // No build outlives the server that ran it; its builder pod is gone.
+  const interrupted = await failInterruptedBuilds()
+  if (interrupted > 0) serverLog(`[server] marked ${interrupted} interrupted image build(s) failed`)
 
   // Set synchronously so it is true before any queued request runs.
   ready = true

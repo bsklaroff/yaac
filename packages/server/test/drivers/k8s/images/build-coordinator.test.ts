@@ -1,9 +1,10 @@
 /**
- * The image build coordinator: `ensureImage`.
+ * The k8s driver's image verbs: `resolveChain`, `missingImageLayers`,
+ * `buildImageLayers` and `imageRef`.
  *
- * Nothing in the images folder is mocked. Trusted-layer routing and the whole
+ * Nothing in the images folder is mocked. Chain resolution and the whole
  * builder-pod flow (manifests, in-pod scripts, build argv, context tar) run
- * for real; the fakes are the cluster, kubectl, spawn, podman and the registry.
+ * for real; the fakes are the cluster, kubectl, spawn and the registry.
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
@@ -12,7 +13,6 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcessModule from 'node:child_process'
-import type * as imageTagsModule from '#drivers/k8s/cluster/image-tags'
 import type * as mainRegistryModule from '#drivers/k8s/cluster/main-registry'
 
 /**
@@ -117,14 +117,6 @@ vi.mock('node:child_process', async (importOriginal) => {
   }
 })
 
-// Only chain resolution is faked, so a test names its layers directly;
-// context collection and .containerignore handling run for real, since
-// builder-pod uses them.
-vi.mock('#drivers/k8s/cluster/image-tags', async (importOriginal) => ({
-  ...(await importOriginal<typeof imageTagsModule>()),
-  resolveImageChain: vi.fn(),
-}))
-
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
   nodeAddressBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32', '5.75.1.7/32']),
@@ -160,11 +152,14 @@ vi.mock('#lib/log', () => ({
   },
 }))
 
-import { ensureImage } from '#drivers/k8s/images/build-coordinator'
-import { _clearBuildCoordinatorForTests } from '#drivers/k8s/images/build-coordinator'
-import { resolveImageChain, type ImageLayer } from '#drivers/k8s/cluster'
-import { listImageBuilds } from '#drivers/k8s/images'
-import { clearAllImageBuildsForTests } from '#drivers/k8s/images/image-builds'
+import {
+  _clearBuildCoordinatorForTests,
+  buildImageLayers,
+  imageRef,
+  missingImageLayers,
+  resolveChain,
+} from '#drivers/k8s/images/build-coordinator'
+import { buildBuilderEgressNpManifest, resolveTrustedLayers, stringHash } from '#drivers/k8s/cluster'
 import { fakeRegistry } from '#test/support/fake-registry'
 // Setup values, not units under test.
 import {
@@ -172,23 +167,29 @@ import {
   BUILDER_AUTHFILE,
   BUILDER_BUILD_IDLE_TIMEOUT_MS,
   BUILDER_CONTEXT_DIR,
-  BUILDER_GRAPHROOT_SIZELIMIT_BYTES,
-  BUILDER_GRAPHROOT_TMPFS_BYTES,
+  BUILDER_DOCKERFILE_DIR,
+  BUILDER_STATE_SIZELIMIT_BYTES,
+  BUILDER_STATE_TMPFS_BYTES,
   BUILDER_CPU_REQUEST_MILLIS,
   BUILDER_MEMORY_LIMIT_BYTES,
   BUILDER_MEMORY_REQUEST_BYTES,
+  BUILD_CACHE_MAX_DAYS,
+  cacheBucket,
 } from '#drivers/k8s/images/builder-pod'
-import { BUILDER_MIRROR_TAG } from '#drivers/k8s/cluster/builder-image'
-import { builderEgress } from '#drivers/k8s/cluster/policy-manifests'
+import { resolveBuilderImageTag } from '#drivers/k8s/cluster/builder-image'
+import { NORMALIZE_STEP } from '#drivers/k8s/cluster/normalize-step'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/cluster/registry-grant'
+import { resetProxyClusterIpCache } from '#drivers/k8s/cluster/proxy-apply'
+import { proxyClient } from '#drivers/k8s/egress'
 import { installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
+import type { ImageBuildRequest, ImageChainSpec, ImageLayerSource } from '#drivers/contract'
 import type { ImageLayerName } from '@yaac/shared/types'
 
-const mockResolveChain = vi.mocked(resolveImageChain)
-
 const CLUSTER_HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
+/** The registry's pod port, which builder pods dial. */
+const POD_HOST = 'yaac-registry.yaac.svc.cluster.local:5002'
 
 /** The cluster's registry grant key, seeded as its Secret. */
 const GRANT_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
@@ -199,7 +200,7 @@ const GRANT_KEY = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).pri
  */
 function grantScopeOf(authFile: string): { repos: string[]; expiry: number } | null {
   const { auths } = JSON.parse(authFile) as { auths: Record<string, { auth: string }> }
-  const basic = Buffer.from(auths[CLUSTER_HOST].auth, 'base64').toString()
+  const basic = Buffer.from(auths[POD_HOST].auth, 'base64').toString()
   const password = basic.slice(basic.indexOf(':') + 1)
   const dot = password.lastIndexOf('.')
   const payload = password.slice(0, dot)
@@ -210,19 +211,12 @@ function grantScopeOf(authFile: string): { repos: string[]; expiry: number } | n
   return { repos: scope.split(','), expiry: Number(expiry) }
 }
 const PROJ = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
-/** The projects' owner, whose Dockerfile.user tops each chain. */
-const OWNER = 'a0b1c2d3-e4f5-4a6b-8c7d-9e0f1a2b3c4d'
-const PROJ_A = '0b6f1d2c-3e4a-4b5c-8d9e-0f1a2b3c4d5e'
 const PROJ_B = 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5'
+/** The build's egress registration id, which labels its pod. */
+const EGRESS_ID = '7d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6'
+const PROXY_IP = '10.96.7.7'
+let ensureProxy: ReturnType<typeof vi.spyOn>
 const LAYERED_DOCKERFILE = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n'
-
-/**
- * A yaac-shipped layer. `yaac cluster install` builds these; here they are
- * only looked up, so the paths can be fake.
- */
-function layer(tag: string, name: ImageLayerName = 'base'): ImageLayer {
-  return { tag, name, dockerfile: '/df', context: '/ctx', contentHash: 'h' }
-}
 
 const tmpDirs: string[] = []
 async function makeContext(files: Record<string, string>): Promise<string> {
@@ -235,22 +229,56 @@ async function makeContext(files: Record<string, string>): Promise<string> {
   return dir
 }
 
-/** An untrusted layer over a real on-disk context — builds in a pod. */
-async function podLayer(over: Partial<ImageLayer> = {}, files?: Record<string, string>): Promise<ImageLayer> {
-  const dir = await makeContext(files ?? { 'Dockerfile.yaac': LAYERED_DOCKERFILE })
+/** The project image whose cache the layers below read and write. */
+const IMAGE = '5e6f7a8b-9c0d-4e1f-a2b3-c4d5e6f7a8b9'
+
+/** An untrusted layer's source over a real on-disk context. */
+async function source(
+  layer: ImageLayerSource['layer'],
+  dockerfile = LAYERED_DOCKERFILE,
+  files: Record<string, string> = {},
+): Promise<ImageLayerSource> {
   return {
-    tag: `yaac-proj-${PROJ}:p1`,
-    name: 'project',
-    dockerfile: path.join(dir, 'Dockerfile.yaac'),
-    context: dir,
-    buildArgs: { BASE_IMAGE: 'yaac-tools:t1' },
-    contentHash: 'p1',
-    ...over,
+    layer, dockerfile, contextDir: await makeContext(files),
+    contentHash: stringHash(dockerfile + JSON.stringify(files)), cacheKey: IMAGE,
   }
 }
 
-function chain(layers: ImageLayer[]): void {
-  mockResolveChain.mockResolvedValue({ layers, finalTag: layers.at(-1)!.tag })
+function spec(...layers: ImageLayerSource[]): ImageChainSpec {
+  return { projectId: PROJ, layers }
+}
+
+/** What a request reported, beside its outcome. */
+interface Seen { starts: ImageLayerName[]; lines: string[] }
+
+function request(
+  chainSpec: ImageChainSpec,
+  layers: ImageLayerName[],
+  over: Partial<ImageBuildRequest> = {},
+): { req: ImageBuildRequest; seen: Seen } {
+  const seen: Seen = { starts: [], lines: [] }
+  return {
+    seen,
+    req: {
+      spec: chainSpec,
+      layers,
+      egressId: EGRESS_ID,
+      allowedHosts: ['deb.debian.org'],
+      noCache: false,
+      cacheMaxDays: BUILD_CACHE_MAX_DAYS,
+      signal: new AbortController().signal,
+      onLayerStart: (l) => seen.starts.push(l),
+      onLine: (l, line) => seen.lines.push(`${l}: ${line}`),
+      ...over,
+    },
+  }
+}
+
+/** A layered project image, its trusted parents already in the registry. */
+async function layeredProject(files?: Record<string, string>): Promise<ImageChainSpec> {
+  const { base, tools } = await resolveTrustedLayers()
+  fakeRegistry.tags.add(base.tag).add(tools.tag)
+  return spec(await source('project', LAYERED_DOCKERFILE, files))
 }
 
 interface PodManifest {
@@ -263,10 +291,13 @@ interface PodManifest {
     runtimeClassName: string
     priorityClassName: string
     securityContext: { seccompProfile: { type: string } }
+    dnsPolicy: string
+    dnsConfig: { nameservers: string[] }
     containers: Array<{
       image: string
       imagePullPolicy: string
       command: string[]
+      env: Array<{ name: string; value: string }>
       securityContext: { capabilities: { add: string[] } }
       resources: {
         requests: Record<string, string>
@@ -305,14 +336,15 @@ function podStatus(status: object): void {
   })
 }
 
-async function flush(): Promise<void> {
-  for (let i = 0; i < 10; i++) await Promise.resolve()
+/** Hold every in-pod `buildctl build` open, resolving once the first starts. */
+function holdInPodBuild(): Promise<void> {
+  spawnState.hold = (file, args) => file === 'kubectl' && args.includes('build')
+  return new Promise<void>((resolve) => { spawnState.onHold = resolve })
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
   _clearBuildCoordinatorForTests()
-  clearAllImageBuildsForTests()
   spawned.length = 0
   tarLists.length = 0
   held.length = 0
@@ -328,10 +360,10 @@ beforeEach(() => {
     die(signal)
     return true
   }) as typeof process.kill)
-  // Only the pinned podman-stable mirror is in the registry, so
-  // `ensureBuilderImage` resolves without pulling or pushing.
+  // Only the builder image is in the registry, recorded as install pushed
+  // it, so `ensureBuilderImage` resolves without building.
   fakeRegistry.install()
-  fakeRegistry.mirror(BUILDER_MIRROR_TAG)
+  fakeRegistry.mirror(await resolveBuilderImageTag())
   mockEnsureMainRegistry.mockResolvedValue(undefined)
   execState.calls.length = 0
   execState.error = null
@@ -341,11 +373,19 @@ beforeEach(() => {
     data: { 'key.pem': Buffer.from(GRANT_KEY.export({ type: 'pkcs8', format: 'pem' })).toString('base64') },
   })
   _resetRegistryGrantKeyForTests()
+  // The proxy, which builder pods resolve names through, as its bootstrap
+  // (a sibling feature, faked here) leaves it.
+  ensureProxy = vi.spyOn(proxyClient, 'ensureRunning').mockResolvedValue()
+  fakeCluster.seed({
+    apiVersion: 'v1', kind: 'Service',
+    metadata: { name: 'yaac-proxy', namespace: k8sNamespace() },
+    spec: { clusterIP: PROXY_IP },
+  })
+  resetProxyClusterIpCache()
 })
 
 afterEach(async () => {
   _clearBuildCoordinatorForTests()
-  clearAllImageBuildsForTests()
   vi.restoreAllMocks()
   vi.useRealTimers()
   vi.unstubAllEnvs()
@@ -355,162 +395,108 @@ afterEach(async () => {
   }
 })
 
-describe('ensureImage', () => {
-  /**
-   * Hold every in-pod `podman build` open, and return a waiter for the next
-   * one to start.
-   */
-  function holdInPodBuilds(): () => Promise<void> {
-    spawnState.hold = (file, args) => file === 'kubectl' && args.includes('build')
-    return () => {
-      const seen = held.length
-      return new Promise<void>((resolve) => {
-        spawnState.onHold = () => { if (held.length > seen) resolve() }
-      })
-    }
-  }
+describe('resolveChain', () => {
+  it('stacks project and user layers on the trusted chain, or a standalone project alone', async () => {
+    const { base, tools } = await resolveTrustedLayers()
+    const layered = await resolveChain(spec(await source('project'), await source('user')))
+    expect(layered.layers.map((l) => l.name)).toEqual(['base', 'tools', 'project', 'user'])
+    const [, , project, user] = layered.layers
+    expect(layered.layers.slice(0, 2)).toEqual([{ name: 'base', tag: base.tag }, { name: 'tools', tag: tools.tag, parentTag: base.tag }])
+    expect(project.tag.startsWith(`yaac-proj-${PROJ}:`)).toBe(true)
+    expect(project.parentTag).toBe(tools.tag)
+    expect(user.tag.startsWith(`yaac-user-${PROJ}:`)).toBe(true)
+    expect(user.parentTag).toBe(project.tag)
+    expect(layered.finalTag).toBe(user.tag)
 
-  it('coalesces a shared layer across chains and fans out the distinct ones', async () => {
-    const shared = await podLayer({ tag: 'yaac-base:shared', buildArgs: undefined })
-    mockResolveChain.mockImplementation(async (projectId) => ({
-      layers: [shared, await podLayer({
-        tag: `yaac-user-${projectId}:x`, name: 'user', buildArgs: { BASE_IMAGE: shared.tag },
-      })],
-      finalTag: `yaac-user-${projectId}:x`,
-    }))
-    const nextBuild = holdInPodBuilds()
-
-    const a = ensureImage(PROJ_A, OWNER, { reason: 'prewarm' })
-    const b = ensureImage(PROJ_B, OWNER, { reason: 'prewarm' })
-
-    // Both chains wait on one shared build and attach to its single entry.
-    // Which project registered first is a race, so compare ids as a set.
-    await nextBuild()
-    await flush()
-    expect(held).toHaveLength(1)
-    const entries = listImageBuilds()
-    expect(entries).toHaveLength(1)
-    expect(entries[0].status).toBe('running')
-    expect([...entries[0].projectIds].sort()).toEqual([PROJ_A, PROJ_B].sort())
-
-    // Once the shared layer finishes, both downstream layers build.
-    held[0].close(0)
-    await vi.waitFor(() => { expect(held.length).toBe(3) })
-
-    for (const h of held.slice(1)) h.close(0)
-    expect(await a).toBe(`yaac-user-${PROJ_A}:x`)
-    expect(await b).toBe(`yaac-user-${PROJ_B}:x`)
-    expect(listImageBuilds().every((e) => e.status === 'succeeded')).toBe(true)
+    const standalone = await resolveChain(spec(await source('project', 'FROM ubuntu\n')))
+    expect(standalone.layers.map((l) => [l.name, l.parentTag])).toEqual([['project', undefined]])
   })
+})
 
-  it('propagates a build failure to every waiter and marks the entry failed', async () => {
-    const project = await podLayer({ tag: 'yaac-base:x', buildArgs: undefined })
-    chain([project])
-    const nextBuild = holdInPodBuilds()
-    const a = ensureImage(PROJ_A, OWNER)
-    const b = ensureImage(PROJ_B, OWNER)
+describe('missingImageLayers', () => {
+  it('names the absent untrusted layers, and checks each tag once a run', async () => {
+    const chain = await resolveChain(spec(await source('project'), await source('user')))
+    const [base, tools, project, user] = chain.layers
+    fakeRegistry.tags.add(base.tag).add(tools.tag).add(project.tag)
+    expect(await missingImageLayers(chain)).toEqual(['user'])
 
-    await nextBuild()
-    await flush()
-    expect(held).toHaveLength(1)
-    held[0].close(1)
-    await expect(a).rejects.toThrow(/exit(ed with)? code 1/)
-    await expect(b).rejects.toThrow(/exit(ed with)? code 1/)
-
-    expect(listImageBuilds()[0]).toMatchObject({ status: 'failed' })
-    // A failed tag is not remembered as built, so the next ensure retries.
-    const retry = nextBuild()
-    const again = ensureImage(PROJ_A, OWNER)
-    await retry
-    await flush()
-    held.at(-1)!.close(0)
-    await again
-  })
-
-  it('fans build output into the registry log', async () => {
-    chain([await podLayer({ tag: 't:1', buildArgs: undefined })])
-    const nextBuild = holdInPodBuilds()
-    const done = ensureImage(PROJ, OWNER)
-
-    await nextBuild()
-    held[0].log('STEP 1/2: FROM ubuntu')
-    held[0].close(0)
-    await done
-
-    expect(listImageBuilds()[0]).toMatchObject({ stepCurrent: 1, stepTotal: 2 })
-  })
-
-  it('skips present tags and memoizes the verification for the rest of the run', async () => {
-    const first = await podLayer({ tag: 't:1', buildArgs: undefined })
-    const second = await podLayer({ tag: 't:2', name: 'user', buildArgs: undefined })
-    chain([first, second])
-    fakeRegistry.tags.add('t:1')
-
-    await ensureImage(PROJ, OWNER)
-    // Only the absent layer built; both tags were probed once.
-    expect(appliedKinds().filter((k) => k === 'Pod')).toHaveLength(1)
-    expect(fakeRegistry.lookups.filter((tag) => tag === 't:1')).toHaveLength(1)
-
-    // Content-hash tags never change, so neither tag is re-checked.
+    // Content-hash tags never change, so a present tag is not re-checked;
+    // an absent one is, since a build may have pushed it since.
     fakeRegistry.lookups.length = 0
-    fakeCluster.calls = []
-    await ensureImage(PROJ, OWNER)
-    expect(fakeRegistry.lookups.filter((tag) => tag === 't:1' || tag === 't:2')).toEqual([])
-    expect(appliedKinds()).not.toContain('Pod')
+    expect(await missingImageLayers(chain)).toEqual(['user'])
+    expect(fakeRegistry.lookups).toEqual([user.tag])
   })
 
-  it('reports layer starts with 1-based chain positions', async () => {
-    chain([
-      await podLayer({ tag: 't:1', buildArgs: undefined }),
-      await podLayer({ tag: 't:2', name: 'user', buildArgs: undefined }),
-    ])
-    const starts: string[] = []
-    await ensureImage(PROJ, OWNER, {
-      onLayerStart: (i, total, name) => starts.push(`${i}/${total} ${name}`),
-    })
-    expect(starts).toEqual(['1/2 project', '2/2 user'])
-  })
-
-  it('throws under requirePrebuilt without building or registering', async () => {
+  it('refuses a missing yaac-shipped layer, naming what builds it', async () => {
+    const chain = await resolveChain(spec(await source('project')))
+    // The server cannot build base/tools, so the error names the command
+    // that does.
+    await expect(missingImageLayers(chain)).rejects.toThrow(/base image yaac-base:\S+ is missing.*yaac cluster install/s)
     vi.stubEnv('YAAC_REQUIRE_PREBUILT_IMAGES', '1')
-    chain([layer('t:1')])
-    await expect(ensureImage(PROJ, OWNER)).rejects.toThrow(/t:1 is missing.*Restart the test run/s)
-    expect(appliedKinds()).not.toContain('Pod')
-    expect(listImageBuilds()).toEqual([])
+    await expect(missingImageLayers(chain)).rejects.toThrow(/Restart the test run/)
   })
 
-  it('refuses a yaac-shipped layer the registry does not have, naming the install', async () => {
-    // The server cannot build base/tools, so the error names the
-    // command that does.
-    chain([layer('yaac-base:missing')])
-    await expect(ensureImage(PROJ, OWNER)).rejects.toThrow(
-      /yaac-base:missing is missing from the local registry.*yaac cluster install/s,
-    )
-    expect(appliedKinds()).not.toContain('Pod')
-    expect(listImageBuilds()[0]).toMatchObject({ status: 'failed' })
-  })
+  it('fails, rather than counting a layer missing, when the registry does not answer for it', async () => {
+    const chain = await resolveChain(spec(await source('project')))
+    const [base, tools, project] = chain.layers
+    fakeRegistry.tags.add(base.tag).add(tools.tag)
+    // A 500 for the project layer's manifest alone.
+    const registryFetch = globalThis.fetch
+    vi.stubGlobal('fetch', (input: string | URL, init?: RequestInit) =>
+      String(input).endsWith(`/manifests/${project.tag.split(':')[1]}`)
+        ? Promise.resolve(new Response(null, { status: 500 }))
+        : registryFetch(input, init))
+    await expect(missingImageLayers(chain))
+      .rejects.toThrow(`the registry did not say whether it has ${project.tag}`)
 
-  it('builds an untrusted layer in a gvisor builder pod and pushes the product', async () => {
-    // The whole builder-pod path: manifest, storage setup, parent pull,
-    // context tar, cached build, push, teardown.
-    const tools = layer('yaac-tools:t1', 'tools')
-    const project = await podLayer({}, {
-      'Dockerfile.yaac': LAYERED_DOCKERFILE,
+    // An unreachable registry is not a missing install either.
+    _clearBuildCoordinatorForTests()
+    fakeRegistry.down = true
+    await expect(missingImageLayers(chain))
+      .rejects.toThrow(`the registry did not say whether it has ${base.tag}`)
+  })
+})
+
+describe('buildImageLayers', () => {
+  it('builds an untrusted layer with buildkitd in a gvisor builder pod', async () => {
+    // The whole builder-pod path: egress registration, manifest, daemon
+    // start, context tar, Dockerfile with the normalize step, policy,
+    // grant, one buildctl build that pushes, teardown.
+    const chainSpec = await layeredProject({
       'keep.txt': 'k',
       'skipped/file.txt': 's',
       '.containerignore': 'skipped\n',
     })
-    chain([tools, project])
-    // The yaac-shipped parent is already in the registry, where the pod
-    // pulls it from. Only the pod pushes; this process pushes nothing.
-    fakeRegistry.tags.add(tools.tag)
+    const chain = await resolveChain(chainSpec)
+    const tools = chain.layers[1]
+    const project = chain.layers[2]
+    holdInPodBuild().then(() => {
+      held[0].log('#5 [1/2] FROM ubuntu')
+      held[0].close(0)
+    }, () => {})
+    const { req, seen } = request(chainSpec, ['project'])
 
-    await ensureImage(PROJ, OWNER)
+    expect(await buildImageLayers(req)).toEqual({ ok: true, blockedHosts: [] })
+    expect(seen.starts).toEqual(['project'])
+    expect(seen.lines).toContain('project: #5 [1/2] FROM ubuntu')
+    // The pushed tag is remembered, so the chain needs nothing now.
+    expect(await missingImageLayers(chain)).toEqual([])
 
     expect(mockEnsureMainRegistry).toHaveBeenCalled()
+    // The proxy is brought up first: a server that has launched no
+    // workspace has none.
+    expect(ensureProxy).toHaveBeenCalled()
     expect(appliedKinds()).toEqual(expect.arrayContaining([
-      'ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding', 'NetworkPolicy', 'Pod',
+      'ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding', 'NetworkPolicy', 'ConfigMap', 'Pod',
     ]))
+    // The proxy knows the build before its pod dials: by build id, with
+    // the project's allowed hosts and no owner.
+    expect(appliedKinds().indexOf('ConfigMap')).toBeLessThan(appliedKinds().indexOf('Pod'))
+    const registration = appliedOfKind<{ metadata: { name: string; labels: Record<string, string> }; data: Record<string, string> }>('ConfigMap')
+    expect(registration.metadata.labels['yaac.build-id']).toBe(EGRESS_ID)
+    expect(JSON.parse(registration.data['registration.json'])).toEqual({
+      rules: [], allowedHosts: ['deb.debian.org'], projectId: PROJ, owner: 'none',
+    })
 
     const pod = appliedOfKind<PodManifest>('Pod')
     expect(pod.metadata.name).toMatch(/^yaac-builder-[0-9a-f]{8}-[0-9a-f]{4}$/)
@@ -518,6 +504,8 @@ describe('ensureImage', () => {
     expect(pod.metadata.labels).toEqual({
       'yaac.install-id': installId(),
       'yaac.role': 'builder',
+      'yaac.project-id': PROJ,
+      'yaac.build-id': EGRESS_ID,
     })
     expect(pod.spec.runtimeClassName).toBe('gvisor')
     // Outranks workspaces for eviction, but never preempts a running one.
@@ -527,166 +515,235 @@ describe('ensureImage', () => {
     expect(pod.spec.automountServiceAccountToken).toBe(false)
     expect(pod.spec.enableServiceLinks).toBe(false)
     expect(pod.spec.securityContext.seccompProfile.type).toBe('RuntimeDefault')
-    expect(pod.spec.containers[0].resources.limits.memory).toBe(String(BUILDER_MEMORY_LIMIT_BYTES))
+    // Names resolve through the proxy's DNS stub, which knows the registry.
+    expect(pod.spec.dnsPolicy).toBe('None')
+    expect(pod.spec.dnsConfig).toEqual({ nameservers: [PROXY_IP] })
+    const container = pod.spec.containers[0]
+    expect(container.resources.limits.memory).toBe(String(BUILDER_MEMORY_LIMIT_BYTES))
     // An explicit request well under the limit; Kubernetes would otherwise
-    // default the request to the full 8Gi limit.
-    expect(pod.spec.containers[0].resources.requests).toEqual({
+    // default the request to the full limit.
+    expect(container.resources.requests).toEqual({
       cpu: `${BUILDER_CPU_REQUEST_MILLIS}m`,
       memory: String(BUILDER_MEMORY_REQUEST_BYTES),
     })
     expect(BUILDER_MEMORY_REQUEST_BYTES).toBeLessThan(BUILDER_MEMORY_LIMIT_BYTES)
-    expect(pod.spec.containers[0].command).toEqual(['sleep', 'infinity'])
-    // The pinned podman-stable mirror by its recorded digest, never its
-    // rewritable tag or the user-customizable image.
-    expect(pod.spec.containers[0].image)
-      .toBe(`${CLUSTER_HOST}/podman-stable@${fakeRegistry.digestOf(BUILDER_MIRROR_TAG)}`)
-    expect(pod.spec.containers[0].imagePullPolicy).toBe('IfNotPresent')
-    expect(pod.spec.containers[0].securityContext.capabilities.add).toContain('SETFCAP')
-    // Graphroot on a gVisor tmpfs emptyDir.
-    expect(pod.metadata.annotations['dev.gvisor.spec.mount.podman-graphroot.type']).toBe('bind')
-    expect(pod.metadata.annotations['dev.gvisor.spec.mount.podman-graphroot.options'])
-      .toBe(`rw,size=${BUILDER_GRAPHROOT_TMPFS_BYTES}`)
+    // buildkitd is the entrypoint, its RUN steps sharing the pod's network.
+    expect(container.command.join(' ')).toContain('exec buildkitd --config /etc/buildkit/buildkitd.toml --oci-worker-net=host')
+    const env = Object.fromEntries(container.env.map((e) => [e.name, e.value]))
+    // Gateway frontends off; the registry's pod port over plain HTTP.
+    expect(env.BUILDKITD_CONFIG).toContain('[frontend."gateway.v0"]\n  enabled = false')
+    expect(env.BUILDKITD_CONFIG).toContain(`[registry."${POD_HOST}"]\n  http = true`)
+    expect(env.BUILDKITD_CONFIG).toContain('gc = false')
+    // No cap on a step's log, so the build page gets all of it.
+    expect(env.BUILDKIT_STEP_LOG_MAX_SPEED).toBe('-1')
+    // The builder image by the digest install recorded, never its tag or
+    // a user-customizable image.
+    const builderTag = await resolveBuilderImageTag()
+    expect(container.image)
+      .toBe(`${CLUSTER_HOST}/${builderTag.slice(0, builderTag.indexOf(':'))}@${fakeRegistry.digestOf(builderTag)}`)
+    expect(container.imagePullPolicy).toBe('IfNotPresent')
+    expect(container.securityContext.capabilities.add).toContain('SETFCAP')
+    // State on a gVisor tmpfs emptyDir.
+    expect(pod.metadata.annotations['dev.gvisor.spec.mount.buildkit-state.type']).toBe('bind')
+    expect(pod.metadata.annotations['dev.gvisor.spec.mount.buildkit-state.options'])
+      .toBe(`rw,size=${BUILDER_STATE_TMPFS_BYTES}`)
     expect(pod.spec.volumes).toEqual([{
-      name: 'podman-graphroot',
-      emptyDir: { sizeLimit: String(BUILDER_GRAPHROOT_SIZELIMIT_BYTES) },
+      name: 'buildkit-state',
+      emptyDir: { sizeLimit: String(BUILDER_STATE_SIZELIMIT_BYTES) },
     }])
-    expect(pod.spec.containers[0].volumeMounts).toEqual([{
-      name: 'podman-graphroot', mountPath: '/var/lib/containers',
-    }])
+    expect(container.volumeMounts).toEqual([{ name: 'buildkit-state', mountPath: '/var/lib/buildkit' }])
 
     const np = appliedOfKind<{
       spec: { podSelector: { matchLabels: Record<string, string> }; policyTypes: string[]; egress: unknown[] }
     }>('NetworkPolicy')
     expect(np.spec.podSelector.matchLabels).toEqual({ 'yaac.role': 'builder' })
     expect(np.spec.policyTypes).toEqual(['Egress'])
-    // A RUN step comes from an agent-editable Dockerfile, so it gets the
-    // public-only floor plus the main registry (policy-manifests.test.ts).
-    expect(np.spec.egress).toEqual(builderEgress(['10.89.0.7/32', '5.75.1.7/32'], ['10.96.0.10/32']))
+    expect(np.spec.egress).toEqual((buildBuilderEgressNpManifest(['10.89.0.7/32']) as { spec: { egress: unknown } }).spec.egress)
 
-    // storage.conf bootstrap, parent pull, extract, grant, build, push — in order.
+    // Daemon wait, context, Dockerfile, policy, grant, build: in order.
     const remote = remoteCommands()
+    const execs = spawned.filter((x) => x.file === 'kubectl')
     expect(remote).toHaveLength(6)
-    // Native overlay: the stock image's fuse-overlayfs is broken on gVisor.
-    expect(remote[0][2]).toContain('driver = "overlay"')
-    expect(remote[0][2]).not.toContain('fuse-overlayfs')
-    expect(remote[0][2]).toContain('enable_partial_images = "true"')
-    expect(remote[0][2]).toContain('graphroot = "/var/lib/containers/storage"')
-    // Parent retagged to the bare tag so --build-arg BASE_IMAGE matches.
-    expect(remote[1][2]).toContain(`podman pull --tls-verify=false ${CLUSTER_HOST}/${tools.tag}`)
-    expect(remote[1][2]).toContain(`podman tag ${CLUSTER_HOST}/${tools.tag} ${tools.tag}`)
-    expect(remote[1][2]).toContain(`if podman image exists ${tools.tag}; then exit 0; fi`)
-    expect(remote[2][2]).toContain(`tar -xf - -C ${BUILDER_CONTEXT_DIR}`)
-    // The write grant arrives over stdin, not argv, and covers only the
-    // product's repo and the project's step-cache repo.
-    expect(remote[3][2]).toBe(`umask 077 && cat > ${BUILDER_AUTHFILE}`)
-    const grantExec = spawned.filter((s) => s.file === 'kubectl')[3]
-    const grant = grantScopeOf(grantExec.stdin)
+    expect(remote[0][2]).toContain('buildctl debug workers')
+    expect(remote[1][2]).toContain(`tar -xf - -C ${BUILDER_CONTEXT_DIR}`)
+    // The Dockerfile as built ends with the normalize step.
+    expect(remote[2][2]).toContain(`cat > ${BUILDER_DOCKERFILE_DIR}/Dockerfile`)
+    expect(execs[2].stdin).toBe(`${LAYERED_DOCKERFILE}\n${NORMALIZE_STEP}`)
+    // Every image on the registry is denied but the parent.
+    const policy = JSON.parse(execs[3].stdin) as { rules: Array<{ action: string; selector: { identifier: string } }> }
+    expect(policy.rules.map((r) => `${r.action} ${r.selector.identifier}`)).toEqual([
+      `DENY docker-image://${CLUSTER_HOST}/*`,
+      `DENY docker-image://${POD_HOST}/*`,
+      `ALLOW docker-image://${POD_HOST}/${tools.tag}*`,
+    ])
+    // The grant arrives over stdin, not argv, and covers only the product's
+    // repo and the project's cache repo.
+    expect(remote[4][2]).toContain(`cat > ${BUILDER_AUTHFILE}`)
+    expect(remote[4][2]).toMatch(/^umask 077/)
+    const grant = grantScopeOf(execs[4].stdin)
     expect(grant?.repos).toEqual([`yaac-proj-${PROJ}`, `yaac-buildcache-${PROJ}`])
     // Valid for the pod's maximum lifetime, and not much longer.
     expect(grant!.expiry - Date.now() / 1000).toBeGreaterThan(BUILDER_ACTIVE_DEADLINE_SECONDS)
     expect(grant!.expiry - Date.now() / 1000).toBeLessThan(BUILDER_ACTIVE_DEADLINE_SECONDS + 120)
-    expect(grantExec.args.join(' ')).not.toContain(grantExec.stdin)
-    // Build: chroot isolation, per-project registry step cache.
-    expect(remote[4].slice(0, 4)).toEqual(['podman', 'build', '--isolation', 'chroot'])
-    expect(remote[4]).toContain(project.tag)
-    const cacheRef = `${CLUSTER_HOST}/yaac-buildcache-${PROJ}`
-    expect(remote[4].join(' '))
-      .toContain(`--cache-from ${cacheRef} --cache-to ${cacheRef} --cache-ttl 168h`)
-    expect(remote[4].join(' ')).toContain(`--authfile ${BUILDER_AUTHFILE}`)
-    expect(remote[4].join(' ')).toContain(`-f ${BUILDER_CONTEXT_DIR}/Dockerfile.yaac`)
-    expect(remote[4].join(' ')).toContain(`--build-arg BASE_IMAGE=${tools.tag}`)
-    expect(remote[4].at(-1)).toBe(BUILDER_CONTEXT_DIR)
-    expect(remote[5].slice(0, 5)).toEqual(['podman', 'push', '--tls-verify=false', '--authfile', BUILDER_AUTHFILE])
-    expect(remote[5]).toContain(`${CLUSTER_HOST}/${project.tag}`)
+    expect(execs[4].args.join(' ')).not.toContain(execs[4].stdin)
+    // One build: the parent from the pod port, the built-in frontend
+    // whatever the file names, this layer's cache window, a zstd push.
+    const build = remote[5]
+    expect(build.slice(0, 2)).toEqual(['buildctl', 'build'])
+    const args = build.join(' ')
+    expect(args).toContain('--opt cmdline=dockerfile.v0')
+    expect(args).toContain(`--opt build-arg:BASE_IMAGE=${POD_HOST}/${tools.tag}`)
+    const cacheRef = `${POD_HOST}/yaac-buildcache-${PROJ}:project-${IMAGE}-${cacheBucket(PROJ, BUILD_CACHE_MAX_DAYS)}`
+    expect(args).toContain(`--import-cache type=registry,ref=${cacheRef}`)
+    expect(args).toContain(`--export-cache type=registry,ref=${cacheRef},mode=max,image-manifest=true`)
+    expect(args).toContain(`--output type=image,name=${POD_HOST}/${project.tag},push=true,compression=zstd`)
+    expect(args).toContain('--progress plain')
 
     // The context honors .containerignore exactly like contextHash().
-    expect(tarLists[0]).toEqual(expect.arrayContaining(['keep.txt', '.containerignore', 'Dockerfile.yaac']))
+    expect(tarLists[0]).toEqual(expect.arrayContaining(['keep.txt', '.containerignore']))
     expect(tarLists[0].some((f) => f.startsWith('skipped/'))).toBe(false)
 
-    // ensureImage owns the lease, so the pod is deleted after the chain.
+    // The pod and its registration go with the build.
     expect(deleteCalls()).toEqual([pod.metadata.name])
+    expect(fakeCluster.callsOf('delete', 'ConfigMap').map((c) => c.name)).toEqual([registration.metadata.name])
   })
 
-  it('ships a parentless layer without a pull, and its dockerfile even when ignored', async () => {
-    const project = await podLayer(
-      { buildArgs: { HTTP_PROXY: 'http://proxy:8080' } },
-      { 'Dockerfile.yaac': 'FROM ubuntu\n', '.containerignore': 'Dockerfile.yaac\n' },
-    )
-    chain([project])
-    await ensureImage(PROJ, OWNER)
+  it('builds a standalone layer allowing no registry image, without its cache when asked', async () => {
+    const chainSpec = spec(await source('project', 'FROM ubuntu\n'))
+    const { req } = request(chainSpec, ['project'], { noCache: true })
+    expect(await buildImageLayers(req)).toMatchObject({ ok: true })
 
-    const scripts = remoteCommands().map((argv) => argv.join(' '))
-    expect(scripts.some((s) => s.includes('podman pull'))).toBe(false)
-    expect(scripts.some((s) => s.includes('--build-arg HTTP_PROXY=http://proxy:8080'))).toBe(true)
-    // The Dockerfile is always sent, ignore file or not.
-    expect(tarLists[0]).toContain('Dockerfile.yaac')
+    const execs = spawned.filter((x) => x.file === 'kubectl')
+    const build = remoteCommands()[5].join(' ')
+    expect(build).not.toContain('BASE_IMAGE')
+    expect((JSON.parse(execs[3].stdin) as { rules: Array<{ action: string }> }).rules.map((r) => r.action))
+      .toEqual(['DENY', 'DENY'])
+    expect(execs[2].stdin).toMatch(/^FROM ubuntu\n/)
+    // Rebuilt from scratch, though the result still seeds the cache.
+    expect(build).toContain('--no-cache')
+    expect(build).not.toContain('--import-cache')
+    expect(build).toContain('--export-cache')
   })
 
-  it('names the step-cache repo by the project id, never its name', async () => {
-    // A project re-added under an old name must not hit the old cache.
-    chain([await podLayer({ buildArgs: undefined })])
-    await ensureImage(PROJ_B, OWNER)
-    const build = remoteCommands()[3].join(' ')
-    expect(build).toContain(`${CLUSTER_HOST}/yaac-buildcache-${PROJ_B}`)
-    expect(build).not.toContain('buildcache-demo')
+  it('names the cache repo by the project id and its tag by layer and image, and moves to a new cache each window', async () => {
+    // A project re-added under an old name must not hit the old cache, and
+    // two images of one project must not overwrite each other's.
+    const chainSpec = { ...await layeredProject(), projectId: PROJ_B }
+    chainSpec.layers[0].cacheKey = 'other-image'
+    const { req } = request(chainSpec, ['project'], { cacheMaxDays: 7 })
+    await buildImageLayers(req)
+    const build = remoteCommands()[5].join(' ')
+    expect(build).toContain(`${POD_HOST}/yaac-buildcache-${PROJ_B}:project-other-image-${cacheBucket(PROJ_B, 7)}`)
+    // Windows are cacheMaxDays long, offset per project.
+    const day = 86_400_000
+    const now = Date.UTC(2026, 10, 23)
+    const buckets = Array.from({ length: BUILD_CACHE_MAX_DAYS + 1 }, (_, d) => cacheBucket(PROJ_B, BUILD_CACHE_MAX_DAYS, now + d * day))
+    expect(new Set(buckets).size).toBe(2)
+    expect(buckets.filter((b) => b === buckets[0]).length).toBeLessThanOrEqual(BUILD_CACHE_MAX_DAYS)
   })
 
-  it('reuses one builder pod across adjacent untrusted layers and deletes it once', async () => {
-    const first = await podLayer({ buildArgs: undefined })
-    const second = await podLayer({
-      tag: `yaac-user-${PROJ}:u1`, name: 'user', buildArgs: { BASE_IMAGE: first.tag },
-    })
-    chain([first, second])
+  it('reuses one builder pod across the project and user layers and deletes it once', async () => {
+    const { tools } = await resolveTrustedLayers()
+    fakeRegistry.tags.add(tools.tag)
+    const chainSpec = spec(await source('project'), await source('user'))
+    const { req, seen } = request(chainSpec, ['project', 'user'])
+    expect(await buildImageLayers(req)).toMatchObject({ ok: true })
 
-    await ensureImage(PROJ, OWNER)
-
+    expect(seen.starts).toEqual(['project', 'user'])
     expect(appliedKinds().filter((k) => k === 'Pod')).toHaveLength(1)
     expect(deleteCalls()).toHaveLength(1)
-    // A shared pod gets a fresh grant per layer, for that layer's repo only.
+    // A shared pod gets a fresh grant per layer, for that layer's repo and,
+    // for the user layer, the project layer it reads as its parent.
     const grants = spawned
-      .filter((s) => s.file === 'kubectl' && s.args.at(-1)?.includes(BUILDER_AUTHFILE) && s.args.at(-1)?.startsWith('umask'))
+      .filter((s) => s.file === 'kubectl' && s.args.at(-1)?.includes(`cat > ${BUILDER_AUTHFILE}`))
       .map((s) => grantScopeOf(s.stdin)?.repos)
     expect(grants).toEqual([
       [`yaac-proj-${PROJ}`, `yaac-buildcache-${PROJ}`],
-      [`yaac-user-${PROJ}`, `yaac-buildcache-${PROJ}`],
+      [`yaac-user-${PROJ}`, `yaac-buildcache-${PROJ}`, `yaac-proj-${PROJ}`],
     ])
   })
 
-  it('consults the registry for untrusted tags', async () => {
-    const tools = layer('yaac-tools:t1', 'tools')
-    const project = await podLayer()
-    chain([tools, project])
-    fakeRegistry.tags.add(tools.tag).add(project.tag)
-
-    await ensureImage(PROJ, OWNER)
-    expect(fakeRegistry.lookups).toContain(project.tag)
+  it('reports a failed layer, and leaves it missing for the next build', async () => {
+    const chainSpec = await layeredProject()
+    spawnState.codeFor = (file, args) => (file === 'kubectl' && args.includes('build') ? 1 : undefined)
+    const { req } = request(chainSpec, ['project'])
+    const failed = await buildImageLayers(req)
+    expect(failed).toMatchObject({ ok: false, failedLayer: 'project', blockedHosts: [] })
+    expect(failed.error).toMatch(/exit(ed with)? code 1/)
+    expect(deleteCalls()).toHaveLength(1)
+    expect(await missingImageLayers(await resolveChain(chainSpec))).toEqual(['project'])
+    // A layer the chain does not have is refused before any pod.
+    fakeCluster.calls = []
+    const refused = await buildImageLayers(request(chainSpec, ['base']).req)
+    expect(refused).toMatchObject({ ok: false, failedLayer: 'base' })
+    expect(refused.error).toMatch(/no untrusted base layer/)
     expect(appliedKinds()).not.toContain('Pod')
   })
 
-  it('sandboxes any non-whitelisted layer name', async () => {
-    // An unknown layer name must not fall through to host podman.
-    chain([await podLayer({ name: 'some-future-layer' as ImageLayerName, buildArgs: undefined })])
-    await ensureImage(PROJ, OWNER)
-    expect(appliedKinds()).toContain('Pod')
+  it('stops on abort, deleting the pod under the build', async () => {
+    const started = holdInPodBuild()
+    const abort = new AbortController()
+    const { req } = request(await layeredProject(), ['project'], { signal: abort.signal })
+    const outcome = buildImageLayers(req)
+    await started
+    abort.abort()
+    await vi.waitFor(() => { expect(deleteCalls()).toHaveLength(1) })
+    // kubectl exec ends when its pod goes.
+    held[0].close(137)
+    expect(await outcome).toMatchObject({ ok: false, error: 'cancelled', failedLayer: 'project' })
+  })
+
+  it('starts nothing for a request aborted before it is called', async () => {
+    const abort = new AbortController()
+    abort.abort()
+    const { req, seen } = request(await layeredProject(), ['project'], { signal: abort.signal })
+    expect(await buildImageLayers(req)).toEqual({
+      ok: false, error: 'cancelled', failedLayer: 'project', blockedHosts: [],
+    })
+    expect(seen.starts).toEqual([])
+    expect(appliedKinds()).not.toContain('Pod')
+  })
+
+  it('builds no further layer once aborted between layers', async () => {
+    const { tools } = await resolveTrustedLayers()
+    fakeRegistry.tags.add(tools.tag)
+    const started = holdInPodBuild()
+    const abort = new AbortController()
+    const { req, seen } = request(spec(await source('project'), await source('user')), ['project', 'user'], {
+      signal: abort.signal,
+    })
+    const outcome = buildImageLayers(req)
+    // The project layer's build succeeds, then the request is aborted.
+    await started
+    held[0].close(0)
+    abort.abort()
+
+    expect(await outcome).toMatchObject({ ok: false, error: 'cancelled', failedLayer: 'user' })
+    expect(seen.starts).toEqual(['project'])
+    expect(remoteCommands().filter((c) => c[1] === 'build')).toHaveLength(1)
+    expect(appliedKinds().filter((k) => k === 'Pod')).toHaveLength(1)
+    expect(deleteCalls()).toHaveLength(1)
   })
 
   it('fails closed when the ValidatingAdmissionPolicy API is unavailable', async () => {
     fakeCluster.removeKind('ValidatingAdmissionPolicy')
-    chain([await podLayer({ buildArgs: undefined })])
-    await expect(ensureImage(PROJ, OWNER)).rejects.toThrow(/ValidatingAdmissionPolicy/)
+    const { req } = request(await layeredProject(), ['project'])
+    expect((await buildImageLayers(req)).error).toMatch(/ValidatingAdmissionPolicy/)
     // Without the guard the builder label could be forged, so no pod.
     expect(appliedKinds()).not.toContain('Pod')
   })
 
   it('maps an unreachable cluster to a `yaac cluster check` pointer', async () => {
+    const chainSpec = await layeredProject()
     fakeCluster.unreachable = new Error('no cluster')
-    chain([await podLayer({ buildArgs: undefined })])
-    await expect(ensureImage(PROJ, OWNER)).rejects.toThrow(/yaac cluster check/)
+    expect((await buildImageLayers(request(chainSpec, ['project']).req)).error).toMatch(/yaac cluster check/)
   })
 
   it('explains a Ready timeout with whatever the pod status accounts for', async () => {
     // A bare `kubectl wait` timeout looks like a broken build, but an
     // unschedulable pod is far more likely.
+    const chainSpec = await layeredProject()
+    const errorOf = async (): Promise<string | undefined> => (await buildImageLayers(request(chainSpec, ['project']).req)).error
     execState.error = new Error('timed out')
     podStatus({
       conditions: [{
@@ -694,53 +751,44 @@ describe('ensureImage', () => {
         message: '0/1 nodes are available: 1 Insufficient memory.',
       }],
     })
-    chain([await podLayer({ buildArgs: undefined })])
-    await expect(ensureImage(PROJ, OWNER))
-      .rejects.toThrow(/not scheduled \(Unschedulable\): 0\/1 nodes are available/)
+    expect(await errorOf()).toMatch(/not scheduled \(Unschedulable\): 0\/1 nodes are available/)
     // The pod is deleted even though setup failed.
     expect(deleteCalls().length).toBeGreaterThan(0)
 
     // A container stuck pulling is named the same way.
-    _clearBuildCoordinatorForTests()
     podStatus({
       conditions: [{ type: 'PodScheduled', status: 'True' }],
       containerStatuses: [{ state: { waiting: { reason: 'ImagePullBackOff' } } }],
     })
-    chain([await podLayer({ tag: 'yaac-base:p2', buildArgs: undefined })])
-    await expect(ensureImage(PROJ, OWNER)).rejects.toThrow(/container waiting \(ImagePullBackOff\)/)
+    expect(await errorOf()).toMatch(/container waiting \(ImagePullBackOff\)/)
 
     // An uninformative status leaves the bare timeout.
-    _clearBuildCoordinatorForTests()
     podStatus({})
-    chain([await podLayer({ tag: 'yaac-base:p3', buildArgs: undefined })])
-    await expect(ensureImage(PROJ, OWNER)).rejects.toThrow('timed out')
+    expect(await errorOf()).toMatch(/^timed out/)
   })
 
   it('kills an in-pod build only once it stops producing output', async () => {
     // The timeout is on idle time: a slow build that keeps logging
     // survives, and only silence ends it.
-    spawnState.hold = (file, args) => file === 'kubectl' && args.includes('build')
-    const reachedBuild = new Promise<void>((r) => { spawnState.onHold = r })
-    chain([await podLayer({ buildArgs: undefined })])
+    const reachedBuild = holdInPodBuild()
+    const { req } = request(await layeredProject(), ['project'])
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const build = ensureImage(PROJ, OWNER)
+    const build = buildImageLayers(req)
     const settled = vi.fn()
-    void build.then(settled, settled)
+    void build.then(settled)
 
     // The steps before the build do real filesystem IO, so wait for them.
     await reachedBuild
     expect(held).toHaveLength(1)
 
     await vi.advanceTimersByTimeAsync(BUILDER_BUILD_IDLE_TIMEOUT_MS - 1_000)
-    held[0].log('STEP 2/5: RUN cargo build --release')
+    held[0].log('#7 [2/5] RUN cargo build --release')
     await vi.advanceTimersByTimeAsync(BUILDER_BUILD_IDLE_TIMEOUT_MS - 1_000)
     expect(settled).not.toHaveBeenCalled()
     expect(held[0].signals).toEqual([])
 
-    await vi.advanceTimersByTimeAsync(2_000)
-    await expect(build).rejects.toThrow(
-      /builder exec \[podman build .*\] produced no output for 600s/,
-    )
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect((await build).error).toMatch(/builder exec \[buildctl build .*\] produced no output for 600s/)
     expect(held[0].signals).toEqual(['SIGTERM'])
     // The pod is released, not leaked.
     expect(deleteCalls().length).toBeGreaterThan(0)
@@ -752,30 +800,22 @@ describe('ensureImage', () => {
     spawnState.codeFor = (file, args) =>
       (file === 'kubectl' && args.includes('build') ? 137 : undefined)
     podStatus({ phase: 'Failed', reason: 'DeadlineExceeded' })
-    chain([await podLayer({ buildArgs: undefined })])
-
-    await expect(ensureImage(PROJ, OWNER)).rejects.toThrow(
-      /exited with code 137[\s\S]*stopped at the whole-pod deadline/,
-    )
+    const { req } = request(await layeredProject(), ['project'])
+    expect((await buildImageLayers(req)).error).toMatch(/exited with code 137[\s\S]*stopped at the whole-pod deadline/)
   })
 
-  it('rejects a dockerfile outside its context, and an oversized context', async () => {
-    const dir = await makeContext({ 'Dockerfile.yaac': 'FROM x' })
-    chain([{
-      tag: 'yaac-base:o1', name: 'project', dockerfile: '/elsewhere/Dockerfile',
-      context: dir, contentHash: 'o1',
-    }])
-    await expect(ensureImage(PROJ, OWNER)).rejects.toThrow(/outside its build context/)
-
-    _clearBuildCoordinatorForTests()
+  it('rejects an oversized context', async () => {
+    const chainSpec = await layeredProject()
     // Sparse file: st_size crosses the cap without touching the disk.
-    const fh = await fs.open(path.join(dir, 'big.bin'), 'w')
+    const fh = await fs.open(path.join(chainSpec.layers[0].contextDir, 'big.bin'), 'w')
     await fh.truncate(BUILDER_CONTEXT_MAX_BYTES + 1)
     await fh.close()
-    chain([{
-      tag: 'yaac-base:o2', name: 'project', dockerfile: path.join(dir, 'Dockerfile.yaac'),
-      context: dir, contentHash: 'o2',
-    }])
-    await expect(ensureImage(PROJ, OWNER)).rejects.toThrow(/\.containerignore/)
+    expect((await buildImageLayers(request(chainSpec, ['project']).req)).error).toMatch(/\.containerignore/)
+  })
+})
+
+describe('imageRef', () => {
+  it('names a tag on the registry the node pulls from', () => {
+    expect(imageRef('yaac-proj-x:1')).toBe(`${CLUSTER_HOST}/yaac-proj-x:1`)
   })
 })

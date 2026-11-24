@@ -111,7 +111,7 @@ import {
   type WorkspaceRegistration,
   type WorkspaceSpec,
 } from '#drivers/contract'
-import type { AgentTool } from '@yaac/shared/types'
+import { STOCK_IMAGE_ID, type AgentTool } from '@yaac/shared/types'
 import type { Actor } from '#domain/access'
 import { workspaceDelegate } from '#test/support/delegate'
 
@@ -399,7 +399,7 @@ describe('prepareStart', () => {
         opened = (await listWorkspaceSessions(workspaceId))[0]
         throw new Error('stop here')
       }
-      installDriver({ ...driver, prepareImage: stop, prepareSubstrate: stop })
+      installDriver({ ...driver, resolveImageChain: stop, prepareSubstrate: stop })
       await expect(start({ ...over, workspaceId })).rejects.toThrow('stop here')
       return opened!
     }
@@ -505,7 +505,7 @@ describe('prepareStart', () => {
       await expect(prepare(local)).resolves.toBeTypeOf('function')
       await expect(prepare(workspaceDelegate(BUILT_IN_USER_ID, 'other'))).resolves.toBeTypeOf('function')
       // A run that settles gives its slot back, failed or not.
-      installDriver({ prepareImage: () => Promise.reject(new Error('stop here')) })
+      installDriver({ resolveImageChain: () => Promise.reject(new Error('stop here')) })
       const [first] = runs as Array<PromiseFulfilledResult<(p?: unknown) => Promise<unknown>>>
       await expect(first.value()).rejects.toThrow('stop here')
       await expect(prepare()).resolves.toBeTypeOf('function')
@@ -684,7 +684,7 @@ describe('prepareStart', () => {
 
       // The failure frees its slot, and what waits for room takes it.
       const waiting = await queueWorkspace(local, DEMO_PROJECT_ID, { prompt: 'waiting', group: groupId, mode: 'tui' })
-      installDriver({ prepareImage: () => { installDriver(); throw new Error('no image') } })
+      installDriver({ missingImageLayers: () => { installDriver(); throw new Error('no image') } })
       await expect(failing()).rejects.toThrow('no image')
       await vi.waitFor(async () => { expect((await listQueuedWorkspaces()).map((e) => e.id)).not.toContain(waiting.id) })
       await vi.waitFor(() => { expect(listProvisioning().some((p) => p.prompt === 'waiting')).toBe(false) }, { timeout: 30_000 })
@@ -704,10 +704,9 @@ describe('prepareStart', () => {
       // What the driver reports while it prepares reaches the caller too.
       let row: ReturnType<typeof listProvisioning>[number] | undefined
       installDriver({
-        prepareImage: (o) => {
+        missingImageLayers: () => {
           row = listProvisioning()[0]
-          o.onProgress?.('image ready')
-          return Promise.resolve('img')
+          return Promise.resolve([])
         },
         prepareSubstrate: (i) => { i.onProgress?.('substrate ready'); return Promise.resolve(substrateFixture()) },
       })
@@ -719,7 +718,14 @@ describe('prepareStart', () => {
       const { workspaceId } = result
 
       const [session] = await listWorkspaceSessions(workspaceId)
-      expect(result).toEqual({ workspaceId, jobName: `yaac-demo-${workspaceId}`, forwardedPorts: [], sessionId: session.id, image: 'img' })
+      // The stock image, all present, so nothing is built; the row records
+      // what it launched, which a restart asks for again.
+      expect(result).toEqual({
+        workspaceId, jobName: `yaac-demo-${workspaceId}`, forwardedPorts: [], sessionId: session.id, image: 'registry.test/fake-tools:t',
+      })
+      expect(specs[0].image).toBe('registry.test/fake-tools:t')
+      const launchedRow = await getWorkspaceRow(DEMO_PROJECT_ID, workspaceId)
+      expect([launchedRow?.imageTag, launchedRow?.imageId]).toEqual(['fake-tools:t', undefined])
       // The row names what is coming up before any agent has answered, and
       // goes once the workspace is up.
       expect(row).toMatchObject({ workspaceId, kind: 'create', tool: 'codex', prompt: 'ship it', model: 'gpt-6-sol' })
@@ -733,8 +739,10 @@ describe('prepareStart', () => {
         tool: 'codex', mode: 'tui', permissionMode: 'bypass', model: 'gpt-6-sol', firstPrompt: 'ship it',
       })
       expect((await listWorkspaceSessions(workspaceId))[0]?.launchedAt).toBeInstanceOf(Date)
+      // The stock chain is already built, so no build is reported.
+      expect(progress).not.toContain('Building image yaac...')
       expect(progress).toEqual(expect.arrayContaining([
-        'image ready', 'substrate ready', 'launching', 'Creating workspace from dev...', 'Starting Codex...',
+        'substrate ready', 'launching', 'Creating workspace from dev...', 'Starting Codex...',
       ]))
       // No spare was looked for.
       expect(claims).toEqual([])
@@ -1379,7 +1387,7 @@ describe('prepareStart', () => {
       const rowAtImage = async (workspaceId: string, branch?: string): Promise<WorkspaceRepoRow | undefined> => {
         let row: WorkspaceRepoRow | undefined
         installDriver({
-          prepareImage: async () => {
+          resolveImageChain: async () => {
             row = await checkout(workspaceId)
             throw new Error('stop here')
           },
@@ -1730,6 +1738,7 @@ describe('prepareStart', () => {
       permissionMode: 'accept-edits',
       prompt: 'fix the build',
       title: 'Build',
+      imageId: STOCK_IMAGE_ID,
       draft: { id: draft.id, ...(onFailure ? { onFailure } : {}) },
     })
 
@@ -1740,7 +1749,7 @@ describe('prepareStart', () => {
       code: 'VALIDATION', message: 'pod never became ready; its prompt is kept as a draft',
     })
     expect(await listDraftWorkspaces()).toEqual([expect.objectContaining({
-      id: draft.id, prompt: 'fix the build', title: 'Build', tool: 'codex', permissionMode: 'accept-edits',
+      id: draft.id, prompt: 'fix the build', title: 'Build', tool: 'codex', permissionMode: 'accept-edits', imageId: STOCK_IMAGE_ID,
     })])
     expect(shared.message).toBe('pod never became ready')
     // The failed row carries what the caller is told.
@@ -2139,8 +2148,9 @@ describe('prepareStart', () => {
         expect(ranIn(spare)).toHaveLength(1)
         execs = []
       }
-      // An image the project no longer builds (its Dockerfile was edited).
-      installDriver({ currentImage: () => Promise.resolve('registry.test/fake-image:edited') })
+      // An image the project no longer builds: its chain resolves to another
+      // tag now, as after a new stock image.
+      installDriver({ resolveImageChain: () => Promise.resolve({ layers: [{ name: 'tools', tag: 'fake-tools:edited' }], finalTag: 'fake-tools:edited' }) })
       await cold()
       installDriver()
       // A zone the user has left, which `TZ` fixed at warm time.

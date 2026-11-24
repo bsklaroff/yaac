@@ -1,13 +1,11 @@
-import { useMemo, type JSX } from 'react'
-import { FileEditor } from '#components/settings/FileEditor'
-import { BuildFiles } from '#components/settings/BuildFiles'
+import type { JSX } from 'react'
+import { ProjectImages } from '#components/settings/Images'
 import { ProjectEnv } from '#components/settings/ProjectEnv'
 import { ProjectRunSecrets } from '#components/settings/ProjectRunSecrets'
 import { EgressAllowlist } from '#components/settings/EgressAllowlist'
 import { ScratchDirs } from '#components/settings/ScratchDirs'
 import { PortForwards } from '#components/settings/PortForwards'
 import { CacheVolumes } from '#components/settings/CacheVolumes'
-import { ContainerOptions } from '#components/settings/ContainerOptions'
 import { ProjectIcon } from '#components/settings/ProjectIcon'
 import { ProjectRepos } from '#components/settings/ProjectRepos'
 import { RemoveProject } from '#components/settings/RemoveProject'
@@ -16,35 +14,30 @@ import { KeptIgnoredPaths } from '#components/settings/KeptIgnoredPaths'
 import { Volumes } from '#components/settings/Volumes'
 import { useSettingsProject } from '#components/settings/ProjectPicker'
 import { SettingsPageTitle } from '#components/settings/SettingsPage'
-import { api } from '#lib/api'
-import { projectBuildFilesApi } from '#lib/buildFilesApi'
 import type { ProjectPage } from '#lib/store'
 import { useSnapshotSelect } from '#lib/useSnapshot'
 import { useHasVolumes } from '#lib/volumes'
 import { useTeammateView } from '#lib/viewer'
-import { YCallout, YSettingGroup, YSettingRow } from '#ui'
-
-const project = api.project[':projectId']
+import { YCallout, YSettingGroup } from '#ui'
 
 export const PROJECT_PAGE_LABEL: Record<ProjectPage, string> = {
   general: 'General',
   env: 'Environment',
   network: 'Network',
   storage: 'Storage',
-  image: 'Image',
+  images: 'Images',
 }
 
 /**
  * One page of the project settings, for the project the settings nav picks
  * (`useSettingsProject`); a teammate's show read-only. A containerless
- * server builds no images and runs no pods, so the Image page and the
+ * server builds no images and runs no pods, so the Images page and the
  * pod-only settings are not offered there.
  */
 export function ProjectSettings({ page }: { page: ProjectPage }): JSX.Element {
   const readOnly = useTeammateView()
   const { selected } = useSettingsProject()
   const projectId = selected?.id ?? null
-  const filesApi = useMemo(() => (projectId ? projectBuildFilesApi(projectId) : null), [projectId])
   const buildsImages = useSnapshotSelect((s) => s?.driver) !== 'containerless'
   // Only with an egress proxy can a secret's value stay out of the
   // workspace, or an allowlist apply.
@@ -106,43 +99,7 @@ export function ProjectSettings({ page }: { page: ProjectPage }): JSX.Element {
         />
       </YSettingGroup>}
 
-      {page === 'image' && buildsImages && <YSettingGroup>
-        <YSettingRow
-          stacked
-          label="Dockerfile"
-          hint={<>
-            Overrides the base image for this project. Use{' '}
-            <code className="text-muted">{'ARG BASE_IMAGE'}</code> and{' '}
-            <code className="text-muted">{'FROM ${BASE_IMAGE}'}</code> to layer on the default
-            image, or any other <code className="text-muted">FROM</code> for a standalone image.
-          </>}
-        >
-          <FileEditor
-            key={`dockerfile:${projectId}`}
-            title={`${selected.name} · Dockerfile`}
-            language="dockerfile"
-            queryKey={['project-dockerfile', projectId]}
-            load={async () => (await project.dockerfile.$get({ param: { projectId } })).content}
-            {...(readOnly ? {} : {
-              save: async (content: string) => {
-                await project.dockerfile.$put({ param: { projectId }, json: { content } })
-              },
-            })}
-          />
-        </YSettingRow>
-        <YSettingRow
-          stacked
-          label="Build files"
-          hint={<>
-            Files stored next to the Dockerfile as its build context — reference them
-            with <code className="text-muted">COPY</code>. Changes apply on the next
-            workspace create.
-          </>}
-        >
-          {filesApi && <BuildFiles key={`files:${projectId}`} filesApi={filesApi} title={selected.name} readOnly={readOnly} />}
-        </YSettingRow>
-        <ContainerOptions key={`containers:${projectId}`} projectId={projectId} npmCache={selected.npmCache} readOnly={readOnly} />
-      </YSettingGroup>}
+      {page === 'images' && buildsImages && <ProjectImages key={`images:${projectId}`} project={selected} readOnly={readOnly} />}
     </>
   )
 }

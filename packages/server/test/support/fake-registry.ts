@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import { vi } from 'vitest'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
-import { REGISTRY_NAMESPACE, registryHost } from '#drivers/k8s/cluster/registry'
+import { REGISTRY_NAMESPACE, registryPodHost, registryRepoIsProtected } from '#drivers/k8s/cluster/registry'
 
 /** The real `fetch`, captured before any test stubs it. */
 const realFetch = globalThis.fetch
@@ -12,9 +12,10 @@ const MIRROR_DIGESTS = 'yaac-mirror-digests'
 /**
  * A fake main registry at the network boundary, for unit tests of code
  * that asks the registry which tags it holds. `install()` points the
- * registry client at the in-cluster Service (`YAAC_IN_CLUSTER`), so no
- * port-forward is spawned, and stubs `fetch` to answer `/v2/` and manifest
- * HEADs, by tag or by digest. Like registry:2, it keeps serving a manifest
+ * registry client at the in-cluster Service's pod port (`YAAC_IN_CLUSTER`),
+ * so no port-forward is spawned, and stubs `fetch` to answer `/v2/` and
+ * manifest HEADs, by tag or by digest. Like the gate, it answers 401 to a
+ * read of a project repo that carries no credential. Like registry:2, it keeps serving a manifest
  * a tag moved off until `collect()`. Requests to any other URL reach the
  * real `fetch`. Call `install()` from a `beforeEach`; it starts empty and
  * reachable.
@@ -93,7 +94,7 @@ export const fakeRegistry = {
     fakeRegistry.down = false
     fakeRegistry.lookups.length = 0
     vi.stubEnv('YAAC_IN_CLUSTER', '1')
-    const origin = `http://${registryHost()}`
+    const origin = `http://${registryPodHost()}`
     vi.stubGlobal('fetch', (input: string | URL | Request, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : String(input)
       if (!url.startsWith(origin)) return realFetch(input, init)
@@ -104,6 +105,10 @@ export const fakeRegistry = {
       const [, repo, reference] = manifest
       const ref = reference.startsWith('sha256:') ? `${repo}@${reference}` : `${repo}:${reference}`
       fakeRegistry.lookups.push(ref)
+      const headers = new Headers(init?.headers)
+      if (registryRepoIsProtected(repo) && !headers.get('authorization')?.startsWith('Basic ')) {
+        return Promise.resolve(new Response(null, { status: 401 }))
+      }
       if (!fakeRegistry.holds(ref)) return Promise.resolve(new Response(null, { status: 404 }))
       const digest = ref.includes('@') ? reference : fakeRegistry.digestOf(ref)
       return Promise.resolve(new Response(null, { status: 200, headers: { 'docker-content-digest': digest } }))

@@ -1,6 +1,6 @@
 /**
- * The "is this an editable text file" rule, shared by the build-files
- * editor and the workspace file editor.
+ * The "is this an editable text file" rule, shared by the image file
+ * routes and the workspace file editor.
  */
 
 /** Files at most this size are read and written inline as text. */

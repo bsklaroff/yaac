@@ -9,7 +9,7 @@ import {
   setDraftWorkspaceTitle,
   updateDraftWorkspace,
 } from '#db/draft-workspace-store'
-import type { DraftWorkspaceSettings } from '@yaac/shared/types'
+import { STOCK_IMAGE_ID, type DraftWorkspaceSettings } from '@yaac/shared/types'
 import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib/notify'
 
 const OTHER = '795f3202-b17c-46bc-8d4b-771d8c6c9eaf'
@@ -34,7 +34,7 @@ afterEach(async () => {
 
 const SETTINGS: DraftWorkspaceSettings = {
   prompt: 'an idea', tool: 'codex', mode: 'acp', permissionMode: 'plan',
-  model: 'gpt-5.5', repos: [{ repo: 'api', branch: 'dev' }], nested: true, cwd: 'api', startAfter: 'w-parent',
+  model: 'gpt-5.5', imageId: STOCK_IMAGE_ID, repos: [{ repo: 'api', branch: 'dev' }], nested: true, cwd: 'api', startAfter: 'w-parent',
 }
 const UNKNOWN = '00000000-0000-4000-8000-000000000000'
 
@@ -45,6 +45,7 @@ describe('insertDraftWorkspace', () => {
     expect(full.generatedTitle).toBeUndefined()
     const bare = await insertDraftWorkspace(PROJ, { prompt: 'p', tool: 'claude', mode: 'tui', permissionMode: 'manual' })
     expect(bare).not.toHaveProperty('model')
+    expect(bare).not.toHaveProperty('imageId')
     expect(bare).not.toHaveProperty('repos')
     expect(bare).not.toHaveProperty('startAfter')
     expect(pushes).toBe(2)

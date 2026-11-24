@@ -2,8 +2,9 @@
  * DNS wire-format helpers for the proxy's UDP/53 stub. Workspace pods use the
  * proxy as their resolver, and main.ts answers split-horizon:
  *
- *   - Names of Services in the proxy's own namespace (see isInternalName)
- *     are resolved by the cluster DNS, so pods find the npm cache, which
+ *   - Names of Services in the proxy's own namespace, and the main
+ *     registry's (see isInternalName), are resolved by the cluster DNS, so
+ *     workspaces find the npm cache and builder pods the registry, which
  *     they dial directly.
  *   - Every other name gets a fixed sinkhole IP. netd redirects egress by port
  *     and the proxy routes by SNI / Host, so the address never matters, and
@@ -33,7 +34,7 @@ export interface DnsQuery {
 
 /**
  * True for names the proxy resolves against the cluster DNS instead of
- * sinkholing: Services in `namespace`, the install's own, whose
+ * sinkholing: the main registry, and Services in `namespace`, the install's own, whose
  * `.svc.cluster.local` names the server hands to workspaces. Those Services
  * are yaac's, and a workspace reaches one only where a label-scoped policy
  * admits it.
@@ -47,8 +48,19 @@ export interface DnsQuery {
  * also keeps DNS from carrying data out.
  */
 export function isInternalName(name: string, namespace: string): boolean {
-  return name.toLowerCase().replace(/\.$/, '').endsWith(`.${namespace}.svc.cluster.local`)
+  const n = name.toLowerCase().replace(/\.$/, '')
+  return n.endsWith(`.${namespace}.svc.cluster.local`) || n === MAIN_REGISTRY_NAME
 }
+
+/**
+ * The main registry's Service, always in the default install namespace,
+ * which builder pods of every namespace dial for parents and pushes. Must
+ * match REGISTRY_SERVICE_NAME and REGISTRY_NAMESPACE in
+ * packages/server/src/drivers/k8s/cluster/registry.ts. A workspace that
+ * resolves it gets nowhere: the registry's ingress policy admits no
+ * workspace pod.
+ */
+export const MAIN_REGISTRY_NAME = 'yaac-registry.yaac.svc.cluster.local'
 
 /**
  * Parse a DNS query. Returns null (the caller drops the packet) for anything

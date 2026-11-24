@@ -429,15 +429,25 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     expect((await config('port-forwards', 'demo-settings', '--none')).stdout).toContain('are now: none.')
   })
 
-  it('config cache-volumes, npm-cache and dockerfile are refused, since there is no pod or image to apply them to', async () => {
+  it('config cache-volumes and npm-cache are refused, since there is no pod to apply them to', async () => {
     for (const [args, why] of [
       [['cache-volumes', 'demo-settings', 'pip=/p'], 'keeps no cache volumes'],
       [['npm-cache', 'demo-settings', 'off'], 'runs no npm cache'],
-      [['dockerfile', 'demo-settings'], 'builds no images'],
     ] as const) {
       const refused = await config(...args)
       expect(refused.exitCode, args[0]).not.toBe(0)
       expect(refused.stderr).toContain(`This server ${why}`)
+    }
+  })
+
+  it('config build-concurrency and image-cache-days check what they are given, and are refused, since nothing builds images', async () => {
+    expect((await config('image-cache-days', 'demo-settings', '0')).stderr).toContain('0 is not a whole number of days')
+    expect((await config('image-cache-days', 'demo-settings', '7', '--none')).stderr).toContain('not both')
+    expect((await config('build-concurrency', '2', '--none')).stderr).toContain('not both')
+    for (const args of [['build-concurrency'], ['image-cache-days', 'demo-settings', '7']]) {
+      const refused = await config(...args)
+      expect(refused.exitCode, args[0]).not.toBe(0)
+      expect(refused.stderr).toContain('This server builds no images')
     }
   })
 

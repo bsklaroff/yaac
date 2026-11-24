@@ -1,10 +1,6 @@
 import { Hono } from 'hono'
 import { zv } from '#routes/validator'
 import { z } from 'zod'
-import { readUserDockerfile, writeUserDockerfile } from '#domain/projects'
-import { userBuildDir } from '#lib/build-dirs'
-import { buildFilesApp } from '#routes/build-files'
-import { requireDriverFeature } from '#api/http/driver-features'
 import { personOnly, type IdentityEnv } from '#api/http/web-auth'
 import { getGitIdentity, getTimeZone, setGitIdentity, setTimeZone } from '#db'
 import { ServerError } from '@yaac/shared/errors'
@@ -13,9 +9,8 @@ import { personId } from '#domain/access'
 
 /**
  * The caller's own (not project-scoped) editable config: the git identity
- * their workspaces commit under, the time zone they run in, and their
- * Dockerfile.user, layered on every project image they own, with the other
- * files in its build context.
+ * their workspaces commit under and the time zone they run in. Their
+ * Dockerfile.user is an image (`/image/user`).
  */
 export const configApp = new Hono<IdentityEnv>()
   .use(personOnly)
@@ -62,19 +57,3 @@ export const configApp = new Hono<IdentityEnv>()
       return c.json(await getTimeZone(owner))
     },
   )
-  // Both refuse on a runtime that builds no images.
-  .get('/user-dockerfile', async (c) => {
-    requireDriverFeature('images')
-    return c.json({ content: await readUserDockerfile(personId(c.get('principal'))) })
-  })
-  .put(
-    '/user-dockerfile',
-    zv('json', z.object({ content: z.string() })),
-    async (c) => {
-      requireDriverFeature('images')
-      const { content } = c.req.valid('json')
-      await writeUserDockerfile(personId(c.get('principal')), content)
-      return c.json({ content })
-    },
-  )
-  .route('/user-build-files', buildFilesApp((c) => Promise.resolve(userBuildDir(personId(c.get('principal'))))))

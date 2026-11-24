@@ -74,6 +74,12 @@ export interface NewWorkspaceForm {
   groupId?: string | null
   /** The project volume a create now attaches (docs/workspace-volumes.md). */
   volume?: string
+  /** The image it launches, picked or as its entry stored it; absent is
+   *  the project's last choice (docs/image-builds.md "Behavior"). */
+  imageId?: string
+  /** A create waits for the image's revision being built rather than
+   *  starting on the last built one. */
+  awaitBuild?: true
   /** The saved draft it was opened on. */
   draftId?: string
   /** The queued entry it edits. */
@@ -233,6 +239,7 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
     ...(selection?.nested !== undefined ? { nested: selection.nested } : {}),
     ...(selection?.cwd !== undefined ? { cwd: selection.cwd } : {}),
     ...(groupId !== undefined ? { groupId } : {}),
+    ...(from.imageId !== undefined ? { imageId: from.imageId } : {}),
     ...(workflow !== undefined ? { workflow, ...(nonInteractive ? { kind: 'workflow' as const } : {}) } : {}),
     ...(entry !== undefined ? { editId: entry.id } : routine !== undefined ? { editRoutineId: routine.id } : { draftId: from.id }),
   }

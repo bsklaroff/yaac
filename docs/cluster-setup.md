@@ -60,18 +60,21 @@ Other flags:
 
 ## Images are built here, and only here
 
-Every image yaac ships is built by `podman build` on the machine running
-the CLI and pushed to the in-cluster registry. That covers the
-base/tools workspace chain, the egress proxy, netd and the server.
-Install also mirrors the digest-pinned upstream images yaac uses
-(Envoy, podman-stable, curl for the gVisor installer, Verdaccio and
-nginx for the npm cache).
+Every image yaac ships is built on the machine running the CLI and pushed
+to the in-cluster registry. The builder image (BuildKit), the egress proxy,
+netd, tailgate and the server are `podman build`s; the base/tools workspace
+chain is built by a BuildKit container run from the builder image, since
+only BuildKit keeps the base image's `SHELL` (docs/image-builds.md "The
+trusted chain"). Install also mirrors the digest-pinned upstream images
+yaac uses (Envoy, podman-stable for root utility pods, curl for the gVisor
+installer, Verdaccio and nginx for the npm cache).
 Tags carry a content hash, so an unchanged source tree costs one registry
 HEAD per image and re-running install is cheap. The server image's hash is
 taken over the built bundle (`dist/`), so a rebuilt server is a new image
 and therefore a rollout.
 
-Install records the digest podman pushed each mirror as, in the
+Install records the digest podman pushed each mirror (and the builder
+image) as, in the
 `yaac-mirror-digests` ConfigMap beside the registry, and re-mirrors any
 mirror whose tag no longer names its recorded digest.
 
@@ -79,7 +82,7 @@ The server builds none of these. It looks each one up in the registry by
 tag (the builder and gVisor installer images by their recorded digest),
 and a missing one is an error that names this command, not a build
 trigger. That is why the server needs no container engine
-(docs/trust-split-builds.md). The only images the server builds are the
+(docs/image-builds.md). The only images the server builds are the
 ones a project or user wrote, and only inside sandboxed builder pods.
 
 ## The runtime
@@ -310,7 +313,7 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
    cluster's default StorageClass, so a cluster with none leaves the
    registry Pending. Losing the store costs only re-pushes. Reads are
    anonymous. A write needs a grant signed by the cluster's registry key,
-   which an Envoy gate in the registry pod checks (docs/trust-split-builds.md
+   which an Envoy gate in the registry pod checks (docs/image-builds.md
    "The write gate"). Install creates the key on its first run, as the
    Secret `yaac-registry-grant-key` in its own `yaac-registry-keys`
    namespace.
@@ -899,7 +902,7 @@ the size of RAM behind zswap (`infra/hetzner-k3s/node-memory.sh`).
 
 Root inside a gVisor sandbox has no authority outside it, which is why the
 image can grant passwordless sudo (so agents can `apt-get install`) and why
-builder pods can run their engine as root. No user namespace or idmap is used,
+builder pods can run buildkitd as root. No user namespace or idmap is used,
 so files on the claims show their real uids, and every writer of a shared path
 must use the same one: **the install uid**. On kind it is the uid of the user
 who ran install (on macOS virtiofs allows nothing else); on byo it is a fixed
@@ -907,7 +910,7 @@ who ran install (on macOS virtiofs allows nothing else); on byo it is a fixed
 runs as").
 
 The images work at any uid, so one image set serves every host
-(docs/arbitrary-uid-images.md). A standalone `Dockerfile.yaac` that creates
+(docs/arbitrary-uid-images.md). A standalone project image that creates
 its own user must follow the same pattern, or its writes fail with
 `Permission denied` on hosts whose uid is not 1000. The README's "Custom
 images" section explains how.

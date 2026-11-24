@@ -3,6 +3,7 @@ import {
   DNS_SINKHOLE,
   DNS_STUB_PORT,
   LABEL_INSTALL_ID,
+  LABEL_BUILD_ID,
   LABEL_PROJECT_ID,
   LABEL_PROXY_INPUT,
   LABEL_PROXY_OUTPUT,
@@ -411,6 +412,34 @@ export function buildRegistrationConfigMapManifest(
       }),
     },
     data: { 'registration.json': JSON.stringify(registration) },
+  }
+}
+
+/**
+ * An image build's registration (docs/image-builds.md "Build egress"): the
+ * project's allowed hosts and nothing else. No injection rules and no
+ * owner whose credentials could be swapped in (`none`), and the proxy
+ * tunnels every host for a builder pod anyway. Labelled by build id, which
+ * the proxy reads in place of a workspace id, and by project.
+ */
+export function buildBuildRegistrationConfigMapManifest(
+  buildId: string,
+  projectId: string,
+  allowedHosts: string[],
+): Record<string, unknown> {
+  return {
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: {
+      name: proxyRegistrationName(buildId),
+      namespace: k8sNamespace(),
+      labels: proxyLabels({
+        [LABEL_PROXY_INPUT]: 'registration',
+        [LABEL_BUILD_ID]: buildId,
+        [LABEL_PROJECT_ID]: projectId,
+      }),
+    },
+    data: { 'registration.json': JSON.stringify({ rules: [], allowedHosts, projectId, owner: 'none' }) },
   }
 }
 

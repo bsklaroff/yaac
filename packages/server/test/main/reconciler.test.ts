@@ -288,7 +288,7 @@ async function runPass(
     signal: new AbortController().signal,
     snapshot: () => snapshotFixture(),
     projectIds: () => Promise.resolve([]),
-    projectOwner: () => Promise.resolve('owner'),
+    keptImageTags: () => Promise.resolve([]),
     pinnedImages: () => Promise.resolve([]),
         terminating: () => false,
   }
@@ -374,8 +374,9 @@ describe('defaultReconcileSteps', () => {
     for (const fn of ALL_STEP_FNS) expect(fn).toHaveBeenCalledTimes(1)
   })
 
-  // A spare's create joins the builds the runtime's pre-pool steps (the
-  // image prewarm) started.
+  // The runtime's pre-pool steps (the k8s node sync) come first, so a
+  // spare, and an image build the sweep starts, never lands on a node the
+  // pass has not synced.
   it('runs the runtime\'s pre-pool steps before the pool', async () => {
     const order: string[] = []
     runtimePrePool.mockImplementation(() => {

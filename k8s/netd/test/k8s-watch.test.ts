@@ -181,19 +181,25 @@ describe('watchPods', () => {
     vi.restoreAllMocks()
   })
 
-  it('watches and lists only this install\'s workspace pods, never the proxy', async () => {
+  it('watches and lists only this install\'s workspace and builder pods, never the proxy', async () => {
     // Another install's pods, or the proxy itself, must never be
-    // redirected here; scoping the watch keeps them out of the store.
+    // redirected here; scoping the watches keeps them out of the store.
     const { client, listNamespacedPod } = fakeClient()
-    watchPods(client, onChange)
-    const [informer] = informers
-    expect(informer.path).toBe('/api/v1/namespaces/yaac/pods')
-    expect(informer.labelSelector).toBe('yaac.workspace-id,app!=yaac-proxy')
+    const pods = watchPods(client, onChange)
+    expect(informers.map((i) => [i.path, i.labelSelector])).toEqual([
+      ['/api/v1/namespaces/yaac/pods', 'yaac.workspace-id,app!=yaac-proxy'],
+      ['/api/v1/namespaces/yaac/pods', 'yaac.build-id'],
+    ])
     // client-node applies the selector to the watch only.
-    await informer.listFn()
-    expect(listNamespacedPod).toHaveBeenCalledWith({
-      namespace: 'yaac', labelSelector: 'yaac.workspace-id,app!=yaac-proxy',
-    })
+    for (const informer of informers) await informer.listFn()
+    expect(listNamespacedPod.mock.calls).toEqual([
+      [{ namespace: 'yaac', labelSelector: 'yaac.workspace-id,app!=yaac-proxy' }],
+      [{ namespace: 'yaac', labelSelector: 'yaac.build-id' }],
+    ])
+    // Both kinds are redirected alike.
+    informers[0].objects = [{ metadata: { name: 'w', namespace: 'yaac' }, status: { podIP: '10.244.0.9' } } as KubernetesObject]
+    informers[1].objects = [{ metadata: { name: 'b', namespace: 'yaac' }, status: { podIP: '10.244.0.10' } } as KubernetesObject]
+    expect(pods().map((p) => p.name)).toEqual(['w', 'b'])
   })
 
   it('reads through to the store, mapping and dropping unusable pods', () => {

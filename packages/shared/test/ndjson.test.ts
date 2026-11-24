@@ -96,6 +96,20 @@ describe('consumeNdjsonStream', () => {
     expect(result).toEqual({ workspaceId: 's-2' })
   })
 
+  it('skips the blank keepalive lines between events', async () => {
+    const res = chunkedResponse([
+      '\n',
+      JSON.stringify({ type: 'progress', message: 'waiting' }) + '\n',
+      '\n', '\n\n',
+      JSON.stringify({ type: 'result', result: { ok: true } }) + '\n',
+      '\n',
+    ])
+    const seen: string[] = []
+    const result = await consumeNdjsonStream(res, (m) => seen.push(m))
+    expect(seen).toEqual(['waiting'])
+    expect(result).toEqual({ ok: true })
+  })
+
   it('throws when the stream ends without a result event', async () => {
     const res = ndjsonResponse([{ type: 'progress', message: 'started' }])
     await expect(consumeNdjsonStream(res, () => {})).rejects.toThrow(/without a result/)

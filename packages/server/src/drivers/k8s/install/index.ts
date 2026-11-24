@@ -8,7 +8,7 @@
 // This folder may import `#drivers/k8s/cluster` and `substrate`, but
 // neither may import it. It alone drives the host's podman, which keeps
 // the server free of a container-engine dependency
-// (docs/trust-split-builds.md).
+// (docs/image-builds.md).
 //
 // Each name exported here needs a unit test in
 // packages/server/test/drivers/k8s/install/.

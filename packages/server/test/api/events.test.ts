@@ -30,11 +30,11 @@ import {
 } from '#domain/workspaces/provisioning'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { recordWorkspaceCreated, recordWorkspaceStopped } from '#db/workspace-store'
-import { createWorkspaceGroup } from '#db'
+import { BUILT_IN_USER_ID, createWorkspaceGroup, insertImage, insertImageBuild, insertImageRevision } from '#db'
 import { insertQueuedWorkspace } from '#db/queued-workspace-store'
 import { insertDraftWorkspace } from '#db/draft-workspace-store'
 import {
-  CONVERSATION_PROMPT_PREVIEW_LENGTH, MAX_PROMPT_BYTES, PROMPT_PREVIEW_LENGTH, type ServerSnapshot,
+  CONVERSATION_PROMPT_PREVIEW_LENGTH, MAX_PROMPT_BYTES, PROMPT_PREVIEW_LENGTH, type ImageBuildStatus, type ServerSnapshot,
 } from '@yaac/shared/types'
 
 function emptySnapshot(): ServerSnapshot {
@@ -224,20 +224,43 @@ describe('buildSnapshot', () => {
 })
 
 describe('buildSnapshot image builds', () => {
-  it('includes the builds the runtime reports', async () => {
-    installFakeWorkspaceDriver({
-      listImageBuilds: () => [{
-        id: 'b1',
-        tag: 'yaac-base:abc',
-        layer: 'base',
-        reason: 'prewarm',
-        projectIds: ['p'],
-        status: 'running',
-        startedAt: '2026-01-01 00:00:00',
-      }],
-    })
+  const PROJ = '9d3c1f0e-5b7a-4c2d-8e6f-1a2b3c4d5e6f'
+  const minutesAgo = (m: number): Date => new Date(Date.now() - m * 60_000)
+
+  /** An image of the project with one revision, and builds of it, oldest
+   *  first. */
+  async function builtImage(name: string, builds: Array<{ status: ImageBuildStatus; queuedAt: Date; finishedAt?: Date }>): Promise<void> {
+    const image = await insertImage({ projectId: PROJ }, name)
+    const revision = await insertImageRevision({ imageId: image.id, dockerfile: 'FROM x', files: {}, contentHash: name, author: BUILT_IN_USER_ID })
+    for (const b of builds) {
+      await insertImageBuild({
+        imageId: image.id, revisionId: revision.id, projectId: PROJ, layer: 'project', tag: `${name}:${b.status}`,
+        reason: 'save', ...b,
+      })
+    }
+  }
+
+  // The building pill: what is queued or running, and a failure of the
+  // last hour that no later build of the same image replaced.
+  it('includes builds in flight and recent failures not since replaced', async () => {
+    await builtImage('live', [{ status: 'running', queuedAt: minutesAgo(2) }, { status: 'queued', queuedAt: minutesAgo(1) }])
+    await builtImage('broken', [{ status: 'failed', queuedAt: minutesAgo(4), finishedAt: minutesAgo(3) }])
+    await builtImage('fixed', [
+      { status: 'failed', queuedAt: minutesAgo(10), finishedAt: minutesAgo(9) },
+      { status: 'succeeded', queuedAt: minutesAgo(5), finishedAt: minutesAgo(4) },
+    ])
+    await builtImage('stale', [{ status: 'failed', queuedAt: minutesAgo(180), finishedAt: minutesAgo(120) }])
+
+    installFakeWorkspaceDriver()
     const snap = await buildSnapshot()
-    expect(snap.imageBuilds.map((b) => b.tag)).toEqual(['yaac-base:abc'])
+    expect(snap.imageBuilds.map((b) => [b.imageName, b.status]).sort()).toEqual([
+      ['broken', 'failed'], ['live', 'queued'], ['live', 'running'],
+    ])
+    expect(snap.imageBuilds.find((b) => b.status === 'running')).toMatchObject({ revisionNumber: 1, scope: 'project', projectId: PROJ })
+
+    // A runtime that builds no images shows none.
+    installFakeWorkspaceDriver({ kind: 'containerless' })
+    expect((await buildSnapshot()).imageBuilds).toEqual([])
   })
 })
 

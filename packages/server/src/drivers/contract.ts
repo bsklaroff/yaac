@@ -8,7 +8,7 @@ import type {
   EgressAllowlist,
   GitAuthFailure,
   ComponentUsage,
-  ImageBuildEntry,
+  ImageLayerName,
   NodeUsage,
   PortForwardConfig,
   PortMapping,
@@ -368,8 +368,8 @@ export interface WorkspaceSpec {
   workspaceId: string
   /** A warmed spare: hidden from user-facing views until it is claimed. */
   prewarm: boolean
-  /** The image from `prepareImage`. Absent for a driver that runs no
-   *  images. */
+  /** The image ref to launch (`imageRef` of the tag `#domain/images`
+   *  chose). Absent for a driver that runs no images. */
   image?: string
   /** Caller-decided `NAME=VALUE` entries; the runtime appends its own. */
   env: string[]
@@ -535,12 +535,15 @@ export interface PassContext {
    *  empty, which a garbage-collecting step would read as "collect
    *  everything". */
   projectIds: () => Promise<string[]>
-  /** One project's owner, whose `Dockerfile.user` tops its image chain.
-   *  Rejects for a project that no longer exists. */
-  projectOwner: (projectId: string) => Promise<string>
   /** Images a launch may still need though nothing runs them: what a public
    *  site's replacement or restart launches again (docs/public-sites.md). */
   pinnedImages: () => Promise<string[]>
+  /**
+   * Every project and user image tag the registry must keep: each image's
+   * newest builds and the builds in progress (docs/image-gc.md). Rejects if
+   * unreadable, which the registry GC reads as "retire nothing".
+   */
+  keptImageTags: () => Promise<string[]>
   /**
    * Whether a teardown was issued for this workspace but is not yet visible
    * in the substrate. The marks live in `#runtime`, which drivers cannot
@@ -549,8 +552,65 @@ export interface PassContext {
   terminating: (workspaceId: string) => boolean
 }
 
-/** What an image build reads about each project it builds for. */
-export type ProjectReaders = Pick<PassContext, 'projectOwner'>
+/**
+ * One untrusted layer of an image chain, as `#domain/images` resolved it
+ * from a revision (docs/image-builds.md "Images, revisions and builds"): the driver is handed
+ * the content, never looks a revision up.
+ */
+export interface ImageLayerSource {
+  layer: 'project' | 'user'
+  /** The Dockerfile's text. */
+  dockerfile: string
+  /** The revision's support files, materialized: the build context. */
+  contextDir: string
+  /** The revision's content hash, from its Dockerfile and file manifest. */
+  contentHash: string
+  /** Names the layer's build cache: the image for a project layer, the
+   *  project image it tops (or `stock`) for a user layer, so images of one
+   *  project never overwrite each other's cache. */
+  cacheKey: string
+}
+
+/** What an image is built from: a project, and its untrusted layers in order
+ *  (the project layer, then its owner's user layer; either may be absent). */
+export interface ImageChainSpec {
+  projectId: string
+  layers: ImageLayerSource[]
+}
+
+/** A chain's layers by tag, yaac-shipped ones first, and the tag a
+ *  workspace launches (the last layer's). */
+export interface ResolvedImageChain {
+  layers: Array<{ name: ImageLayerName; tag: string; parentTag?: string }>
+  finalTag: string
+}
+
+/** One request to build some of a chain's untrusted layers, in one builder. */
+export interface ImageBuildRequest {
+  spec: ImageChainSpec
+  /** The layers to build, in chain order (what `missingImageLayers` named). */
+  layers: ImageLayerName[]
+  /** The id the builder's egress is registered under. */
+  egressId: string
+  /** The project's allowed hosts: all a build may reach. */
+  allowedHosts: string[]
+  noCache: boolean
+  /** Days a build cache is read before a new one starts. */
+  cacheMaxDays: number
+  /** Aborting stops the build and deletes its builder. */
+  signal: AbortSignal
+  onLayerStart: (layer: ImageLayerName) => void
+  onLine: (layer: ImageLayerName, line: string) => void
+}
+
+/** How a build request ended: a failure names its layer. The hosts the
+ *  build was refused are read before its egress registration goes. */
+export interface ImageBuildOutcome {
+  ok: boolean
+  error?: string
+  failedLayer?: ImageLayerName
+  blockedHosts: string[]
+}
 
 /**
  * A driver's only channel to the layers above it, which it cannot import.
@@ -710,26 +770,6 @@ export interface WorkspaceDriver {
    *  caller refuse early; `forwardPort` checks again. */
   unforwardedPorts(workspaceId: string): Promise<number[]>
   /**
-   * Image builds run or running, for display. In memory, lost on restart.
-   * Empty for a driver that builds no images.
-   */
-  listImageBuilds(): ImageBuildEntry[]
-  /**
-   * One build's raw output, or `undefined` if unknown. Kept out of
-   * `listImageBuilds` because it changes on every line; the viewer polls it
-   * while open.
-   */
-  imageBuildLog(id: string): string | undefined
-  /** Hide a finished build from the feed; returns whether it existed.
-   *  Display only: retry backoff is unaffected. */
-  dismissImageBuild(id: string): boolean
-  /**
-   * Rerun a finished build now; returns false for an unknown or running id.
-   * Fire-and-forget: progress shows in the feed. `projects` is passed in
-   * for the same reason as on `PassContext`.
-   */
-  retryImageBuild(id: string, projects: ProjectReaders): boolean
-  /**
    * Let one running workspace reach `host`, until it stops. The caller
    * persists the host for future workspaces itself. `fanOutToProject` also
    * widens the project's other running workspaces, best-effort. Rejects if
@@ -843,20 +883,20 @@ export interface WorkspaceDriver {
   /** Check the substrate (e.g. the cluster) is reachable, before a create
    *  records or provisions anything. */
   ensureRuntimeReachable(): Promise<void>
-  /** Build or reuse the project's workspace image and return its ref.
-   *  `owner` is the project's, whose Dockerfile.user tops the chain. */
-  prepareImage(opts: {
-    projectId: string
-    owner: string
-    onProgress?: (message: string) => void
-  }): Promise<string>
-  /** The ref `prepareImage` would answer now, from the chain's build inputs
-   *  alone: nothing is built or looked up. A spare launched on another ref
-   *  predates an image change. */
-  currentImage(opts: {
-    projectId: string
-    owner: string
-  }): Promise<string>
+  /**
+   * An image chain's tags, from its sources alone: nothing is built or
+   * looked up. Refuses a user layer that is not layered on its parent.
+   * Images are a k8s feature (`requireDriverFeature('images')`).
+   */
+  resolveImageChain(spec: ImageChainSpec): Promise<ResolvedImageChain>
+  /** The untrusted layers of `chain` the registry lacks. Rejects when a
+   *  yaac-shipped layer is missing, which only an install builds. */
+  missingImageLayers(chain: ResolvedImageChain): Promise<ImageLayerName[]>
+  /** Build and push some of a chain's untrusted layers. Never rejects:
+   *  the outcome says how it ended. */
+  buildImageLayers(request: ImageBuildRequest): Promise<ImageBuildOutcome>
+  /** The ref a workspace launches for an image tag. */
+  imageRef(tag: string): string
   /**
    * Set up what a workspace needs around it; the result goes on the launch
    * spec. Once per create, not per launch attempt: it is slow, runs

@@ -576,8 +576,9 @@ name, and Tor dials from its exit, off the cluster's network. Internal names
 and non-public addresses skip Tor and are checked like any direct dial.
 
 **The network floor** (`wideEgress` in
-`drivers/k8s/cluster/policy-manifests.ts`) is shared by the proxy's, the
-builder pods' and the server's egress policies (the server's peers are in
+`drivers/k8s/cluster/policy-manifests.ts`) is shared by the proxy's and
+the server's egress policies (builder pods have a workspace's egress
+instead, docs/image-builds.md "Build egress") (the server's peers are in
 docs/server-in-cluster.md "The server's own egress"). It allows public
 addresses only: 0.0.0.0/0 less the same special-purpose ranges and
 168.63.129.16, and IPv6 global unicast (2000::/3) less its special-purpose
@@ -597,13 +598,13 @@ floor allows back only what yaac needs:
   mode it answers on a link-local address;
 - for the proxy, the nodes, on every port but NFS and the kind fronting's
   (docs/server-in-cluster.md "The ingress policy is the wall"), so that an
-  allowlist entry may name one. Builders reach no node address;
+  allowlist entry may name one;
 - for the proxy, the server's mama listener and workspace pods' streamd by
   selector, and the apiserver its watches read, at the real endpoints the
   `kubernetes` Service's EndpointSlices list (re-read by node-sync, so a
   moved control plane is followed);
-- for builders, the main registry by selector, which their parent pulls,
-  pushes and step cache all use.
+- for the server, the main registry's pod port by selector, for the tag
+  checks it makes.
 
 Selector rules also match a dial to a Service address, because policy sees
 the destination after kube-proxy's DNAT. The gateway Calico gives every pod
@@ -625,8 +626,7 @@ exact entry naming a DNS address reaches port 53 on it. Under `*` the proxy
 refuses all three, as it does every non-public address.
 
 **What this changes for an existing install.** A `*` workspace is refused a
-public name that resolves privately, and builders can no longer reach
-private addresses at all. A name that worked silently before now fails:
+public name that resolves privately. A name that worked silently before now fails:
 AWS interface VPC endpoints with private DNS (ECR, S3, STS and the rest),
 Azure Private Link, corporate mirrors and git servers. Each needs an exact
 allowlist entry and an operator opening, below.
@@ -679,7 +679,9 @@ Only the network operator can open one, by applying a NetworkPolicy of their
 own in yaac's namespace. NetworkPolicy allows add up across every policy that
 selects a pod, so a separate policy selecting the proxy (`app: yaac-proxy`),
 builders (`yaac.role: builder`) or the server (`app: yaac-server`) widens
-their egress without touching yaac's. yaac never writes, prunes or deletes a policy it does not own, so the
+their egress without touching yaac's. Builders go through the proxy like
+workspaces, so an internal mirror a build needs is opened for the proxy and
+named in the project's allowlist, exactly as for a workspace. yaac never writes, prunes or deletes a policy it does not own, so the
 opening survives server restarts and reinstalls (`yaac cluster delete`
 removes it with the namespace). Creating one takes kubectl access to the
 namespace, which no workspace has.
@@ -712,10 +714,7 @@ and `git.corp.example` in the project's allowlist. The server clones and
 fetches the project's remote itself, so for a project whose remote is that
 server, the same policy must also select `app: yaac-server`: use
 `podSelector: {matchExpressions: [{key: app, operator: In, values:
-[yaac-proxy, yaac-server]}]}`. Builds that need an
-internal package mirror get the same kind of policy with `podSelector:
-{matchLabels: {yaac.role: builder}}`. Builds do not pass through the proxy,
-so the opening alone admits them.
+[yaac-proxy, yaac-server]}]}`.
 
 An in-cluster Service is opened the same way. Policy sees the destination
 after kube-proxy's rewrite, so the opening names the Service's pods and
@@ -807,9 +806,10 @@ The e2e suites open their mock pods to the proxy the same way
 ## Which pods are redirected
 
 netd has exactly **one** rule, recomputed on every relevant watch event: a
-workspace pod (label `yaac.workspace-id`, never the proxy itself) in **this
-install's own namespace** is redirected to this install's proxy. Nothing else
-on the node is redirected.
+workspace pod (label `yaac.workspace-id`, never the proxy itself) or an image
+builder pod (label `yaac.build-id`) in **this install's own namespace** is
+redirected to this install's proxy. Nothing else on the node is redirected.
+A label selector cannot OR two labels, so each kind is its own watch.
 
 netd watches only its own namespace, by label selector, so installs that share
 a node stay out of each other's traffic and netd needs no cluster-wide access:
@@ -821,7 +821,7 @@ namespace. Until the Service exists netd redirects nothing.
 
 Envoy admits a connection by matching its source pod IP against the listener's
 filter chain (`filter_chain_match.source_prefix_ranges`). All three listeners
-are shared by every workspace pod, so pods come and go without moving a port.
+are shared by every redirected pod, so pods come and go without moving a port.
 That matters because conntrack pins a flow's DNAT destination on its first
 packet, and moving a port under a live flow would strand it. A source netd has
 not programmed matches no filter chain, and Envoy closes the connection, the

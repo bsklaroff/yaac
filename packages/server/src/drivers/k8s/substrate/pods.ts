@@ -7,8 +7,8 @@ import { serverLog } from '#lib/log'
 // Label keys attached to every workspace Job and its Pod.
 
 /**
- * The project's id, on workspace pods and on the project's egress proxy
- * objects. The orphan GCs key on it; ids are never reused, so a later
+ * The project's id, on workspace pods, builder pods and on the project's
+ * egress proxy objects. The orphan GCs key on it; ids are never reused, so a later
  * project can never claim an object.
  */
 export const LABEL_PROJECT_ID = 'yaac.project-id'
@@ -17,6 +17,11 @@ export const LABEL_PROJECT_ID = 'yaac.project-id'
  * podSelector for workspace pods matches on it.
  */
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
+/**
+ * The image build a builder pod runs (docs/image-builds.md). netd redirects
+ * pods carrying it to the egress proxy, which knows them by it.
+ */
+export const LABEL_BUILD_ID = 'yaac.build-id'
 /**
  * Marks a workspace pod and its Job as a prewarmed spare: provisioned with
  * its agent booted, but not yet handed to a user. Spares are hidden from

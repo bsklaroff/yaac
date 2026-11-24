@@ -8,10 +8,12 @@ import {
   contextHash,
   fileHash,
   imagePrefix,
+  resolveImageChain,
   resolveTrustedLayers,
   stringHash,
   toolsContentHash,
 } from '#drivers/k8s/cluster'
+import type { ImageLayerSource } from '#drivers/contract'
 
 describe('imagePrefix', () => {
   afterEach(() => {
@@ -160,6 +162,81 @@ describe('resolveTrustedLayers', () => {
     // Same content hash; only the repository differs.
     expect(test.base.contentHash).toBe(yaac.base.contentHash)
     expect(test.tools.buildArgs?.BASE_IMAGE).toBe(test.base.tag)
+  })
+})
+
+describe('resolveImageChain', () => {
+  const LAYERED = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\nRUN true\n'
+  const source = (layer: 'project' | 'user', contentHash: string, dockerfile = LAYERED): ImageLayerSource => ({
+    layer,
+    dockerfile,
+    contextDir: `/ctx/${layer}`,
+    contentHash,
+    cacheKey: `cache-${layer}-${contentHash}`,
+  })
+  const tagsByName = async (layers: ImageLayerSource[]): Promise<Record<string, string>> => {
+    const chain = await resolveImageChain({ projectId: 'p1', layers })
+    return Object.fromEntries(chain.layers.map((l) => [l.name, l.tag]))
+  }
+
+  it('re-tags a changed layer and everything built on it, never what is under it', async () => {
+    const before = await tagsByName([source('project', 'p-a'), source('user', 'u-a')])
+    const projectChanged = await tagsByName([source('project', 'p-b'), source('user', 'u-a')])
+    const userChanged = await tagsByName([source('project', 'p-a'), source('user', 'u-b')])
+
+    expect(Object.keys(before)).toEqual(['base', 'tools', 'project', 'user'])
+    expect(projectChanged.base).toBe(before.base)
+    expect(projectChanged.tools).toBe(before.tools)
+    expect(projectChanged.project).not.toBe(before.project)
+    expect(projectChanged.user).not.toBe(before.user)
+    expect(userChanged.project).toBe(before.project)
+    expect(userChanged.user).not.toBe(before.user)
+  })
+
+  it('builds each untrusted layer FROM its parent, under its own cache key, in repos named by project id', async () => {
+    const { layers, finalTag } = await resolveImageChain({
+      projectId: 'p1',
+      layers: [source('project', 'p-a'), source('user', 'u-a')],
+    })
+    const [, tools, project, user] = layers
+    const prefix = imagePrefix()
+
+    expect(project).toMatchObject({
+      dockerfile: LAYERED,
+      context: '/ctx/project',
+      buildArgs: { BASE_IMAGE: tools.tag },
+      cacheKey: 'cache-project-p-a',
+    })
+    expect(user).toMatchObject({
+      context: '/ctx/user',
+      buildArgs: { BASE_IMAGE: project.tag },
+      cacheKey: 'cache-user-u-a',
+    })
+    expect(project.tag).toMatch(new RegExp(`^${prefix}-proj-p1:[0-9a-f]{16}$`))
+    expect(user.tag).toMatch(new RegExp(`^${prefix}-user-p1:[0-9a-f]{16}$`))
+    // The yaac-shipped layers carry no cache key: only an install builds them.
+    expect(layers[0].cacheKey).toBeUndefined()
+    expect(tools.cacheKey).toBeUndefined()
+    expect(finalTag).toBe(user.tag)
+  })
+
+  it('lets a standalone project layer replace base and tools', async () => {
+    const { layers } = await resolveImageChain({
+      projectId: 'p1',
+      layers: [source('project', 'p-a', 'FROM ubuntu:24.04\n'), source('user', 'u-a')],
+    })
+
+    expect(layers.map((l) => l.name)).toEqual(['project', 'user'])
+    expect(layers[0].buildArgs).toBeUndefined()
+    expect(layers[0].cacheKey).toBe('cache-project-p-a')
+    expect(layers[1].buildArgs).toEqual({ BASE_IMAGE: layers[0].tag })
+  })
+
+  it('refuses a user layer that does not take its parent as BASE_IMAGE', async () => {
+    await expect(resolveImageChain({
+      projectId: 'p1',
+      layers: [source('project', 'p-a'), source('user', 'u-a', 'FROM ubuntu:24.04\n')],
+    })).rejects.toThrow('Dockerfile.user must use `ARG BASE_IMAGE`')
   })
 })
 

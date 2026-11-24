@@ -15,7 +15,6 @@ import {
   listProjects,
   MAX_ICON_BYTES,
   portForwardsSchema,
-  readProjectDockerfile,
   readProjectIcon,
   registerStagedProject,
   removeProjectEnvVar,
@@ -26,7 +25,6 @@ import {
   setProjectAllowlist,
   setProjectEnvVar,
   setRunSecret,
-  writeProjectDockerfile,
   pushProjectSecrets,
   resolveProjectId,
   setInitWorkflows,
@@ -43,11 +41,9 @@ import { AGENT_TOOLS } from '@yaac/shared/types'
 import { serveHostedRepo } from '#domain/repos'
 import { getProjectRow, setProjectOrder } from '#db'
 import { getProjectSkills, getSkillDetail } from '#domain/skills'
-import { projectBuildDir } from '#lib/build-dirs'
 import { DEFAULT_ALLOWED_HOSTS, missingCriticalHosts } from '@yaac/shared/allowed-hosts'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_PROJECT_REPOS } from '@yaac/shared/types'
-import { buildFilesApp } from '#routes/build-files'
 import { authorizeProject, personId } from '#domain/access'
 import { requireDriverFeature } from '#api/http/driver-features'
 import { personOnly, type IdentityEnv } from '#api/http/web-auth'
@@ -484,31 +480,5 @@ export const projectApp = new Hono<IdentityEnv>()
       const projectId = await resolveProjectId(c.req.param('projectId'))
       const { id, ...query } = c.req.valid('query')
       return c.json(await getSkillDetail(projectId, id, query))
-    },
-  )
-  // Support files next to Dockerfile.yaac in the project's build dir: its
-  // build context, which feeds the image tag.
-  .route('/:projectId/build-files', buildFilesApp(async (c, level) => {
-    // The generic Context can't see the mount path's :projectId, so param()
-    // is string | undefined here; the mount guarantees it exists.
-    const projectId = await resolveProjectId(c.req.param('projectId') ?? '')
-    if (level === 'owner') await authorizeProject(c.get('principal'), projectId)
-    return projectBuildDir(projectId)
-  }))
-  // The project's image layer. Both check the driver feature before the
-  // project (see `requireDriverFeature`).
-  .get('/:projectId/dockerfile', async (c) => {
-    requireDriverFeature('images')
-    return c.json({ content: await readProjectDockerfile(await resolveProjectId(c.req.param('projectId'))) })
-  })
-  .put(
-    '/:projectId/dockerfile',
-    zv('json', z.object({ content: z.string() })),
-    async (c) => {
-      requireDriverFeature('images')
-      const projectId = await resolveProjectId(c.req.param('projectId'))
-      const { content } = c.req.valid('json')
-      await writeProjectDockerfile(c.get('principal'), projectId, content)
-      return c.json({ content })
     },
   )

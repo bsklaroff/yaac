@@ -49,6 +49,9 @@ export async function listProjects(
     // Remembered create defaults, so the create form opens on what an
     // untouched create would run (see `resolveToolCreateDefaults`).
     ...(meta.lastTool !== undefined ? { lastTool: meta.lastTool } : {}),
+    ...(meta.defaultImageId !== undefined ? { defaultImageId: meta.defaultImageId } : {}),
+    ...(meta.lastImageId !== undefined ? { lastImageId: meta.lastImageId } : {}),
+    ...(meta.imageCacheDays !== undefined ? { imageCacheDays: meta.imageCacheDays } : {}),
     createDefaults: meta.createDefaults,
     repos: meta.repos.map((l) => {
       const upstream = upstreamFor(l.repo.upstreamRepoId, meta.owner)

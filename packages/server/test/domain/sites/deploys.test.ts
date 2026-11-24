@@ -114,7 +114,12 @@ function installDriver(): void {
       running.set(spec.workspaceId, handle)
       return Promise.resolve(handle)
     },
-    prepareImage: () => Promise.resolve(`registry.test/proj:${String(++images)}`),
+    // A new tag each time a chain is resolved, so a release that reuses
+    // its predecessor's image is told apart from one that resolved anew.
+    resolveImageChain: () => {
+      const tag = `proj:${String(++images)}`
+      return Promise.resolve({ layers: [{ name: 'tools', tag }], finalTag: tag })
+    },
     find: (id) => Promise.resolve(running.get(id)),
     findForTeardown: (id) => Promise.resolve(running.has(id)
       ? { workspaceId: id, projectId: DEMO_PROJECT_ID, unitName: `yaac-${id}` }

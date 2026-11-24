@@ -468,7 +468,7 @@ export function resolveVacantSelection(args: {
 }
 
 /** Pages of the settings modal's Project group, for the project it picks. */
-export type ProjectPage = 'general' | 'env' | 'network' | 'storage' | 'image'
+export type ProjectPage = 'general' | 'env' | 'network' | 'storage' | 'images'
 
 /** Sections of the settings modal (left-nav entries): the Account group's,
  *  then one per project page. */
@@ -712,6 +712,10 @@ interface UiState {
   openSettings: (section?: SettingsSection, focusTool?: AgentTool, focusRepo?: string) => void
   closeSettings: () => void
   setSettingsSection: (section: SettingsSection) => void
+  /** The image build whose page is open over the app (`BuildPage`), or
+   *  null. It is the URL's `?build=` param, so a link opens it. */
+  buildPageId: string | null
+  openBuild: (buildId: string | null) => void
   /** The new-workspace pane's form, shown while no workspace is selected.
    *  Saved. Null shows a blank one. */
   newWorkspace: NewWorkspaceForm | null
@@ -1011,6 +1015,16 @@ export const useUiStore = create<UiState>((set, get) => ({
     settingsOpen: false, settingsFocusTool: null, settingsFocusRepo: null, settingsProjectId: null,
   }),
   setSettingsSection: (section) => set({ settingsSection: section }),
+  buildPageId: new URLSearchParams(window.location.search).get('build'),
+  openBuild: (buildId) => {
+    set({ buildPageId: buildId })
+    const url = new URL(window.location.href)
+    if (buildId === null) url.searchParams.delete('build')
+    else url.searchParams.set('build', buildId)
+    try {
+      window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
+    } catch { /* Safari throws past 100 replaceState calls in 30s */ }
+  },
   setNewWorkspace: (newWorkspace) => set({ newWorkspace }),
   openNewWorkspace: (opts) => {
     const show = (form: NewWorkspaceForm | null): void => set((s) => ({

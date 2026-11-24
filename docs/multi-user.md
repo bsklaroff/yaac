@@ -77,8 +77,9 @@ such as cloning a project's remote, into the cluster's internal addresses
 
 Every user is an **admin** or a **member** (`users.role`). Admins alone
 publish sites, and deploy or start published ones (docs/public-sites.md
-"Publishing"), and set roles; members have every other access a user has,
-building and deploying unpublished sites included. "Owner" is a project's
+"Publishing"), set the install's image build concurrency, and set roles;
+members have every other access a user has, building and deploying
+unpublished sites included. "Owner" is a project's
 owner and nothing else.
 
 - **Admins are peers.** Any admin may promote or demote anyone, themself
@@ -172,7 +173,7 @@ and `resolveCreate` for a posture it names none of), and its launch slots.
 There are four access levels:
 
 - **`reader`**: any user, any resource. Workspace lists and details,
-  transcripts, diffs, project pages, build files, the file explorer's
+  transcripts, diffs, project pages, the file explorer's
   reads of a teammate's working tree (`/changes`, `/dir`, `/file`,
   `/file-at`), and `/acp/observe`, which follows a running conversation
   (see "Following a teammate's conversation"); its only answers are reads
@@ -244,8 +245,10 @@ write as `CONFLICT` (409), the server's own included.
   moves) call `authorizeProject` before the write, at `delegate` where an
   agent reaches them, and a provisioning entry is dismissed or stopped
   only by its project's owner.
-- A project's build files are read at `reader` and written at `owner`: the
-  build-files routes ask `resolveRoot` for the dir at the level each needs.
+- A project's images, their files and builds are its owner's, in person
+  (`#domain/images` authorizes each verb at `owner`, so an agent reaches
+  none of them); a user image is its user's alone, read through
+  `personId`, so no delegate reads or edits it.
 - An `owner` attach is checked against the workspace's row before the
   upgrade (a real 403) and again against the unit it resolves to when the
   socket opens, so an id with no row yet is not let through.
@@ -266,10 +269,10 @@ write as `CONFLICT` (409), the server's own included.
   credential (`resolveCredentialForRemote`).
 - `/project/add` and `/project/register` create a project the caller then
   owns.
-- The only writes open to every user are retrying and dismissing builds
-  of the shared images (base, tools, proxy, netd). Install
-  administration (upgrades, restarts, server env, `--admin`) happens
-  through host or cluster access, outside the API.
+- No route builds the images yaac ships (base, tools, proxy, netd):
+  `yaac cluster install` builds them on the host. That and the rest of
+  install administration (upgrades, restarts, server env, `--admin`)
+  happens through host or cluster access, outside the API.
 
 **Delegates on the API.** `delegateApp(resolve)` serves the API's HTTP
 routes to a delegate alone: `resolve` turns a request into a delegate or
@@ -346,7 +349,7 @@ changing it would strand them until they are recreated.
 The project image repo, the build cache and the user-layer repo are keyed
 by project, hence by owner. Registry repositories stay one per project and
 layer, since builder-pod write grants are scoped per repository
-(docs/trust-split-builds.md "The write gate").
+(docs/image-builds.md "The gate").
 
 ### Under `containerless`
 
@@ -356,17 +359,13 @@ still read every other tool home on the host.
 
 ## Image builds
 
-`Dockerfile.user` and its build files are per user, in
-`server-local/users/<user id>/build/` (`userBuildDir`);
-`/config/user-dockerfile` and `/config/user-build-files/*` act on the
-caller's own. A project's `yaac-user-<projectId>` layer is built from its
-owner's file. The driver is handed the owner rather than looking it up:
-`prepareImage` takes it from the create, and the prewarm sweep, registry GC
-and build retry read it through `projectOwner` (`ProjectReaders`). The
-prewarm pool is per project, hence per owner.
-
-Build rows for a project's chain are visible to everyone and retried or
-dismissed only by its owner; shared-image builds are open to every user.
+A user's `Dockerfile.user` is the one image in their user scope
+(docs/image-builds.md); `/image/user` acts on the caller's own, and only
+they may read or change it. A project's `yaac-user-<projectId>` layer is
+built from its owner's. A project's images and builds are its owner's to
+read, change, build and cancel. The driver is handed the chain's sources
+rather than looking them up. The prewarm pool is per project, hence per
+owner.
 
 ## Snapshot and webapp
 

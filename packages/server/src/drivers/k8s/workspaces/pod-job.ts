@@ -141,9 +141,9 @@ export interface PodJobParams {
    * checkpoint opencode's state here.
    */
   preStopExec?: string[]
-  /** The pinned builder image, which the `volume-root` init container
+  /** The pinned utility image, which the `volume-root` init container
    *  runs; required when a byo volume's claim is mounted. */
-  builderImage?: string
+  utilityImage?: string
   /** Defaults to 5 seconds. */
   terminationGracePeriodSeconds?: number
   /**
@@ -302,8 +302,8 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
   const volumeRoots = p.mounts.flatMap((m, i) =>
     m.source.kind === 'pvc' && m.source.claimName.startsWith(volumeClaimName('')) ? [`pv-${String(i)}`] : [])
   if (volumeRoots.length > 0) {
-    if (!p.builderImage) throw new Error('a volume claim mounted without builderImage')
-    initContainers.push(volumeRootInitContainer(p.builderImage, volumeRoots))
+    if (!p.utilityImage) throw new Error('a volume claim mounted without utilityImage')
+    initContainers.push(volumeRootInitContainer(p.utilityImage, volumeRoots))
   }
   if (p.treeContainer) initContainers.push(treeContainer(p.treeContainer, treeMounts))
 

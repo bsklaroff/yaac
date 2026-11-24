@@ -35,7 +35,11 @@ import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
 import {
   applyWorkspaceEvent,
   createWorkspaceGroup,
+  deleteImage,
   findWorkspaceRow,
+  insertImage,
+  insertImageRevision,
+  setImageLastBuilt,
   getSessionRow,
   insertSession,
   listActiveConversations,
@@ -1080,12 +1084,14 @@ describe('prepareRestart', () => {
   })
 })
 
-/** A non-interactive workspace that ran its graph at the project's head. */
-async function finishedRun(workspaceId: string): Promise<string> {
+/** A non-interactive workspace that ran its graph at the project's head,
+ *  on `imageId` (default: the project's). */
+async function finishedRun(workspaceId: string, imageId?: string): Promise<string> {
   const head = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim()
   const run = await prepareStart(local, {
     projectId: DEMO_PROJECT_ID, workspaceId, noSession: true, nonInteractive: true, commit: head,
     steps: { test: { run: 'pnpm test' } }, rememberDefaults: false, claimSpare: false,
+    ...(imageId !== undefined ? { imageId } : {}),
   })
   await run()
   await applyWorkspaceEvent({ type: 'steps-settled', projectId: DEMO_PROJECT_ID, workspaceId, outcome: 'failed' })
@@ -1106,6 +1112,24 @@ describe('prepareRerun', () => {
     })
     expect((await listWorkspaceRepos('ci-2'))[0]?.startCommit).toBe(head)
     expect((await listWorkspaceRepos('ci-2'))[0]?.baseBranch).toBeUndefined()
+    // It launches the image the original ran on.
+    const ranOn = await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-1')
+    expect(ranOn?.imageTag).toBeDefined()
+    const rerun = await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-2')
+    expect([rerun?.imageId, rerun?.imageTag]).toEqual([ranOn?.imageId, ranOn?.imageTag])
+
+    // Run on a named image deleted since: it launches the project default
+    // (here the stock image) rather than failing.
+    const image = await insertImage({ projectId: DEMO_PROJECT_ID }, 'web')
+    const revision = await insertImageRevision({ imageId: image.id, dockerfile: 'FROM x', files: {}, contentHash: 'h', author: BUILT_IN_USER_ID })
+    await setImageLastBuilt(image.id, revision.id, `fake-project-${DEMO_PROJECT_ID}:t.h`)
+    await finishedRun('ci-web', image.id)
+    expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-web'))
+      .toMatchObject({ imageId: image.id, imageTag: `fake-project-${DEMO_PROJECT_ID}:t.h` })
+    await deleteImage(image.id)
+    await (await prepareRerun(local, 'ci-web', { workspaceId: 'ci-web-2' }))()
+    const fallback = await getWorkspaceRow(DEMO_PROJECT_ID, 'ci-web-2')
+    expect([fallback?.imageId, fallback?.imageTag]).toEqual([undefined, ranOn?.imageTag])
 
     // Interactively: the same graph and commit, in a workspace that stays up.
     await (await prepareRerun(local, 'ci-1', { workspaceId: 'ci-debug', interactive: true }))()

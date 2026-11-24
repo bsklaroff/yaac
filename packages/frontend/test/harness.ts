@@ -8,8 +8,8 @@ import type { XtermCore } from '#lib/xterm-internals'
 import type { Terminal } from '@xterm/xterm'
 import type { AcpEvent } from '@yaac/shared/acp'
 import type {
-  ConversationEntry, ProjectRepo, ProvisioningWorkspaceEntry, RepoSummary, ServerSnapshot, SessionEntry, Whoami,
-  WorkspaceListEntry,
+  ConversationEntry, ImageBuild, ImageRevision, ImageSummary, ProjectRepo, ProvisioningWorkspaceEntry, RepoSummary,
+  ServerSnapshot, SessionEntry, Whoami, WorkspaceListEntry,
 } from '@yaac/shared/types'
 
 /**
@@ -208,6 +208,29 @@ export const sessionEntry = (over: Partial<SessionEntry> = {}): SessionEntry => 
 /** A workspace's first, active agent conversation. */
 export const conversation = (over: Partial<ConversationEntry> = {}): ConversationEntry => ({
   conversationId: 'c1', tool: 'claude', mode: 'acp', ordinal: 0, active: true, ...over,
+})
+
+/** A project image `node` (`img-1`), built and ready at its revision 1
+ *  (`rev-1`). */
+export const imageSummary = (over: Partial<ImageSummary> = {}): ImageSummary => ({
+  id: 'img-1', scope: 'project', name: 'node', isDefault: false, state: 'ready',
+  currentRevision: { id: 'rev-1', number: 1, createdAt: '2026-11-20T00:00:00Z' },
+  lastBuiltRevision: { id: 'rev-1', number: 1 }, ...over,
+})
+
+/** `img-1`'s revision 1, with no support files. */
+export const imageRevision = (over: Partial<ImageRevision> = {}): ImageRevision => ({
+  id: 'rev-1', imageId: 'img-1', number: 1, dockerfile: 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n', files: {},
+  contentHash: 'c1', author: 'Me', createdAt: '2026-11-20T00:00:00Z', missingFiles: [], ...over,
+})
+
+/** A running build (`build-1`) of `img-1`'s revision 1, for the fixture
+ *  project `proj`. */
+export const imageBuild = (over: Partial<ImageBuild> = {}): ImageBuild => ({
+  id: 'build-1', imageId: 'img-1', imageName: 'node', scope: 'project', revisionId: 'rev-1', revisionNumber: 1,
+  projectId: 'proj', layer: 'project', tag: 'yaac-proj-proj:abc', reason: 'save', status: 'running', noCache: false,
+  queuedAt: '2026-11-20T00:00:00Z', warnings: [], baseDigests: {}, cachedSteps: 0, totalSteps: 0, blockedHosts: [],
+  ...over,
 })
 
 /** A user prompt in a conversation (or a subagent's `thread`). */

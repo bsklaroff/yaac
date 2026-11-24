@@ -22,6 +22,7 @@ import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { dropProjectClaudeKeychainItem } from '@yaac/shared/tool-auth'
 import { authorizeProject, type Actor } from '#domain/access'
+import { removeProjectImages } from '#domain/images'
 
 /**
  * Remove a project: its workspaces and bytes (`purgeProjectBytes`), then its
@@ -41,6 +42,8 @@ async function deleteProject(projectId: string): Promise<void> {
   // First, so the sites step neither replaces a release the purge stops nor
   // advances a deploy into the project (docs/public-sites.md).
   await deleteProjectSiteRows(projectId)
+  // Before the purge, since a running build reads the project's files.
+  await removeProjectImages(projectId)
   await purgeProjectBytes(projectId)
   // The macOS Keychain item containerless claude keys on the tool home path.
   // No-op elsewhere.

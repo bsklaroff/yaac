@@ -34,7 +34,7 @@ import {
   k8sNamespace,
 } from '#drivers/k8s/substrate'
 import { MAIN_REGISTRY_APP_LABEL } from './main-registry'
-import { REGISTRY_NAMESPACE, REGISTRY_SERVICE_PORT } from './registry'
+import { REGISTRY_NAMESPACE, REGISTRY_POD_PORT } from './registry'
 
 /**
  * Every yaac network policy, as plain `networking.k8s.io/v1` NetworkPolicy
@@ -75,6 +75,28 @@ const workspacePodSelector = {
 }
 
 /**
+ * The egress every proxied pod has (workspaces and builders): the node on
+ * netd's listener range, so a pod whose redirect netd has not programmed
+ * has no egress at all, and the proxy pod's DNS stub (53/udp).
+ */
+function proxiedEgress(nodeCidrs: string[]): Array<Record<string, unknown>> {
+  return [
+    {
+      to: ipBlocks(nodeCidrs),
+      ports: [{
+        protocol: 'TCP',
+        port: NETD_LISTENER_PORT_BASE,
+        endPort: NETD_LISTENER_PORT_END,
+      }],
+    },
+    {
+      to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
+      ports: [udp(DNS_STUB_PORT)],
+    },
+  ]
+}
+
+/**
  * Workspace-pod egress: the containment floor. The only outbound rule is
  * the node on netd's listener range, so if netd has not programmed a pod's
  * redirect, its traffic is dropped. A broken netd cuts egress; it never
@@ -92,20 +114,7 @@ export function buildWorkspaceEgressNpManifest(nodeCidrs: string[]): Record<stri
   return np(WORKSPACE_EGRESS_NP_NAME, k8sNamespace(), {
     podSelector: workspacePodSelector,
     policyTypes: ['Egress'],
-    egress: [
-      {
-        to: ipBlocks(nodeCidrs),
-        ports: [{
-          protocol: 'TCP',
-          port: NETD_LISTENER_PORT_BASE,
-          endPort: NETD_LISTENER_PORT_END,
-        }],
-      },
-      {
-        to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
-        ports: [udp(DNS_STUB_PORT)],
-      },
-    ],
+    egress: proxiedEgress(nodeCidrs),
   })
 }
 
@@ -129,7 +138,7 @@ export function buildWorkspaceIngressLockNpManifest(): Record<string, unknown> {
 /**
  * Proxy ingress. The transparent ports are open only to node addresses,
  * where netd's Envoy delivers from, so no pod can forge a PROXY-protocol
- * source. Workspace pods may reach only the DNS stub.
+ * source. Workspace and builder pods may reach only the DNS stub.
  * The control API and relay are open to the node and to the in-cluster
  * server pod.
  */
@@ -150,7 +159,10 @@ export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string,
         ],
       },
       {
-        from: [{ podSelector: workspacePodSelector }],
+        from: [
+          { podSelector: workspacePodSelector },
+          { podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } } },
+        ],
         ports: [udp(DNS_STUB_PORT)],
       },
       {
@@ -225,8 +237,7 @@ function inPublicV6(cidr: string): boolean {
 }
 
 /**
- * Egress for pods that may dial the internet: builder pods (running
- * agent-editable Dockerfiles) and the proxy. Public addresses and DNS
+ * Egress for pods that may dial the internet: the proxy and the server. Public addresses and DNS
  * (`dnsEgress`) are open. Every node address (`nodeAddressBlocks`) is cut
  * from the public block, as a cloud node's ExternalIP is public. Each is
  * cut from its own family's block, because the apiserver rejects an
@@ -292,36 +303,31 @@ export function buildProxyEgressNpManifest(
   })
 }
 
-/**
- * Builder egress: anywhere `wideEgress` allows, plus the main registry its
- * builds pull parents from and push layers to. No node address is open: no
- * build needs one, and from a `RUN` step it would reach the kubelet, every
- * NodePort, and on a byo cluster the machines' own daemons.
- */
-export function builderEgress(nodeAddrs: string[], dnsCidrs: string[]): Array<Record<string, unknown>> {
-  return [
-    ...wideEgress(nodeAddrs, dnsCidrs),
-    {
-      to: [{
-        namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': REGISTRY_NAMESPACE } },
-        podSelector: { matchLabels: { app: MAIN_REGISTRY_APP_LABEL } },
-      }],
-      ports: [tcp(REGISTRY_SERVICE_PORT)],
-    },
-  ]
+/** The main registry's pod port (docs/image-builds.md "The gate"), by selector. */
+function registryEgress(): Record<string, unknown> {
+  return {
+    to: [{
+      namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': REGISTRY_NAMESPACE } },
+      podSelector: { matchLabels: { app: MAIN_REGISTRY_APP_LABEL } },
+    }],
+    ports: [tcp(REGISTRY_POD_PORT)],
+  }
 }
 
 /**
- * `builderEgress` on every builder pod. The world-deny policy excludes
- * builders, so this is the policy that applies to them. Applied before each
- * build and by `reconcileNodeSet` as nodes join, so a builder that waited
- * for a new node is not left reaching it.
+ * Builder egress (docs/image-builds.md "Build egress"): what a workspace
+ * pod has (`proxiedEgress`), so every build fetch goes through the proxy
+ * under the project's allowlist, plus the main registry's pod port its
+ * builds pull parents from and push layers to. A builder whose redirect
+ * netd has not programmed has no egress. The world-deny policy excludes
+ * builders, so this is the policy that applies to them. Applied before
+ * each build and by `reconcileNodeSet` as nodes join.
  */
-export function buildBuilderEgressNpManifest(nodeAddrs: string[], dnsCidrs: string[]): Record<string, unknown> {
+export function buildBuilderEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
   return np(BUILDER_EGRESS_NP_NAME, k8sNamespace(), {
     podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } },
     policyTypes: ['Egress'],
-    egress: builderEgress(nodeAddrs, dnsCidrs),
+    egress: [...proxiedEgress(nodeCidrs), registryEgress()],
   }, {})
 }
 
@@ -343,8 +349,8 @@ function torEgress(socksUrl: string | null): Array<Record<string, unknown>> {
 
 /**
  * Server-pod egress (docs/server-in-cluster.md "The server's own egress"):
- * the builders' floor, which is public addresses, DNS and the main
- * registry, plus the server's own in-cluster peers. Those are the proxy's
+ * public addresses, DNS and the main registry's pod port, plus the server's
+ * own in-cluster peers. Those are the proxy's
  * control and relay ports, the apiserver at its real endpoints, and under
  * `YAAC_USE_TOR` the host's Tor listener (`torSocksUrl`, null without Tor).
  * It keeps a git remote or endpoint URL a user names off the cluster's
@@ -367,7 +373,8 @@ export function buildServerEgressNpManifest(
     podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_SERVER } },
     policyTypes: ['Egress'],
     egress: [
-      ...builderEgress(nodeAddrs, dnsCidrs),
+      ...wideEgress(nodeAddrs, dnsCidrs),
+      registryEgress(),
       { to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }], ports: [tcp(PROXY_PORT), tcp(RELAY_PORT)] },
       // Each node's disk pod (disk-pod.ts), asked for its free space.
       { to: [{ podSelector: { matchLabels: { app: DISK_APP_NAME } } }], ports: [tcp(DISK_PORT)] },

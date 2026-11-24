@@ -1015,3 +1015,74 @@ report meanwhile, and `CHECKOUTS_CLAIM_NAME` is kept for both.
   `yaac-checkouts` claim, which `kubectl get pvc -A` shows. Remove after
   the shared-tier lives above are gone, since a pod running one of them is
   what keeps the claim.
+
+## Build dirs
+
+Before named images, a project's Dockerfile and its support files lived in
+`global/projects/<id>/config/build/` (`Dockerfile.yaac`) and a user's in
+`server-local/users/<id>/build/` (`Dockerfile.user`). At each server start,
+`importLegacyBuildDirs` (`#domain/images/legacy-import.ts`) turns a
+project's into its image `default` at revision 1, set as the project
+default, and a user's into their user image. The image, its revision and
+the default are one transaction; only after it commits is the dir renamed
+to `build.imported` (or `build.imported.2`… if that is taken). Nothing is
+deleted: files the import did not store (what `.containerignore` listed,
+symlinks) stay there for the user. The imported revision's content hash is
+computed the new way, so each project rebuilds its layer once, mostly from
+cache.
+
+An import that fails leaves no rows and keeps the dir, so the next start
+tries again and logs the reason again; until someone fixes the dir, that
+project stays on its default (the stock image unless set otherwise). The
+cases that fail are a support file over 50MB or unreadable, and a
+Dockerfile Postgres refuses (one with a NUL byte). A `.containerignore`
+pattern is read as a literal path, as the old build did, so a glob
+excludes nothing.
+
+- **What it reads.** Those two kinds of dir, for every project and every
+  user dir under `server-local/users/`.
+- **What breaks silently if it goes too early.** A project that never ran
+  an importing server launches the stock image instead of its Dockerfile,
+  and its build dir sits unread; a user's `Dockerfile.user` stops topping
+  their images.
+- **When it is safe to remove.** Once every install's server has started at
+  least once since this release; on a given install, once no project's
+  `config/build/` and no `server-local/users/*/build/` dir exists (the
+  renamed `build.imported` dirs are the user's to delete).
+
+## Per-step build-cache tags
+
+The podman builder exported a cache tag per Dockerfile step per edit into
+each `yaac-buildcache-<id>` repo, retired by age. BuildKit writes one tag
+per layer per cache window (`<layer>-<n>`). The registry GC's cache sweep
+(`buildCacheSweepScript` in `images/main-registry-gc.ts`) keeps each layer's
+newest window and untags every other tag, which is also what removes the
+old per-step tags: no other code needs that branch, but the sweep's "any
+other shape" clause exists for them.
+
+- **What it reads.** Tags in `yaac-buildcache-*` repos that are not
+  `<layer>-<n>`.
+- **What breaks silently if it goes too early.** An upgraded install keeps
+  its per-step cache tags, and their blobs, in the registry forever.
+- **When it is safe to remove.** Once every install's server has run a main
+  registry GC since upgrading; on a given install, once no
+  `yaac-buildcache-*` repo has a tag of another shape. Removing the clause
+  means narrowing the sweep to `<layer>-<n>` tags, not deleting the sweep.
+
+## Trusted-chain images in the host podman store
+
+`yaac cluster install` built `yaac-base` and `yaac-tools` with host podman,
+and the host GC keeps the newest two generations per repo. Now a host
+buildkitd builds them, so nothing would ever push a newer generation past
+the old ones. `gcHostImages` (`install/image-gc.ts`) retires every tag of
+`yaac-base` and `yaac-tools` from the host store
+(`legacyTrustedChainRepo`), and the e2e suite's `gcTestImages` does the
+same for `yaac-test-base` and `yaac-test-tools`.
+
+- **What it reads.** The host podman store's `yaac-base`, `yaac-tools`,
+  `yaac-test-base` and `yaac-test-tools` tags.
+- **What breaks silently if it goes too early.** About 10 GB per host stays
+  in the podman store with nothing to reclaim it.
+- **When it is safe to remove.** Once every host has run one install (and
+  one unshared test setup, or `pnpm gc:test-images`) since this release;
+  on a given host, once `podman images` lists none of those repos.

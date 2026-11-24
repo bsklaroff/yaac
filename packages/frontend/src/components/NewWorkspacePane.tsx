@@ -1,7 +1,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState, type JSX, type KeyboardEvent } from 'react'
 import { PushRefusedWarning } from '#components/settings/RepoForks'
 import { createPortal } from 'react-dom'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChatIcon, CloseIcon, RenameIcon, RunIcon, SendIcon, SiteIcon, TerminalIcon, TOOL_LABEL, WorkflowIcon } from '#lib/icons'
 import { BranchPicker } from '#components/BranchPicker'
 import { AgentSettings, PermissionModeSelect } from '#components/ComposerSettings'
@@ -11,6 +11,7 @@ import { PaneMenu } from '#components/PaneBar'
 import { SiteForm } from '#components/SitePane'
 import { StepList } from '#components/WorkflowPane'
 import { api } from '#lib/api'
+import { IMAGE_KEY, imageStateLabel, useFollowBuilds } from '#lib/images'
 import { openSession } from '#lib/createWorkspace'
 import { sessionTarget } from '#lib/panes'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
@@ -30,6 +31,7 @@ import { guardNewWorkspace, useUiStore, type LaunchPane } from '#lib/store'
 import { focusRaisesKeyboard } from '#lib/viewport'
 import {
   AGENT_TOOLS,
+  STOCK_IMAGE_ID,
   SUPPORTED_PERMISSION_MODES,
   effortFor,
   resolveAgentOptions,
@@ -52,7 +54,7 @@ import type {
 } from '@yaac/shared/types'
 import {
   cn, YButton, YCheckbox, YChip, YConfirm, YEmptyState, YInput, YNumberInput, YPageBody, YSection, YSelect, YSettingGroup,
-  YSegmented, YSettingRow, YTextArea, YTypeahead,
+  YSegmented, YSettingRow, YSwitch, YTextArea, YTypeahead,
 } from '#ui'
 
 const MODE_COPY: Record<AgentMode, string> = { tui: 'Terminal', acp: 'Chat' }
@@ -145,7 +147,7 @@ const workspaceName = (w: { title?: string; prompt?: string }): string =>
 
 const DRAFT_FIELDS = [
   'prompt', 'tool', 'mode', 'permissionMode', 'model', 'effort', 'agentOptions', 'repos', 'nested', 'cwd', 'startAfter',
-  'title', 'groupId',
+  'title', 'groupId', 'imageId',
   'startAt', 'timeout', 'cron', 'timeZone',
 ] as const satisfies
   readonly (keyof DraftWorkspaceSettings)[]
@@ -407,6 +409,24 @@ export function NewWorkspacePane({ projectId, bar }: {
   const volumes = useVolumes(projectId)
   const volume = volumes?.find((v) => v.name === form.volume && v.holder === undefined)?.name
 
+  // The image it launches: the pick, else the project's last choice, else
+  // its default (docs/image-builds.md "Behavior"). A create starts on the
+  // image's last built revision unless told to wait for the one building.
+  useFollowBuilds()
+  const buildsImages = snapshot !== undefined && snapshot.driver !== 'containerless'
+  const { data: images } = useQuery({
+    queryKey: [IMAGE_KEY, 'list', projectId],
+    queryFn: () => api.image.project[':projectId'].$get({ param: { projectId } }),
+    enabled: buildsImages,
+    staleTime: 0,
+  })
+  const wantedImage = form.imageId ?? project?.lastImageId ?? project?.defaultImageId ?? STOCK_IMAGE_ID
+  const image = images?.find((i) => i.id === wantedImage) ?? images?.find((i) => i.isDefault) ?? images?.[0]
+  const sentImage = buildsImages && image !== undefined ? { imageId: image.id } : {}
+  // The revision building, which a create may wait for rather than start
+  // on the last built one.
+  const waitable = image?.state === 'building' && image.lastBuiltRevision !== undefined ? image.currentRevision : undefined
+
   // On open, refetch credentials; they may have changed via the CLI.
   useEffect(() => {
     void queryClient.invalidateQueries({ queryKey: AUTH_LIST_KEY })
@@ -449,6 +469,7 @@ export function NewWorkspacePane({ projectId, bar }: {
     ...(routineMode ? { cron, timeZone: routineZone } : {}),
     ...(titleText !== '' ? { title: titleText } : {}),
     ...(groupId !== null ? { groupId } : {}),
+    ...(form.imageId !== undefined ? { imageId: form.imageId } : {}),
   }
   // Leaving loses a typed prompt on a create (not an edit of a queued
   // entry or routine), unless it matches the reopened draft exactly.
@@ -567,6 +588,8 @@ export function NewWorkspacePane({ projectId, bar }: {
       ...(timeout !== undefined ? { timeout } : {}),
       ...(pane !== undefined ? { pane } : {}),
       ...(volume !== undefined ? { volume } : {}),
+      ...sentImage,
+      ...(waitable !== undefined && form.awaitBuild === true ? { awaitBuild: true } : {}),
     })
   }
 
@@ -588,6 +611,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       }),
       ...runs,
       ...selection.request,
+      ...sentImage,
     }
     const group = newGroup !== null ? newGroupName : groupId
     const show = (id: string): void => {
@@ -637,6 +661,7 @@ export function NewWorkspacePane({ projectId, bar }: {
       }),
       ...runs,
       ...selection.request,
+      ...sentImage,
       title: titleText,
       ...(ownGroup ? {} : { group: newGroup !== null ? newGroupName : groupId }),
     }
@@ -936,7 +961,7 @@ export function NewWorkspacePane({ projectId, bar }: {
             </YSettingGroup>
           </YSection>
 
-          {!inWorkspace && (selection.rows.length > 0 || showVolumes || !unattended) && (
+          {!inWorkspace && (selection.rows.length > 0 || showVolumes || images !== undefined || !unattended) && (
             <YSection title="Code">
               <YSettingGroup>
                 {selection.rows.length === 1 ? selection.rows[0].included && (
@@ -1007,6 +1032,41 @@ export function NewWorkspacePane({ projectId, bar }: {
                         </option>
                       ))}
                     </YSelect>
+                  </YSettingRow>
+                )}
+                {buildsImages && image !== undefined && images !== undefined && (
+                  <YSettingRow
+                    dense
+                    label="Image"
+                    hint={image.state === 'never-built' ? 'Waits for its first build'
+                      : image.state === 'failed' ? `Its newest build failed${image.lastBuiltRevision ? `: starts on revision ${image.lastBuiltRevision.number}` : ''}`
+                      : undefined}
+                  >
+                    <YSelect
+                      aria-label="Image"
+                      value={image.id}
+                      onChange={(e) => update({ imageId: e.target.value, awaitBuild: undefined })}
+                      className={CONTROL}
+                    >
+                      {images.map((i) => (
+                        <option key={i.id} value={i.id}>
+                          {i.name} ({i.id === STOCK_IMAGE_ID ? 'stock' : imageStateLabel(i)}){i.isDefault ? ', default' : ''}
+                        </option>
+                      ))}
+                    </YSelect>
+                  </YSettingRow>
+                )}
+                {waitable !== undefined && !storesEntry && (
+                  <YSettingRow
+                    dense
+                    label={`Wait for revision ${waitable.number}`}
+                    hint={`Otherwise it starts now on revision ${image?.lastBuiltRevision?.number}, the last built`}
+                  >
+                    <YSwitch
+                      checked={form.awaitBuild === true}
+                      onCheckedChange={(on) => update({ awaitBuild: on || undefined })}
+                      aria-label={`Wait for revision ${waitable.number}`}
+                    />
                   </YSettingRow>
                 )}
                 {!unattended && (

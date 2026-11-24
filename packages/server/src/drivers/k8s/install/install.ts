@@ -1,5 +1,5 @@
 import {
-  ensureBuilderImage,
+  ensureUtilityImage,
   ensureBuilderRoleGuard,
   ensureMainRegistry,
   ensureNetd,
@@ -1060,7 +1060,7 @@ async function retireLegacyNames(deps: ClusterInstallDeps, hash: string): Promis
     return
   }
   deps.log(`Removing ${NODE_LOCAL_NODE_ROOT}/${hash}, the node tree the install used before install ids...`)
-  const image = await ensureBuilderImage()
+  const image = await ensureUtilityImage()
   const runs = await runOnEachNode({
     name: 'yaac-legacy-node-tree',
     labels: { app: 'yaac-legacy-node-tree', [LABEL_INSTALL_ID]: boundInstallId() },

@@ -30,6 +30,7 @@ function columns(s: DraftWorkspaceSettings): Omit<typeof draftWorkspaces.$inferI
     model: s.model ?? null,
     effort: s.effort ?? null,
     agentOptions: s.agentOptions ?? {},
+    imageId: s.imageId ?? null,
     repos: s.repos ?? null,
     nested: s.nested ?? null,
     cwd: s.cwd ?? null,

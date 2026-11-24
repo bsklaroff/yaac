@@ -28,7 +28,7 @@ vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
   ...(await importOriginal<typeof clusterModule>()),
   proxyServiceClusterIp: mockProxyClusterIp,
   servingNpmCacheUrl: mockNpmCacheUrl,
-  ensureBuilderImage: () => Promise.resolve('registry.local/podman-stable:v5.5'),
+  ensureUtilityImage: () => Promise.resolve('registry.local/podman-stable:v5.5'),
   // The tree container's image, which hashing the Dockerfiles would name.
   resolveTrustedLayers: () => Promise.resolve({ base: { tag: 'yaac-base:abc' } }),
 }))

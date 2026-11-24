@@ -2,7 +2,7 @@ import { Command, Argument, Option, type Help } from 'commander'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- the repo-root package.json is the published @bsklaroff/yaac manifest and the single source of truth for the CLI version (inlined by tsup at build time).
 import pkg from '../../../package.json' with { type: 'json' }
 import { exitOnApiError } from '@yaac/shared/server-api'
-import { AGENT_MODES, PERMISSION_MODES } from '@yaac/shared/types'
+import { AGENT_MODES, DEFAULT_IMAGE_CACHE_DAYS, PERMISSION_MODES } from '@yaac/shared/types'
 import { projectAdd } from '#commands/project-add'
 import { userList, userRole } from '#commands/user'
 import { projectList } from '#commands/project-list'
@@ -22,6 +22,24 @@ import { repoDelete, repoList, repoReadOnly, repoShare, repoUnshare, repoUpstrea
 import { groupCreate, groupDelete, groupList, groupMove, groupSetLimit } from '#commands/group'
 import { AGENT_OPTION_HELP, agentOptionArg, workspaceCreate } from '#commands/workspace-create'
 import { scopeToUser } from '#commands/api'
+import {
+  imageBuild,
+  imageBuilds,
+  imageCreate,
+  imageDefault,
+  imageEdit,
+  imageList,
+  imageLogs,
+  imageRestore,
+  imageRevisions,
+  imageRm,
+  imageShow,
+  imageUserBuilds,
+  imageUserEdit,
+  projectImage,
+  userImage,
+  type ImageContentOptions,
+} from '#commands/image'
 import { selectionOptions } from '#commands/repo-selection'
 import { workspaceList } from '#commands/workspace-list'
 import { workspaceRename } from '#commands/workspace-rename'
@@ -43,7 +61,7 @@ import { workspaceConversations } from '#commands/workspace-conversations'
 import { authUpdate } from '#commands/auth-update'
 import { authClear } from '#commands/auth-clear'
 import { authList } from '#commands/auth-list'
-import { configDockerfile, configUserDockerfile } from '#commands/config-dockerfile'
+import { configBuildConcurrency, configImageCacheDays } from '#commands/config-image-builds'
 import { configIcon } from '#commands/config-icon'
 import { configCacheVolumes, configNpmCache, configPortForwards } from '#commands/config-launch-settings'
 import { configShow } from '#commands/config-show'
@@ -549,7 +567,9 @@ selectionOptions(workspace
   .option('--timeout <duration>', 'Stop the workspace this long after it starts, like 45m, 2h or 1h30m (whole minutes; the server checks every minute)')
   .option('--start-at <time>', 'Queue it to start at this time instead of now: HH:MM (its next occurrence), YYYY-MM-DD HH:MM, or ISO 8601, read in your yaac time zone. Needs --prompt')
   .option('--start-in <duration>', 'Queue it to start this long from now, like 30m or 2h. Needs --prompt')
-  .option('--volume <name>', 'Mount this project\'s volume at $YAAC_VOLUME_DIR (see `yaac volume`); refused while another running workspace has it'), 'the workspace')
+  .option('--volume <name>', 'Mount this project\'s volume at $YAAC_VOLUME_DIR (see `yaac volume`); refused while another running workspace has it')
+  .option('--use-image <name>', 'Launch this image of the project (see `yaac image list`; yaac is the stock image) instead of its default, at its last built revision')
+  .option('--await-build', 'Launch the image\'s current revision once its build finishes, rather than the last one built; the create fails if that build does'), 'the workspace')
   .action(workspaceCreate)
 
 workspace
@@ -801,6 +821,7 @@ function siteOptions(cmd: Command, required: boolean): Command {
     .option('--repo <dir@ref>', 'A repo each release starts with, by folder, at a branch on origin or a full commit (repeatable: one sits at the release\'s root, several in their folders); on edit, the whole list', collect, [])
     .option('--admin-port <n>', 'A port of each release that only you can reach, by `yaac forward` or a preview, never the internet')
     .option('--volume <name>', 'A project volume each release mounts at $YAAC_VOLUME_DIR (see `yaac volume`)')
+    .option('--image <name>', 'The project\'s image each release launches (see `yaac image list`; yaac is the stock image) instead of its default')
     .option('--deploy-timeout <duration>', 'Fail a deploy whose release is not ready this long after it starts, like 30m or 2h, at most 1d (default 1h); `site deploy --timeout` overrides it for one deploy')
     .addOption(new Option('--no-repos', 'Refused: a site starts with at least one repo').hideHelp())
     .option('--follow', 'Deploy whenever a branch in --repo moves while the site serves, so whoever can push one, the project\'s agents included, publishes unless the remote\'s branch protection stops them; what fails to deploy leaves the last good release serving')
@@ -820,6 +841,7 @@ siteOptions(site
   .argument('<name>', 'Site name'), false)
   .option('--no-admin-port', 'Offer no admin port')
   .option('--no-volume', 'Mount no volume')
+  .option('--no-image', 'Launch the project\'s default image')
   .option('--no-follow', 'Deploy only when asked; allowed mid-deploy, to whoever may stop the site')
   .action(siteEdit)
 
@@ -934,6 +956,145 @@ workflow
   .argument('<name>', 'Workflow name')
   .action(workflowDelete)
 
+const IMAGE_HELP = 'Image name in the project (see `yaac image list`)'
+
+const image = program
+  .command('image')
+  .description('Manage a project\'s workspace images, and your own Dockerfile.user: each a Dockerfile with support files, saved as revisions and built in the cluster (k8s only)')
+
+/** The options a save takes. */
+function imageContentOptions(cmd: Command): Command {
+  return cmd
+    .requiredOption('--file <path>', 'The Dockerfile, or - to read it from stdin')
+    .option('--context <dir>', 'Upload this directory\'s files, less those its .containerignore lists, as the support files the Dockerfile can COPY; on an edit without it, the current revision\'s files are kept')
+    .option('--note <text>', 'A note on the revision it saves')
+}
+
+/** The options a build takes. */
+function imageBuildOptions(cmd: Command): Command {
+  return cmd
+    .option('--no-cache', 'Run every step again rather than reuse cached ones')
+    .option('--wait', 'Follow the build\'s log until it ends, exiting non-zero unless it succeeded')
+}
+
+image
+  .command('list')
+  .description('List a project\'s images, the stock yaac image first: which is the default, each one\'s state, its current revision and the last one built, which creates launch')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .action(imageList)
+
+image
+  .command('show')
+  .description('Print an image\'s Dockerfile to stdout, and its revision, author and support files to stderr')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<image>', IMAGE_HELP)
+  .option('--revision <n>', 'Show this revision instead of the current one')
+  .action(async (project: string, name: string, opts: { revision?: string }) => imageShow(await projectImage(project, name), opts))
+
+imageContentOptions(image
+  .command('create')
+  .description('Create an image in a project from a Dockerfile, and start building it; `yaac workspace create --use-image` launches it')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<image>', 'Its name: lowercase letters, digits, ".", "_" and "-", and not yaac'))
+  .action(imageCreate)
+
+imageContentOptions(image
+  .command('edit')
+  .description('Save new content of an image: a change makes a new revision and starts building it, while creates keep launching the last built one')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<image>', IMAGE_HELP))
+  .action(async (project: string, name: string, opts: ImageContentOptions) => imageEdit(await projectImage(project, name), opts))
+
+image
+  .command('rm')
+  .description('Delete an image with its revisions and builds; running workspaces keep theirs')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<image>', IMAGE_HELP)
+  .action(async (project: string, name: string) => imageRm(await projectImage(project, name)))
+
+image
+  .command('default')
+  .description('Show the image a project\'s creates launch when they name none, or set it')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[image]', 'An image name, or yaac for the stock image')
+  .action(imageDefault)
+
+image
+  .command('revisions')
+  .description('List an image\'s revisions, newest first: number, build status, author, time and note')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<image>', IMAGE_HELP)
+  .action(async (project: string, name: string) => imageRevisions(await projectImage(project, name)))
+
+image
+  .command('restore')
+  .description('Save an old revision\'s content as a new revision, and build it; support files no longer kept are left out, and named')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<image>', IMAGE_HELP)
+  .argument('<revision>', 'The revision number (see `yaac image revisions`)')
+  .action(async (project: string, name: string, revision: string) => imageRestore(await projectImage(project, name), revision))
+
+imageBuildOptions(image
+  .command('build')
+  .description('Build an image now: its current revision, or another')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('<image>', IMAGE_HELP)
+  .option('--revision <n>', 'Build this revision instead'))
+  .action(async (project: string, name: string, opts: { cache?: boolean; revision?: string; wait?: boolean }) =>
+    imageBuild(await projectImage(project, name), opts))
+
+image
+  .command('builds')
+  .description('List a project\'s image builds, or one image\'s, newest first')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[image]', IMAGE_HELP)
+  .action(imageBuilds)
+
+image
+  .command('logs')
+  .description('Print a build\'s log')
+  .argument('<build-id>', 'The build\'s id (see `yaac image builds`)')
+  .option('-f, --follow', 'Keep printing it until the build ends, then its outcome, exiting non-zero unless it succeeded')
+  .action(imageLogs)
+
+const imageUser = image
+  .command('user')
+  .description('Your own Dockerfile.user image, layered on the default image of every project you own')
+
+imageUser
+  .command('show')
+  .description('Print your Dockerfile.user to stdout, and its revision and support files to stderr')
+  .option('--revision <n>', 'Show this revision instead of the current one')
+  .action(async (opts: { revision?: string }) => imageShow(await userImage(), opts))
+
+imageContentOptions(imageUser
+  .command('edit')
+  .description('Save your Dockerfile.user, creating it on its first save; it must use `ARG BASE_IMAGE` and `FROM ${BASE_IMAGE}`. A change makes a new revision and builds it on each of your projects'))
+  .action(imageUserEdit)
+
+imageUser
+  .command('revisions')
+  .description('List your Dockerfile.user\'s revisions, newest first')
+  .action(async () => imageRevisions(await userImage()))
+
+imageUser
+  .command('restore')
+  .description('Save an old revision of your Dockerfile.user as a new revision')
+  .argument('<revision>', 'The revision number (see `yaac image user revisions`)')
+  .action(async (revision: string) => imageRestore(await userImage(), revision))
+
+imageBuildOptions(imageUser
+  .command('build')
+  .description('Build your Dockerfile.user now, on a project\'s default image')
+  .argument('<project>', 'Project name, id, or id prefix'))
+  .action(async (project: string, opts: { cache?: boolean; wait?: boolean }) => imageBuild(await userImage(), { ...opts, project }))
+
+imageUser
+  .command('builds')
+  .description('List your Dockerfile.user\'s builds, newest first')
+  .argument('[project]', 'Only those on this project')
+  .action(imageUserBuilds)
+
 const config = program
   .command('config')
   .description('Show or change project settings and your own; each setting prints given no value')
@@ -968,19 +1129,19 @@ config
   .action(configNpmCache)
 
 config
-  .command('dockerfile')
-  .description('Print a project\'s Dockerfile.yaac, which builds its workspace image, or replace it (k8s only)')
-  .argument('<project>', 'Project name, id, or id prefix')
-  .option('--file <path>', 'Replace it with this file, or - to read it from stdin')
-  .option('--none', 'Remove it, so workspaces run the default image')
-  .action(configDockerfile)
+  .command('build-concurrency')
+  .description('Show how many image builds the install runs at once, or set it (admins only; k8s only)')
+  .argument('[n]', 'Most builds at once, a whole number')
+  .option('--none', 'Return to the default')
+  .action(configBuildConcurrency)
 
 config
-  .command('user-dockerfile')
-  .description('Print your Dockerfile.user, layered on every project you own, or replace it (k8s only)')
-  .option('--file <path>', 'Replace it with this file, or - to read it from stdin')
-  .option('--none', 'Remove it')
-  .action(configUserDockerfile)
+  .command('image-cache-days')
+  .description('Show how old a cached build step a project\'s image builds still reuse, or set it (k8s only)')
+  .argument('<project>', 'Project name, id, or id prefix')
+  .argument('[days]', 'Days, a whole number from 1 to 365')
+  .option('--none', `Return to the default, ${DEFAULT_IMAGE_CACHE_DAYS} days`)
+  .action(configImageCacheDays)
 
 config
   .command('icon')

@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises'
 import { api, resolveProjectId } from '#commands/api'
 import { attachWorkspacePty } from '#commands/ws-terminal'
+import { resolveImageId } from '#commands/image'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { testEnv } from '@yaac/shared/env'
 import { reportDeviceTimeZone } from '@yaac/shared/time-zone-report'
@@ -63,6 +64,12 @@ export interface WorkspaceCreateOptions extends SelectionOptions {
   /** With `nonInteractive`: wait for the outcome, exiting non-zero unless
    *  it succeeded. */
   wait?: boolean
+  /** The project's image to launch, by name (`yaac` for the stock image);
+   *  absent is the project's default (docs/image-builds.md). */
+  useImage?: string
+  /** Launch the image's current revision once it is built, rather than its
+   *  last built one. */
+  awaitBuild?: boolean
 }
 
 /**
@@ -88,7 +95,8 @@ export async function workspaceCreate(project: string | undefined, options: Work
       ['--start-at', options.startAt], ['--start-in', options.startIn], ['--volume', options.volume],
       ['--commit', options.commit], [options.steps === false ? '--no-steps' : '--steps', options.steps],
       ['--workflow', options.workflow],
-      ['--non-interactive', options.nonInteractive], ['--wait', options.wait]] as const) {
+      ['--non-interactive', options.nonInteractive], ['--wait', options.wait],
+      ['--use-image', options.useImage], ['--await-build', options.awaitBuild]] as const) {
       if (set !== undefined) throw new Error(`${flag} is a workspace's setting, which --workspace (an agent in a running one) does not take.`)
     }
     if (noAgent) throw new Error('--no-agent starts a new workspace; it does not take --workspace.')
@@ -124,12 +132,16 @@ export async function workspaceCreate(project: string | undefined, options: Work
   if (options.startAt !== undefined && startIn !== undefined) {
     throw new Error('Give --start-at or --start-in, not both.')
   }
+  if (options.awaitBuild === true && (options.startAt !== undefined || startIn !== undefined)) {
+    throw new Error('--await-build waits for a create now; a scheduled one launches the image built when it starts.')
+  }
   // Best-effort, so a CLI-only user's workspaces get their zone too, and a
   // `--start-at` is read in it.
   await reportDeviceTimeZone().catch(() => {})
   const steps = options.steps === undefined ? undefined : options.steps === false ? null : await readSteps(options.steps)
+  const projectId = await resolveProjectId(project)
   const settings = {
-    project: await resolveProjectId(project),
+    project: projectId,
     tool: options.tool,
     ...selection,
     model: options.model,
@@ -142,6 +154,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
     ...(steps !== undefined ? { steps } : {}),
     ...(options.workflow !== undefined ? { workflow: options.workflow } : {}),
     ...(nonInteractive ? { nonInteractive: true } : {}),
+    ...(options.useImage !== undefined ? { imageId: await resolveImageId(projectId, project, options.useImage) } : {}),
   }
 
   const source = promptSource(options)
@@ -164,6 +177,7 @@ export async function workspaceCreate(project: string | undefined, options: Work
     prompt,
     ...(noAgent ? { noSession: true } : {}),
     ...(options.volume !== undefined ? { volume: options.volume } : {}),
+    ...(options.awaitBuild === true ? { awaitBuild: true } : {}),
   } })
   if (nonInteractive) {
     await followNonInteractive(res, { wait: options.wait === true })

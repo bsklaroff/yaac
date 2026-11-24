@@ -16,6 +16,7 @@ import {
   CA_SECRET_NAME,
   CREDENTIALS_SECRET_NAME,
   EMPTY_CREDENTIALS,
+  LABEL_BUILD_ID,
   LABEL_PROXY_INPUT,
   LABEL_WORKSPACE_ID,
   REFRESHED_SECRET_NAME,
@@ -274,11 +275,15 @@ export async function fetchRegistration(
 ): Promise<ProxyRegistration | undefined> {
   const missedAt = registrationMisses.get(workspaceId)
   if (missedAt !== undefined && Date.now() - missedAt < REGISTRATION_MISS_TTL_MS) return undefined
-  const list = await client.core.listNamespacedConfigMap({
-    namespace: client.namespace,
-    labelSelector: `${selector('registration')},${LABEL_WORKSPACE_ID}=${workspaceId}`,
-  })
-  for (const cm of list.items) objects.applyRegistration(cm)
+  // A workspace's, or an image build's (no selector ORs two labels).
+  for (const label of [LABEL_WORKSPACE_ID, LABEL_BUILD_ID]) {
+    const list = await client.core.listNamespacedConfigMap({
+      namespace: client.namespace,
+      labelSelector: `${selector('registration')},${label}=${workspaceId}`,
+    })
+    for (const cm of list.items) objects.applyRegistration(cm)
+    if (objects.registration(workspaceId)) break
+  }
   const found = objects.registration(workspaceId)
   if (!found) registrationMisses.set(workspaceId, Date.now())
   return found

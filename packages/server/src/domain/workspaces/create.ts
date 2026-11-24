@@ -2,6 +2,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import crypto, { createHash } from 'node:crypto'
 import { allowlistAllows } from '@yaac/shared/allowed-hosts'
+import { imageForCreate, type CreateImage } from '#domain/images'
 import { buildStatusRight } from '#lib/status-right'
 import { mergeEnvEntries } from '#lib/env-entries'
 import { testEnv } from '@yaac/shared/env'
@@ -69,12 +70,14 @@ import { AgentLaunchDeadError, buildWindowsExec, ensureAgentReporters, ensureOmp
 import {
   applyWorkspaceEvent,
   getGitIdentity,
+  getImage,
   getProjectRow,
   getTimeZone,
   getWorkspaceRow,
   insertSession,
   listWorkspaceSessions,
   markSessionsLaunched,
+  setWorkspaceImage,
   setWorkspaceMamaTokenHash,
   unstageVolume,
   type RepoRow,
@@ -145,6 +148,7 @@ import {
   type DriverKind,
   type PermissionMode,
   type PortMapping,
+  STOCK_IMAGE_ID,
 } from '@yaac/shared/types'
 import { toolApiKeyEnvVar, type CustomEndpoint } from '@yaac/shared/tool-providers'
 import type { Actor } from '#domain/access'
@@ -276,6 +280,14 @@ export interface WorkspaceCreateOptions {
   siteId?: string
   image?: string
   stageVolumeId?: string
+  /**
+   * The image to launch (docs/image-builds.md): an image id, or
+   * `STOCK_IMAGE_ID`; absent, the project's default (a spare: the
+   * project's last choice; a restart: what it last launched). With
+   * `awaitBuild`, the image's current revision, waiting for its build.
+   */
+  imageId?: string
+  awaitBuild?: boolean
   colocateWith?: string
   /**
    * Called with each user-visible progress message. The HTTP route streams
@@ -1090,13 +1102,19 @@ async function provisionWorkspace(
   // overlaps pod boot.
   timing.phase('checks', startedAt)
 
-  const imageTask: Promise<string | undefined> = runtime.kind === 'containerless' || options.image !== undefined
-    ? Promise.resolve(options.image)
-    : timing.time('image', runtime.prepareImage({
-      projectId,
-      owner,
-      onProgress: (m) => emit(m, options),
-    }))
+  const imageTask: Promise<CreateImage | undefined> = runtime.kind === 'containerless'
+    ? Promise.resolve(undefined)
+    : options.image !== undefined
+      ? Promise.resolve({ ref: options.image, tag: options.image })
+      : timing.time('image', launchImageId(options, projectId).then((imageId) => imageForCreate({
+        projectId,
+        ...(imageId !== undefined ? { imageId } : {}),
+        awaitBuild: options.awaitBuild === true,
+        remember: options.prewarm !== true && options.resume !== true,
+        reason: options.prewarm === true ? 'prewarm' : 'create',
+        requestedBy: owner,
+        onProgress: (m) => emit(m, options),
+      })))
   imageTask.catch(() => { /* awaited at the join */ })
 
   // The checkouts (`provisionCheckout`). A non-interactive run and a site's
@@ -1329,7 +1347,9 @@ async function provisionWorkspace(
   })()
 
   void timing.time('prep', prepTask)
-  const [imageRef, substrate, prep] = await Promise.all([imageTask, substrateTask, prepTask])
+  const [launchImage, substrate, prep] = await Promise.all([imageTask, substrateTask, prepTask])
+  const imageRef = launchImage?.ref
+  if (launchImage) await setWorkspaceImage(workspaceId, launchImage)
   const joinedAt = Date.now()
   // The image too, so a spare that outlives an image change is never
   // claimed, and what it started with, which a claim must ask for exactly.
@@ -1798,4 +1818,30 @@ async function provisionWorkspace(
     ...(options.session !== undefined && sessions[0] !== undefined ? { sessionId: sessions[0].id } : {}),
     ...(imageRef !== undefined ? { image: imageRef } : {}),
   }
+}
+
+/**
+ * The image a launch asks for: the create's own choice, a spare's
+ * project's last choice, or what a restarted workspace last launched
+ * (`storedImageId`). Absent takes the project default.
+ */
+async function launchImageId(options: WorkspaceCreateOptions, projectId: string): Promise<string | undefined> {
+  if (options.imageId !== undefined) return options.imageId
+  if (options.prewarm === true) return (await getProjectRow(projectId))?.lastImageId ?? undefined
+  if (options.resume === true && options.workspaceId !== undefined) {
+    const row = await getWorkspaceRow(projectId, options.workspaceId)
+    if (row) return storedImageId(row)
+  }
+  return undefined
+}
+
+/**
+ * The image a workspace launched, to launch it again: the stock image, a
+ * named one, or (for one from before images, or whose image was deleted
+ * since) absent, which takes the project default.
+ */
+export async function storedImageId(row: { imageId?: string; imageTag?: string }): Promise<string | undefined> {
+  if (row.imageTag === undefined) return undefined
+  if (row.imageId === undefined) return STOCK_IMAGE_ID
+  return await getImage(row.imageId) ? row.imageId : undefined
 }

@@ -1,5 +1,5 @@
 /**
- * GC of the main registry: retires aged-out step-cache tags, old
+ * GC of the main registry: retires superseded build caches, old
  * content-hash generations and orphaned project repos, collects the
  * unreferenced blobs, then prunes the nodes' copies
  * (node-image-gc.ts). docs/image-gc.md "The main registry" describes each
@@ -18,16 +18,16 @@
  * repeated just before it runs. The registry keeps no blob-descriptor
  * cache (main-registry.ts), so it needs no restart afterwards.
  */
-import { mainRegistryExec, resolveImageChain } from '#drivers/k8s/cluster'
+import { mainRegistryExec, resolveTrustedLayers } from '#drivers/k8s/cluster'
 import { listObjects } from '#drivers/k8s/substrate'
 import { testEnv } from '@yaac/shared/env'
-import type { PassContext, ProjectReaders } from '#drivers/contract'
+import type { PassContext } from '#drivers/contract'
 import { serverLog } from '#lib/log'
-import { BUILD_CACHE_TTL } from './builder-pod'
 import { forgetVerifiedTags, imageWorkInFlight } from './build-coordinator'
 import { pruneNodeImages, registryGeneration } from './node-image-gc'
 
-/** Generations kept per repo beyond the live set, which is always protected. */
+/** Generations kept per repo beyond the live set, which is always protected.
+ *  A project's or user's repo keeps only the live set. */
 const MAIN_REGISTRY_GENERATIONS_KEPT = 2
 
 /**
@@ -35,15 +35,6 @@ const MAIN_REGISTRY_GENERATIONS_KEPT = 2
  * duration, often with no pod naming them. The suite retires them itself.
  */
 const TEST_IMAGE_REPOS = 'yaac-test-*'
-
-/**
- * Step-cache retention in whole days (busybox `find -mtime`), derived from
- * `--cache-ttl`, past which a tag is already a cache miss. Computed on call
- * because some tests mock builder-pod.
- */
-function buildCacheRetainDays(): number {
-  return Math.max(1, Math.floor(Number.parseInt(BUILD_CACHE_TTL, 10) / 24))
-}
 
 /**
  * An upload whose data file changed within this many minutes counts as in
@@ -99,8 +90,9 @@ function registryQuietProbeScript(
 
 /**
  * Busybox script that untags all but the newest MAIN_REGISTRY_GENERATIONS_KEPT
- * content-hash generations of each yaac-built repo, never touching a
- * `protect`ed `repo:tag` (which still counts toward the kept number). Only
+ * content-hash generations of each yaac-built repo, and every generation of
+ * a project's or user's images, never touching a `protect`ed `repo:tag`
+ * (which still counts toward the kept number). Only
  * `yaac-*` repos other than the e2e suite's, and tags of 16 hex chars, are
  * candidates, so `latest` and step-cache tags never are. Newest is by tag
  * directory mtime, i.e. creation time, which suits write-once tags. Prints
@@ -118,7 +110,11 @@ function registryRetentionScript(protect: string[]): string {
     '    yaac-*) ;;',
     '    *) continue;;',
     '  esac',
-    `  for stale in $(ls -1t "$tagdir" 2>/dev/null | grep -Ex '[0-9a-f]{16}' | tail -n +${MAIN_REGISTRY_GENERATIONS_KEPT + 1}); do`,
+    // A project's or user's images keep only what is protected (each
+    // image's newest builds); every other repo, its newest generations.
+    `  keep=${MAIN_REGISTRY_GENERATIONS_KEPT}`,
+    '  case "$repo" in yaac-proj-*|yaac-user-*) keep=0;; esac',
+    `  for stale in $(ls -1t "$tagdir" 2>/dev/null | grep -Ex '[0-9a-f]{16}' | tail -n +$((keep + 1))); do`,
     '    printf \'%s\\n\' "$PROTECT" | grep -qxF "$repo:$stale" && continue',
     '    rm -rf "$tagdir/$stale" && echo "RETIRED $repo:$stale"',
     '  done',
@@ -127,22 +123,28 @@ function registryRetentionScript(protect: string[]): string {
 }
 
 /**
- * Busybox script that untags every `yaac-buildcache-*` entry whose tag link
- * is older than `days` (by removing `<repo>/_manifests/tags/<key>`) and
- * prints each as `RETIRED <key>`. A cache hit re-pushes the entry and
- * refreshes the link, so age means time since last use.
+ * Busybox script that keeps, in each `yaac-buildcache-*` repo, only each
+ * cache's newest window (`<layer>-<cacheKey>-<n>` with the highest `n` per
+ * prefix; see `cacheBucket` in builder-pod.ts) and untags every other tag,
+ * printing each as `RETIRED <repo>:<tag>`. A build never reads a window
+ * after it ends, so an older one is dead weight. A deleted image's newest
+ * window has nothing to supersede it, so it stays until its project is
+ * removed (docs/image-gc.md). Tags of any other shape are the
+ * per-step cache the podman builder wrote (docs/legacy-compat-shims.md
+ * "Per-step build-cache tags").
  */
-function buildCacheSweepScript(days = buildCacheRetainDays()): string {
+function buildCacheSweepScript(): string {
   return [
     'set -eu',
     `ROOT=${REGISTRY_REPOS_DIR}`,
     '[ -d "$ROOT" ] || exit 0',
     'for tags in "$ROOT"/yaac-buildcache-*/_manifests/tags; do',
     '  [ -d "$tags" ] || continue',
-    `  find "$tags" -mindepth 3 -maxdepth 3 -name link -mtime +${days} 2>/dev/null | while read -r link; do`,
-    '    dir=$(dirname "$(dirname "$link")")',
-    '    echo "RETIRED ${dir##*/}"',
-    '    rm -rf "$dir"',
+    '  repo=${tags%/_manifests/tags}; repo=${repo##*/}',
+    "  keep=$(ls -1 \"$tags\" | grep -Ex '[a-z][a-z0-9-]*-[0-9]+' | awk -F- '{ n = $NF; p = substr($0, 1, length($0) - length(n) - 1); if (!(p in best) || n + 0 > best[p] + 0) best[p] = n } END { for (p in best) print p \"-\" best[p] }')",
+    '  for tag in $(ls -1 "$tags"); do',
+    '    printf \'%s\\n\' "$keep" | grep -qxF "$tag" && continue',
+    '    rm -rf "${tags:?}/$tag" && echo "RETIRED $repo:$tag"',
     '  done',
     'done',
   ].join('\n')
@@ -179,7 +181,7 @@ function orphanProjectRepoSweepScript(liveIds: string[], keepRepos: string[]): s
 }
 
 interface MainRegistryGcResult {
-  /** Cache keys and `repo:tag` generations untagged this sweep. */
+  /** `repo:tag` caches and generations untagged this sweep. */
   retired: string[]
   /** True when live push activity made the sweep stand down. */
   busy: boolean
@@ -197,7 +199,7 @@ async function registryBusy(): Promise<boolean> {
 }
 
 /** What the pass reads above the driver. */
-type GcReaders = ProjectReaders & Pick<PassContext, 'pinnedImages'>
+type GcReaders = Pick<PassContext, 'pinnedImages' | 'keptImageTags'>
 
 /** What the retention pass must not retire, gathered before it runs. */
 interface LiveImages {
@@ -206,9 +208,9 @@ interface LiveImages {
   /** `repo:tag` of every generation a pod or workload names, any namespace. */
   inUse: Set<string>
   /**
-   * `repo:tag` of every layer of every project's current chain, or null
-   * when some project's chain could not be resolved — which makes the whole
-   * generation half stand down (see `readLiveImages`).
+   * `repo:tag` of every project and user image build `#domain/images`
+   * keeps, or null when it could not say, which makes the whole generation
+   * half stand down (see `readLiveImages`).
    */
   wanted: Set<string> | null
 }
@@ -253,11 +255,10 @@ async function readInUse(): Promise<Set<string>> {
 }
 
 /**
- * Read the live set: images in use or pinned, plus every project's current
- * chain (a project with no running workspace still needs its image). If any
- * chain cannot be resolved, `wanted` is null and no generations are
- * retired this pass; the usual cause, a broken `Dockerfile.user`, breaks
- * every chain at once.
+ * Read the live set: images in use or pinned, plus the trusted chain this
+ * server launches and the image builds `#domain/images` keeps (an image
+ * with no running workspace still needs its newest builds). If those
+ * cannot be read, `wanted` is null and no generation is retired this pass.
  */
 async function readLiveImages(
   projectIds: string[],
@@ -268,17 +269,13 @@ async function readLiveImages(
     const generation = registryGeneration(image)
     if (generation) inUse.add(generation)
   }
-  let wanted: Set<string> | null = new Set<string>()
-  for (const projectId of projectIds) {
-    try {
-      const { layers } = await resolveImageChain(projectId, await projects.projectOwner(projectId))
-      for (const { tag } of layers) wanted.add(tag)
-    } catch (err) {
-      serverLog(`[main-registry-gc] ${projectId}: cannot resolve its image chain, `
-        + `so no image generation is retired this pass: ${String(err)}`)
-      wanted = null
-      break
-    }
+  let wanted: Set<string> | null
+  try {
+    const { base, tools } = await resolveTrustedLayers()
+    wanted = new Set([base.tag, tools.tag, ...await projects.keptImageTags()])
+  } catch (err) {
+    serverLog(`[main-registry-gc] cannot read the image builds to keep, so no image generation is retired this pass: ${String(err)}`)
+    wanted = null
   }
   return { projectIds, inUse, wanted }
 }

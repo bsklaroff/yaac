@@ -54,7 +54,7 @@ mark "$TIMING_DIR/.init-start"
 # orders a container's entrypoint and its postStart hook not at all, so the
 # setup below could run before it; and staging it with the rest of
 # workspace-bin makes it independent of which image a workspace runs,
-# including a standalone Dockerfile.yaac with an entrypoint of its own. Same
+# including a standalone project image with an entrypoint of its own. Same
 # rewrite, same two rules as dockerfiles/server-entrypoint.sh:
 #
 #   REPLACE the entry, never append a second one. getpwnam("yaac") and

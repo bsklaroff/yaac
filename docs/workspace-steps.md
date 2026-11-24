@@ -346,7 +346,7 @@ longest value less one byte, to catch a value split across two reads, and
 flushes them after 100 ms with no input, so a prompt still shows. It skips
 values under 8 characters, which would mask ordinary words, masks each
 such line of a multi-line value too, and catches no encoded or changed
-form. An image without `node` (a standalone `Dockerfile.yaac`) logs
+form. An image without `node` (a standalone project image) logs
 unmasked and says so on the log's first line.
 
 The dir is `terminalLogDir` (`global/projects/<project>/logs/<workspace>`),

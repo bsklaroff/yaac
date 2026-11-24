@@ -1,23 +1,58 @@
+import { BUILDKIT_DIR } from '@yaac/shared/project-paths'
+import { contextHash, imagePrefix } from './image-tags'
 import { mirrorRef } from './registry'
 
 /**
- * The digest-pinned podman image the sandboxed builder pods run, mirrored
- * into the local registry at install like the other pinned upstreams. Its
- * podman version tracks the workspace engines' so store metadata stays
- * compatible. Never the workspace's own image, whose binaries the user
- * controls. The builder pods themselves are in `#drivers/k8s/images`.
+ * The sandboxed builder pods' image: BuildKit with a patched buildkitd
+ * (k8s/buildkit/Dockerfile), tagged by the build context's hash. `yaac
+ * cluster install` builds it and records the digest it pushed, like a
+ * pinned mirror's. The builder pods themselves are in `#drivers/k8s/images`.
  */
-const BUILDER_PIN = 'sha256:25d49cf990843962043942db172c7ef5c6f85012384aada7976aec65906ae209'
-export const BUILDER_UPSTREAM_IMAGE = `quay.io/podman/stable@${BUILDER_PIN}`
-/** The mirror tag includes the pin, so re-pinning re-mirrors. */
-export const BUILDER_MIRROR_TAG =
-  `podman-stable:v5.5-${BUILDER_PIN.slice('sha256:'.length, 'sha256:'.length + 12)}`
+export async function resolveBuilderImageTag(prefix = imagePrefix()): Promise<string> {
+  return `${prefix}-buildkit:${await contextHash(BUILDKIT_DIR)}`
+}
 
 /**
- * The builder image's in-cluster ref, by the digest install recorded. Many
- * of the pods that run it are root over node or shared data, so an
- * overwritten tag must never reach them. Lookup-only.
+ * The builder image's in-cluster ref, by the digest install recorded. Every
+ * project's untrusted layers build in it, so an overwritten tag must never
+ * reach a builder pod. Lookup-only.
  */
 export async function ensureBuilderImage(): Promise<string> {
-  return mirrorRef('builder', BUILDER_MIRROR_TAG)
+  return mirrorRef('builder', await resolveBuilderImageTag())
+}
+
+/**
+ * buildkitd's config, for the builder pods and for install's host daemon.
+ *
+ * - Gateway frontends are off, so a `# syntax=` line or a frontend image
+ *   never runs; callers pass `cmdline` so the built-in Dockerfile frontend
+ *   parses every file instead of refusing it.
+ * - `plainHttp` names the registries reached over plain HTTP: the main
+ *   registry, from wherever this daemon dials it.
+ * - Its own GC is off: a builder pod's state dies with the pod, and the
+ *   host daemon prunes before install removes it.
+ */
+export function buildkitdConfig(opts: { plainHttp: string[] }): string {
+  return [
+    '[worker.oci]',
+    '  enabled = true',
+    '  snapshotter = "overlayfs"',
+    '  gc = false',
+    '[worker.containerd]',
+    '  enabled = false',
+    '[frontend."gateway.v0"]',
+    '  enabled = false',
+    ...opts.plainHttp.flatMap((host) => [`[registry."${host}"]`, '  http = true']),
+    '',
+  ].join('\n')
+}
+
+/**
+ * buildkitd's environment: no cap on a step's log size or rate, which by
+ * default clips output past 200KiB/s, so a build's log reaches the client
+ * whole.
+ */
+export const BUILDKITD_ENV: Record<string, string> = {
+  BUILDKIT_STEP_LOG_MAX_SIZE: '-1',
+  BUILDKIT_STEP_LOG_MAX_SPEED: '-1',
 }

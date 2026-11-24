@@ -5,6 +5,11 @@ import type {
   AgentTool,
   EgressAllowlist,
   GroupOwnerKind,
+  ImageBuildReason,
+  ImageBuildStatus,
+  ImageBuildWarning,
+  ImageFileManifest,
+  ImageLayerName,
   PermissionMode,
   PortForwardConfig,
   RepoCommits,
@@ -152,6 +157,17 @@ export const projects = snakeCase.table('projects', {
   portForwards: jsonb().$type<PortForwardConfig[]>().notNull().default([]),
   cacheVolumes: jsonb().$type<Record<string, string>>().notNull().default({}),
   npmCache: boolean().notNull().default(true),
+  /** The image a create naming none launches (docs/image-builds.md); null
+   *  is the stock yaac image. No foreign key; deleting an image clears it. */
+  defaultImageId: uuid(),
+  /** The image the last create named: the create pane's default, and the
+   *  image the project's spare and the image sweep keep built.
+   *  `STOCK_IMAGE_ID` is the stock image; null means no create has named
+   *  one, so the project default applies. */
+  lastImageId: uuid(),
+  /** Days a build cache is read before a new one starts; null is the
+   *  default (docs/image-builds.md "Build caches"). */
+  imageCacheDays: integer(),
 })
 
 /**
@@ -335,6 +351,12 @@ export const workspaces = snakeCase.table('workspaces', {
   /** The public site it is a release of (docs/public-sites.md), which makes
    *  it read-only. No foreign key; a deleted site's releases keep it. */
   siteId: uuid(),
+  /** The image, its revision and the image tag it last launched with
+   *  (docs/image-builds.md); null for the stock image and for a
+   *  containerless workspace. No foreign keys: history outlives an image. */
+  imageId: uuid(),
+  imageRevisionId: uuid(),
+  imageTag: text(),
 }, (t) => [index().on(t.projectId)])
 
 /**
@@ -506,6 +528,11 @@ export const sites = snakeCase.table('sites', {
   /** The named workflow whose current workflow each release runs; its
    *  `needs` may name `volume`. */
   namedWorkflowId: uuid().notNull().references((): AnyPgColumn => namedWorkflows.id),
+  /** The image its deploys launch (docs/image-builds.md): an image id, or
+   *  `STOCK_IMAGE_ID`; null is the project's default. A release still pins
+   *  the image it launched (`releaseImage`). No foreign key; deleting an
+   *  image clears it. */
+  imageId: uuid(),
   /** No foreign key; deleting a volume a site names is refused. */
   volumeId: uuid(),
   /** The repos its releases start with, by id, each at a branch on origin
@@ -992,6 +1019,9 @@ export const queuedWorkspaces = snakeCase.table('queued_workspaces', {
   /** Null when its model has no effort setting. */
   effort: text(),
   agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
+  /** The image to launch (docs/image-builds.md); null is the project's
+   *  default. No foreign key; deleting an image clears it. */
+  imageId: uuid(),
   /** The repos it starts with, by repo id, each at a branch (no `origin/`
    *  prefix, fetched at launch so the child starts from its latest tip) or a
    *  full commit; whether a lone one sits in its own folder; and where its
@@ -1065,6 +1095,9 @@ export const routines = snakeCase.table('routines', {
   permissionMode: text().$type<PermissionMode>().notNull(),
   effort: text(),
   agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
+  /** The image to launch (docs/image-builds.md); null is the project's
+   *  default. No foreign key; deleting an image clears it. */
+  imageId: uuid(),
   /** What each run starts with, as on a queued entry. */
   repos: jsonb().$type<RepoStart[]>().notNull().default([]),
   nested: boolean().notNull().default(false),
@@ -1110,6 +1143,9 @@ export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   /** Null when the model has no effort setting, or none was resolved. */
   effort: text(),
   agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
+  /** The image to launch (docs/image-builds.md); null is the project's
+   *  default. No foreign key; deleting an image clears it. */
+  imageId: uuid(),
   /** The dialog's repo rows, layout and cwd; null where it had not
    *  resolved one. */
   repos: jsonb().$type<RepoStart[]>(),
@@ -1131,3 +1167,90 @@ export const draftWorkspaces = snakeCase.table('draft_workspaces', {
   cron: text(),
   timeZone: text(),
 }, (t) => [index().on(t.projectId)])
+
+/**
+ * A named Dockerfile (docs/image-builds.md "Images, revisions and
+ * builds"): one of a project's images, or a user's own `Dockerfile.user`
+ * (the one image in a user's scope, which tops every project they own).
+ * Exactly one of `projectId` and `userId` is set.
+ */
+export const images = snakeCase.table('images', {
+  id: uuid().primaryKey().defaultRandom(),
+  projectId: uuid(),
+  userId: uuid(),
+  name: text().notNull(),
+  /** The newest revision: what a save made and a build of it builds. */
+  currentRevisionId: uuid(),
+  /** The newest revision a build finished for, and the final tag of that
+   *  chain: what a create launches by default, so a save or a rebuild in
+   *  progress never holds one up. */
+  lastBuiltRevisionId: uuid(),
+  lastBuiltTag: text(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex().on(t.projectId, t.name),
+  uniqueIndex().on(t.userId, t.name),
+])
+
+/**
+ * One saved content of an image, immutable. Support files live in the
+ * scope's content-addressed blob store; the manifest names them by hash.
+ * `contentHash` covers the Dockerfile and the manifest, so it is computed
+ * without reading any file.
+ */
+export const imageRevisions = snakeCase.table('image_revisions', {
+  id: uuid().primaryKey().defaultRandom(),
+  imageId: uuid().notNull().references(() => images.id, { onDelete: 'cascade' }),
+  /** 1, 2, 3, … within the image. */
+  number: integer().notNull(),
+  dockerfile: text().notNull(),
+  files: jsonb().$type<ImageFileManifest>().notNull().default({}),
+  contentHash: text().notNull(),
+  /** The user who saved it. */
+  author: uuid().notNull(),
+  note: text(),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+}, (t) => [uniqueIndex().on(t.imageId, t.number)])
+
+/**
+ * One build of one layer of an image chain: queued, run in a builder pod,
+ * and kept as a record afterwards (its log is a file, `logPath`). A user
+ * image's builds name the project whose chain they top.
+ */
+export const imageBuilds = snakeCase.table('image_builds', {
+  id: uuid().primaryKey().defaultRandom(),
+  imageId: uuid().notNull().references(() => images.id, { onDelete: 'cascade' }),
+  revisionId: uuid().notNull(),
+  projectId: uuid().notNull(),
+  layer: text().$type<ImageLayerName>().notNull(),
+  tag: text().notNull(),
+  reason: text().$type<ImageBuildReason>().notNull(),
+  status: text().$type<ImageBuildStatus>().notNull(),
+  /** Built importing no cache (`--no-cache`). */
+  noCache: boolean().notNull().default(false),
+  /** Who asked for it; null for the sweep. */
+  requestedBy: uuid(),
+  queuedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  startedAt: timestamp({ withTimezone: true }),
+  finishedAt: timestamp({ withTimezone: true }),
+  error: text(),
+  /** The Dockerfile frontend's check warnings, with the lines they name. */
+  warnings: jsonb().$type<ImageBuildWarning[]>().notNull().default([]),
+  /** What it consumed: its parent tag, the digest each `FROM` resolved to,
+   *  and the BuildKit version that built it. */
+  parentTag: text(),
+  baseDigests: jsonb().$type<Record<string, string>>().notNull().default({}),
+  buildkitVersion: text(),
+  /** Steps answered from cache, of all steps. */
+  cachedSteps: integer().notNull().default(0),
+  totalSteps: integer().notNull().default(0),
+  /** Hosts the build tried and the project's allowlist refused. */
+  blockedHosts: jsonb().$type<string[]>().notNull().default([]),
+  logPath: text(),
+}, (t) => [index().on(t.imageId), index().on(t.projectId), index().on(t.status)])
+
+/** Install-wide settings, one row per key (the image build concurrency). */
+export const installSettings = snakeCase.table('install_settings', {
+  key: text().primaryKey(),
+  value: text().notNull(),
+})

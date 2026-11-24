@@ -20,7 +20,6 @@ const LS_OUTPUT = [
   'localhost/yaac-test-server|localhost/yaac-test-server:s1',
   'localhost/yaac-test-server|localhost/yaac-test-server:s2',
   'localhost/yaac-test-server|localhost/yaac-test-server:s3',
-  'localhost/yaac-test-tools|localhost/yaac-test-tools:t1',
   'localhost/yaac-test-upstream-registry|localhost/yaac-test-upstream-registry:2',
   'localhost/yaac-server|localhost/yaac-server:p1',
   'localhost/yaac-server|localhost/yaac-server:p2',
@@ -28,7 +27,7 @@ const LS_OUTPUT = [
 ].join('\n')
 
 describe('gcTestImages', () => {
-  it('retires only yaac-test-* generations past the newest two, leaving install images and kept tags alone', async () => {
+  it('retires only yaac-test-* generations past the newest two, leaving install images and kept tags alone, and the old trusted chain whole', async () => {
     mockExecFile.mockImplementation((_file, args) => Promise.resolve({
       stdout: args[0] === 'image' && args[1] === 'ls' ? LS_OUTPUT : '',
       stderr: '',
@@ -46,5 +45,15 @@ describe('gcTestImages', () => {
     const podmanCalls = mockExecFile.mock.calls.map(([, args]) => args)
     expect(podmanCalls.filter((a) => a[0] === 'rmi')).toEqual([['rmi', 'localhost/yaac-test-server:s3']])
     expect(podmanCalls.some((a) => a.includes('prune') || a.includes('-f'))).toBe(false)
+
+    // Base and tools build straight to the registry, so any tag of theirs
+    // in the host store is a leftover, retired even when it is the newest.
+    mockExecFile.mockImplementation((_file, args) => Promise.resolve({
+      stdout: args[0] === 'image' && args[1] === 'ls'
+        ? `localhost/yaac-test-tools|localhost/yaac-test-tools:t1\n${LS_OUTPUT}`
+        : '',
+      stderr: '',
+    }))
+    expect(await gcTestImages(['yaac-test-server:s1'])).toEqual(['localhost/yaac-test-tools:t1'])
   })
 })

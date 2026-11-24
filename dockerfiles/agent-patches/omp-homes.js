@@ -43,12 +43,15 @@ exec "\${0%/*}/${relativeCli}" "$@"
 `
 }
 
-/** Replace the npm prefix's `bin/omp` link to `cli` with the wrapper. */
+/**
+ * Replace the npm prefix's `bin/omp` link to `cli` with the wrapper,
+ * group-writable like the rest of the image (docs/arbitrary-uid-images.md).
+ */
 export function installOmpWrapper(cli) {
   const nodeModules = cli.slice(0, cli.lastIndexOf(`${path.sep}node_modules${path.sep}`) + '/node_modules'.length)
   const bin = path.join(path.dirname(path.dirname(nodeModules)), 'bin', 'omp')
   fs.rmSync(bin, { force: true })
-  fs.writeFileSync(bin, ompWrapper(path.relative(path.dirname(bin), cli)), { mode: 0o755 })
+  fs.writeFileSync(bin, ompWrapper(path.relative(path.dirname(bin), cli)), { mode: 0o775 })
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

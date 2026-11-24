@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
@@ -64,12 +65,16 @@ import {
   recordMirrorDigest,
   registryEndpoint,
   registryHost,
+  registryPodEndpoint,
+  registryPodHost,
   registryReachable,
+  registryRepoIsProtected,
   registryRef,
   registryTagState,
 } from '#drivers/k8s/cluster'
-// State-reset hook, not a unit under test.
+// State-reset hooks, not units under test.
 import { _resetPortForwardsForTests } from '#drivers/k8s/substrate/port-forward'
+import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/cluster/registry-grant'
 
 const fetchMock = vi.fn<typeof fetch>()
 
@@ -121,6 +126,33 @@ describe('registryHost', () => {
     // namespaces share one image store.
     vi.stubEnv('YAAC_K8S_NAMESPACE', 'yaac-test-abc123')
     expect(registryHost()).toBe(CLUSTER_HOST)
+  })
+})
+
+describe('registryPodHost', () => {
+  it('is the same Service on the port pods are admitted to', () => {
+    expect(registryPodHost()).toBe('yaac-registry.yaac.svc.cluster.local:5002')
+  })
+})
+
+describe('registryRepoIsProtected', () => {
+  it('names the repos a project id keys, whatever the image prefix', () => {
+    const id = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
+    for (const repo of [`yaac-proj-${id}`, `yaac-user-${id}`, `yaac-buildcache-${id}`, `yaac-test-proj-${id}`]) {
+      expect(registryRepoIsProtected(repo), repo).toBe(true)
+    }
+    for (const repo of ['yaac-tools', 'yaac-base', 'envoyproxy/envoy', 'yaac-proj-demo', 'yaac-buildkit']) {
+      expect(registryRepoIsProtected(repo), repo).toBe(false)
+    }
+  })
+})
+
+describe('registryPodEndpoint', () => {
+  it('port-forwards to the pod port from the host, and is the Service in-cluster', async () => {
+    await expect(registryPodEndpoint()).resolves.toBe(ENDPOINT)
+    expect(forwardArgs()).toEqual([expect.arrayContaining(['deploy/yaac-registry', '0:5002'])])
+    vi.stubEnv('YAAC_IN_CLUSTER', '1')
+    await expect(registryPodEndpoint()).resolves.toBe('yaac-registry.yaac.svc.cluster.local:5002')
   })
 })
 
@@ -213,6 +245,27 @@ describe('registryTagState', () => {
     fetchMock.mockResolvedValueOnce(fetchResponse({ ok: true }))
     await expect(registryTagState(`podman-stable@${DIGEST_A}`)).resolves.toBe('present')
     expect(fetchMock.mock.calls[0][0]).toBe(`http://${ENDPOINT}/v2/podman-stable/manifests/${DIGEST_A}`)
+  })
+
+  it('reads a project repo with a grant naming it, from inside the cluster', async () => {
+    const pem = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey
+      .export({ type: 'pkcs8', format: 'pem' }).toString()
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Secret', metadata: { name: 'yaac-registry-grant-key', namespace: 'yaac-registry-keys' },
+      data: { 'key.pem': Buffer.from(pem).toString('base64') },
+    })
+    _resetRegistryGrantKeyForTests()
+    vi.stubEnv('YAAC_IN_CLUSTER', '1')
+    const repo = 'yaac-proj-3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
+    fetchMock.mockResolvedValue(fetchResponse({ ok: true }))
+    await registryTagState(`${repo}:t`)
+    await registryTagState('yaac-tools:t')
+    const [protectedCall, trustedCall] = fetchMock.mock.calls
+    expect(protectedCall[0]).toBe(`http://yaac-registry.yaac.svc.cluster.local:5002/v2/${repo}/manifests/t`)
+    const basic = (protectedCall[1]?.headers as Record<string, string>).Authorization
+    const password = Buffer.from(basic.slice('Basic '.length), 'base64').toString().slice('yaac:'.length)
+    expect(password).toMatch(new RegExp(`^v1\\|\\d+\\|${repo}\\.`))
+    expect((trustedCall[1]?.headers as Record<string, string>).Authorization).toBeUndefined()
   })
 
   it('reports unknown for a ref without a tag, without asking', async () => {

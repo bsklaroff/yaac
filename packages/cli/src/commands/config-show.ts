@@ -17,10 +17,10 @@ export async function configShow(project: string): Promise<void> {
     api.workflow.list.$get({ query: { project: projectId } }),
   ])
   const k8s = driver === 'k8s'
-  const [allowlist, dockerfile] = k8s
+  const [allowlist, images] = k8s
     ? await Promise.all([
       api.project[':projectId'].allowlist.$get({ param: { projectId } }),
-      api.project[':projectId'].dockerfile.$get({ param: { projectId } }),
+      api.image.project[':projectId'].$get({ param: { projectId } }),
     ])
     : [undefined, undefined]
   const list = (items: string[]): string => (items.length === 0 ? 'none' : items.join(', '))
@@ -52,7 +52,7 @@ export async function configShow(project: string): Promise<void> {
     ['workspace-auto-delete', p.stoppedWorkspaceRetentionDays === undefined ? 'off' : `${p.stoppedWorkspaceRetentionDays} days`],
     k8s && ['cache-volumes', formatCacheVolumes(p.cacheVolumes)],
     k8s && ['npm-cache', onOff(p.npmCache)],
-    dockerfile !== undefined && ['dockerfile', dockerfile.content.trim() === '' ? 'none' : 'set'],
+    k8s && ['image-cache-days', p.imageCacheDays === undefined ? 'the default' : `${p.imageCacheDays} days`],
   ] satisfies Array<[string, string] | false>).filter((row) => row !== false)
   const width = Math.max(...rows.map(([key]) => key.length))
   console.log(`${p.name} (${projectId.slice(0, 8)})`)
@@ -63,6 +63,7 @@ export async function configShow(project: string): Promise<void> {
     ...(r.pushRefused === true ? ['pushes refused'] : []),
     ...(k8s && !r.ghToken ? ['not GH_TOKEN'] : []),
   ].join(', ')})`).join('; ')}`)
+  if (images !== undefined) console.log(`  default image  ${images.find((i) => i.isDefault)?.name ?? 'yaac'} (\`yaac image default\`)`)
   for (const [key, value] of rows) console.log(`  ${key.padEnd(width)}  ${value}`)
   console.log('Change one with `yaac config <setting>`.')
 }

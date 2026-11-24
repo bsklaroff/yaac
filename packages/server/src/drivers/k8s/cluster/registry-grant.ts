@@ -2,10 +2,10 @@ import crypto from 'node:crypto'
 import { applyObject, createObject, readObject } from '#drivers/k8s/substrate'
 
 /**
- * Write grants for the main registry (docs/trust-split-builds.md, "The
- * write gate"). Reads are anonymous; every write must carry a grant — a
- * statement signed by the install's grant key naming the repositories it
- * may write and when it expires. The gate in front of the registry holds
+ * Grants for the main registry (docs/image-builds.md, "The gate").
+ * Every write must carry one, and so must a pod's read of a project repo:
+ * a statement signed by the install's grant key naming the repositories it
+ * covers and when it expires. The gate in front of the registry holds
  * only the public key, so compromising it mints nothing.
  *
  * Wire format, as a Basic credential (user `yaac`):
@@ -108,18 +108,24 @@ export async function registryGrant(scope: RegistryGrantScope, ttlSeconds: numbe
   )
 }
 
+/** A grant as the base64 user:password of a Basic credential. */
+export async function registryBasicCredential(scope: RegistryGrantScope, ttlSeconds: number): Promise<string> {
+  const password = await registryGrant(scope, ttlSeconds)
+  return Buffer.from(`${REGISTRY_GRANT_USER}:${password}`).toString('base64')
+}
+
 /**
- * A containers-auth.json (`--authfile`) holding one grant for `host`, for
- * builder pods and host pushes. A file, not argv, which `ps` would expose.
+ * A containers-auth.json (`--authfile`, or a Docker `config.json`) holding
+ * one grant for each of `hosts`, for builder pods and host pushes. A file,
+ * not argv, which `ps` would expose.
  */
 export async function registryAuthFile(
-  host: string,
+  hosts: string | string[],
   scope: RegistryGrantScope,
   ttlSeconds: number,
 ): Promise<string> {
-  const password = await registryGrant(scope, ttlSeconds)
-  const auth = Buffer.from(`${REGISTRY_GRANT_USER}:${password}`).toString('base64')
-  return JSON.stringify({ auths: { [host]: { auth } } })
+  const auth = await registryBasicCredential(scope, ttlSeconds)
+  return JSON.stringify({ auths: Object.fromEntries([hosts].flat().map((host) => [host, { auth }])) })
 }
 
 /** The grant key's public half, SubjectPublicKeyInfo DER — what the gate verifies with. */

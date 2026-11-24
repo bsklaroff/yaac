@@ -490,7 +490,7 @@ async function startDeploy(
       title: `${site.name} @ ${formatCommits(commits, 8)}`,
       groupId: await ownedGroup(site.projectId, { kind: 'site', id: site.id }, site.name),
       siteId: site.id,
-      ...(opts.image !== undefined ? { image: opts.image } : {}),
+      ...(opts.image !== undefined ? { image: opts.image } : site.imageId !== undefined ? { imageId: site.imageId } : {}),
       ...(opts.volumeId !== undefined ? { stageVolumeId: opts.volumeId } : {}),
       ...(holder !== undefined ? { colocateWith: holder } : {}),
       ...(opts.replacing !== undefined ? { rerunOf: opts.replacing.rerunOf } : {}),

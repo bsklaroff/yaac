@@ -76,7 +76,7 @@ Install refuses to run in two cases:
 
 `dockerfiles/Dockerfile.server`, built with `podman build` on the machine
 running the CLI and pushed to the in-cluster registry like every other
-yaac-shipped image (docs/trust-split-builds.md). The server builds none of
+yaac-shipped image (docs/image-builds.md). The server builds none of
 its own images.
 
 The **build context is `dist/`**, the bundle and the only directory the npm
@@ -263,8 +263,8 @@ on a node port, which no pod policy covers, and its dial into the server
 comes from the node. A pod that reached `<node>:<that port>` would therefore
 reach the server as the node and, with a loopback `Host`, be its owner.
 Workspace pods cannot: their egress reaches node addresses only on the netd
-listener range. Builder pods, which run `RUN` steps from agent-editable
-Dockerfiles, reach no node address at all. The egress proxy, whose upstream
+listener range, and builder pods, which run `RUN` steps from agent-editable
+Dockerfiles, have the same egress. The egress proxy, whose upstream
 is whatever a workspace's allowlist names, is the one pod that may dial
 node addresses, and its egress policy allows every node port except that
 one and NFS (docs/workspace-egress.md "Non-public destinations"). It gets
@@ -294,15 +294,16 @@ mediate untrusted code. With no floor, any user of a shared install could
 point the server at the cluster's internal addresses (the main registry, the
 proxy's internal listeners, the kubelet, cloud metadata) and learn from the
 errors what answers. So the pod's egress is `yaac-server-egress`
-(`buildServerEgressNpManifest`). It sits on the same floor as the proxy and
-builder pods (docs/workspace-egress.md "Non-public destinations"): public
-addresses less every node address, plus DNS. On top of that it allows the
+(`buildServerEgressNpManifest`). It sits on the same floor as the proxy
+(docs/workspace-egress.md "Non-public destinations"): public addresses less
+every node address, plus DNS. On top of that it allows the
 peers the server dials itself:
 
 - the apiserver, at the real endpoints the `kubernetes` Service's
   EndpointSlices list, since policy sees a destination after kube-proxy's
   DNAT. On kind and k3s that is a node address on 6443;
-- the main registry, by selector in its own namespace, for tag lookups;
+- the main registry's pod port, by selector in its own namespace, for tag
+  lookups (docs/image-builds.md "The registry");
 - the proxy's control and relay ports, by selector. The relay carries every
   stream into a workspace pod, which the server never dials directly;
 - under `YAAC_USE_TOR`, the host's Tor listener at the address in the pod's

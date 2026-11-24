@@ -45,7 +45,14 @@ export {
   syncProxyCredentials,
   vapAvailable,
 } from './proxy-apply'
-export { BUILDER_MIRROR_TAG, BUILDER_UPSTREAM_IMAGE, ensureBuilderImage } from './builder-image'
+export { UTILITY_MIRROR_TAG, UTILITY_UPSTREAM_IMAGE, ensureUtilityImage } from './utility-image'
+export {
+  BUILDKITD_ENV,
+  buildkitdConfig,
+  ensureBuilderImage,
+  resolveBuilderImageTag,
+} from './builder-image'
+export { NORMALIZE_STEP } from './normalize-step'
 export { ensureProxyImage, resolveProxyImageTag } from './proxy-image'
 export {
   ENVOY_MIRROR_TAG,
@@ -57,6 +64,7 @@ export {
 } from './netd'
 export { buildDiskDaemonSetManifest, buildDiskIngressNpManifest } from './disk-pod'
 export {
+  buildBuildRegistrationConfigMapManifest,
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
   buildRegistrationConfigMapManifest,
@@ -89,14 +97,18 @@ export {
   recordMirrorDigest,
   registryEndpoint,
   registryHost,
+  registryPodEndpoint,
+  registryPodHost,
   registryReachable,
+  registryRepoIsProtected,
   registryRef,
   registryTagState,
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
+  REGISTRY_POD_PORT,
   REGISTRY_SERVICE_PORT,
 } from './registry'
-export { REGISTRY_GRANT_NAMESPACE, registryAuthFile } from './registry-grant'
+export { REGISTRY_GRANT_NAMESPACE, registryAuthFile, registryBasicCredential } from './registry-grant'
 export {
   NGINX_MIRROR_TAG,
   NGINX_UPSTREAM_IMAGE,

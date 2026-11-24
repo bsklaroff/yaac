@@ -51,6 +51,7 @@ import { workspaceDelegate } from '#test/support/delegate'
 
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
+const IMAGE = 'b6a1f6a4-5d43-4e0b-9a59-6c2f0b8f3e11'
 
 let tmpDir: string
 let launched: string[]
@@ -179,11 +180,12 @@ describe('createRoutine on a workflow', () => {
 
 describe('updateRoutine', () => {
   it('replaces what it names, re-reading the next tick only when the schedule changes', async () => {
-    const r = await routine({ timeout: 30 })
+    const r = await routine({ timeout: 30, imageId: IMAGE })
     const before = (await getRoutineRow(r.id))!.nextRunAt
     const renamed = await updateRoutine(local, r.id, { name: 'Renamed', timeout: null })
-    expect(renamed).toMatchObject({ name: 'Renamed', groupId: r.groupId })
+    expect(renamed).toMatchObject({ name: 'Renamed', groupId: r.groupId, imageId: IMAGE })
     expect(renamed.timeoutMinutes).toBeUndefined()
+    expect(await updateRoutine(local, r.id, { imageId: null })).not.toHaveProperty('imageId')
     expect((await getRoutineRow(r.id))!.nextRunAt).toEqual(before)
 
     const moved = await updateRoutine(local, r.id, { cron: '30 6 * * 1', timeZone: 'Europe/Paris' })
@@ -305,11 +307,12 @@ describe('reconcileRoutines', () => {
     // Friday 2026-10-23 09:00 UTC: a weekday routine's run lasts until Monday.
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-10-23T09:00:30Z'))
-    const r = await routine({ cron: '0 9 * * 1-5', timeZone: 'UTC' })
+    const r = await routine({ cron: '0 9 * * 1-5', timeZone: 'UTC', imageId: IMAGE })
     await due(r.id, new Date('2026-10-23T09:00:00Z'))
     await reconcileRoutines()
     const [friday] = await runsOf(r.id)
-    expect(friday.timeoutMinutes).toBe(3 * 24 * 60)
+    // Each run launches the routine's image.
+    expect(friday).toMatchObject({ timeoutMinutes: 3 * 24 * 60, imageId: IMAGE })
 
     // Its launch failed; Monday's tick replaces it rather than piling up,
     // and what was queued after it waits on Monday's run instead.

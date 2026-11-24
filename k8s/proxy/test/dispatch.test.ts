@@ -93,6 +93,14 @@ beforeAll(async () => {
     }],
   })
   register('release', { allowedHosts: ['*.apps.example.com'] })
+  // An image build of the ssh project: its repo grant and redirect must
+  // not apply, since a build only tunnels.
+  objects.applyRegistration({
+    metadata: { name: 'yaac-proxy-reg-build-1', labels: { 'yaac.build-id': 'build-1' } },
+    data: { 'registration.json': JSON.stringify({
+      rules: [], projectId: 'sshp', owner: 'none', allowedHosts: ['git.example', 'blocked.test.invalid'],
+    }) },
+  })
   register('elsewhere', { allowedHosts: ['github.com'], identity: site.identity })
   register('everywhere', { allowedHosts: ['*'], identity: site.identity })
   // An unrestricted project that has allowed the site from the blocked-hosts badge.
@@ -146,6 +154,7 @@ beforeAll(async () => {
     noteGitUpstreamStatus: () => {},
     liveTunnels: new LiveTunnels(),
     recordBlockedHost: (_ws, host) => { blocked.push(host) },
+    isBuild: (id) => id.startsWith('build-'),
     lookup: (hostname) => {
       lookups.push(hostname)
       const answers = ANSWERS[hostname]
@@ -338,6 +347,17 @@ describe('dispatchToUpstream and forwardPlainHttp', () => {
     entry.close()
     expect(lookups).toEqual([])
   }, 30_000)
+
+  it('tunnel a build\'s allowed dials untouched: no ssh session, no redirect, no MITM', async () => {
+    // The same host the ssh project's workspace gets a proxy-ended session
+    // and a redirect for: a build dials it directly, so the lookup runs.
+    const out = await exchange('build-1', 'git.example', 22, true)
+    expect(out).not.toContain('SSH-2.0')
+    expect(lookups).toContain('git.example')
+    // Its allowlist still decides, and a block is recorded against it.
+    expect(await exchange('build-1', 'github.com', 443, true)).toContain('403')
+    expect(blocked).toEqual(['github.com'])
+  })
 
   it('send a tailnet site\'s requests to the site router on any port, stamped with the owner\'s login over anything the workspace or a rule sent', async () => {
     const entry = await listen(net.createServer((socket) => {

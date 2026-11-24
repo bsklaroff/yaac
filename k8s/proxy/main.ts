@@ -293,6 +293,7 @@ const dispatchContext: DispatchContext = {
     objects.registration(workspaceId)?.projectId, hostname, requestPath, status),
   liveTunnels,
   recordBlockedHost: (workspaceId, hostname) => observed.recordBlockedHost(workspaceId, hostname),
+  isBuild: (id) => podIndex.isBuild(id),
   lookup: (hostname) => dns.promises.lookup(hostname, { all: true, family: 4 }),
   sites: {
     router: { host: SITE_ROUTER.slice(0, SITE_ROUTER.lastIndexOf(':')), port: Number(SITE_ROUTER.slice(SITE_ROUTER.lastIndexOf(':') + 1)) },
@@ -467,10 +468,13 @@ function relayMamaRequest(
   workspaceId: string,
 ): void {
   // A public site's release faces the internet, so it never reaches the
-  // server at all (docs/public-sites.md); the server refuses it too.
-  if (podIndex.isRelease(workspaceId)) {
+  // server at all (docs/public-sites.md); the server refuses it too. Nor
+  // does an image build, whose RUN steps are no workspace.
+  if (podIndex.isRelease(workspaceId) || podIndex.isBuild(workspaceId)) {
     res.writeHead(403, { 'Content-Type': 'text/plain' })
-    res.end('a public site\'s release may not call yaac')
+    res.end(podIndex.isBuild(workspaceId)
+      ? 'an image build may not call yaac'
+      : 'a public site\'s release may not call yaac')
     return
   }
   const target = relayTarget(req.url ?? '/', MAMA_RELAY_URL!)

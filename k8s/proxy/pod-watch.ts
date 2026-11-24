@@ -35,6 +35,13 @@ export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
  * refuses (docs/public-sites.md).
  */
 export const LABEL_SITE_ID = 'yaac.site-id'
+/**
+ * Must match LABEL_BUILD_ID in packages/server/src/drivers/k8s/substrate/pods.ts
+ * (and objects.ts): an image builder pod's build id. The proxy knows a
+ * builder by it as it knows a workspace pod by its workspace id, and a
+ * build only tunnels (docs/image-builds.md "Build egress").
+ */
+export const LABEL_BUILD_ID = 'yaac.build-id'
 
 /** The shape we read out of a Pod object (only the fields we need). */
 export interface WatchedPod {
@@ -48,17 +55,21 @@ export interface PodWatchEvent {
   object: WatchedPod
 }
 
-/** workspaceId carried by a pod, or null if it has no IP / workspace label yet. */
+/**
+ * The id a pod's egress is registered under: its workspace id, or a
+ * builder's build id. Null if it has no IP or neither label yet.
+ */
 export function podWorkspaceId(pod: WatchedPod): string | null {
   const ip = pod.status?.podIP
-  const sid = pod.metadata?.labels?.[LABEL_WORKSPACE_ID]
+  const labels = pod.metadata?.labels
+  const sid = labels?.[LABEL_WORKSPACE_ID] ?? labels?.[LABEL_BUILD_ID]
   if (!ip || !sid) return null
   return sid
 }
 
 /**
  * In-memory `podIP → workspaceId` index, plus the reverse map the relay
- * listener uses and the workspaces that are site releases. A DELETED event
+ * listener uses and the ids that are site releases or image builds. A DELETED event
  * removes the reverse entry only if it still points at that pod's IP, so a
  * replacement pod's entry survives the old pod's late deletion event.
  */
@@ -66,6 +77,7 @@ export class PodWorkspaceIndex {
   private byIp = new Map<string, string>()
   private byId = new Map<string, string>()
   private releases = new Set<string>()
+  private builds = new Set<string>()
 
   /** Apply one watch event. ADDED/MODIFIED upsert; DELETED (or a pod that
    * lost its IP/label) evicts. */
@@ -79,12 +91,14 @@ export class PodWorkspaceIndex {
       if (evicted !== undefined && this.byId.get(evicted) === ip) {
         this.byId.delete(evicted)
         this.releases.delete(evicted)
+        this.builds.delete(evicted)
       }
       return
     }
     this.byIp.set(ip, sid)
     this.byId.set(sid, ip)
     if (ev.object.metadata?.labels?.[LABEL_SITE_ID] !== undefined) this.releases.add(sid)
+    if (ev.object.metadata?.labels?.[LABEL_BUILD_ID] !== undefined) this.builds.add(sid)
   }
 
   /** Rebuild the whole index from a pod list. */
@@ -92,6 +106,7 @@ export class PodWorkspaceIndex {
     this.byIp.clear()
     this.byId.clear()
     this.releases.clear()
+    this.builds.clear()
     for (const object of pods) this.apply({ type: 'ADDED', object })
   }
 
@@ -104,6 +119,12 @@ export class PodWorkspaceIndex {
    *  are fixed at launch, so this never changes for a workspace. */
   isRelease(workspaceId: string): boolean {
     return this.releases.has(workspaceId)
+  }
+
+  /** Whether an id is an image build's. It gets the project's allowlist
+   *  and nothing else: no credentials, no MITM, no `yaac.internal`. */
+  isBuild(id: string): boolean {
+    return this.builds.has(id)
   }
 
   /** Reverse lookup for the relay listener: the workspace's pod IP. */
@@ -151,27 +172,28 @@ export function _resetInClusterClientForTests(): void {
   cachedClient = null
 }
 
-/** Selects every workspace pod in this namespace. */
-const WORKSPACE_POD_SELECTOR = LABEL_WORKSPACE_ID
+/** Selects the workspace pods, and the builder pods, in this namespace. A
+ *  selector cannot OR two labels, so each is its own watch and list. */
+const POD_SELECTORS = [LABEL_WORKSPACE_ID, LABEL_BUILD_ID]
 
-/** Keep `index` fed from an informer over this namespace's workspace pods. */
+/** Keep `index` fed from informers over this namespace's workspace and
+ *  builder pods. */
 export function startPodWatch(index: PodWorkspaceIndex, client = inClusterClient()): void {
   const path = `/api/v1/namespaces/${client.namespace}/pods`
-  // client-node applies the selector to the watch only; the list needs it too.
-  const listFn = (): ReturnType<CoreV1Api['listNamespacedPod']> =>
-    client.core.listNamespacedPod({
-      namespace: client.namespace,
-      labelSelector: WORKSPACE_POD_SELECTOR,
-    })
-  const informer = makeInformer(client.kubeConfig, path, listFn, WORKSPACE_POD_SELECTOR)
+  for (const labelSelector of POD_SELECTORS) {
+    // client-node applies the selector to the watch only; the list needs it too.
+    const listFn = (): ReturnType<CoreV1Api['listNamespacedPod']> =>
+      client.core.listNamespacedPod({ namespace: client.namespace, labelSelector })
+    const informer = makeInformer(client.kubeConfig, path, listFn, labelSelector)
 
-  const feed = (type: string) => (obj: KubernetesObject): void => {
-    index.apply({ type, object: obj })
+    const feed = (type: string) => (obj: KubernetesObject): void => {
+      index.apply({ type, object: obj })
+    }
+    informer.on('add', feed('ADDED'))
+    informer.on('update', feed('MODIFIED'))
+    informer.on('delete', feed('DELETED'))
+    superviseInformer(informer, `pod-watch ${labelSelector}`)
   }
-  informer.on('add', feed('ADDED'))
-  informer.on('update', feed('MODIFIED'))
-  informer.on('delete', feed('DELETED'))
-  superviseInformer(informer, 'pod-watch')
 }
 
 /**
@@ -262,16 +284,18 @@ export async function fetchWorkspaceByPodIp(
   ip: string,
   client = inClusterClient(),
 ): Promise<string | undefined> {
-  const list = await client.core.listNamespacedPod({
-    namespace: client.namespace,
-    labelSelector: WORKSPACE_POD_SELECTOR,
-    fieldSelector: `status.podIP=${ip}`,
-  })
-  for (const pod of list.items) {
-    const sid = podWorkspaceId(pod)
-    if (sid && pod.status?.podIP === ip) {
-      index.apply({ type: 'ADDED', object: pod })
-      return sid
+  for (const labelSelector of POD_SELECTORS) {
+    const list = await client.core.listNamespacedPod({
+      namespace: client.namespace,
+      labelSelector,
+      fieldSelector: `status.podIP=${ip}`,
+    })
+    for (const pod of list.items) {
+      const sid = podWorkspaceId(pod)
+      if (sid && pod.status?.podIP === ip) {
+        index.apply({ type: 'ADDED', object: pod })
+        return sid
+      }
     }
   }
   return undefined

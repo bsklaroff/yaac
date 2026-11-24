@@ -803,7 +803,7 @@ a ready agent is out of use for new starts:
 - **The image.** One pool per image ref. A project with a `Dockerfile.yaac`
   has an image of its own, and so does each project whose owner has a
   `Dockerfile.user`, because that repo is named per project
-  (docs/trust-split-builds.md). For those a pool is a pool per project, as
+  (docs/image-builds.md). For those a pool is a pool per project, as
   today, though it no longer depends on layout or time zone.
 - **The scratch size.** A spare's scratch volume has one size, so a pool is
   for an image and a size. Projects that leave the size at its default share

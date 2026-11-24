@@ -23,7 +23,7 @@ driver run workspaces with no cluster at all
 - **docs/plans/generic-prewarm-pool.md has shipped.** Every workspace pod
   has one shape, with an id from creation, and a spare belongs to no
   project until its claim.
-- **docs/plans/buildkit-image-builds.md has shipped.** A builder pod is
+- **BuildKit builds have shipped** (docs/image-builds.md). A builder pod is
   redirected and policed like a workspace pod: it has a registration, the
   proxy tunnels its traffic under the project's allowlist and injects
   nothing, and the server drives it with `kubectl exec`. Its only direct
@@ -382,7 +382,7 @@ socket outside `/run/yaac`, while an allowlisted host succeeds.
 
 `docs/workspace-egress.md` is rewritten around the socket datapath,
 `docs/stream-relay.md` around the dial through netd, and
-`docs/trust-split-builds.md` (or its successor) around a build's egress.
+`docs/image-builds.md` (or its successor) around a build's egress.
 `docs/cluster-setup.md` loses "The CNI gate" down to the enforcement
 probe, and its Linux sections lose what they say about Calico.
 `infra/hetzner-k3s/README.md` loses its Calico and kube-proxy rows and

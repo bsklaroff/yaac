@@ -5,6 +5,7 @@ beforeEach(() => { vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns') })
 
 
 import {
+  buildBuildRegistrationConfigMapManifest,
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,
   buildRegistrationConfigMapManifest,
@@ -16,7 +17,7 @@ import {
 } from '#drivers/k8s/substrate/proxy-constants'
 
 // The exported manifests: the builder-role admission guard (for gVisor
-// builder pods) and the per-workspace registration ConfigMap. The proxy's own
+// builder pods) and the per-workspace and per-build registration ConfigMaps. The proxy's own
 // objects are internal and asserted through `ensureProxyResources`.
 
 interface Vap {
@@ -122,5 +123,36 @@ describe('buildRegistrationConfigMapManifest', () => {
     for (const owner of ['', 'a.b']) {
       expect(() => buildRegistrationConfigMapManifest('w1', 'demo', { owner })).toThrow(/owner key/)
     }
+  })
+})
+
+describe('buildBuildRegistrationConfigMapManifest', () => {
+  it('registers a build by its id with only the project’s allowed hosts', () => {
+    const cm = buildBuildRegistrationConfigMapManifest('b1', 'demo', ['registry.npmjs.org']) as {
+      kind: string
+      metadata: { name: string; namespace: string; labels: Record<string, string> }
+      data: Record<string, string>
+    }
+    expect(cm.kind).toBe('ConfigMap')
+    // The proxy reads the build id where a workspace's registration has its
+    // workspace id, so no workspace label is set.
+    expect(cm.metadata).toEqual({
+      name: proxyRegistrationName('b1'),
+      namespace: 'test-ns',
+      labels: {
+        'app': 'yaac-proxy',
+        'yaac.proxy-input': 'registration',
+        'yaac.build-id': 'b1',
+        'yaac.project-id': 'demo',
+      },
+    })
+    // No injection rules and no credential owner: a build reaches its hosts
+    // with nothing swapped in.
+    expect(JSON.parse(cm.data['registration.json'])).toEqual({
+      rules: [],
+      allowedHosts: ['registry.npmjs.org'],
+      projectId: 'demo',
+      owner: 'none',
+    })
   })
 })

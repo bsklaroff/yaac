@@ -117,6 +117,9 @@ export interface QueueRequest {
   /** Refused if the tool lacks one; unnamed ones are the project's
    *  remembered choices, else off. */
   agentOptions?: AgentOptions
+  /** An image id or `STOCK_IMAGE_ID`; absent, or null on an edit, launches
+   *  the project's default image. */
+  imageId?: string | null
   /** What it starts with (`queuedSelection`): repos by folder or id, each
    *  at a branch or a full commit, their layout and the agent's cwd.
    *  `branch` or `commit` alone names the start of its one repo. Each left
@@ -281,6 +284,7 @@ export async function updateQueuedWorkspace(
     ...(retooled ? patch.agentOptions !== undefined ? { agentOptions: patch.agentOptions } : {}
       : { agentOptions: { ...row.agentOptions, ...patch.agentOptions } }),
     timeout: patch.timeout !== undefined ? patch.timeout : row.timeoutMinutes ?? null,
+    imageId: patch.imageId !== undefined ? patch.imageId : row.imageId ?? null,
   }, selectionOf(row), row)
   const updated = await updateQueuedWorkspaceRow(id, {
     ...settings,
@@ -526,6 +530,7 @@ async function launch(
         permissionMode: row.permissionMode,
         ...(row.effort !== undefined ? { effort: row.effort } : {}),
         agentOptions: row.agentOptions,
+        ...(row.imageId !== undefined ? { imageId: row.imageId } : {}),
         ...selectionOf(row),
         ...(pinned !== undefined
           ? {
@@ -880,6 +885,7 @@ async function resolveSettings(
     permissionMode: setup.permissionMode,
     ...(setup.effort !== undefined ? { effort: setup.effort } : {}),
     agentOptions: setup.agentOptions,
+    ...(request.imageId != null ? { imageId: request.imageId } : {}),
     ...selection,
     ...(named !== undefined ? { namedWorkflowId: named.id }
       : steps !== undefined ? { workflowId: (await storeWorkflow(projectId, { steps: steps ?? {}, secrets: [] })).id } : {}),
@@ -956,6 +962,7 @@ async function toEntries(rows: QueuedWorkspaceRow[]): Promise<QueuedWorkspaceEnt
       permissionMode: r.permissionMode,
       ...(r.effort !== undefined ? { effort: r.effort } : {}),
       agentOptions: r.agentOptions,
+      ...(r.imageId !== undefined ? { imageId: r.imageId } : {}),
       selection: selectionOf(r),
       ...(graphs.get(r.id) ?? {}),
       ...(r.nonInteractive ? { nonInteractive: true as const } : {}),

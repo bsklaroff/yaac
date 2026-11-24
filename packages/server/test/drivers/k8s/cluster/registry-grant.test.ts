@@ -21,7 +21,7 @@ function storedPem(): string {
 
 const verbs = (): string[] => fakeCluster.calls.map((c) => `${c.verb} ${c.kind}`)
 
-import { registryAuthFile } from '#drivers/k8s/cluster'
+import { registryAuthFile, registryBasicCredential } from '#drivers/k8s/cluster'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/cluster/registry-grant'
 
 const HOST = 'yaac-registry.yaac.svc.cluster.local:5000'
@@ -104,5 +104,20 @@ describe('registryAuthFile', () => {
 
     seedKey(newPem())
     await expect(registryAuthFile('h:5000', '*', 60)).resolves.toContain('h:5000')
+  })
+})
+
+describe('registryBasicCredential', () => {
+  it('is the same signed grant as an authfile carries, ready for a Basic header', async () => {
+    const pem = newPem()
+    seedKey(pem)
+    const publicKey = crypto.createPublicKey(pem).export({ type: 'spki', format: 'der' })
+    const [user, ...rest] = Buffer.from(await registryBasicCredential(['yaac-proj-p1'], 300), 'base64')
+      .toString().split(':')
+    expect(user).toBe('yaac')
+    expect(verify(rest.join(':'), publicKey)?.scope).toBe('yaac-proj-p1')
+    // One authfile can name the registry at both of its ports.
+    const both = JSON.parse(await registryAuthFile([HOST, 'other:5002'], '*', 60)) as { auths: object }
+    expect(Object.keys(both.auths)).toEqual([HOST, 'other:5002'])
   })
 })

@@ -2,7 +2,7 @@ import {
   buildProxyIngressNpManifest,
   buildWorkspaceEgressNpManifest,
   cniVethPrefix,
-  ensureBuilderImage,
+  ensureUtilityImage,
   ensureNamespace,
   nodeIpBlocks,
   REGISTRY_NAMESPACE,
@@ -10,6 +10,7 @@ import {
   REGISTRY_SERVICE_PORT,
   registryEndpoint,
   registryHost,
+  registryPodEndpoint,
   registryReachable,
   servingNpmCacheUrl,
   siteCloudflareStatus,
@@ -347,7 +348,7 @@ async function runNodeLocalFsCheck(): Promise<CheckResult> {
     return { name, status: 'skip', detail: 'skipped — kind keeps workspace trees on the host disk' }
   }
   try {
-    const image = await ensureBuilderImage()
+    const image = await ensureUtilityImage()
     const runs = await runOnEachNode({
       name: 'yaac-nlfs-check',
       labels: { app: 'yaac-node-local-fs-check', [LABEL_INSTALL_ID]: installId() },
@@ -767,34 +768,46 @@ async function runInstallerReadinessCheck(): Promise<CheckResult> {
 }
 
 /**
- * Once the registry answers, check that anonymous writes are refused;
- * otherwise any builder pod could overwrite trusted images. The probe
+ * Once the registry answers, check its gate: an anonymous write must be
+ * refused on the node port, or any builder pod could overwrite trusted
+ * images, and an anonymous read of a project repo must be refused on the
+ * pod port, or one project's build could read another's images. The probe
  * upload is only started, never finished; an open registry purges the
  * empty session itself.
  */
 async function registryGateResult(): Promise<CheckResult> {
-  let status: number | null = null
-  try {
-    const res = await fetch(`http://${await registryEndpoint()}/v2/yaac-cluster-probe/blobs/uploads/`, {
-      method: 'POST',
-      signal: AbortSignal.timeout(5_000),
-    })
-    status = res.status
-  } catch { /* reported below */ }
-  if (status === 401) {
-    return { name: 'registry', status: 'pass', detail: `serving as ${registryHost()}; writes need a grant` }
+  const answer = async (url: string, method: string): Promise<number | null> => {
+    try {
+      return (await fetch(url, { method, signal: AbortSignal.timeout(5_000) })).status
+    } catch {
+      return null
+    }
   }
-  if (status !== null && status >= 200 && status < 300) {
+  const write = await answer(`http://${await registryEndpoint()}/v2/yaac-cluster-probe/blobs/uploads/`, 'POST')
+  const podEndpoint = await registryPodEndpoint().catch(() => null)
+  const read = podEndpoint === null
+    ? null
+    : await answer(`http://${podEndpoint}/v2/yaac-proj-00000000-0000-0000-0000-000000000000/tags/list`, 'GET')
+  if (write === 401 && read === 401) {
+    return {
+      name: 'registry', status: 'pass',
+      detail: `serving as ${registryHost()}; writes, and pods' reads of project images, need a grant`,
+    }
+  }
+  if ((write !== null && write >= 200 && write < 300) || (read !== null && read !== 401)) {
     return {
       name: 'registry', status: 'fail',
-      detail: `the in-cluster registry ${registryHost()} accepts anonymous writes — its write gate is missing`,
+      detail: `the in-cluster registry ${registryHost()} `
+        + (write !== null && write < 300 ? 'accepts anonymous writes' : `answers HTTP ${String(read)} to an anonymous read of a project repo on its pod port`)
+        + ' — its gate is missing or out of date',
       fix: 'Re-apply the gate with:\n  yaac cluster install',
     }
   }
   return {
     name: 'registry', status: 'warn',
-    detail: `serving as ${registryHost()}, but its write gate could not be verified `
-      + `(${status === null ? 'no answer' : `HTTP ${String(status)}`} to an anonymous upload)`,
+    detail: `serving as ${registryHost()}, but its gate could not be verified `
+      + `(${write === null ? 'no answer' : `HTTP ${String(write)}`} to an anonymous upload, `
+      + `${read === null ? 'no answer' : `HTTP ${String(read)}`} to an anonymous project read on the pod port)`,
   }
 }
 
@@ -1243,7 +1256,7 @@ const STORAGE_SEMANTICS_FIX =
 /**
  * Check the POSIX semantics of the global claim's storage as a gVisor pod
  * at the workspace uid sees them, using k8s/probes/fsprobe.py (shipped in a
- * temporary ConfigMap, run in the builder image because it has python3).
+ * temporary ConfigMap, run in the utility image because it has python3).
  * Fail-level on every backend; a probe that cannot run also fails.
  */
 async function runStorageSemanticsProbe(identity: InstallIdentity): Promise<CheckResult> {
@@ -1267,7 +1280,7 @@ async function runStorageSemanticsProbe(identity: InstallIdentity): Promise<Chec
         ],
       },
       container: {
-        image: await ensureBuilderImage(),
+        image: await ensureUtilityImage(),
         imagePullPolicy: 'IfNotPresent',
         // fsprobe leaves its scratch dir behind.
         command: ['sh', '-c', 'python3 /probes/fsprobe.py /probe; rc=$?; rm -rf /probe/fsprobe-*; exit $rc'],

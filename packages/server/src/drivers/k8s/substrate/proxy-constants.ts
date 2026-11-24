@@ -112,7 +112,7 @@ export const WORKSPACE_INGRESS_LOCK_NP_NAME = 'yaac-workspace-ingress-lock'
 export const LABEL_ROLE = 'yaac.role'
 /**
  * Role of the ephemeral runsc builder pods that run untrusted image layers
- * (docs/trust-split-builds.md). Used by network policy and the builder-pod
+ * (docs/image-builds.md). Used by network policy and the builder-pod
  * sweep.
  */
 export const ROLE_BUILDER = 'builder'

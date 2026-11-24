@@ -1,19 +1,21 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import path from 'node:path'
-import { contextHash, resolveTrustedLayers } from '@yaac/server/drivers/k8s/cluster/image-tags'
+import { contextHash } from '@yaac/server/drivers/k8s/cluster/image-tags'
+import { resolveBuilderImageTag } from '@yaac/server/drivers/k8s/cluster/builder-image'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/install/podman'
 import { kindEnv, nodeBindsPath } from '@yaac/server/drivers/k8s/install/install'
 import { ensureImageByTag, pushImageToRegistry } from '@yaac/server/drivers/k8s/install/host-images'
 import {
-  TRUSTED_PARENT_COMPRESSION,
+  ensureTrustedChain,
   mirrorPinnedUpstreams,
+  pushBuilderImage,
 } from '@yaac/server/drivers/k8s/install/builtin-images'
 import { registryReachable } from '@yaac/server/drivers/k8s/cluster/registry'
 import { NETD_DIR, PROXY_DIR, TAILGATE_DIR } from '@yaac/shared/project-paths'
 import { buildCliBundle } from '#support/cli-bundle'
 import { buildTestServerImage, testServerImageTag } from '#support/deployed-server'
-import { testContainerOwnerLabel } from '@yaac/test-utils/setup'
+import { TEST_IMAGE_PREFIX, testContainerOwnerLabel } from '@yaac/test-utils/setup'
 import { testTmpBase } from '@yaac/test-utils/tmp'
 import { env } from '@yaac/shared/env'
 import { gcTestImages } from '#support/test-images'
@@ -127,14 +129,6 @@ export async function setup(): Promise<void> {
   // Leaked containers with dead conmons hang podman under build load.
   await pruneTestContainers()
 
-  // The trusted chain (base -> tools), resolved by the same
-  // helper the server and `yaac cluster install` use, so the tags match what
-  // test workers look up.
-  const { base, tools } = await resolveTrustedLayers('yaac-test')
-  for (const layer of [base, tools]) {
-    await ensureImageByTag(layer.tag, layer.dockerfile, layer.context, layer.buildArgs)
-  }
-
   const proxyHash = await contextHash(PROXY_DIR)
   const proxyTag = `yaac-test-proxy:${proxyHash}`
   await ensureImageByTag(proxyTag, path.join(PROXY_DIR, 'Dockerfile'), PROXY_DIR)
@@ -149,11 +143,11 @@ export async function setup(): Promise<void> {
   // Pods pull from the local registry. Push up front so workers never race
   // a push; already-present tags are skipped.
   if (await registryReachable()) {
-    // zstd for the builder pods' parent layers (see
-    // TRUSTED_PARENT_COMPRESSION).
-    for (const tag of [base.tag, tools.tag]) {
-      await pushImageToRegistry(tag, { compressionFormat: TRUSTED_PARENT_COMPRESSION })
-    }
+    // The trusted chain (base -> tools) and the builder image, built by the
+    // same helpers `yaac cluster install` uses, so the tags match what test
+    // workers look up. The chain is built and pushed by a host buildkitd.
+    await ensureTrustedChain((m) => console.log(`[global-setup] ${m.trim()}`), TEST_IMAGE_PREFIX, testContainerOwnerLabel())
+    await pushBuilderImage(TEST_IMAGE_PREFIX)
     for (const tag of [proxyTag, netdTag, tailgateTag]) {
       await pushImageToRegistry(tag)
     }
@@ -173,7 +167,9 @@ export async function setup(): Promise<void> {
   // they are not the newest). Skipped on a shared engine, where the host
   // runs `pnpm gc:test-images` while every rig is idle.
   if (process.env.YAAC_TEST_SHARED_ENGINE !== '1') {
-    const ownTags = [base.tag, tools.tag, proxyTag, netdTag, tailgateTag, await testServerImageTag()]
+    const ownTags = [
+      await resolveBuilderImageTag(TEST_IMAGE_PREFIX), proxyTag, netdTag, tailgateTag, await testServerImageTag(),
+    ]
     const retired = await gcTestImages(ownTags).catch((err: unknown) => {
       console.log(`[global-setup] could not sweep stale test images: ${String(err)}`)
       return []

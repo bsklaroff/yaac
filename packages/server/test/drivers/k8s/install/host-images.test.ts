@@ -355,13 +355,4 @@ describe('pushImageToRegistry', () => {
     expect(fs.existsSync(podmanChildren()[0].authFile!.path)).toBe(false)
     expect(readState()).toEqual([])
   })
-
-  it('passes --compression-format through (trust-split zstd parent pushes)', async () => {
-    fetchMock.mockResolvedValue(fetchResponse({ ok: false, status: 404 }))
-    await pushImageToRegistry('yaac-tools:abc', { compressionFormat: 'zstd' })
-    expect(withoutAuthFile(podmanChildren()[0])).toEqual([
-      'push', '--tls-verify=false', '--compression-format', 'zstd',
-      'yaac-tools:abc', `${ENDPOINT}/yaac-tools:abc`,
-    ])
-  })
 })

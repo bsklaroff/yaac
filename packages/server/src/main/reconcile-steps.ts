@@ -1,6 +1,7 @@
 import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, collectDeletedRepos, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileDiskGuard, reconcileTreeSalvage, collectCheckpointBundles, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshRepoOrigins } from '#domain/repos'
 import { reconcileSites } from '#domain/sites'
+import { pruneImageBlobs, reconcileImageSweep } from '#domain/images'
 import { adoptRefreshedToolCredentials, syncToolCredentials } from '#domain/auth'
 import { workspaceDriver } from '#drivers/driver'
 import type { ReconcileStep } from '#drivers/contract'
@@ -49,6 +50,15 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     { name: 'sites', triggers: ['workspaces', 'windows', 'sites'],
       run: (ctx) => reconcileSites(ctx.snapshot(), ctx.resync) },
   ]
+  // Images (docs/image-builds.md): before the pool, so a spare's create
+  // finds the builds the sweep queued. Every resync: a warm sweep is a
+  // registry HEAD per layer of two images per project.
+  const images: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
+    { name: 'image-sweep', triggers: [], run: () => reconcileImageSweep() },
+  ]
+  const imageGc: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
+    { name: 'image-blob-gc', triggers: [], every: 60 * 60_000, run: () => pruneImageBlobs() },
+  ]
   const volumes: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
     { name: 'volume-leases', triggers: ['workspaces'], run: (ctx) => reconcileVolumeLeases(ctx.snapshot()) },
     { name: 'volume-gc', triggers: [], every: 10 * 60_000, run: () => collectDeletedVolumes() },
@@ -89,6 +99,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // image builds already running, and anything holding capacity should be
     // freed first.
     ...runtime.prePool,
+    ...images,
     ...pool,
     // Give every open session of a running workspace a window: one opened
     // while it was stopped, or one a server restart cut off mid-launch.
@@ -119,6 +130,7 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // above so a just-reaped workspace's leftovers are collected the same
     // pass.
     ...runtime.maintenance,
+    ...imageGc,
     // Delete scratch dirs left by workspaces whose runtime is gone (crashes,
     // reboots, a spare's pod dying; see gcOrphanScratchDirs).
     // In-flight creates are registered synchronously before staging, so

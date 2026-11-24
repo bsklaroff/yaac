@@ -296,7 +296,7 @@ describe('reconcileRegistrationGc', () => {
         workspaces: () => Promise.resolve(live.map((workspaceId) => ({ workspaceId }))),
       }) as unknown as ReturnType<PassContext['snapshot']>,
       projectIds: () => Promise.resolve([]),
-      projectOwner: () => Promise.resolve('owner'),
+      keptImageTags: () => Promise.resolve([]),
       pinnedImages: () => Promise.resolve([]),
       terminating: (id) => terminating.includes(id),
     }

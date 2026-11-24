@@ -6,11 +6,17 @@ until the disk fills, and on kind that disk is the host's, with no warning.
 
 | Store | What accumulates | Collector | When |
 |---|---|---|---|
-| Host podman engine | one tagged generation per source change of each yaac-built repo | `gcHostImages` (`#drivers/k8s/install`), keeps the newest 2 per repo | every `yaac cluster install` |
-| Main registry, step cache | a cache tag per Dockerfile step per edit | main-registry GC | reconcile, every 6 h |
-| Main registry, images | one tagged generation per source change | main-registry GC | reconcile, every 6 h |
+| Host podman engine | one tagged generation per source change of each podman-built repo | `gcHostImages` (`#drivers/k8s/install`), keeps the newest 2 per repo | every `yaac cluster install` |
+| Host BuildKit volume | the trusted chain's build cache | `buildctl prune --keep-storage` to 3 GB, before install removes the daemon | every `yaac cluster install` |
+| Main registry, build caches | one cache ref per layer of each image per cache window | main-registry GC | reconcile, every 6 h |
+| Main registry, images | one tagged generation per source change, per image build | main-registry GC | reconcile, every 6 h |
+| Image support files | one blob per uploaded file content | `pruneImageBlobs` (`#domain/images`) | reconcile, hourly |
 | Main registry, project repos | the repos of removed projects | main-registry GC | reconcile, every 6 h |
 | Node containerd store | every image the node ever pulled, unpacked | main-registry GC, node half | same pass |
+
+buildkitd's own GC is off in every daemon. A builder pod's BuildKit state
+dies with the pod, so the host volume is the only BuildKit store that
+outlives a build.
 
 The e2e suite's `yaac-test-*` images belong to the suite, not the install.
 `gcTestImages` retires them on the host engine. Nothing retires them in the
@@ -28,45 +34,48 @@ started by one of them could delete a blob another run is pushing. One pass:
    namespace. Templates count because a Deployment scaled to zero (`yaac
    server stop`) still needs its image to scale back up, and ReplicaSets
    because `kubectl rollout undo` restores an older template. The live set
-   also includes every layer of every project's current image chain (as the
-   prewarm sweep resolves it): a project with no running workspace still
-   has a current image, and losing it would cost a rebuild. And it includes
-   each public site's release image, which a stopped site's start and a
-   dead release's replacement launch again (docs/public-sites.md).
+   also includes what `#domain/images` keeps (`keptImageTags`): each image's
+   two newest builds per project and layer, every build in progress, and
+   each image's last built chain, which a create launches with no running
+   workspace naming it. And it includes each public site's release image,
+   which a stopped site's start and a dead release's replacement launch
+   again (docs/public-sites.md).
 
    Both reads are strict. If the workload list cannot be read, the pass
-   stops. If any project's chain cannot be resolved, step 5 is skipped for
-   every project: the `yaac-base` repo holds every project's
-   `Dockerfile.yaac` layer side by side, so keeping the newest two protects
-   none of them in particular. The usual cause, a non-layered
-   `Dockerfile.user` mid-edit, breaks every chain its user owns at once.
+   stops. If the image builds cannot be read, step 5 is skipped.
 2. **Stands down** if the registry is taking a push: an upload in progress,
    or any link file written in the last 5 minutes.
-3. **Retires step-cache tags** that no build has written for one
-   `--cache-ttl` (docs/trust-split-builds.md "Collecting the step cache").
+3. **Retires superseded build caches**: in each `yaac-buildcache-*` repo,
+   every tag but each cache's newest window (a cache is a layer of one
+   image, tagged `<layer>-<image>-<window>`), which no build reads after it
+   ends (docs/image-builds.md "Build caches"). A deleted image's newest
+   window has nothing to supersede it, so it stays until the project is
+   removed and step 4 drops the repo.
 4. **Removes orphaned project repos**: `yaac-proj-<id>`, `yaac-user-<id>`
    and `yaac-buildcache-<id>` whose id belongs to no live project, unless a
    workload still names one of their tags. Repos younger than 10 minutes
    are skipped, since a newly added project may be pushing its first image.
 5. **Retires old content-hash generations** of every `yaac-*` repo with a
    retention script (`registryRetentionScript` in `main-registry-gc.ts`),
-   passing the live set as tags it must never retire. Beyond the live set, the
-   newest two per repo are kept for rollback. Mirrors carry no 16-hex tag, so
+   passing the live set as tags it must never retire. A project's or
+   user's repo keeps only the live set: it holds all of that project's
+   images side by side, so "newest two per repo" could not tell one image's
+   generations from another's. Every other repo also keeps its newest two
+   for rollback. Mirrors carry no 16-hex tag, so
    they are never candidates. Neither are `yaac-test-*` repos: an e2e run uses
    them from its global setup to its last file, often with no pod naming them.
 6. **Collects** blobs with the registry's `garbage-collect
    --delete-untagged`, but only if something was retired and the push
    signals and this server's own builds are still quiet.
-   docs/trust-split-builds.md explains why the collect needs no maintenance
+   docs/image-builds.md explains why the collect needs no maintenance
    window. The registry runs with its blob-descriptor cache off, so a blob
    the collect deletes is never answered from memory as still present.
 7. **Prunes the nodes** (below), against a fresh read of the workloads.
    This step runs even when the registry stood down.
 
-Retiring tags also clears the build coordinator's cache of tags it has seen
-in the registry, so a create that resolves back to a retired tag (after a
-reverted Dockerfile edit) rebuilds it instead of handing its pod a ref that
-404s. One race remains: a create that resolves such a tag in the seconds
+Retiring tags also clears the driver's cache of tags it has seen in the
+registry, so a build that resolves back to a retired tag (a restored
+revision) rebuilds it instead of handing a pod a ref that 404s. One race remains: a create that resolves such a tag in the seconds
 between the live-set read and the retention. Its pod fails to pull, and the
 next create rebuilds.
 

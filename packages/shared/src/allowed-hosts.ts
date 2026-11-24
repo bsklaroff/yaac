@@ -413,3 +413,21 @@ export function resolveAllowedHosts(allowlist: EgressAllowlist): string[] {
 export function missingCriticalHosts(allowlist: EgressAllowlist): typeof CRITICAL_HOSTS {
   return CRITICAL_HOSTS.filter(({ host }) => !allowlistAllows(allowlist, host))
 }
+
+/**
+ * Hosts that serve one container registry together: its API, its token
+ * endpoint and the CDN its blobs come from. A build refused one is offered
+ * them all (docs/image-builds.md "Build egress"), so allowing a registry
+ * takes one retry, not one per host.
+ */
+const REGISTRY_HOST_GROUPS: string[][] = [
+  ['docker.io', 'registry-1.docker.io', 'auth.docker.io', 'index.docker.io', 'production.cloudflare.docker.com'],
+  ['quay.io', 'cdn.quay.io', 'cdn01.quay.io', 'cdn02.quay.io', 'cdn03.quay.io'],
+  ['ghcr.io', 'pkg-containers.githubusercontent.com'],
+  ['mcr.microsoft.com', '*.data.mcr.microsoft.com'],
+]
+
+/** The hosts to allow together with `host`: its registry's, or itself. */
+export function relatedRegistryHosts(host: string): string[] {
+  return REGISTRY_HOST_GROUPS.find((group) => group.some((h) => hostMatchesPattern(host, h))) ?? [host]
+}

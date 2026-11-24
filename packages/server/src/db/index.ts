@@ -314,3 +314,28 @@ export {
   type WorkspaceRow,
 } from './workspace-store'
 export type { CheckpointOutcome } from './schema'
+export {
+  deleteImage,
+  deleteProjectImageRows,
+  failInterruptedImageBuilds,
+  getImage,
+  getImageBuild,
+  getImageRevision,
+  getInstallSetting,
+  insertImage,
+  insertImageBuild,
+  insertImageRevision,
+  insertImageWithRevision,
+  listImageBuilds,
+  listImageRevisions,
+  listImages,
+  setImageLastBuilt,
+  setInstallSetting,
+  setProjectImageFields,
+  setWorkspaceImage,
+  updateImageBuild,
+  type ImageBuildRow,
+  type ImageRevisionRow,
+  type ImageRow,
+  type ImageScope,
+} from './image-store'
