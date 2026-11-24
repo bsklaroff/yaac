@@ -49,7 +49,7 @@ describe('workspaceCreate', () => {
   it('POSTs the request with unset options omitted, prints progress, and attaches', async () => {
     api.on('POST /api/workspace/create', { ndjson: [
       { type: 'progress', message: 'Fetching latest from remote...' },
-      { type: 'progress', message: 'Creating session job yaac-demo-sess-123...' },
+      { type: 'progress', message: 'Creating workspace job yaac-demo-sess-123...' },
       { type: 'result', result: { workspaceId: 'sess-123', jobName: 'yaac-demo-sess-123', forwardedPorts: [], sessionId: 's-1' } },
     ] })
     listing(['sess-123', [{ sessionId: 's-1', mode: 'tui', window: 'claude-s1' }]])
@@ -61,7 +61,7 @@ describe('workspaceCreate', () => {
     const create = api.requests.find((r) => r.route === 'POST /api/workspace/create')
     expect(create?.body).toEqual({ project: 'id-demo' })
     expect(logSpy.mock.calls.map((args) => args[0] as unknown)).toEqual(expect.arrayContaining([
-      'Fetching latest from remote...', 'Creating session job yaac-demo-sess-123...',
+      'Fetching latest from remote...', 'Creating workspace job yaac-demo-sess-123...',
     ]))
     // On the window of the session the create opened.
     expect(attaches()).toEqual([['sess-123', 'native:claude-s1']])
@@ -110,7 +110,7 @@ describe('workspaceAttach', () => {
     expect(attaches()).toEqual([['abc123def456', 'shell']])
   })
 
-  // tmux on the first session's window, or the one --session names by id
+  // tmux on the first session's window, or the one --agent names by id
   // or prefix; with no session, whichever window tmux shows.
   it('attaches tmux on a session\'s window, refusing a session the workspace lacks', async () => {
     api.on('GET /api/workspace/abc', { json: { workspaceId: 'abc123def456' } })
@@ -119,8 +119,8 @@ describe('workspaceAttach', () => {
       { sessionId: 'bbbb2222', mode: 'tui', window: 'codex-bbbb2222' },
     ]], ['bare', []])
     await workspaceAttach('abc', 'native')
-    await workspaceAttach('abc', 'native', { session: 'bbbb' })
-    await expect(workspaceAttach('abc', 'native', { session: 'cccc' })).rejects.toThrow('Workspace abc123def456 has no open session "cccc".')
+    await workspaceAttach('abc', 'native', { agent: 'bbbb' })
+    await expect(workspaceAttach('abc', 'native', { agent: 'cccc' })).rejects.toThrow('Workspace abc123def456 has no running agent "cccc".')
     api.on('GET /api/workspace/bare', { json: { workspaceId: 'bare' } })
     await workspaceAttach('bare', 'native')
     expect(attaches()).toEqual([

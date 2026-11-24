@@ -45,7 +45,7 @@ export GH_REPO=$(git remote get-url origin | sed -E 's#^[a-z+]+://([^@/]*@)?##; 
 under the workspace dir (`$YAAC_CHECKOUTS` lists the folders, colon-separated),
 and this skill works on **one** of them: `cd` into that repo's folder and
 run every `git`, `gh` and `yaac-watch-prs` command from there. `GH_TOKEN`
-is the token of the repo your session started in, so when you work on
+is the token of the repo you started in, so when you work on
 another one, run each `gh` call (and `yaac-watch-prs`) as
 `yaac-mama as-repo <folder> -- gh …`, which gives it that repo's token.
 If the changes span several repos, each repo gets a PR of its own: run the

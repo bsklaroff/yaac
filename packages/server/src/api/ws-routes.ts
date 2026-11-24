@@ -210,7 +210,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
         serverLog(`[server] pty attach: session=${id} job=${jobName}`)
       },
       refuse: (socket) => {
-        trySend(socket, { type: 'error', message: 'session not found or not running' })
+        trySend(socket, { type: 'error', message: 'workspace not found or not running' })
         socket.close(1011, 'resolve failed')
       },
     }
@@ -231,7 +231,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
       refuse: (socket, err) => {
         serverLog(`[server] forward tunnel to ${id.slice(0, 8)}:${String(port)} refused: `
           + (err instanceof Error ? err.message : String(err)))
-        socket.close(TUNNEL_DIAL_FAILED, 'session not found or not running')
+        socket.close(TUNNEL_DIAL_FAILED, 'workspace not found or not running')
       },
     }
   })
@@ -248,7 +248,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
         serverLog(`[server] acp attach: session=${id} conversation=${conversationId}`)
       },
       refuse: (socket) => {
-        const message = 'session not found or not running'
+        const message = 'workspace not found or not running'
         trySend(socket, { type: 'health', connected: false }, { type: 'error', message })
         socket.close(1011, message)
       },
@@ -271,7 +271,7 @@ export function registerWebSocketRoutes(app: Hono<IdentityEnv>, hub: EventHub): 
       },
       refuse: (socket) => {
         trySend(socket, { type: 'health', connected: false })
-        socket.close(1011, 'session not found or not running')
+        socket.close(1011, 'workspace not found or not running')
       },
     }
   })

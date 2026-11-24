@@ -71,8 +71,8 @@ use Option B.
 
 ### Option B — paste into your own agent pane (any harness)
 
-Anything in the session can type into the agent's tmux window; it is how yaac
-delivers a session's initial prompt (`promptPasteScript` in
+Anything in the workspace can type into the agent's tmux window; it is how yaac
+delivers an agent's initial prompt (`promptPasteScript` in
 `agent-command.ts`). Pipe the watcher into a detached paste loop, and each
 event lands in your input box and submits.
 
@@ -96,19 +96,19 @@ watcher's stderr lands in `/tmp/yaac-watch.log` if a watch goes quiet.
 
 Events arrive as ordinary input, so **they look exactly like the user typing**.
 Treat an `[opened]`/`[comment]`/`[commit]` line as an event to act on, with
-nobody awaiting a reply — push a fix, summarize it, spawn a sibling session
+nobody awaiting a reply — push a fix, summarize it, spawn a sibling workspace
 with [`yaac-mama`](../yaac-mama/SKILL.md), whatever the task calls for.
 
 ## What actually happens
 
 - Each poll runs `gh` from the top of the checkout you are standing in (repo
-  inferred from its git remote, auth via this session's `GH_TOKEN`) — so it
+  inferred from its git remote, auth via this workspace's `GH_TOKEN`) — so it
   works both in a container, where that is `/workspace`, and on a containerless
   workspace, whose checkout is an arbitrary host path. Point it elsewhere with
   `YAAC_WATCH_PRS_WORKDIR`. **In a workspace with several repos** it
   watches the repo whose folder you start it from (started outside every
-  repo, it refuses and says so). `GH_TOKEN` is the token of the repo your
-  session started in, so to watch another repo of the workspace, start it
+  repo, it refuses and says so). `GH_TOKEN` is the token of the repo you
+  started in, so to watch another repo of the workspace, start it
   from that repo's folder as `yaac-mama as-repo <folder> -- yaac-watch-prs …`.
   `gh` is the only dependency — the JSON
   filtering goes through gh's built-in `--jq`, never a `| jq` pipe, so the
@@ -136,7 +136,7 @@ with [`yaac-mama`](../yaac-mama/SKILL.md), whatever the task calls for.
 ## Auto-reviewing new PRs
 
 To reproduce a continuous PR-review setup, watch `opened` events and spawn a
-review session per PR yourself: arm `Monitor(command: "yaac-watch-prs
+review workspace per PR yourself: arm `Monitor(command: "yaac-watch-prs
 --events opened", persistent: true)`, and on each `[opened] PR #<n> …`
 notification run `yaac-mama create --tool claude` with a prompt that checks out the
 PR's head branch (`git fetch origin <branch> && git reset --hard

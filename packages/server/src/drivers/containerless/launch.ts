@@ -526,7 +526,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     await fs.chmod(file, 0o600)
   }
 
-  spec.onProgress?.('Starting the workspace session...')
+  spec.onProgress?.('Starting the workspace...')
   // One tmux call, since each costs a process start. It opens on the keeper
   // window, as the pod's init script does (`KEEPER_STARTING`), in the
   // workspace's default cwd, which shell and step windows take from the

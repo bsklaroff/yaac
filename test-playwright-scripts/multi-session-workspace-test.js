@@ -2,11 +2,11 @@
  * Verifies in Chromium how the webapp shows a workspace's sessions
  * (docs/sessions.md, "The webapp"):
  *
- *  1. Sidebar: a workspace with several sessions reads "N sessions" and
+ *  1. Sidebar: a workspace with several sessions reads "N agents" and
  *     lists a child row per session; one with none reads "No agent".
  *  2. Session panes: clicking a child row opens the workspace on that
  *     session's pane, a chat for an `acp` session and a terminal for a
- *     `tui` one, and each session has a "Close session" button in the tab bar.
+ *     `tui` one, and each session has a "Close agent" button in the tab bar.
  *  3. A workspace with no session shows the empty-workspace pane.
  *  4. The new-workspace pane: Where lists the running workspaces, and aiming
  *     it at one hides the workspace-only rows (Start, Group, Timeout, Base
@@ -17,7 +17,7 @@
  * running workspace MULTI (id prefix) holding at least one `acp` and one
  * `tui` session, each started with a prompt (`-p`) so its sidebar row has a
  * name to find, and a running workspace EMPTY (id prefix) with none
- * (`yaac workspace create <project> --no-session`). Nothing is created or
+ * (`yaac workspace create <project> --no-agent`). Nothing is created or
  * closed.
  *
  * Titles land while an agent works, so names are read from a fresh listing
@@ -59,7 +59,7 @@ await page.waitForTimeout(3000)
 
 
 // 1. Sidebar rows.
-const label = `${multi.sessions.length} sessions`
+const label = `${multi.sessions.length} agents`
 check(`multi-session row reads "${label}"`, await page.getByText(label, { exact: true }).count() === 1)
 for (const s of multi.sessions) {
   check(`child row for session ${s.sessionId.slice(0, 8)} (${s.tool}/${s.mode})`, await (await sessionRow(s.sessionId)).count() > 0)
@@ -80,7 +80,7 @@ for (const mode of ['acp', 'tui']) {
   await page.screenshot({ path: path.join(SHOTS, `multi-session-${mode}-pane.png`) })
 }
 check('each session has a close button in the tab bar',
-  await page.locator('[aria-label^="Close session"]').count() >= multi.sessions.filter((s) => s.exited !== true).length)
+  await page.locator('[aria-label^="Close agent"]').count() >= multi.sessions.filter((s) => s.exited !== true).length)
 
 // 3. The sessionless workspace.
 await page.locator('aside [class*="group/row"]', { hasText: 'No agent' }).first().click()

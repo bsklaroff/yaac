@@ -1120,13 +1120,13 @@ describe.skipIf(!CAN_RUN)('queued workspaces', () => {
         const messageFile = path.join(testEnv.dataDir, 'message.md')
         await fs.writeFile(messageFile, message)
         expect(await mamaAs(sender, 'send', '--prompt-file', messageFile, child.slice(0, 8)))
-          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex session [0-9a-f]{8}\\.`))
+          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex agent [0-9a-f]{8}\\.`))
         await vi.waitFor(async () => {
           expect((await fs.readFile(sent, 'utf8').catch(() => '')).includes(`\n${message}\n`)).toBe(true)
         }, { timeout: 30_000, interval: 500 })
 
         expect(await mamaAs(sender, 'send', child.slice(0, 8), 'a message from a peer'))
-          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex session [0-9a-f]{8}\\.`))
+          .toMatch(new RegExp(`^Sent to ${child.slice(0, 8)}'s codex agent [0-9a-f]{8}\\.`))
         await vi.waitFor(async () => {
           expect(await fs.readFile(sent, 'utf8').catch(() => ''))
             .toContain(`Sent from ${sender} via yaac-mama:\n\na message from a peer\n`)

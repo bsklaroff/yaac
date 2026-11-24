@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { toConversationEntry } from '#domain/workspaces/conversation-entry'
-import type { ConversationLinkRow } from '#db'
+import type { ConversationLinkRow, SessionRow } from '#db'
 
 function link(over: Partial<ConversationLinkRow> = {}): ConversationLinkRow {
   return {
@@ -54,6 +54,18 @@ describe('toConversationEntry', () => {
     expect('modelName' in typed).toBe(false)
   })
 
+  // A stopped tab keeps its agent's name, but only for the conversation the
+  // agent held last: one it left with `/clear` keeps the tool's own title.
+  it('takes its agent\'s title for the conversation that agent held last, else the tool\'s', () => {
+    const agent = { id: 'sess-1', conversationId: 'sid-2', title: 'Parser fix' } as SessionRow
+    const last = link({ conversationId: 'sid-2', sessionId: 'sess-1', title: 'Fix the parser' })
+    const cleared = link({ conversationId: 'sid-1', sessionId: 'sess-1', title: 'Tidy the docs' })
+    expect(toConversationEntry(last, [agent]).title).toBe('Parser fix')
+    expect(toConversationEntry(cleared, [agent]).title).toBe('Tidy the docs')
+    expect(toConversationEntry(last, [{ ...agent, title: undefined }]).title).toBe('Fix the parser')
+    expect(toConversationEntry(last).title).toBe('Fix the parser')
+  })
+
   it('omits what a conversation has not recorded', () => {
     const entry = toConversationEntry(link({ active: false, ordinal: 2 }))
     expect(entry).toEqual({
@@ -67,5 +79,6 @@ describe('toConversationEntry', () => {
     expect('sessionId' in entry).toBe(false)
     expect('lastActiveAt' in entry).toBe(false)
     expect('prompt' in entry).toBe(false)
+    expect('title' in entry).toBe(false)
   })
 })

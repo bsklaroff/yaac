@@ -464,7 +464,7 @@ describe('yaac site (real CLI + real server)', () => {
     }
     /** A new workspace of `project`, with no agent, and its pod's job. */
     const workspaceOf = async (project: string, projectId: string): Promise<string> => {
-      const out = await as('workspace', 'create', project, '--no-session')
+      const out = await as('workspace', 'create', project, '--no-agent')
       const id = /Workspace ([0-9a-f-]{36}) is running/.exec(out)?.[1]
       if (id === undefined) throw new Error(`create printed no workspace id:\n${out}`)
       return vi.waitFor(async () => {

@@ -439,7 +439,7 @@ describe('reconcileStaleWorkspaces', () => {
       await tickPastGrace()
 
       expect(stopsReported()).toEqual([
-          ['proj', 'abandoned', { reason: 'never-started', detail: 'session create did not complete' }],
+          ['proj', 'abandoned', { reason: 'never-started', detail: 'workspace create did not complete' }],
         ])
     })
 

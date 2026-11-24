@@ -13,7 +13,9 @@ import {
   getQueuedWorkspaceRow,
   getRoutineRow,
   getSessionRow,
+  listClosedSessionTitlesFor,
   listDraftWorkspaceRows,
+  listOpenSessionsFor,
   listWorkspaceConversations,
   recordAllDeathsSeen,
   recordDeathSeen,
@@ -110,7 +112,7 @@ async function sessionOf(workspaceIdOrPrefix: string, sessionId: string): Promis
   const workspaceId = await resolveWorkspaceId(workspaceIdOrPrefix)
   const session = await getSessionRow(sessionId)
   if (session?.workspaceId !== workspaceId) {
-    throw new ServerError('NOT_FOUND', `workspace ${workspaceIdOrPrefix} has no session ${sessionId}`)
+    throw new ServerError('NOT_FOUND', `workspace ${workspaceIdOrPrefix} has no agent ${sessionId}`)
   }
   return session.id
 }
@@ -282,7 +284,7 @@ export const workspaceApp = new Hono<IdentityEnv>()
       const noSession = body.noSession === true || body.nonInteractive === true
       if (noSession && (['tool', 'model', 'permissionMode', 'effort', 'agentOptions', 'mode', 'prompt'] as const)
         .some((k) => body[k] !== undefined)) {
-        throw new ServerError('VALIDATION', 'a workspace with no session takes no prompt or agent settings')
+        throw new ServerError('VALIDATION', 'a workspace with no agent takes no prompt or agent settings')
       }
       const workspaceId = body.workspaceId ?? randomUUID()
       // A client-chosen id already in use is a plain 409 before the stream
@@ -808,8 +810,13 @@ export const workspaceApp = new Hono<IdentityEnv>()
   .get('/:id/conversations', async (c) => {
     // Resolved from the record, so a stopped workspace works too.
     const { projectId, workspaceId } = await resolveWorkspaceRecord(c.req.param('id'))
-    const links = await listWorkspaceConversations(projectId, workspaceId)
-    return c.json(links.map((l) => toConversationEntry(l)))
+    const [links, open, closed] = await Promise.all([
+      listWorkspaceConversations(projectId, workspaceId),
+      listOpenSessionsFor([workspaceId]),
+      listClosedSessionTitlesFor([workspaceId]),
+    ])
+    const named = [...open.get(workspaceId) ?? [], ...closed.get(workspaceId) ?? []]
+    return c.json(links.map((l) => toConversationEntry(l, named)))
   })
   // One page of a conversation's history as chat-pane events: `page`, or
   // the last. Resolved from the record so the stopped-workspaces view can

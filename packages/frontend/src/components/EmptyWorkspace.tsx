@@ -1,6 +1,6 @@
 import type { JSX } from 'react'
 import { AddIcon, ChatIcon, HistoryIcon } from '#lib/icons'
-import { NEW_SHELL_TITLE } from '#components/PaneBar'
+import { NEW_SHELL_TITLE, stoppedConversationsLabel } from '#components/PaneBar'
 import { isLocked } from '#lib/steps'
 import { useReadOnly } from '#lib/viewer'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
@@ -14,13 +14,13 @@ import { YButton } from '#ui'
  * steps untouched (docs/workspace-steps.md), as does a public site's
  * release, which only its site manages (docs/public-sites.md).
  */
-export function EmptyWorkspace({ workspace, onNewSession, onNewShell, onOpenHistory }: {
+export function EmptyWorkspace({ workspace, onNewSession, onNewShell, history }: {
   workspace: WorkspaceListEntry
   /** Absent where nothing may start (a locked workspace). */
   onNewSession?: () => void
   onNewShell?: () => void
   /** Absent with no earlier conversation. */
-  onOpenHistory?: () => void
+  history?: { count: number; onOpen: () => void }
 }): JSX.Element {
   const readOnly = useReadOnly()
   if (isLocked(workspace)) {
@@ -48,16 +48,15 @@ export function EmptyWorkspace({ workspace, onNewSession, onNewShell, onOpenHist
             The workspace keeps its checkout and ports until it is stopped.
           </p>
         </div>
-        <div className="flex justify-center gap-2">
+        <div className="flex flex-wrap justify-center gap-2">
           {!readOnly && onNewSession !== undefined && onNewShell !== undefined && (
             <>
-              <YButton icon={ChatIcon} onClick={onNewSession}>New session</YButton>
+              <YButton icon={ChatIcon} onClick={onNewSession}>New agent</YButton>
               <YButton icon={AddIcon} onClick={onNewShell} title={NEW_SHELL_TITLE}>New shell</YButton>
             </>
           )}
-          {onOpenHistory !== undefined && (
-            <YButton icon={HistoryIcon} onClick={onOpenHistory}>Earlier conversations</YButton>
-
+          {history !== undefined && (
+            <YButton icon={HistoryIcon} onClick={history.onOpen}>{stoppedConversationsLabel(history.count)}</YButton>
           )}
         </div>
       </div>

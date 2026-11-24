@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { and, asc, eq, inArray, isNull, max, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNotNull, isNull, max, sql } from 'drizzle-orm'
 import { getDb } from './client'
 import { sessions, workspaceConversations } from './schema'
 import { appendUser, lacksUser } from './workspace-store'
@@ -116,6 +116,32 @@ export async function listOpenSessionsFor(workspaceIds: string[]): Promise<Map<s
     .orderBy(asc(sessions.ordinal))
   for (const r of rows) {
     byWorkspace.set(r.workspaceId, [...byWorkspace.get(r.workspaceId) ?? [], nullsToUndefined(r)])
+  }
+  return byWorkspace
+}
+
+/** What names a closed session's last conversation: its title, and which
+ *  conversation that was. */
+export type ClosedSessionTitle = Pick<SessionRow, 'id' | 'conversationId'> & { title: string }
+
+/**
+ * The titled closed sessions of several workspaces, by workspace id, in one
+ * query. Only the columns that name a conversation are read, since a
+ * workspace's closed sessions grow for its whole life and their rows carry
+ * prompts of up to `MAX_PROMPT_BYTES`.
+ */
+export async function listClosedSessionTitlesFor(workspaceIds: string[]): Promise<Map<string, ClosedSessionTitle[]>> {
+  const byWorkspace = new Map<string, ClosedSessionTitle[]>()
+  if (workspaceIds.length === 0) return byWorkspace
+  const db = await getDb()
+  const rows = await db.select({
+    workspaceId: sessions.workspaceId, id: sessions.id, conversationId: sessions.conversationId, title: sessions.title,
+  }).from(sessions)
+    .where(and(inArray(sessions.workspaceId, workspaceIds), isNotNull(sessions.closedAt), isNotNull(sessions.title)))
+  for (const { workspaceId, id, conversationId, title } of rows) {
+    if (title === null) continue
+    const row = { id, title, ...(conversationId !== null ? { conversationId } : {}) }
+    byWorkspace.set(workspaceId, [...byWorkspace.get(workspaceId) ?? [], row])
   }
   return byWorkspace
 }

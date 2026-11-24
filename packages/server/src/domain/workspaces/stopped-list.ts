@@ -1,6 +1,7 @@
 import { workspaceDriver } from '#drivers/driver'
 import {
   getConversationsFor,
+  listClosedSessionTitlesFor,
   listOpenSessionsFor,
   listProjectRows,
   listStoppedWorkspaceRows,
@@ -82,14 +83,17 @@ export async function listStoppedWorkspaces(query: StoppedListQuery = {}): Promi
 
 /** Stopped rows in wire form, with their conversations. */
 export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWorkspaceEntry[]> {
-  const [linksByWorkspace, sessionsByWorkspace, sitesById] = await Promise.all([
+  const ids = rows.map((r) => r.workspaceId)
+  const [linksByWorkspace, sessionsByWorkspace, closedByWorkspace, sitesById] = await Promise.all([
     getConversationsFor(rows),
-    listOpenSessionsFor(rows.map((r) => r.workspaceId)),
+    listOpenSessionsFor(ids),
+    listClosedSessionTitlesFor(ids),
     siteNames([...new Set(rows.flatMap((r) => r.siteId ?? []))]),
   ])
   return rows.map((r) => {
     const links = linksByWorkspace.get(`${r.projectId}/${r.workspaceId}`) ?? []
     const sessions = sessionsByWorkspace.get(r.workspaceId) ?? []
+    const named = [...sessions, ...closedByWorkspace.get(r.workspaceId) ?? []]
     const prompt = openingPrompt(links) ?? sessions[0]?.firstPrompt
     const title = r.title ?? conversationTitle(links) ?? r.generatedTitle
     return {
@@ -99,7 +103,7 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
       lastActiveAt: formatUtcTimestamp(lastActiveMs(links) ?? r.createdAt.getTime()),
       stoppedAt: formatUtcTimestamp(stoppedAtOf(r).getTime()),
       sessions: sessions.map((s) => toSessionEntry(s, links)),
-      conversations: links.map(toConversationEntry),
+      conversations: links.map((l) => toConversationEntry(l, named)),
       deathSeenBy: r.deathSeenBy,
       ...(prompt !== undefined ? { prompt } : {}),
       ...(title !== undefined ? { title } : {}),

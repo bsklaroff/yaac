@@ -37,6 +37,6 @@ export async function configEgressAllowlist(
   })
   console.log(`${name}'s workspaces may now reach ${describe(stored)}. Applies to workspaces created from now on.`)
   for (const { host, label } of leavesOut) {
-    console.warn(`Warning: this leaves out ${label} (${host}); agent sessions may not work without it.`)
+    console.warn(`Warning: this leaves out ${label} (${host}); agents may not work without it.`)
   }
 }

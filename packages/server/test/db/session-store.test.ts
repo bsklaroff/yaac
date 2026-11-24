@@ -9,6 +9,7 @@ import {
   getSessionRow,
   holdSessionPrompt,
   insertSession,
+  listClosedSessionTitlesFor,
   listOpenSessionsFor,
   listWorkspaceSessions,
   markSessionsLaunched,
@@ -109,6 +110,18 @@ describe('listOpenSessionsFor', () => {
     const byWorkspace = await listOpenSessionsFor(['w1', 'w2', 'none'])
     expect([...byWorkspace].map(([w, rows]) => [w, rows.map((r) => r.id)])).toEqual([['w1', [a.id]], ['w2', [b.id]]])
     expect(await listOpenSessionsFor([])).toEqual(new Map())
+  })
+})
+
+describe('listClosedSessionTitlesFor', () => {
+  it('reads only titled closed sessions, and only what names their last conversation', async () => {
+    await insertSession(PROJ, 'w1', { ...claude, title: 'Still open' })
+    const titled = await insertSession(PROJ, 'w1', { ...claude, title: 'Parser fix' })
+    const untitled = await insertSession(PROJ, 'w1', claude)
+    await closeSessionRow(titled.id)
+    await closeSessionRow(untitled.id)
+    expect(await listClosedSessionTitlesFor(['w1', 'none'])).toEqual(new Map([['w1', [{ id: titled.id, title: 'Parser fix' }]]]))
+    expect(await listClosedSessionTitlesFor([])).toEqual(new Map())
   })
 })
 

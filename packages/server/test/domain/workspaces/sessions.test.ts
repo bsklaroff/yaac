@@ -148,8 +148,18 @@ describe('openSession', () => {
   it('opens a session on one of the workspace\'s conversations, in its own tool and mode, and refuses one it does not hold', async () => {
     await recordConversations(DEMO_PROJECT_ID, WS, [{ tool: 'claude', conversationId: 'conv-1', mode: 'acp' }])
     await expect(openSession(local, WS, { resume: 'conv-nope' })).rejects.toMatchObject({ code: 'VALIDATION' })
-    const session = await openSession(local, WS, { tool: 'codex', mode: 'tui', resume: 'conv-1' })
+    const session = await openSession(local, WS, { tool: 'codex', mode: 'tui', resume: 'conv-1', title: 'Parser fix' })
     expect(session).toMatchObject({ tool: 'claude', mode: 'acp', conversationId: 'conv-1' })
+
+    // Its tab was named for the agent that held it last, and a resume keeps
+    // that name rather than renaming the tab.
+    await applyWorkspaceEvent({
+      type: 'conversations-discovered', projectId: DEMO_PROJECT_ID, workspaceId: WS,
+      sessions: [{ tool: 'claude', conversationId: 'conv-1', sessionId: session.id }],
+    })
+    await closeSession(local, session.id)
+    expect((await openSession(local, WS, { resume: 'conv-1' })).title).toBe('Parser fix')
+    expect((await openSession(local, WS, { resume: 'conv-1', title: 'Renamed' })).title).toBe('Renamed')
   })
 
   // A conversation whose agent wrote history that is gone would be killed by

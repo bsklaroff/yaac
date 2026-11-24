@@ -252,12 +252,12 @@ export const WorkspaceRow = memo(function WorkspaceRow({
           aria-expanded={!collapsed}
           className="pointer-events-auto -my-1 ml-auto flex shrink-0 items-center gap-1 py-1"
         >
-          {workspace.sessions.length} sessions
+          {workspace.sessions.length} agents
           <ChevronIcon size={11} className={clsx(!collapsed && 'rotate-90')} />
         </YButton>
       ) : (
         <span className="ml-auto shrink-0">
-          {multi ? `${String(workspace.sessions.length)} sessions` : workspaceAgentLabel(workspace)}
+          {multi ? `${String(workspace.sessions.length)} agents` : workspaceAgentLabel(workspace)}
         </span>
       )}
     </>
@@ -314,7 +314,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
               variant="bare"
               onClick={toggleSessions}
               aria-label={`${statusText(shownStatus, workspace.asking, teammate, unread)}. `
-                + `${collapsed ? 'Show' : 'Hide'} ${title}'s sessions`}
+                + `${collapsed ? 'Show' : 'Hide'} ${title}'s agents`}
               aria-expanded={!collapsed}
               className="pointer-events-auto flex size-3.5 items-center justify-center text-subtle transition hover:text-text"
             >
@@ -333,7 +333,7 @@ export const WorkspaceRow = memo(function WorkspaceRow({
             label: 'Workspace actions',
             items: [
               ...isLocked(workspace) ? [] : [{
-                label: 'New session…',
+                label: 'New agent…',
                 onSelect: () => openNewWorkspace({ projectId: workspace.projectId, inWorkspace: workspace.workspaceId }),
               }],
               { label: 'Rename', onSelect: startRename },
@@ -558,7 +558,7 @@ export function StoppedWorkspaceRow({ entry }: { entry: StoppedWorkspaceEntry })
         label={title}
         onSelect={() => selectWorkspace(entry.workspaceId)}
         selected={selected}
-        rowProps={{ title: 'Read this workspace\'s conversation' }}
+        rowProps={{ title: 'Read this workspace\'s conversations' }}
         className={selected ? undefined : unseen ? 'bg-warning/10 opacity-80 hover:bg-warning/15' : 'opacity-60 hover:opacity-90'}
         // Only an unseen death takes the mark's slot; the rest start at the edge.
         {...(unseen ? { mark: <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-warning" /> } : {})}

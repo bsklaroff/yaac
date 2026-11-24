@@ -520,22 +520,22 @@ group
 
 const workspace = program
   .command('workspace')
-  .description('Manage workspaces — a git clone plus the container and the agent sessions running in it')
+  .description('Manage workspaces — a git clone plus the container and the agents running in it')
 
 selectionOptions(workspace
   .command('create')
-  .description('Create a new workspace for a project, with an agent session in it; or with --workspace, open another session in a running workspace')
+  .description('Create a new workspace for a project, with an agent in it; or with --workspace, start another agent in a running workspace')
   .argument('[project]', 'Project name, id, or id prefix (omit with --workspace)')
-  .option('-w, --workspace <workspace-id>', 'Open the session in this running workspace (id or unique prefix) instead of a new one. Takes the agent options and --cwd (one of its checkouts\' folders, or . for its root), but not --repo, --branch, --group, --timeout, --start-at or --start-in')
-  .option('--resume <conversation>', 'With --workspace: open the session on one of that workspace\'s conversations (see `yaac workspace conversations`) instead of a new one')
-  .option('--no-session', 'Create the workspace with no agent session; it takes no prompt or agent options')
+  .option('-w, --workspace <workspace-id>', 'Start the agent in this running workspace (id or unique prefix) instead of a new one. Takes the agent options and --cwd (one of its checkouts\' folders, or . for its root), but not --repo, --branch, --group, --timeout, --start-at or --start-in')
+  .option('--resume <conversation>', 'With --workspace: start the agent on one of that workspace\'s conversations (see `yaac workspace conversations`) instead of a new one')
+  .option('--no-agent', 'Create the workspace with no agent; it takes no prompt or agent options')
   .option('-t, --tool <tool>', 'Agent tool to use (claude, codex, opencode, pi, or omp). Defaults to the agent this project was last created with, else claude')
   .option('-b, --branch <branch>', 'Reference branch for a workspace that starts with one repo (defaults to the remote default branch); with several, name each repo\'s with --repo')
   .option('--commit <sha>', 'Start a workspace that starts with one repo at this full commit (40 hex digits) instead of a branch\'s tip; its checkout then has no base branch. Not with --branch')
   .option('--steps <file>', 'A JSON file of the steps to start with, in place of the project\'s init workflows (docs/workspace-steps.md)')
   .option('--no-steps', 'Start with no steps at all, not even the project\'s init workflows')
   .option('--workflow <name>', 'Start with this named workflow, in place of --steps (docs/workflows.md). Non-interactive, it gets the run secrets the workflow names, and its launch, now or scheduled, approves its commits for them; non-interactive, its runs go in the workflow\'s own group unless --group names one')
-  .option('--non-interactive', 'Run --steps untouched, with no session, and stop when they finish: a CI run. Nothing can change it while it runs; it can only be stopped, and is rerun rather than restarted')
+  .option('--non-interactive', 'Run --steps untouched, with no agent, and stop when they finish: a CI run. Nothing can change it while it runs; it can only be stopped, and is rerun rather than restarted')
   .option('--wait', 'With --non-interactive: wait for its steps to finish, exiting non-zero unless they all succeeded')
   .option('-p, --prompt <text>', 'Initial prompt the agent is launched with; - reads it from stdin')
   .option('--prompt-file <path>', 'Read the initial prompt from this file, in place of --prompt, so a long brief needs no shell quoting. A prompt can be up to 130 KB')
@@ -569,9 +569,9 @@ workspace
 
 workspace
   .command('stop')
-  .description('Stop a workspace: tear down its container, keep its checkout and diff (less its gitignored files). With --session, close one session instead; the workspace keeps running')
-  .argument('<id>', 'Workspace ID or unique prefix; with --session, a session ID or unique prefix')
-  .option('--session', 'Close the session <id> names: stop its agent and keep its conversations, leaving the workspace running')
+  .description('Stop a workspace: tear down its container, keep its checkout and diff (less its gitignored files). With --agent, stop one of its agents instead; the workspace keeps running')
+  .argument('<id>', 'Workspace ID or unique prefix; with --agent, an agent ID or unique prefix')
+  .option('--agent', 'Stop the agent <id> names and keep its conversations, leaving the workspace running')
   .action(workspaceStop)
 
 workspace
@@ -590,7 +590,7 @@ workspace
 
 workspace
   .command('restart')
-  .description('Restart a workspace: kill its container, reuse its checkout, resume the sessions it had open')
+  .description('Restart a workspace: kill its container, reuse its checkout, resume the agents it had open')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
   .option('--timeout <duration>', 'Stop it this long after the restart, like 2h; without one the restart clears any timeout it had')
   .option('--volume <name>', 'Attach this volume instead of the one it last held')
@@ -661,11 +661,11 @@ workspace
 
 workspace
   .command('attach')
-  .description('Attach to the workspace\'s tmux session, on a session\'s window (its first, unless --session names one)')
+  .description('Attach to the workspace\'s tmux session, on an agent\'s window (its first, unless --agent names one)')
   .argument('<workspace-id>', 'Workspace ID or unique prefix')
-  .option('-s, --session <session-id>', 'Open on this session\'s window (id or unique prefix)')
+  .option('-a, --agent <agent-id>', 'Open on this agent\'s window (id or unique prefix)')
   .addHelpText('after', '\nTmux shortcuts:\n  Ctrl-B C  Open a new shell\n  Ctrl-B N  Switch to the next window\n  Ctrl-B P  Switch to the previous window')
-  .action((workspaceId: string, opts: { session?: string }) => workspaceAttach(workspaceId, 'native', opts))
+  .action((workspaceId: string, opts: { agent?: string }) => workspaceAttach(workspaceId, 'native', opts))
 
 workspace
   .command('shell')
@@ -695,7 +695,7 @@ function routineOptions(cmd: Command): Command {
     .option('-b, --branch <branch>', 'Reference branch each run forks from, for runs that start with one repo')
     .option('--commit <sha>', 'A full commit every run starts at instead of a branch\'s tip, for runs that start with one repo. Not with --branch')
     .option('--workflow <name>', 'Each run starts with this named workflow, in place of the project\'s init workflows (docs/workflows.md); saving it with --non-interactive approves the commit or branch each repo runs on for the workflow\'s run secrets, which on a branch means whatever anyone pushes there')
-    .option('--non-interactive', 'Each run runs its --workflow untouched, with no prompt or session, and stops when it finishes')
+    .option('--non-interactive', 'Each run runs its --workflow untouched, with no prompt or agent, and stops when it finishes')
     .option('-g, --group <group>', 'Sidebar group runs are filed under (by name or id; created if it does not exist). Defaults to a group named after the routine')
     .option('--no-group', 'File runs in the default list instead of a group')
 }

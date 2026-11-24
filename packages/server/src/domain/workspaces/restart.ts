@@ -102,7 +102,7 @@ export async function prepareRestart(
     kind: 'restart',
     ...(row.groupId !== undefined ? { groupId: row.groupId } : {}),
   }, async (onProgress) => {
-    if (jobName) onProgress(`Stopping session job ${jobName}...`)
+    if (jobName) onProgress(`Stopping workspace job ${jobName}...`)
     // Always: it also clears a leftover terminating mark.
     await teardownForRestart({ jobName: jobName ?? null, projectId, workspaceId })
     // A life whose files were on its node is saved before the next starts.
@@ -116,7 +116,7 @@ export async function prepareRestart(
       await insertSession(projectId, workspaceId, settings)
     }
     const sessions = await listWorkspaceSessions(workspaceId)
-    if (sessions.length > 1) onProgress(`Restoring ${sessions.length} sessions...`)
+    if (sessions.length > 1) onProgress(`Restoring ${sessions.length} agents...`)
 
     try {
       return await createWorkspace(projectId, {

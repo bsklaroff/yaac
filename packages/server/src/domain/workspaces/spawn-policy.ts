@@ -249,8 +249,8 @@ export async function decideRestart(request: RestartRequest): Promise<RestartDec
     const launched = launchablePermissionMode(s.tool, s.permissionMode)
     if (!morePermissive(launched, ceiling)) continue
     return fail(launched === s.permissionMode
-      ? `${short}'s ${s.tool} session runs in permission mode '${s.permissionMode}', ${beyond}`
-      : `${short}'s ${s.tool} session would come back in permission mode '${launched}', the nearest `
+      ? `${short}'s ${s.tool} agent runs in permission mode '${s.permissionMode}', ${beyond}`
+      : `${short}'s ${s.tool} agent would come back in permission mode '${launched}', the nearest `
         + `${s.tool} has to '${s.permissionMode}', ${beyond}`)
   }
   const tools = [...new Set(sessions.map((s) => s.tool))]

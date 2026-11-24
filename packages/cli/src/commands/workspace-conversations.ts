@@ -22,7 +22,7 @@ export async function workspaceConversations(idOrName: string): Promise<void> {
     Number(b.active) - Number(a.active) || a.ordinal - b.ordinal)
 
   printTable(
-    [{ header: 'CONVERSATION' }, { header: 'TOOL' }, { header: 'STATE' }, { header: 'SESSION' }, { header: 'FIRST MESSAGE' }],
+    [{ header: 'CONVERSATION' }, { header: 'TOOL' }, { header: 'STATE' }, { header: 'AGENT' }, { header: 'FIRST MESSAGE' }],
     sorted.map((c) => [
       c.conversationId,
       c.tool,

@@ -1220,7 +1220,7 @@ describe('prepareStart', () => {
       await expect(start({ nonInteractive: true, noSession: true })).rejects.toThrow('needs its own steps')
       await expect(start({ nonInteractive: true, noSession: true, steps: { db: { run: 'pg', service: true } } }))
         .rejects.toThrow('needs its own steps')
-      await expect(start({ nonInteractive: true, steps: { t: { run: 'pnpm test' } } })).rejects.toThrow('opens no session')
+      await expect(start({ nonInteractive: true, steps: { t: { run: 'pnpm test' } } })).rejects.toThrow('starts no agent')
       expect(specs).toEqual([])
     })
 

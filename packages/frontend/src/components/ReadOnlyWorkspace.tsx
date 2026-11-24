@@ -119,7 +119,7 @@ export function ReadOnlyWorkspace({ subject }: { subject: ReadOnlySubject | unde
           className="flex-1"
           icon={TerminalIcon}
           title="No workspace selected"
-          description="Pick one of their workspaces to read its conversation."
+          description="Pick one of their workspaces to read its conversations."
         />
       )}
       {stopped && (

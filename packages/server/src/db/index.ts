@@ -35,6 +35,7 @@ export {
   getSessionRow,
   holdSessionPrompt,
   insertSession,
+  listClosedSessionTitlesFor,
   listOpenSessionsFor,
   listWorkspaceSessions,
   markSessionsLaunched,
@@ -45,6 +46,7 @@ export {
   takeSessionPrompt,
   type SessionLaunchSettings,
   type SessionRow,
+  type ClosedSessionTitle,
 } from './session-store'
 export {
   insertAddedSteps,

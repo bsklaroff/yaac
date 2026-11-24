@@ -241,8 +241,8 @@ describe('prepareRestart', () => {
     expect(windowOf(codex)).not.toContain('resume')
     expect(windowOf(claude)).toMatch(/--resume conv-2'$/)
     expect(progress).toEqual(expect.arrayContaining([
-      'Stopping session job yaac-wt-1...',
-      'Restoring 2 sessions...',
+      'Stopping workspace job yaac-wt-1...',
+      'Restoring 2 agents...',
       `Reusing existing workspace at ${workspaceDir(DEMO_PROJECT_ID, 'wt-1')}`,
     ]))
     expect((await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-1'))?.stoppedAt).toBeUndefined()
@@ -306,7 +306,7 @@ describe('prepareRestart', () => {
     await beside('wt-old', { prompt: 'a'.repeat(MAX_PROMPT_BYTES + 1) })
     await applyWorkspaceEvent({ type: 'workspace-stopped', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-old' })
 
-    await expect(restart('wt-old')).rejects.toThrow(/the prompt is over the 130 KB limit.*Shorten it to start this session/)
+    await expect(restart('wt-old')).rejects.toThrow(/the prompt is over the 130 KB limit.*Shorten it to start this agent/)
     expect(windowsExec()).toBeUndefined()
   })
 

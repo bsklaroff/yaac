@@ -17,6 +17,7 @@ import {
   recordProjectCreate,
   setSessionAgentOptions,
   setSessionTitle,
+  type ConversationLinkRow,
   type SessionRow,
 } from '#db'
 import { KEEPER_WINDOW, type RuntimeSnapshot } from '#drivers/contract'
@@ -63,6 +64,17 @@ export interface OpenSessionRequest {
 }
 
 /**
+ * The title a resumed conversation's tab already shows: that of the agent
+ * that held it last, while it was that agent's last conversation
+ * (`toConversationEntry`), so a resume does not rename the tab.
+ */
+async function heldTitle(resumed: ConversationLinkRow | undefined): Promise<string | undefined> {
+  if (resumed?.sessionId === undefined) return undefined
+  const holder = await getSessionRow(resumed.sessionId)
+  return holder?.conversationId === resumed.conversationId ? holder.title : undefined
+}
+
+/**
  * Open a session in a running workspace and launch its window. Its settings
  * resolve as a create's (`resolveCreate`). Answers with the row once its
  * window is launched; its agent coming up is the session's own business,
@@ -83,6 +95,7 @@ export async function openSession(
     throw new ServerError('VALIDATION', `workspace ${workspaceId.slice(0, 8)} has no conversation ${request.resume}`)
   }
   const cwd = await sessionCwd(workspaceId, request.cwd, resumed?.sessionId)
+  const title = request.title ?? await heldTitle(resumed)
   // A resumed conversation keeps its own tool and protocol.
   const setup = await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
@@ -108,7 +121,7 @@ export async function openSession(
     cwd,
     ...(request.prompt !== undefined ? { prompt: request.prompt } : {}),
     ...(request.resume !== undefined ? { conversationId: request.resume } : {}),
-    ...(request.title !== undefined ? { title: request.title } : {}),
+    ...(title !== undefined ? { title } : {}),
   })
   try {
     await launchSessions({ projectId, workspaceId, jobName }, [session])
@@ -151,7 +164,7 @@ async function sessionCwd(
 async function ownedSession(principal: Actor, sessionId: string): Promise<SessionRow> {
   const session = await getSessionRow(sessionId)
   if (session === undefined || session.closedAt !== undefined) {
-    throw new ServerError('NOT_FOUND', `no open session ${sessionId}`)
+    throw new ServerError('NOT_FOUND', `no running agent ${sessionId}`)
   }
   await authorizeProject(principal, session.projectId)
   return session
@@ -204,7 +217,7 @@ export async function changeSessionAgentOptions(principal: Actor, sessionId: str
       throw new ServerError('VALIDATION', `${session.tool} has no agent option ${option}`)
     }
     if (!agentOptionIsLive(option, session.mode)) {
-      throw new ServerError('VALIDATION', `"${AGENT_OPTIONS[option].label}" is fixed at launch for a ${session.mode} session`)
+      throw new ServerError('VALIDATION', `"${AGENT_OPTIONS[option].label}" is fixed at launch for a ${session.mode} agent`)
     }
   }
   await setSessionAgentOptions(session.id, options)

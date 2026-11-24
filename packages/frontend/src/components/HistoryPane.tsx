@@ -41,7 +41,7 @@ export function HistoryPane({ workspace, focused, onResumed }: {
         className="h-full bg-sunken"
         icon={HistoryIcon}
         title="No earlier conversations"
-        description="A session's conversation shows here once it is closed, to read or resume."
+        description="An agent's conversation shows here once it is closed, to read or resume."
       />
     )
   }

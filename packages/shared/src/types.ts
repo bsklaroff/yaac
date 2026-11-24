@@ -1383,6 +1383,9 @@ export interface ConversationEntry {
   /** This conversation's first user message (differs from the workspace's
    *  founding prompt after a `/clear`). */
   prompt?: string
+  /** Its name: its agent's title while it is the conversation that agent
+   *  holds or closed on, else the one the tool gave it. */
+  title?: string
   /** 'YYYY-MM-DD HH:MM:SS' (UTC) of its transcript's last write. */
   lastActiveAt?: string
   /**

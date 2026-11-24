@@ -26,11 +26,11 @@ describe('workspaceCreate', () => {
       await expect(workspaceCreate(project, options), message).rejects.toThrow(message)
     }
 
-    await refused(undefined, {}, 'Name the project to create the workspace in, or --workspace to open a session in a running one.')
+    await refused(undefined, {}, 'Name the project to create the workspace in, or --workspace to start an agent in a running one.')
     await refused('p', { workspace: 'abc123' }, 'Give a project or --workspace, not both')
     await refused('p', { resume: 'conv-1' }, '--resume needs --workspace: a conversation resumes in the workspace that holds it.')
 
-    // A session in a running workspace takes none of a workspace's settings.
+    // An agent in a running workspace takes none of a workspace's settings.
     const workspaceSettings: Array<[string, WorkspaceCreateOptions]> = [
       ['--branch', { branch: 'main' }], ['--repo', { repo: [{ repo: 'lib' }] }], ['--no-repos', { repos: false }],
       ['--nested', { nested: true }], ['--no-nested', { nested: false }], ['--group', { group: 'g' }],
@@ -41,11 +41,11 @@ describe('workspaceCreate', () => {
     ]
     for (const [flag, options] of workspaceSettings) {
       await refused(undefined, { workspace: 'abc123', ...options },
-        `${flag} is a workspace's setting, which --workspace (a session in a running one) does not take.`)
+        `${flag} is a workspace's setting, which --workspace (an agent in a running one) does not take.`)
     }
-    await refused(undefined, { workspace: 'abc123', session: false }, '--no-session starts a new workspace; it does not take --workspace.')
+    await refused(undefined, { workspace: 'abc123', agent: false }, '--no-agent starts a new workspace; it does not take --workspace.')
 
-    // A workspace with no session runs no agent, so it takes none of one's
+    // A workspace with no agent takes none of an agent's
     // options; a non-interactive one may still be scheduled.
     const agentOptions: Array<[string, WorkspaceCreateOptions]> = [
       ['--tool', { tool: 'claude' }], ['--model', { model: 'opus' }], ['--effort', { effort: 'high' }],
@@ -54,13 +54,13 @@ describe('workspaceCreate', () => {
     ]
     const scheduling: Array<[string, WorkspaceCreateOptions]> = [['--start-at', { startAt: '10:00' }], ['--start-in', { startIn: '5m' }]]
     for (const [flag, options] of [...agentOptions, ...scheduling]) {
-      await refused('p', { session: false, ...options }, `--no-session does not take ${flag}: a workspace with no session runs no agent.`)
+      await refused('p', { agent: false, ...options }, `--no-agent does not take ${flag}: a workspace with no agent runs none.`)
     }
     for (const [flag, options] of agentOptions) {
       await refused('p', { nonInteractive: true, steps: 'steps.json', ...options },
-        `--non-interactive does not take ${flag}: a workspace with no session runs no agent.`)
+        `--non-interactive does not take ${flag}: a workspace with no agent runs none.`)
     }
-    await refused('p', { session: false, nonInteractive: true }, '--non-interactive already starts no session; drop --no-session.')
+    await refused('p', { agent: false, nonInteractive: true }, '--non-interactive already starts no agent; drop --no-agent.')
 
     // What a non-interactive workspace runs, and what waits for it.
     await refused('p', { steps: 'steps.json', workflow: 'ci' }, 'Give --steps or --workflow, not both.')

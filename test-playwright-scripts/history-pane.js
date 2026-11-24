@@ -2,24 +2,24 @@
  * Verifies in Chromium a workspace's History pane (docs/sessions.md,
  * "History"):
  *
- *  1. With every conversation held by an open session, the bar offers no
- *     History button.
- *  2. Closing one session brings History in; it opens the closed
+ *  1. With every conversation held by an open agent, the ⋯ menu offers no
+ *     "N stopped conversations".
+ *  2. Closing one agent brings it in; it opens History on the closed
  *     conversation read-only, with a Resume button.
- *  3. Resume opens a new session on it, focuses that session's pane, and
- *     History leaves the bar once nothing is closed. A History pane still
+ *  3. Resume opens a new agent on it, focuses that agent's pane, and the
+ *     menu drops History once nothing is closed. A History pane still
  *     open (or restored by a reload) reads "No earlier conversations".
  *  4. Resume clicked again as soon as it re-enables: counts the sessions
  *     the conversation ends up in (more than one is a duplicate resume).
- *  5. With every session closed, the empty-workspace pane's "Earlier
+ *  5. With every session closed, the empty-workspace pane's "N stopped
  *     conversations" button opens History.
- *  6. At a phone's width, the ⋯ menu offers "Conversation history".
+ *  6. At a phone's width, the ⋯ menu offers "N stopped conversations".
  *
  * Needs a running `yaac server` and a running workspace WS (id prefix)
- * holding at least two open sessions with conversations (fake-credential
+ * holding at least two open agents with conversations (fake-credential
  * agents do: `yaac workspace create <project> -t claude --mode acp -p …`,
- * then `yaac workspace create -w <id> …`). It closes and resumes sessions
- * there, and leaves every session closed.
+ * then `yaac workspace create -w <id> …`). It closes and resumes agents
+ * there, and leaves every agent closed.
  *
  * Run: WS=<id> node test-playwright-scripts/history-pane.js
  */
@@ -53,22 +53,44 @@ const page = await browser.newPage({ viewport: { width: 1400, height: 900 } })
 await page.addInitScript(() => localStorage.setItem('yaac.viewmode.v1', 'tabs'))
 await page.goto(`${origin}/?project=${ws.projectId}&workspace=${id}`)
 await page.waitForTimeout(3000)
-// The bar's button, told from the History pane's own tab by its title.
-const historyButton = page.getByTitle('Read or resume closed sessions\' conversations')
+// History opens from the ⋯ menu's "N stopped conversations" item.
+const STOPPED = /^\d+ stopped conversations?$/
+const moreButton = page.getByRole('button', { name: 'More pane actions' })
+/** Whether the ⋯ menu offers History, closing the menu again. */
+const historyOffered = async () => {
+  await moreButton.click()
+  await page.waitForTimeout(300)
+  const offered = await page.getByRole('menuitem', { name: STOPPED }).count() === 1
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(200)
+  return offered
+}
+/** Wait up to `ms` for the ⋯ menu to offer History; answers whether it did. */
+const historyAppears = async (ms = 60_000) => {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (await historyOffered()) return true
+    await page.waitForTimeout(1000)
+  }
+  return false
+}
+const openHistory = async () => {
+  await moreButton.click()
+  await page.getByRole('menuitem', { name: STOPPED }).click()
+}
 const resumeButton = page.getByRole('button', { name: /^(Resume|Resuming…)$/ })
 const composerShown = async () => await page.getByPlaceholder(/Message the agent|Connecting|Reconnecting/).filter({ visible: true }).count() > 0
 
 // 1. Nothing closed.
-check('no History button while every conversation is held', await historyButton.count() === 0)
+check('the menu offers no History while every conversation is held', !await historyOffered())
 
 // 2. Close the second session.
 const victim = ws.sessions[1]
 const conversationId = victim.conversationId
 await close(victim.sessionId)
 const t0 = Date.now()
-await historyButton.waitFor({ timeout: 60_000 }).catch(() => {})
-check('History appears once a session is closed', await historyButton.count() === 1, `${Date.now() - t0} ms`)
-await historyButton.click()
+check('History appears in the menu once an agent is closed', await historyAppears(), `${Date.now() - t0} ms`)
+await openHistory()
 await page.waitForTimeout(2000)
 const prompt = victim.prompt ?? ''
 check('History pane opens on the closed conversation',
@@ -81,9 +103,9 @@ await resumeButton.click()
 const resumed = await waitFor((w) => held(w, conversationId).length > 0, 'the resumed session')
 const newSession = held(resumed, conversationId)[0]
 await page.waitForTimeout(2000)
-check('the resumed session\'s pane takes focus', await composerShown()
+check('the resumed agent\'s pane takes focus', await composerShown()
   && await page.getByText('No earlier conversations').filter({ visible: true }).count() === 0)
-check('History leaves the bar once nothing is closed', await historyButton.count() === 0)
+check('History leaves the menu once nothing is closed', !await historyOffered())
 await page.screenshot({ path: path.join(SHOTS, 'history-pane-resumed.png') })
 await page.getByText('History', { exact: true }).filter({ visible: true }).first().click().catch(() => {})
 await page.waitForTimeout(500)
@@ -98,8 +120,8 @@ check('a reload with History in the saved layout degrades to its empty state',
 
 // 4. Resume, then click again as soon as it re-enables.
 await close(newSession.sessionId)
-await historyButton.waitFor({ timeout: 60_000 })
-await historyButton.click()
+if (!await historyAppears()) throw new Error('History never returned to the menu')
+await openHistory()
 await resumeButton.waitFor()
 await resumeButton.click()
 const deadline = Date.now() + 8000
@@ -112,7 +134,7 @@ while (Date.now() < deadline) {
 }
 await page.waitForTimeout(3000)
 const after = held(await listing(), conversationId)
-check('a quick second Resume does not open a duplicate session', after.length === 1,
+check('a quick second Resume does not open a duplicate agent', after.length === 1,
   `${after.length} session(s) hold it after ${reclicks} re-click(s)`)
 
 // 5. Close every session: the empty-workspace pane.
@@ -123,13 +145,13 @@ await page.waitForTimeout(3000)
 // Close a restored History pane so the empty-workspace pane shows.
 await page.getByRole('button', { name: 'Close History' }).click().catch(() => {})
 await page.waitForTimeout(1000)
-const earlier = page.getByRole('button', { name: 'Earlier conversations' })
+const earlier = page.getByRole('button', { name: /^\d+ stopped conversations?$/ })
 await earlier.waitFor({ timeout: 60_000 }).catch(() => {})
-check('the empty workspace offers "Earlier conversations"', await earlier.count() === 1)
+check('the empty workspace offers "N stopped conversations"', await earlier.count() === 1)
 await page.screenshot({ path: path.join(SHOTS, 'history-pane-empty-workspace.png') })
 await earlier.click().catch(() => {})
 await page.waitForTimeout(1500)
-check('"Earlier conversations" opens History with Resume', await resumeButton.count() === 1)
+check('"N stopped conversations" opens History with Resume', await resumeButton.count() === 1)
 
 // 6. A phone's width.
 const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
@@ -137,8 +159,8 @@ await phone.goto(`${origin}/?project=${ws.projectId}&workspace=${id}`)
 await phone.waitForTimeout(3000)
 await phone.getByRole('button', { name: 'More pane actions' }).click()
 await phone.waitForTimeout(500)
-const item = phone.getByRole('menuitem', { name: 'Conversation history' })
-check('the ⋯ menu offers "Conversation history"', await item.count() === 1)
+const item = phone.getByRole('menuitem', { name: /^\d+ stopped conversations?$/ })
+check('the ⋯ menu offers "N stopped conversations"', await item.count() === 1)
 await phone.screenshot({ path: path.join(SHOTS, 'history-pane-mobile-menu.png') })
 await item.click().catch(() => {})
 await phone.waitForTimeout(1500)

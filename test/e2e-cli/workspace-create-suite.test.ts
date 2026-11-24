@@ -1529,7 +1529,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     beforeAll(async () => {
       await skipClaudeOnboarding(await setupProject(NAME))
-      const stdout = await yaac('workspace', 'create', NAME, '--no-session')
+      const stdout = await yaac('workspace', 'create', NAME, '--no-agent')
       // With no session to attach to, it names the workspace instead.
       workspaceId = /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
       expect(workspaceId).not.toBe('')
@@ -1538,7 +1538,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     afterAll(() => stopWorkspace(workspaceId))
 
-    it('starts a workspace with no session: no agent window, and none listed', async () => {
+    it('starts a workspace with no agent: no agent window, and none listed', async () => {
       expect(await windows()).toEqual([KEEPER_WINDOW])
       expect(await sessions()).toEqual([])
       const row = (await yaac('workspace', 'list')).split('\n').find((l) => l.startsWith(workspaceId.slice(0, 8)))
@@ -1546,7 +1546,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(row).toMatch(/\s-\s+\S+\s+0\b/)
     })
 
-    it('opens sessions in the running workspace with --workspace, each in a window of its own, listed under SESSION', async () => {
+    it('opens sessions in the running workspace with --workspace, each in a window of its own, listed under AGENT', async () => {
       await yaac('workspace', 'create', '--workspace', workspaceId.slice(0, 8), '--tool', 'claude', '--mode', 'tui', '--prompt', 'say hi')
       await yaac('workspace', 'create', '--workspace', workspaceId, '--tool', 'codex', '--mode', 'tui')
       const [claude, codex] = await sessions()
@@ -1559,7 +1559,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       }, { timeout: 30_000, interval: 500 })
 
       const listed = await yaac('workspace', 'list')
-      expect(listed).toMatch(/WORKSPACE\s+SESSION\s+AGENT\s+MODE\s+STATUS\s+TITLE/)
+      expect(listed).toMatch(/WORKSPACE\s+AGENT\s+TOOL\s+MODE\s+STATUS\s+TITLE/)
       for (const s of [claude, codex]) {
         expect(listed).toMatch(new RegExp(`${workspaceId.slice(0, 8)}\\s+${s.sessionId.slice(0, 8)}\\s+${s.tool}`))
       }
@@ -1568,15 +1568,15 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     // e2e runs have no TTY, so only a refusal, which comes before the
     // terminal is touched, can be checked here.
     it('refuses to attach to a session the workspace does not have', async () => {
-      const { stderr, exitCode } = await runYaac(serverEnv, 'workspace', 'attach', '--session', 'ffffffff', workspaceId)
+      const { stderr, exitCode } = await runYaac(serverEnv, 'workspace', 'attach', '--agent', 'ffffffff', workspaceId)
       expect(exitCode).not.toBe(0)
-      expect(stderr).toContain(`Workspace ${workspaceId} has no open session "ffffffff".`)
+      expect(stderr).toContain(`Workspace ${workspaceId} has no running agent "ffffffff".`)
     })
 
-    it('closes one session with stop --session, killing its window and leaving the workspace running', async () => {
+    it('stops one agent with stop --agent, killing its window and leaving the workspace running', async () => {
       const codex = (await sessions()).find((s) => s.tool === 'codex')!
-      expect(await yaac('workspace', 'stop', '--session', codex.sessionId.slice(0, 8))).toContain(
-        `Session ${codex.sessionId} closed; its conversations stay in workspace ${workspaceId}'s history. The workspace keeps running.`,
+      expect(await yaac('workspace', 'stop', '--agent', codex.sessionId.slice(0, 8))).toContain(
+        `Agent ${codex.sessionId} stopped; its conversations stay in workspace ${workspaceId}'s history. The workspace keeps running.`,
       )
       expect((await sessions()).map((s) => s.tool)).toEqual(['claude'])
       await vi.waitFor(async () => { expect(await windows()).not.toContain(codex.window) }, { timeout: 15_000, interval: 500 })
@@ -1594,7 +1594,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         expect(recorded).toBeDefined()
         return recorded!.conversationId
       }, { timeout: 60_000, interval: 1_000 })
-      await yaac('workspace', 'stop', '--session', claude.sessionId)
+      await yaac('workspace', 'stop', '--agent', claude.sessionId)
       expect(await yaac('workspace', 'conversations', workspaceId)).toMatch(new RegExp(`${conversationId}\\s+claude\\s+ended`))
 
       await yaac('workspace', 'create', '--workspace', workspaceId, '--resume', conversationId)
@@ -1653,7 +1653,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         web: { run: 'sleep 600', service: true, needs: ['install'], ready: 'test -f /tmp/installed' },
         after: { run: 'echo after-web', needs: ['web'] },
       })
-      const stdout = await yaac('workspace', 'create', NAME, '--no-session', '--steps', graph, '--commit', sha)
+      const stdout = await yaac('workspace', 'create', NAME, '--no-agent', '--steps', graph, '--commit', sha)
       workspaceId = /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
       expect(workspaceId).not.toBe('')
       jobName = (await findWorkspacePod(NAME)).jobName
@@ -1699,7 +1699,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it('starts a workspace with --no-steps in place of the project\'s init workflows', async () => {
       const init = await stepsFile('steps-init.json', { marker: { run: 'touch /tmp/init-marker' } })
       await yaac('workflow', 'create', NAME, 'init', '--file', init, '--init')
-      const stdout = await yaac('workspace', 'create', NAME, '--no-session', '--no-steps')
+      const stdout = await yaac('workspace', 'create', NAME, '--no-agent', '--no-steps')
       const bare = /Workspace (\S+) is running/.exec(stdout)?.[1] ?? ''
       try {
         const pod = await findWorkspacePod(NAME, new Set([workspaceId]))
@@ -1796,23 +1796,23 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it('lists a new volume as free, and refuses a bad name or an unknown --volume', async () => {
       expect(await yaac('volume', 'list', NAME)).toMatch(/NAME\s+SIZE\s+ATTACHED TO[\s\S]*queue\s+1Gi\s+-/)
       expect(await refused('volume', 'create', NAME, 'Not Valid')).toContain('is not a volume name')
-      expect(await refused('workspace', 'create', NAME, '--no-session', '--volume', 'nope')).toContain('no volume named "nope"')
+      expect(await refused('workspace', 'create', NAME, '--no-agent', '--volume', 'nope')).toContain('no volume named "nope"')
     })
 
     it('mounts it at $YAAC_VOLUME_DIR, and refuses it to a second workspace while the first runs', async () => {
-      first = started(await yaac('workspace', 'create', NAME, '--no-session', '--volume', 'queue'))
+      first = started(await yaac('workspace', 'create', NAME, '--no-agent', '--volume', 'queue'))
       const pod = await findWorkspacePod(NAME)
       await execInJob(pod.jobName, ['sh', '-c', 'echo kept > "$YAAC_VOLUME_DIR/state" && echo "$YAAC_VOLUME_NAME"'])
       expect(await readState(first)).toBe('kept')
       expect(await yaac('volume', 'list', NAME)).toMatch(new RegExp(`queue\\s+1Gi\\s+${first.slice(0, 8)}`))
-      expect(await refused('workspace', 'create', NAME, '--no-session', '--volume', 'queue'))
+      expect(await refused('workspace', 'create', NAME, '--no-agent', '--volume', 'queue'))
         .toContain(`attached to running workspace ${first.slice(0, 8)}`)
     }, 240_000)
 
     it('moves to another workspace once the first stops, and the first restarts only with --no-volume', async () => {
       await stopWorkspace(first)
       await freed()
-      second = started(await yaac('workspace', 'create', NAME, '--no-session', '--volume', 'queue'))
+      second = started(await yaac('workspace', 'create', NAME, '--no-agent', '--volume', 'queue'))
       expect(await readState(second)).toBe('kept')
 
       const held = await refused('workspace', 'restart', first)
@@ -2228,7 +2228,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it('--no-nested puts a lone repo at the workspace root, and --no-repos starts an empty workspace', async () => {
       const known = new Set([workspaceId])
       const start = async (...args: string[]): Promise<PodInfo> => {
-        await yaac('workspace', 'create', NAME, '--no-session', ...args)
+        await yaac('workspace', 'create', NAME, '--no-agent', ...args)
         const pod = await findWorkspacePod(NAME, known)
         known.add(pod.workspaceId)
         return pod
@@ -2401,7 +2401,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           expect(sent.some((body) => body.includes(JSON.stringify(brief(tag)).slice(1, -1)))).toBe(true)
         }
       }, { timeout: 120_000, interval: 1000 })
-      expect(outputs['brief-stdin']).toMatch(/attach with `yaac workspace attach --session [0-9a-f-]{36} [0-9a-f-]{36}`/)
+      expect(outputs['brief-stdin']).toMatch(/attach with `yaac workspace attach --agent [0-9a-f-]{36} [0-9a-f-]{36}`/)
     }, 180_000)
 
     it('refuses a prompt given twice, or one that is empty or unreadable, before creating anything', async () => {

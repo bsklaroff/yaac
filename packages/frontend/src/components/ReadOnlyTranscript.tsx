@@ -97,7 +97,7 @@ export function ReadOnlyTranscript({
               />
             )}
             <span className="max-w-48 truncate" title={s.prompt ?? undefined}>
-              {s.prompt ?? `Conversation ${String(i + 1)}`}
+              {s.title ?? s.prompt ?? `Conversation ${String(i + 1)}`}
             </span>
           </>
         ),

@@ -1472,7 +1472,7 @@ describe('NewWorkspacePane', () => {
 // agent of None, for a workspace that runs none.
 describe('NewWorkspacePane sessions', () => {
   const OPEN = 'POST /api/workspace/w-parent/sessions'
-  const startSession = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: 'Start session' })
+  const startSession = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: 'Start agent' })
 
   it('opens a session in a running workspace, with only the agent\'s settings, and shows it there', async () => {
     setSnapshot(project({}, 'k8s', { workspaces: [PARENT] }))
@@ -1481,7 +1481,7 @@ describe('NewWorkspacePane sessions', () => {
     expect([...select('Where').options].map((o) => o.textContent)).toEqual(['New workspace', 'In “Parent work”'])
     fireEvent.change(select('Where'), { target: { value: 'w-parent' } })
 
-    expect(heading()).toBe('New session in “Parent work”')
+    expect(heading()).toBe('New agent in “Parent work”')
     for (const label of ['Start', 'Group', 'Timeout', 'Base branch']) expect(screen.queryByLabelText(label)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'More pane actions' })).toBeNull()
@@ -1496,13 +1496,13 @@ describe('NewWorkspacePane sessions', () => {
     expect(useUiStore.getState().newWorkspace).toBeNull()
   })
 
-  it('opens aimed at a workspace from its New session', async () => {
+  it('opens aimed at a workspace from its New agent', async () => {
     setSnapshot(project({}, 'k8s', { workspaces: [PARENT] }))
     act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', inWorkspace: 'w-parent' }))
     mount()
     await waitFor(() => expect(startSession().title).not.toMatch(/^Loading/))
     expect(select('Where').value).toBe('w-parent')
-    expect(heading()).toBe('New session in “Parent work”')
+    expect(heading()).toBe('New agent in “Parent work”')
   })
 
   it('creates a workspace with no agent, which takes no prompt or agent settings', async () => {
@@ -1648,7 +1648,7 @@ describe('NewWorkspacePane repos', () => {
     server.route(OPEN, { sessionId: 'sn', workspaceId: 'w-parent' })
     act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', inWorkspace: 'w-parent' }))
     mount()
-    const start = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: 'Start session' })
+    const start = (): HTMLButtonElement => screen.getByRole<HTMLButtonElement>('button', { name: 'Start agent' })
     await waitFor(() => expect(start().title).not.toMatch(/^Loading/))
     expect([...select('Start in').options].map((o) => o.textContent)).toEqual(['workspace root', 'api/', 'web/'])
     expect(select('Start in').value).toBe('web')
