@@ -120,7 +120,7 @@ describe('collectCheckpointBundles', () => {
   }
   const left = async (id: string): Promise<string[]> => (await fs.readdir(path.join(workspaceCheckpointsDir(PROJ, id), 'bundles'))).sort()
 
-  it('removes old bundles no kept manifest names, keeping the two newest saved lives\', a lost life\'s, and an unreadable one\'s whole workspace', async () => {
+  it('removes old bundles no kept manifest names, keeping the two newest saved lives\', a lost life\'s, an unrecorded spare\'s, and an unreadable one\'s whole workspace', async () => {
     await fourLives('w')
     await writeManifest('w', 'L0', { final: false, bundles: ['bundles/lost.bundle'], takenAt: '2026-01-01T00:00:00.000Z' })
     // Its node's clock ran ahead: newest by takenAt, but not by its start.
@@ -147,7 +147,13 @@ describe('collectCheckpointBundles', () => {
     await writeManifest('v', 'L1', { final: true, bundles: ['bundles/a.bundle', 'bundles/b.bundle'] })
     await bundles('v', ['a', 'b'])
 
+    // A prewarmed spare has saved, but its life is recorded only at its
+    // claim, so it keeps everything.
+    await writeManifest('s', 'L0', { final: false, bundles: ['bundles/a.bundle'] })
+    await bundles('s', ['a', 'b'])
+
     await collectCheckpointBundles()
+    expect(await left('s')).toEqual(['a.bundle', 'b.bundle'])
     expect(await left('v')).toEqual(['a.bundle', 'b.bundle'])
     expect(await left('w')).toEqual(['a.bundle', 'b.bundle', 'bad.bundle.unreadable', 'c.bundle', 'fresh.bundle', 'lost.bundle'])
     expect(await left('u')).toEqual(['a.bundle', 'b.bundle', 'stray.bundle'])

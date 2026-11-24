@@ -262,9 +262,11 @@ leaves the chain as it is rather than failing the pass.
 Only the server deletes a bundle (the hourly `checkpoint-gc` step), and
 only an old one no kept manifest names. It keeps the manifests of the two
 newest lives that have one (by their start, not a node's clock), any lost
-life's, and an import's until a life has saved. A workspace with a
-manifest it cannot read keeps every bundle, for a `--restore-newest` to
-work from.
+life's, and an import's until a life has saved. A workspace with no
+recorded life keeps every bundle, since a prewarmed spare saves for as long
+as it waits and its life is recorded only when it is claimed. So does a
+workspace with a manifest it cannot read, for a `--restore-newest` to work
+from.
 
 A node dying mid-write cannot leave a log that does not restore:
 
