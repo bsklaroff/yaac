@@ -90,7 +90,6 @@ import {
   setRepoGitCredential,
   setTimeZone,
   setWorkspaceGroupLimit,
-  recordAccessMode,
   seeTailnetUser,
   setToolCredential,
   insertSession,
@@ -1804,8 +1803,6 @@ describe('prepareStart', () => {
       expect(await listWorkspaceSessions(spare.workspaceId, { all: true })).toEqual([])
       expect(specs.at(-1)?.prewarm).toBe(true)
       registrations = []
-      // A tailnet owner's login goes with the registration, for tailnet sites.
-      await recordAccessMode('tailnet', { claim: 'ada@example.com' })
       // The owner's git identity has changed since the spare was warmed.
       await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada L', email: 'ada@example.com' })
 
@@ -1822,7 +1819,6 @@ describe('prepareStart', () => {
       // git identity.
       expect(registrations).toEqual([expect.objectContaining({
         workspaceId: spare.workspaceId, projectId: DEMO_PROJECT_ID, owner: 'install',
-        identity: { login: 'ada@example.com', name: 'ada@example.com' },
       })])
       // The claim runs two commands in the spare. The first asks whether it
       // can be claimed and where its checkout is.

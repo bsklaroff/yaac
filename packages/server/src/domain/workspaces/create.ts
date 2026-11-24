@@ -99,7 +99,7 @@ import {
   type PlannedCheckout,
   type WorkspaceStart,
 } from './checkouts'
-import { egressIdentity, spareSettings } from './prewarm'
+import { spareSettings } from './prewarm'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
 import {
   prepareScratchDirs,
@@ -1180,7 +1180,6 @@ async function provisionWorkspace(
     projectId,
     workspaceId: workspaceId,
     owner: options.siteId !== undefined ? NO_CREDENTIALS_OWNER_KEY : credentialOwnerKey(owner),
-    ...(options.siteId === undefined ? { identity: await egressIdentity(owner) } : {}),
     config: { portForwards, cacheVolumes, npmCache },
     allowlist,
     proxySecretRules: Object.fromEntries(

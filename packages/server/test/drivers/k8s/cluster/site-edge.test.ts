@@ -282,9 +282,8 @@ describe('ensureSiteEdge', () => {
     expect(routes().clusters).toEqual([])
 
     // The router admits the Cloudflare tunnel (by its legacy label too) on
-    // the public port, the tailnet tunnel and the egress proxy on the
-    // tailnet one, and the kubelet on admin, and dials only DNS and release
-    // pods.
+    // the public port, the tailnet tunnel on the tailnet one, and the
+    // kubelet on admin, and dials only DNS and release pods.
     expect(stored('NetworkPolicy', 'yaac-site-router-ingress')?.spec.ingress).toEqual([
       {
         from: [
@@ -294,10 +293,7 @@ describe('ensureSiteEdge', () => {
         ports: [{ protocol: 'TCP', port: 8080 }],
       },
       {
-        from: [
-          { podSelector: { matchLabels: { app: 'yaac-site-tunnel-tailnet' } } },
-          { podSelector: { matchLabels: { app: 'yaac-proxy' } } },
-        ],
+        from: [{ podSelector: { matchLabels: { app: 'yaac-site-tunnel-tailnet' } } }],
         ports: [{ protocol: 'TCP', port: 8081 }],
       },
       { from: [{ ipBlock: { cidr: '10.89.0.7/32' } }], ports: [{ protocol: 'TCP', port: 9901 }] },
@@ -306,16 +302,15 @@ describe('ensureSiteEdge', () => {
       expect.objectContaining({ ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] }),
       { to: [{ podSelector: { matchExpressions: [{ key: 'yaac.site-id', operator: 'Exists' }] } }] },
     ])
-    // No edge policy names workspaces at large, only the router's ingress
-    // names the proxy, as a peer admitted in, and only the tailnet tunnel's
-    // egress names the server, which admits it only for a server name.
+    // No edge policy names the proxy or workspaces at large, and only the
+    // tailnet tunnel's egress names the server, which admits it only for a
+    // server name.
     for (const name of [
       'yaac-site-router-ingress', 'yaac-site-router-egress', 'yaac-site-tunnel-cloudflare-ingress',
       'yaac-site-tunnel-cloudflare-egress', 'yaac-site-tunnel-tailnet-ingress', 'yaac-site-tunnel-tailnet-egress',
     ]) {
-      const forbidden = name === 'yaac-site-router-ingress' ? /yaac-server|yaac\.workspace-id/
-        : name === 'yaac-site-tunnel-tailnet-egress' ? /yaac-proxy|yaac\.workspace-id/
-          : /yaac-server|yaac-proxy|yaac\.workspace-id/
+      const forbidden = name === 'yaac-site-tunnel-tailnet-egress' ? /yaac-proxy|yaac\.workspace-id/
+        : /yaac-server|yaac-proxy|yaac\.workspace-id/
       expect(JSON.stringify(peerSelectors(stored('NetworkPolicy', name))), name).not.toMatch(forbidden)
     }
 

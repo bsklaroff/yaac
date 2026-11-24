@@ -171,12 +171,6 @@ export interface RuntimeSnapshot {
   strayUnits(): Promise<StrayUnit[]>
 }
 
-/** A tailnet user, as a request to a tailnet site names them. */
-export interface EgressIdentity {
-  login: string
-  name: string
-}
-
 /**
  * What the egress path must know about a workspace before it may reach
  * anything. The caller resolves these inputs; the driver turns them into
@@ -188,13 +182,6 @@ export interface WorkspaceRegistration {
   /** The credential owner whose bundle the workspace spends (see
    *  `syncCredentials`). */
   owner: string
-  /**
-   * The project owner's tailnet login and name, which the egress proxy
-   * stamps on the workspace's requests to a tailnet site (docs/public-sites.md
-   * "Tailnet sites"). Absent for a release, and for an owner with no login,
-   * as on a local install; the proxy then refuses those requests.
-   */
-  identity?: EgressIdentity
   config: ProjectConfig
   allowlist: EgressAllowlist
   /**
@@ -315,8 +302,6 @@ export interface SubstrateIntent {
   /** The credential owner whose bundle the workspace spends (see
    *  `syncCredentials`). */
   owner: string
-  /** See `WorkspaceRegistration.identity`. */
-  identity?: EgressIdentity
   config: ProjectConfig
   allowlist: EgressAllowlist
   /** Injection rules for the project's proxied secrets. Values travel

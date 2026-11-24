@@ -570,7 +570,8 @@ pass — the server resolves who is calling and answers for that project only.
   forward` or the webapp's Preview on its port or admin port; you cannot
   reach it. Build it (`create`, `edit`), `deploy` it, then tell the user to
   preview and publish it. Publishing (a hostname, on the internet or the
-  tailnet) is theirs. Once it is published you may only ask to `deploy` it:
+  tailnet) is theirs, and a tailnet site stays out of your reach once
+  published. Once it is published you may only ask to `deploy` it:
   your deploy is kept as the site's **requested deploy** for the user to
   review, and you cannot `edit`, `start`, `stop` or `delete` it. A
   deploy of a workflow that names run secrets waits the same way unless the
