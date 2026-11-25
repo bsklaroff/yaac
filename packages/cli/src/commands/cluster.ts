@@ -18,6 +18,7 @@ import {
   clusterArgError,
   clusterServerLogs,
   foreignClusterRefusal,
+  installedTokenEndpoint,
   kindClusterExists,
   restartClusterServer,
   runClusterCheck,
@@ -138,6 +139,26 @@ export async function clusterServerVerb(
   const origin = verb === 'start' ? await startClusterServer() : await restartClusterServer()
   await registerServer(origin, 'k8s', { keepSelection: verb === 'restart' })
   console.error(`[yaac] server ${verb === 'start' ? 'started' : 'restarted'} at ${origin}`)
+  await printTokenEndpoint((line) => console.error(`[yaac] ${line}`))
+}
+
+/**
+ * `yaac cluster status`'s line for the token endpoint, read from the live
+ * cluster (docs/server-in-cluster.md "The token endpoint"). The pod's own
+ * `/health` names only its pod-network bind, so it is never asked.
+ */
+export async function clusterTokenStatus(): Promise<void> {
+  if (await recordedDriver() !== 'k8s') return
+  await bindRecordedInstall()
+  if (await foreignClusterRefusal() !== null) return
+  await printTokenEndpoint((line) => console.log(line))
+}
+
+async function printTokenEndpoint(print: (line: string) => void): Promise<void> {
+  const token = await installedTokenEndpoint()
+  if (token === null) return
+  print(`token endpoint: https://${token.listen}`)
+  print(`  key fingerprint: ${token.fingerprint ?? 'none (run `yaac cluster check`)'}`)
 }
 
 /** Act for the install this data dir records. */

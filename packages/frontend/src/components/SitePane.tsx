@@ -51,6 +51,7 @@ function useSiteEdge(): SiteEdgeStatus | undefined {
 /** Who asked for a requested deploy, as its pane and review say it. */
 const REQUESTER: Record<NonNullable<SiteEntry['requested']>['from'], string> = {
   agent: 'An agent',
+  token: 'A token',
   following: 'Following',
   person: 'A deploy of content no person approved',
 }

@@ -455,6 +455,12 @@ describe('listProjectSiteEntries', () => {
         changes: ['workflow', 'volume'],
       },
     })])
+
+    // A token's request names the token, not a workspace.
+    await updateSite(row.id, { requestedBy: 'token ci' })
+    const [tokenAsked] = await listProjectSiteEntries(DEMO_PROJECT_ID)
+    expect(tokenAsked.requested).toMatchObject({ from: 'token', token: 'ci' })
+    expect(tokenAsked.requested?.workspaceId).toBeUndefined()
   })
 })
 

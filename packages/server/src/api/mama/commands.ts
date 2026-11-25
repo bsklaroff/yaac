@@ -30,6 +30,7 @@ import {
   type AgentMode,
   type AgentTool,
   type Delegate,
+  type WorkspaceDelegate,
   type PermissionMode,
   type MamaCommand,
   type QueuedWorkspaceEntry,
@@ -60,7 +61,7 @@ export interface MamaCaller {
 }
 
 /** The caller of a command made as `delegate` through `api`. */
-export function mamaCaller(delegate: Delegate, api: MamaApi): MamaCaller {
+export function mamaCaller(delegate: WorkspaceDelegate, api: MamaApi): MamaCaller {
   return {
     delegate,
     workspaceId: delegate.via.id,

@@ -1500,6 +1500,9 @@ export interface WorkspaceListEntry {
   life?: string
   /** It runs one graph untouched and stops when it settles. */
   nonInteractive?: true
+  /** The delegate that created it for its owner (`token <label>`, or a
+   *  workspace's yaac-mama), which outlives a deleted token binding. */
+  createdVia?: string
   /** The name of the public site it is a release of (docs/public-sites.md),
    *  which makes it read-only. */
   site?: string
@@ -1949,6 +1952,8 @@ export interface StoppedWorkspaceEntry {
   nonInteractive?: true
   stepsOutcome?: StepsOutcome
   rerunOf?: string
+  /** The delegate that created it (`WorkspaceListEntry.createdVia`). */
+  createdVia?: string
   /** The public site it was a release of. */
   site?: string
 }
@@ -2396,13 +2401,15 @@ export interface SiteEntry {
   lastDeploy?: { workspaceId: string; commits: SiteCommit[]; outcome: 'succeeded' | 'failed'; error?: string; finishedAt: string }
   /** A deploy waiting for a person's approval (docs/workflows.md
    *  "Approvals"), which a person gives by deploying it with its workflow
-   *  id: who asked (an agent, with its workspace; following; or a person
-   *  whose deploy ran content no person approved), what it would run, and
-   *  which of the live release's settings it changes. */
+   *  id: who asked (an agent, with its workspace; a token, with its label;
+   *  following; or a person whose deploy ran content no person approved),
+   *  what it would run, and which of the live release's settings it
+   *  changes. */
   requested?: LaunchApprovalRequest & {
     at: string
-    from: 'agent' | 'following' | 'person'
+    from: 'agent' | 'token' | 'following' | 'person'
     workspaceId?: string
+    token?: string
     changes: Array<'workflow' | 'port' | 'volume'>
   }
 }
@@ -2846,7 +2853,8 @@ export type Principal =
 
 /**
  * Something acting for a user, within limits, that is not that person: a
- * workspace's `yaac-mama` call. It passes only the checks made at the
+ * workspace's `yaac-mama` call, or a program on the token listener holding
+ * one of the user's token bindings. It passes only the checks made at the
  * `delegate` level, in its one project if it has one, and starts or
  * messages nothing more permissive than its ceiling.
  */
@@ -2856,14 +2864,57 @@ export interface Delegate {
   userId: string
   /** That user's login, for logs; null for a local install's one user. */
   login: string | null
-  /** What is acting: a stable id, a few words for logs and refusals, and
-   *  for a workspace the session that says it is asking. */
-  via: { kind: 'workspace'; id: string; label: string; sessionId?: string }
+  /** What is acting: a stable id (a workspace's, or a binding's), a few
+   *  words for logs and refusals, and for a workspace the session that says
+   *  it is asking. */
+  via:
+    | { kind: 'workspace'; id: string; label: string; sessionId?: string }
+    | { kind: 'token'; id: string; label: string }
   /** The one project it may read or act in; absent, any its user may. */
   projectId?: string
   /** The most permissive mode anything it starts or messages may run in. */
   ceiling: PermissionMode
 }
+
+/** How a token binding knows its caller (docs/remote-hosting.md "Token
+ *  access"): a personal access token, or an OIDC identity. */
+export type TokenBindingKind = 'pat' | 'oidc'
+
+/** A token binding as its owner, or an admin, sees it. Times are epoch ms. */
+export interface TokenBindingSummary {
+  id: string
+  kind: TokenBindingKind
+  label: string
+  ceiling: PermissionMode
+  createdAt: number
+  expiresAt: number | null
+  lastUsedAt: number | null
+  /** `oidc` only. */
+  issuer?: string
+  subject?: string
+  claims?: Record<string, string>
+  audience?: string
+  /** `oidc`: the last wrong subject a token that verified carried. */
+  refusedSubject?: string
+  refusedAt?: number
+}
+
+/** `GET /token`: the bindings, and the token listener's key fingerprint
+ *  (null when this server has no token listener). */
+export interface TokenBindingList {
+  fingerprint: string | null
+  bindings: TokenBindingSummary[]
+}
+
+/** `POST /token`'s answer: the binding, and for a `pat` the token, which
+ *  is shown this once. */
+export interface TokenBindingCreated {
+  binding: TokenBindingSummary
+  token?: string
+}
+
+/** A workspace's `yaac-mama` call, the delegate that knows its session. */
+export type WorkspaceDelegate = Delegate & { via: Extract<Delegate['via'], { kind: 'workspace' }> }
 
 /** A user's install-wide role (docs/multi-user.md "Roles"): an `admin`
  *  publishes sites and sets roles; a `member` does neither. */
@@ -2998,6 +3049,12 @@ export interface LocalServerStatus {
    * runs or there is nowhere to ask (a pod's lock and no cluster origin).
    */
   reachable: boolean | null
+  /**
+   * The running server's token listener (docs/remote-hosting.md "Token
+   * access"): where it listens, its key fingerprint and the certificate a
+   * caller can trust; null when it has none or none runs.
+   */
+  token?: { listen: string; fingerprint: string | null; certificate: string } | null
 }
 
 /**

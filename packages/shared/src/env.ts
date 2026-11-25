@@ -125,6 +125,25 @@ export const env = {
   },
 
   /**
+   * `YAAC_TOKEN_LISTEN` — `<addr>:<port>` of the token listener
+   * (docs/remote-hosting.md "Token access"), parsed by `parseTokenListen`.
+   * Unset means no listener. `yaac server start --token-listen` sets it for
+   * the server it spawns, and the server Deployment for its pod.
+   */
+  get tokenListen(): string | undefined {
+    return nonEmpty(process.env.YAAC_TOKEN_LISTEN)
+  },
+
+  /**
+   * `YAAC_TOKEN_TLS_DIR` — the directory holding the token listener's
+   * `tls.crt` and `tls.key`: the Secret's mount in the server pod. Unset →
+   * `token-tls/` in the server-local tier (`tokenTlsDir()` in paths.ts).
+   */
+  get tokenTlsDirOverride(): string | undefined {
+    return nonEmpty(process.env.YAAC_TOKEN_TLS_DIR)
+  },
+
+  /**
    * `YAAC_IN_CLUSTER` — set to `1` only by the server Deployment manifest.
    * It selects the `k8s` driver (`#main/driver-choice`) and the registry's
    * in-cluster address. Declared explicitly
@@ -594,6 +613,16 @@ export const testEnv = {
    */
   get vendorOAuthOrigin(): string | undefined {
     return nonEmpty(process.env.YAAC_E2E_VENDOR_OAUTH_ORIGIN)
+  },
+
+  /**
+   * `YAAC_E2E_OIDC_ORIGIN` — an origin that stands in for every OIDC
+   * issuer's host when the server fetches a discovery document or key set
+   * (docs/remote-hosting.md "Token access"), keeping the path, so tests
+   * bind a public-looking issuer and serve it from a local stub.
+   */
+  get oidcOrigin(): string | undefined {
+    return nonEmpty(process.env.YAAC_E2E_OIDC_ORIGIN)
   },
 }
 

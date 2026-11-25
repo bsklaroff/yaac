@@ -23,6 +23,8 @@ import {
   SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
   SERVER_MAMA_PORT,
+  SERVER_TOKEN_INGRESS_NP_NAME,
+  SERVER_TOKEN_PORT,
   SERVER_POD_PORT,
   WORKSPACE_EGRESS_NP_NAME,
   WORKSPACE_INGRESS_LOCK_NP_NAME,
@@ -405,6 +407,26 @@ export function buildServerIngressNpManifest(nodeCidrs: string[]): Record<string
           ports: [tcp(SERVER_MAMA_PORT)],
         },
       ],
+    },
+    { app: SERVER_APP_NAME },
+  )
+}
+
+/**
+ * Server-pod ingress, token half: the token listener from any source
+ * (docs/remote-hosting.md "Token access"). Its callers' addresses are not
+ * predictable (a kind NodePort arrives from the host's), and none needs to
+ * be, since the listener admits no request without a token; every other
+ * port stays as the other two policies leave it.
+ */
+export function buildServerTokenIngressNpManifest(): Record<string, unknown> {
+  return np(
+    SERVER_TOKEN_INGRESS_NP_NAME,
+    k8sNamespace(),
+    {
+      podSelector: { matchLabels: { app: SERVER_APP_NAME } },
+      policyTypes: ['Ingress'],
+      ingress: [{ ports: [tcp(SERVER_TOKEN_PORT)] }],
     },
     { app: SERVER_APP_NAME },
   )

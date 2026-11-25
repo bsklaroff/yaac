@@ -34,6 +34,12 @@ yaac server                     The yaac server the CLI and web app talk to
                                 exactly these logins the admins (multi-user.md
                                 "Roles"); asks before revoking anyone else's
     -y, --yes                   Revoke without asking
+    --token-listen <addr:port>  (start, restart) Also serve the API over HTTPS at
+                                this one IP address, to token holders only;
+                                prints the key fingerprint (remote-hosting.md
+                                "Token access")
+  status [--json]               Running, refused, or another build; with a token
+                                listener, where it listens and its fingerprint
   run [-p <port>]               Run in the foreground (what `start` runs)
   logs [-f] [-n <lines>]        Print the server log
 
@@ -67,10 +73,29 @@ yaac cluster                    The Kubernetes cluster (k8s driver only)
                                 the tailnet tunnel; kept for later installs
                                 (remote-hosting.md "A name of your own")
     --no-server-name            Drop the name --server-name recorded
+    --token-listen <addr:port>  Expose the token listener at this one IPv4
+                                address (kind: this machine's; byo: a node's);
+                                kept for later installs (server-in-cluster.md
+                                "The token endpoint")
+    --no-token-listen           Remove the token endpoint
   delete [-y]                   Delete the kind cluster and its registry; keeps
                                 workspaces' checkouts. Refused on a --byo install
 
 yaac host check                 Verify this machine can run containerless workspaces
+
+yaac token                      Your token bindings (remote-hosting.md "Token access")
+  list                          Your bindings (--user's, for an admin), their
+                                last use, and the listener's key fingerprint
+  create <label>                A personal access token, printed once
+  bind <label>                  Accept tokens an OIDC issuer mints for one
+                                subject; prints the audience they must name
+    --issuer <url>              (bind, required) The issuer, exactly
+    --subject <sub>             (bind, required) The exact subject
+    --claim <name>=<value>      (bind, repeatable) A further claim to pin
+    --expires <duration>        (create, bind) e.g. 30d, 12h; default never
+    --permission-mode <mode>    (create, bind) The ceiling (default: the
+                                driver's default mode)
+  delete <label>                Stop a token at once (--user's, for an admin)
 
 yaac user                       The install's users (multi-user.md "Roles")
   list                          Users and their roles

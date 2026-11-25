@@ -77,6 +77,8 @@ export interface WorkspaceCreated extends Partial<LifeStart> {
   workflowName?: string
   nonInteractive?: boolean
   rerunOf?: string
+  /** The label of the delegate that created it. */
+  createdVia?: string
   /** The public site it is a release of. */
   siteId?: string
 }

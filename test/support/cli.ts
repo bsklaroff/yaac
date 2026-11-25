@@ -8,7 +8,7 @@ import { readLock } from '@yaac/shared/lock'
 import { isLockReady, type ServerLock } from '@yaac/shared/server-lock-file'
 import { TEST_NAMESPACE } from '@yaac/test-utils/setup'
 import type { SpawnedServer } from '@yaac/test-utils/api'
-import { deployTestServer } from '#support/deployed-server'
+import { deployTestServer, type TestTokenEndpoint } from '#support/deployed-server'
 import { TEST_CLI_DIR, TEST_CLI_ENTRY } from '#support/cli-bundle'
 import { e2eMkdtemp, removeScratchTree, testTmpBase } from '@yaac/test-utils/tmp'
 import { freeLocalPort } from '@yaac/test-utils/kubectl-forward'
@@ -150,15 +150,15 @@ export async function createYaacTestEnv(): Promise<YaacTestEnv> {
  * port-forward (`#support/deployed-server`).
  *
  * A k8s server holds the cross-worker server mutex until `stop()` has
- * finished.
+ * finished. `token` gives it a token endpoint, set up as install would.
  */
-export async function spawnYaacServer(env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
+export async function spawnYaacServer(env: NodeJS.ProcessEnv, opts: { token?: TestTokenEndpoint } = {}): Promise<SpawnedServer> {
   if (env.YAAC_DRIVER === 'containerless') return await spawnHostServer(env)
 
   const releaseMutex = await acquireServerMutex()
   let server: SpawnedServer
   try {
-    server = await deployTestServer({ env })
+    server = await deployTestServer({ env, ...opts })
   } catch (err) {
     await releaseMutex()
     throw err

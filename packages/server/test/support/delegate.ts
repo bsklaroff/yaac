@@ -1,4 +1,4 @@
-import type { Delegate } from '@yaac/shared/types'
+import type { Delegate, WorkspaceDelegate } from '@yaac/shared/types'
 
 /**
  * A workspace's delegate of `userId`, as `callingWorkspace` builds one:
@@ -8,7 +8,7 @@ export function workspaceDelegate(
   userId: string,
   workspaceId: string,
   over: Partial<Pick<Delegate, 'projectId' | 'ceiling' | 'login'>> & { sessionId?: string } = {},
-): Delegate {
+): WorkspaceDelegate {
   const { sessionId, ...rest } = over
   return {
     kind: 'delegate',

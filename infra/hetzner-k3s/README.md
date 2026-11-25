@@ -144,6 +144,32 @@ For `kubectl` from your machine, copy `~yaac/.kube/config` from the
 control node and point its `server` at `https://yaac-control:6443` (its
 tailnet name, which the API certificate covers).
 
+### Token access from the private network
+
+A program on another VM in the private network, off the tailnet, can call
+the API with a token (docs/remote-hosting.md "Token access"). Expose the
+token endpoint at the control node's fixed private address:
+
+```sh
+yaac cluster install --byo --rwx-storage-class yaac-nfs --token-listen 10.0.1.2:8443
+```
+
+kube-proxy then delivers `10.0.1.2:8443` to the server and nothing else; the
+public address does not answer it, and the firewall filters only the public
+interfaces in any case, so no firewall change is needed. Pick a port no node
+process listens on. Kubernetes 1.37 warns that `spec.externalIPs` is
+deprecated when install applies the Service; k3s's kube-proxy still honors
+it. Install prints the certificate's key fingerprint; the
+caller pins it (`curl --pinnedpubkey 'sha256//…'`), or trusts the
+certificate itself as its CA (`curl --cacert`), copied from the Secret:
+
+```sh
+kubectl -n yaac get secret yaac-server-token-tls -o jsonpath='{.data.tls\.crt}' | base64 -d > yaac-token.crt
+```
+
+Each user makes their tokens over the tailnet (`yaac token create`, or
+Settings → Credentials → Tokens).
+
 ## Nodes
 
 **Infrastructure stays on the control node.** Every worker, manual or
@@ -278,6 +304,10 @@ file again with the install id the refusal names:
   operator opens it (docs/workspace-egress.md "Non-public destinations").
   Never open 169.254.169.254 to the proxy or builders here. The control
   node's user data holds no secret.
+- **The token endpoint opens one port to any source**, behind the token
+  (README "Token access from the private network"). Never bind a node's
+  service account to a token binding: a workspace whose proxy were opened
+  to the metadata service could mint that identity.
 - **The NFS export trusts client-claimed uids** (`no_root_squash`) and is
   open to the node subnet. A pod on another node reaches it SNATed to that
   node's address, so the export list cannot keep pods out. NetworkPolicy

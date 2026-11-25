@@ -264,6 +264,8 @@ export interface WorkspaceCreateOptions {
   title?: string
   /** The title generated for the draft or queued entry it is created from. */
   generatedTitle?: string
+  /** The label of the delegate creating it (`workspaces.createdVia`). */
+  createdVia?: string
   /** When the server stops it (`workspaceLives.deadline`). A resume
    *  without one has no deadline. */
   deadline?: Date
@@ -1068,6 +1070,7 @@ async function provisionWorkspace(
       ...(options.nonInteractive === true ? { nonInteractive: true } : {}),
       ...(options.rerunOf !== undefined ? { rerunOf: options.rerunOf } : {}),
       ...(options.siteId !== undefined ? { siteId: options.siteId } : {}),
+      ...(options.createdVia !== undefined ? { createdVia: options.createdVia } : {}),
     })
   }
 

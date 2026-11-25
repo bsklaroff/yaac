@@ -10,7 +10,8 @@ import { TAILSCALE_OPERATOR_NAMESPACE } from '@yaac/server/drivers/k8s/substrate
 /**
  * The `yaac cluster` commands: `check`, `install` (with `--nodes`, `--byo`,
  * `--rwx-storage-class`, `--rwo-storage-class`, `--tailnet [host]`, `--admin`, `--yes`,
- * `--site-domain`, `--server-name`, `--no-server-name`)
+ * `--site-domain`, `--server-name`, `--no-server-name`, `--token-listen`,
+ * `--no-token-listen`)
  * and `delete` (with `-y/--yes`). They are host-side commands that never talk to the
  * server, so no server is spawned and no cluster is needed: each case breaks
  * the environment (PATH stripping, a bogus KUBECONFIG, a kubectl shim) and
@@ -111,7 +112,7 @@ describe('yaac cluster install (real CLI)', () => {
   }, 60_000)
 
   // These option checks also run before the binary preflight.
-  it('rejects --byo with --nodes, --byo without an RWX class, either class flag without --byo, --admin, --site-domain or --[no-]server-name without --tailnet, and a --tailnet host, site domain or server name it cannot serve', async () => {
+  it('rejects --byo with --nodes, --byo without an RWX class, either class flag without --byo, --admin, --site-domain or --[no-]server-name without --tailnet, a --tailnet host, site domain or server name it cannot serve, and a --token-listen address that is not one IPv4 address', async () => {
     const env: NodeJS.ProcessEnv = { ...testEnv.env }
     const cases: Array<[string[], RegExp]> = [
       [['--byo', '--rwx-storage-class', 'nfs', '--nodes', '3'], /--nodes cannot be combined with --byo/],
@@ -127,6 +128,8 @@ describe('yaac cluster install (real CLI)', () => {
       [['--no-server-name'], /--server-name .* needs --tailnet/],
       [['--tailnet', 'srv.tail.ts.net', '--server-name', 'https://yaac'], /--server-name takes a hostname/],
       [['--tailnet', 'srv.tail.ts.net', '--site-domain', 'apps.example.com', '--server-name', 'yaac.example.com'], /--server-name must be one label under the site domain apps\.example\.com/],
+      [['--token-listen', '0.0.0.0:8443'], /--token-listen .*wildcard address/],
+      [['--token-listen', '[::1]:8443'], /--token-listen takes an IPv4 address on a cluster install/],
     ]
     for (const [args, message] of cases) {
       const { stdout, stderr, exitCode } = await runYaac(env, 'cluster', 'install', ...args)
@@ -208,7 +211,7 @@ describe('yaac cluster install (real CLI)', () => {
         expect(block.exitCode).toBe(1)
         expect(block.stderr).toMatch(/"standard" provisions through ebs\.csi\.aws\.com, which is not NFS-family/)
 
-        const rwo = await install({}, '--rwx-storage-class', 'nfs', '--rwo-storage-class', 'nope')
+        const rwo = await install({}, '--rwx-storage-class', 'nfs', '--rwo-storage-class', 'nope', '--no-token-listen')
         expect(rwo.exitCode).toBe(1)
         expect(rwo.stderr).toMatch(/--rwo-storage-class: there is no StorageClass "nope"/)
         expect(rwo.stdout).not.toMatch(/Deploying the in-cluster image registry/)
@@ -250,6 +253,29 @@ describe('yaac cluster install (real CLI)', () => {
       120_000,
     )
 
+    it.skipIf(process.platform !== 'linux' || !onPath('podman'))(
+      '--token-listen on --byo refuses an address no node reports and an address and port another Service names',
+      async () => {
+        // These pass the byo gates, which record the install, so they get a
+        // data dir of their own rather than the file's.
+        const dataDir = path.join(testEnv.scratchDir, 'token-listen')
+        await fs.mkdir(dataDir, { recursive: true })
+        const own = { YAAC_DATA_DIR: dataDir }
+        fake.state = {}
+        const absent = await install(own, '--rwx-storage-class', 'nfs', '--token-listen', '10.0.0.99:8443')
+        expect(absent.exitCode).toBe(1)
+        expect(absent.stderr).toMatch(/10\.0\.0\.99 is no address a node reports; the nodes report 10\.0\.0\.10/)
+        expect(absent.stdout).not.toMatch(/Deploying the in-cluster image registry/)
+
+        fake.state = { externalService: { address: '10.0.0.10', port: 8443 } }
+        const taken = await install(own, '--rwx-storage-class', 'nfs', '--token-listen', '10.0.0.10:8443')
+        expect(taken.exitCode).toBe(1)
+        expect(taken.stderr).toMatch(/10\.0\.0\.10:8443 is already named by the Service apps\/web/)
+        expect(taken.stdout).not.toMatch(/Deploying the in-cluster image registry/)
+      },
+      120_000,
+    )
+
     // The CNI gate refuses a bad config value rather than silently
     // narrowing netd's exclusion set.
     it.skipIf(process.platform !== 'linux' || !onPath('podman'))(
@@ -278,6 +304,8 @@ interface FakeClusterState {
   operatorAbsent?: boolean
   /** The kube-system namespace's uid, which identifies a cluster. */
   clusterUid?: string
+  /** A Service of another app's that names this address and port. */
+  externalService?: { address: string; port: number }
 }
 
 interface FakeCluster {
@@ -301,6 +329,8 @@ const FAKE_RESOURCES: Record<string, { groupVersion: string; plural: string; nam
     groupVersion: 'apiextensions.k8s.io/v1', plural: 'customresourcedefinitions', namespaced: false,
   },
   IPPool: { groupVersion: 'crd.projectcalico.org/v1', plural: 'ippools', namespaced: false },
+  Service: { groupVersion: 'v1', plural: 'services', namespaced: true },
+  Secret: { groupVersion: 'v1', plural: 'secrets', namespaced: true },
 }
 
 /** The objects of a healthy cluster, shaped by `state`. */
@@ -341,6 +371,12 @@ function fakeObjects(state: FakeClusterState): Array<{ kind: string; metadata: R
           { kind: 'Deployment', metadata: { name: 'operator', namespace: TAILSCALE_OPERATOR_NAMESPACE } },
           { kind: 'IngressClass', metadata: { name: 'tailscale' } },
         ]),
+    ...(state.externalService
+      ? [{
+          kind: 'Service', metadata: { name: 'web', namespace: 'apps' },
+          spec: { type: 'ClusterIP', externalIPs: [state.externalService.address], ports: [{ port: state.externalService.port }] },
+        }]
+      : []),
     { kind: 'StorageClass', metadata: { name: 'nfs' }, provisioner: 'nfs.csi.k8s.io' },
     {
       kind: 'StorageClass',

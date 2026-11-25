@@ -275,6 +275,7 @@ async function prepareAuthorizedStart(
   }
 
   const modelName = setup?.model !== undefined ? modelDisplayName(setup.tool, setup.model) : undefined
+  const createdVia = principal.kind === 'delegate' ? principal.via.label : undefined
   refuseFullGroup(room, workspaceId)
   return provision({
     workspaceId,
@@ -302,6 +303,7 @@ async function prepareAuthorizedStart(
           ...(generatedTitle !== undefined ? { generatedTitle } : {}),
           ...(groupId !== undefined ? { groupId } : {}),
           ...(request.deadline !== undefined ? { deadline: request.deadline } : {}),
+          ...(createdVia !== undefined ? { createdVia } : {}),
         })
         if (claimed) return claimed
       }
@@ -326,6 +328,7 @@ async function prepareAuthorizedStart(
         ...(request.awaitBuild === true ? { awaitBuild: true } : {}),
         ...(request.stageVolumeId !== undefined ? { stageVolumeId: request.stageVolumeId } : {}),
         ...(request.colocateWith !== undefined ? { colocateWith: request.colocateWith } : {}),
+        ...(createdVia !== undefined ? { createdVia } : {}),
       })
     } catch (err) {
       const { draft } = request

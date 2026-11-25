@@ -33,7 +33,9 @@ one mounts two, or three on kind (see "Storage claims").
    `yaac cluster install`, the step that also rolls the server.
 4. **The two ingress NetworkPolicies**, before the Service, so the server's
    port is never reachable from pods before the policy exists (see "The
-   ingress policy is the wall").
+   ingress policy is the wall"). With `--token-listen`, the token
+   endpoint's certificate Secret, its third policy and its Service come
+   before the Deployment too (see "The token endpoint").
 5. **The Service** (ClusterIP) and its **fronting**, meaning how the Service
    is reached from outside the cluster: a forwarder on kind (with this
    machine's `tailscale serve` in front of it under `--tailnet <host>`), the
@@ -50,7 +52,9 @@ one mounts two, or three on kind (see "Storage claims").
    recorded (docs/remote-hosting.md "Access modes"). `YAAC_ACCESS_ADMINS`
    comes from the optional `yaac-server-bootstrap` ConfigMap, which a run
    with `--admin` creates and deletes again once the admins are set
-   (docs/multi-user.md "Roles").
+   (docs/multi-user.md "Roles"). With a token endpoint it also runs the
+   token listener (`YAAC_TOKEN_LISTEN=0.0.0.0:8789`) with the
+   `yaac-server-token-tls` Secret mounted at `YAAC_TOKEN_TLS_DIR`.
 
 Install then waits for the published origin to report ready and registers
 the server: `server.json` selects that origin and the data dir's
@@ -246,6 +250,14 @@ Kubernetes unions):
   fronting does. It is applied even when empty, so switching fronting
   replaces the old peer. Only install writes it.
 
+A third policy, `yaac-server-ingress-token`, exists only with a token
+endpoint: it admits **any source** to the token port (`SERVER_TOKEN_PORT`,
+8789) and to nothing else. Its callers' addresses cannot be predicted (a
+kind NodePort connection arrives from the host's address), and none needs
+to be, since the token listener admits no request without a token and
+never reads `Host` (docs/remote-hosting.md "Token access"). Every other port
+stays as the other two policies leave it.
+
 No pod in the install namespace and no pod CIDR is admitted to the API. A
 workspace pod dialing the Service or the pod IP presents its own address
 (Calico enforces a workload's source) and matches nothing.
@@ -284,6 +296,68 @@ The Host check has one side effect: the kubelet dials the pod IP, so its
 readiness probe would send `Host: <pod ip>` and get a 403 from the
 DNS-rebind check. The probe therefore sends `Host: 127.0.0.1` explicitly,
 standing in for a client of the published origin.
+
+### The token endpoint
+
+`yaac cluster install --token-listen <addr>:<port>` exposes the server
+pod's token listener (docs/remote-hosting.md "Token access") at that one
+IPv4 address and port and nowhere else. The pod binds the token port on
+the pod network, where the third ingress policy is the wall; the address
+the admin named is enforced one hop out, in the shape of the backend:
+
+- **kind**: the node is a container only this machine reaches, so a
+  forwarder container, `yaac-token-front-<install id>`, runs beside it on
+  the kind network: stock Envoy (the pinned upstream image, run directly as
+  its non-root `envoy` user, past the image's entrypoint, which a macOS
+  podman machine cannot run), publishing
+  `<addr>:<port>` with podman (`-p <addr>:<port>:…`, so podman binds
+  exactly that address) and TCP-proxying to the `yaac-server-token`
+  Service's node port on the control-plane node. The Service is a NodePort
+  whose port the API server picks, so the admin's port is free of the
+  node-port range and two installs never ask for the same one. The
+  container's labels record what it was run for; install replaces it when
+  the address or the node port differs, starts it when it is not running
+  (after a reboot), and `--no-token-listen` and `yaac cluster delete`
+  remove it. A taken port or an address the machine lacks is podman's bind
+  error, reported with the `ss` line of whatever holds the port. kind's own
+  port mappings are not used, because kind writes them only when it
+  creates a cluster; with the forwarder, enabling, moving and removing the
+  endpoint are each one install, and running workspaces are untouched.
+- **byo** (and Hetzner k3s): a ClusterIP Service with `externalIPs:
+  [<addr>]` and `port: <port>`, so kube-proxy delivers a packet to the
+  server only when it is addressed to that address and port, on whichever
+  node holds it; the node's other addresses, a public one included, do not
+  answer. Install refuses, before applying anything, an address no node
+  reports (listing the ones they do), an address and port another Service
+  already names (the API server checks external addresses for no clash),
+  and a port a node uses itself (22, 111, 2049, 6443, 10250 and the
+  node-port range), since kube-proxy's rule takes a packet before a process
+  listening there would. A cluster with the `DenyServiceExternalIPs`
+  admission plugin fails the apply, reported as that.
+
+`externalIPs` is one object, exact about the address, and leaves the server
+pod free to move. A NodePort would answer on every address of every node
+unless the cluster's kube-proxy were reconfigured, a `hostPort` would pin
+the server to one node, and a host-network forwarder would pin a
+Deployment. An address that moves with a load balancer is not supported.
+It runs on kind (the e2e tier) and on k3s with Calico; some managed
+clusters reject `externalIPs`, and Kubernetes 1.37 warns on every such
+Service that the field is deprecated and may not be implemented
+everywhere, though kube-proxy still honors it. Where it is refused, the
+fallback would be a host-network forwarder.
+
+**The live cluster is the record.** The Service carries the listen address
+as an annotation, so a later install without the flag keeps what is there,
+and `yaac cluster start|restart|status` print it with the key fingerprint,
+read from the Service and the Secret (the pod's own `/health` names only its
+pod-network bind). Install writes the `yaac-server-token-tls` Secret when
+there is none, and reissues a pair it generated on the same key when the
+address changes or it nears expiry. `--no-token-listen` deletes the Service
+and the policy and drops the listener and its mount, and keeps the Secret,
+so enabling the endpoint again keeps the key callers pinned. `yaac cluster
+check` gains one gate, `token-endpoint`, while the Service exists: the
+Secret must hold a whole, matching, current pair, and the policy must open
+the token port alone.
 
 ### The server's own egress
 
@@ -585,7 +659,11 @@ The harness provides what a pod cannot provide for itself:
   not inside a tier;
 - the site router, applied as install applies it but with no tunnel, so a
   test reaches a site through a port-forward to `yaac-site-router` with the
-  site's `Host`.
+  site's `Host`;
+- with `spawnYaacServer(env, { token })`, the token endpoint's Secret,
+  policy, Service and mount as install renders them, and on kind the
+  forwarder container, run by the function install calls and labelled for
+  the global setup's leaked-container sweep.
 
 Things to know when reading a failure there:
 

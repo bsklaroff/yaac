@@ -65,6 +65,7 @@
     "better-auth": "catalog:",
     "drizzle-orm": "catalog:",
     "hono": "catalog:",
+    "jose": "catalog:",
     "isomorphic-git": "1.42.2",
     "smol-toml": "catalog:",
     "ws": "catalog:",

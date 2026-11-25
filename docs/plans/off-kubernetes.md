@@ -180,6 +180,7 @@ are folders of the data dir, as they already are on kind
 | One-shot pods (the root remover, sweeps, the disk probe) | one-shot units |
 | Site router, tunnels and per-site Services | the same programs as units, reaching a release through its sockets |
 | Tailscale operator Ingress | `tailscale serve` on the host, the form `--tailnet <host>` uses today |
+| The token endpoint's Service, ingress policy and kind forwarder (docs/server-in-cluster.md "The token endpoint") | the server unit binding `--token-listen <addr>:<port>` itself, as a host server does; `yaac engine install` takes the flag, and the certificate stays a pair of files in the data dir |
 | The scheduler, node pools and taints | Pamir's placement function over node labels (stage 7) |
 | cluster-autoscaler and CSI | Pamir's provider interface (stage 7) |
 

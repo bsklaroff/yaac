@@ -16,6 +16,7 @@ import type {
   RepoStart,
   ScratchDirSettings,
   SiteDeployPhase,
+  TokenBindingKind,
   UserRole,
   WorkspaceDeathReason,
 } from '@yaac/shared/types'
@@ -80,6 +81,38 @@ export const preferences = snakeCase.table('preferences', {
   key: text().notNull(),
   value: text().notNull(),
 }, (t) => [uniqueIndex().on(t.owner, t.key)])
+
+/**
+ * What lets a program on the token listener act as a user, as a delegate
+ * (docs/remote-hosting.md "Token access"): a personal access token, known
+ * by its hash, or an OIDC identity, known by the audience its tokens must
+ * name. Read on every request, so a delete or expiry holds from the next.
+ */
+export const tokenBindings = snakeCase.table('token_bindings', {
+  id: uuid().primaryKey().defaultRandom(),
+  owner: uuid().notNull().references(() => users.id, { onDelete: 'cascade' }),
+  kind: text().$type<TokenBindingKind>().notNull(),
+  /** Unique per owner; what logs and the webapp show. */
+  label: text().notNull(),
+  /** The most permissive mode it may start or message an agent in. */
+  ceiling: text().$type<PermissionMode>().notNull(),
+  /** `pat`: SHA-256 hex of the token. */
+  tokenHash: text().unique(),
+  expiresAt: timestamp({ withTimezone: true }),
+  /** `oidc`: the issuer as entered, and the exact subject. */
+  issuer: text(),
+  subject: text(),
+  /** `oidc`: further claims a token must carry, each an exact string. */
+  claims: jsonb().$type<Record<string, string>>(),
+  /** `oidc`: server-generated, so a token's `aud` picks its binding. */
+  audience: text().unique(),
+  /** `oidc`: the last wrong `sub` a token that verified carried. */
+  refusedSubject: text(),
+  refusedAt: timestamp({ withTimezone: true }),
+  createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  /** Refreshed at most hourly, as `users.lastSeenAt` is. */
+  lastUsedAt: timestamp({ withTimezone: true }),
+}, (t) => [uniqueIndex().on(t.owner, t.label)])
 
 /** Keyboard-shortcut rebinds, one row per user and command id. */
 export const shortcutOverrides = snakeCase.table('shortcut_overrides', {
@@ -344,6 +377,9 @@ export const workspaces = snakeCase.table('workspaces', {
    * outlives the server process; a workspace restart gets a new one.
    */
   mamaTokenHash: text(),
+  /** The label of the delegate that created it (`token <label>` for a
+   *  token's), which outlives a binding; null for a person. */
+  createdVia: text(),
   /** The volume it was last launched with (docs/workspace-volumes.md). Kept
    *  while it is stopped, so a restart attaches it again. No foreign key;
    *  deleting a volume clears it here (volume-store.ts). */
@@ -591,7 +627,7 @@ export const sites = snakeCase.table('sites', {
   replaceAfter: timestamp({ withTimezone: true }),
   /** A deploy waiting for a person's approval: its commits, the workflow it
    *  would run, when it was asked for, and who asked: an agent's workspace
-   *  id, `following`, or `person` for a person's deploy of content a person
+   *  id, a token's label (`token <label>`), `following`, or `person` for a person's deploy of content a person
    *  has not approved. */
   requestedCommits: jsonb().$type<RepoCommits>(),
   requestedWorkflowId: uuid(),

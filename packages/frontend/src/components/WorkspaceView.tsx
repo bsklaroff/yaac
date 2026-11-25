@@ -648,7 +648,7 @@ export function WorkspaceView({
               workspaceId={workspace.workspaceId}
               title={workspace.title ?? ''}
               prompt={workspace.prompt ?? ''}
-              after={routineOf !== undefined && (
+              after={routineOf !== undefined ? (
                 <YButton
                   variant="ghost"
                   size="sm"
@@ -658,6 +658,10 @@ export function WorkspaceView({
                 >
                   <span className="truncate">from {routineOf.name}</span>
                 </YButton>
+              ) : workspace.createdVia !== undefined && (
+                <span className="min-w-0 truncate text-sm text-subtle" title="What created this workspace for its owner">
+                  via {workspace.createdVia}
+                </span>
               )}
             />
             {!isMobile && <GitStatusBar key={workspace.workspaceId} workspaceId={workspace.workspaceId} />}

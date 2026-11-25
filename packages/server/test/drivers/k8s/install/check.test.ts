@@ -40,6 +40,7 @@ import type { NodeTaint } from '#drivers/k8s/substrate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { globalRoot, serverLocalRoot, volumesRoot } from '@yaac/shared/paths'
 import { recordInstall } from '@yaac/shared/install-record'
+import { planTokenCertificate, type TokenTlsPair } from '@yaac/shared/token-tls'
 
 const NS = 'test-ns'
 const mockRun = vi.mocked(execFileAsync)
@@ -640,6 +641,33 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'egress')?.status).toBe('skip')
     expect(applied().map((c) => (c[0] as { metadata?: { name?: string } }).metadata?.name))
       .not.toContain('yaac-cluster-check-peer')
+  })
+
+  it('gates the token endpoint only where it is installed: a current pair, and a policy opening the token port alone', async () => {
+    stage()
+    fakeCluster.reset()
+    seedCluster()
+    expect(byName((await runClusterCheck()).results, 'token-endpoint')).toBeUndefined()
+
+    const pair = (await planTokenCertificate(undefined, '127.0.0.1')) as TokenTlsPair
+    const b64 = (v: string): string => Buffer.from(v).toString('base64')
+    const policy = (port: number): FakeObject => ({
+      apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name: 'yaac-server-ingress-token', namespace: NS },
+      spec: { ingress: [{ ports: [{ protocol: 'TCP', port }] }] },
+    })
+    fakeCluster.seed(
+      { apiVersion: 'v1', kind: 'Service', metadata: { name: 'yaac-server-token', namespace: NS, annotations: { 'yaac.token-listen': '127.0.0.1:8443' } }, spec: {} },
+      { apiVersion: 'v1', kind: 'Secret', metadata: { name: 'yaac-server-token-tls', namespace: NS }, data: { 'tls.crt': b64(pair.cert), 'tls.key': b64(pair.key) } },
+      policy(8789),
+    )
+    expect(byName((await runClusterCheck()).results, 'token-endpoint')).toMatchObject({ status: 'pass' })
+    fakeCluster.seed(policy(8787))
+    expect(byName((await runClusterCheck()).results, 'token-endpoint')).toMatchObject({ status: 'fail', detail: expect.stringMatching(/opens ports 8787/) as string })
+    const other = (await planTokenCertificate(undefined, '127.0.0.1')) as TokenTlsPair
+    fakeCluster.seed(policy(8789), {
+      apiVersion: 'v1', kind: 'Secret', metadata: { name: 'yaac-server-token-tls', namespace: NS }, data: { 'tls.crt': b64(pair.cert), 'tls.key': b64(other.key) },
+    })
+    expect(byName((await runClusterCheck()).results, 'token-endpoint')).toMatchObject({ status: 'fail', detail: expect.stringMatching(/not the certificate's/) as string })
   })
 
   it('warns rather than crashing when the node list cannot be read', async () => {

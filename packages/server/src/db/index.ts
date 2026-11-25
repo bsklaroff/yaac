@@ -286,6 +286,18 @@ export {
   setUserRole,
 } from './user-store'
 export {
+  deleteTokenBinding,
+  findTokenBinding,
+  getTokenBinding,
+  insertTokenBinding,
+  listTokenBindings,
+  markTokenBindingUsed,
+  recordRefusedSubject,
+  type NewTokenBinding,
+  type ResolvedTokenBinding,
+  type TokenBindingRow,
+} from './token-binding-store'
+export {
   backfillWorkspaceScratchDirs,
   countStoppedWorkspaces,
   forgetWorkspaceScratchDirs,

@@ -274,6 +274,11 @@ const ROUTE_MATRIX: RouteCase[] = [
   // ── users (docs/multi-user.md "Roles") ──────────────────────────────────
   { method: 'PUT', path: '/api/users/:userId/role', request: `/api/users/${ID.user}/role`, body: { role: 'admin' }, access: 'admin', k8s: MISSING, containerless: MISSING },
 
+  // ── token bindings (docs/remote-hosting.md "Token access") ─────────────
+  { method: 'GET', path: '/api/token', access: 'owner', callerScoped: true, k8s: 200, containerless: 200 },
+  { method: 'POST', path: '/api/token', body: { kind: 'pat', label: 'matrix' }, access: 'owner', callerScoped: true, k8s: 200, containerless: 200 },
+  { method: 'DELETE', path: '/api/token/:id', request: `/api/token/${ID.credential}`, access: 'owner', callerScoped: true, k8s: MISSING, containerless: MISSING },
+
   // ── public sites (docs/public-sites.md) ───────────────────────────────
   { method: 'GET', path: '/api/site/edge', access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: 200, containerless: UNSUPPORTED },
   { method: 'GET', path: '/api/site/list', request: `/api/site/list?project=${ID.project}`, access: 'reader', why: 'sites need a sandbox between the internet and the host', k8s: MISSING, containerless: UNSUPPORTED },

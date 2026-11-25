@@ -34,6 +34,7 @@ describe('buildApp', () => {
       ready: true,
       access: 'local',
       driver: workspaceDriver().kind,
+      tokenListen: null,
     })
   })
 

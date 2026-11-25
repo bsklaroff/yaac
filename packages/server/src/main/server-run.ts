@@ -2,6 +2,7 @@ import type { Server } from 'node:http'
 import { serve, type ServerType } from '@hono/node-server'
 import { WebSocketServer } from 'ws'
 import { buildApp, buildMamaRelayApp } from '#main/server'
+import { startTokenListener } from '#main/token-listener'
 import { importEmbeddedEndpoints, pushCredentialsToRuntime, refreshPlanUsage } from '#domain/auth'
 import { closeDb, DbRefusal, listProjectRows, openDb, pingDb } from '#db'
 import { startGitSshAgent, stopGitSshAgent } from '#domain/git'
@@ -265,6 +266,16 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
   const interrupted = await failInterruptedBuilds()
   if (interrupted > 0) serverLog(`[server] marked ${interrupted} interrupted image build(s) failed`)
 
+  // Before `ready`, so an address that cannot be bound refuses the start
+  // `yaac server start` waits on (docs/remote-hosting.md "Token access").
+  let tokenListener: Awaited<ReturnType<typeof startTokenListener>>
+  try {
+    tokenListener = await startTokenListener(deps)
+  } catch (err) {
+    refuse(`the token listener cannot start: ${errorText(err)}`)
+    return
+  }
+
   // Set synchronously so it is true before any queued request runs.
   ready = true
 
@@ -351,10 +362,13 @@ export async function runServer(opts: ServerRunOptions): Promise<void> {
     // close() drains in-flight requests. Bounded to 3s so a wedged request
     // cannot delay lock removal, which the CLI waits on.
     await Promise.race([
-      Promise.all([server, relayServer, adminServer].map((s) => new Promise<void>((resolve) => {
-        if (s) s.close(() => resolve())
-        else resolve()
-      }))),
+      Promise.all([
+        ...[server, relayServer, adminServer].map((s) => new Promise<void>((resolve) => {
+          if (s) s.close(() => resolve())
+          else resolve()
+        })),
+        tokenListener?.close(),
+      ]),
       new Promise<void>((resolve) => setTimeout(resolve, 3000)),
     ])
     await stopGitSshAgent().catch((err: unknown) => serverLog(`[server] ssh-agent stop failed: ${errorText(err)}`))

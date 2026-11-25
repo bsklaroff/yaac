@@ -149,6 +149,7 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       ...(row?.deadline !== undefined ? { deadline: row.deadline.toISOString() } : {}),
       ...(routineRuns.has(w.workspaceId) ? { routineId: routineRuns.get(w.workspaceId) } : {}),
       ...(row?.nonInteractive === true ? { nonInteractive: true as const } : {}),
+      ...(row?.createdVia !== undefined ? { createdVia: row.createdVia } : {}),
       ...(row?.siteId !== undefined && sitesById.has(row.siteId) ? { site: sitesById.get(row.siteId) } : {}),
       repos: (reposByWorkspace.get(w.workspaceId) ?? []).map(({ workspaceId: _, ...repo }) => repo),
       cwd: row?.cwd ?? '',

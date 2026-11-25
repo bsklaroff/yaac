@@ -20,6 +20,7 @@ import { workflowApp } from '#routes/workflows'
 import { imageApp } from '#routes/images'
 import { serverApp } from '#routes/server'
 import { usersApp } from '#routes/users'
+import { tokensApp } from '#routes/tokens'
 import { jsonBodyLimit, zv } from '#routes/validator'
 import { submitFeedback } from '#domain/feedback'
 import { workspaceDriver } from '#drivers/driver'
@@ -29,6 +30,7 @@ import type { AccessMode, Delegate, Whoami } from '@yaac/shared/types'
 import { listUsers } from '#db'
 import { z } from 'zod'
 import { errorText, serverLog } from '#lib/log'
+import { env } from '@yaac/shared/env'
 
 export interface ServerAppDeps {
   buildId: string
@@ -92,11 +94,13 @@ export function buildApp(deps: ServerAppDeps) {
  * `resolve` answers for a request. No route is public, `/api/health`
  * included; it serves no WebSocket route and no SPA, runs none of the
  * browser guards and never answers `local`. yaac-mama's commands reach the
- * routes through it in the server process.
+ * routes through it in the server process, and the token listener's
+ * callers over the network (`#main/token-listener`), which logs a refusal
+ * itself.
  */
 export function delegateApp(resolve: (request: Request) => Promise<Delegate | undefined>, deps: ServerAppDeps) {
   const app = new Hono<IdentityEnv>()
-  app.use('*', requestLogger())
+  app.use('*', requestLogger({ identifiedOnly: true }))
   app.onError(errorResponse)
   app.notFound(noRoute)
   app.use('*', delegateGate(resolve))
@@ -176,6 +180,9 @@ function apiRoutes(
         // On /health because `yaac cluster …` needs it before identifying,
         // to know what THIS server runs.
         driver: workspaceDriver().kind,
+        // So `yaac server start` can tell a running server's token listener
+        // from the one it was asked for.
+        tokenListen: env.tokenListen ?? null,
       })
     })
     // The SPA's bootstrap and the clients' "will this server accept me"
@@ -223,6 +230,7 @@ function apiRoutes(
     .route('/image', imageApp)
     .route('/server', serverApp)
     .route('/users', usersApp)
+    .route('/token', tokensApp)
 }
 
 export type AppType = ReturnType<typeof apiRoutes>

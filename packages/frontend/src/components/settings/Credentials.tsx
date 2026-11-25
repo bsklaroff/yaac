@@ -8,6 +8,7 @@ import { useSnapshotSelect } from '#lib/useSnapshot'
 import { isElectron, windowApi } from '#lib/platform'
 import { CustomEndpoints } from '#components/settings/CustomEndpoints'
 import { GitCredentials } from '#components/settings/GitCredentials'
+import { Tokens } from '#components/settings/Tokens'
 import { SettingsPageTitle } from '#components/settings/SettingsPage'
 import {
   CUSTOM_PROVIDER,
@@ -41,7 +42,7 @@ const DEFAULT_PROVIDER: Partial<Record<AgentTool, string>> = {
 }
 
 /**
- * Per-tool sign-in, custom endpoints and git credentials. claude and codex
+ * Per-tool sign-in, custom endpoints, git credentials and token bindings. claude and codex
  * sign in through the vendor's browser login or a pasted API key; opencode,
  * pi and omp take a provider and an API key, or one of the user's custom
  * endpoints. Creating a workspace needs a credential for its tool, and a git
@@ -85,6 +86,7 @@ export function CredentialsPane(): JSX.Element {
       </YSection>
       <CustomEndpoints />
       <GitCredentials />
+      <Tokens />
     </>
   )
 }

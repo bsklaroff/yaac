@@ -8,14 +8,15 @@ tunnel stays as it is: the router, the per-site Services and policies,
 releases and deploys. Only what reaches the router changes.
 
 It also gives the install one way to get a certificate for a DNS name, which
-the edge, the token endpoint (docs/plans/token-endpoint.md) and the tailnet
+the edge, the token endpoint (docs/remote-hosting.md "Token access") and the tailnet
 site tunnel all use.
 
 ## What this builds on
 
-docs/plans/token-endpoint.md, for two things: the forwarder container that
-publishes an address of the machine into a kind cluster, and the token
-listener, to which this plan adds a name.
+The token endpoint (docs/server-in-cluster.md "The token endpoint"), for
+two things: the forwarder container that publishes an address of the
+machine into a kind cluster, and the token listener, to which this plan
+adds a name.
 
 ## Three rules shared with the token endpoint
 
@@ -62,8 +63,8 @@ which picks the site by `Host` as it does now. On 80 it redirects to
 
 ### Reachability
 
-- **kind.** The forwarder container of docs/plans/token-endpoint.md
-  ("kind") publishes `<addr>:80` and `<addr>:443` to the edge's NodePort
+- **kind.** The token endpoint's forwarder container
+  (docs/server-in-cluster.md "The token endpoint") publishes `<addr>:80` and `<addr>:443` to the edge's NodePort
   Service. Nothing is added to the kind node's port mappings, so turning
   the edge on, moving it and removing it are each one `yaac cluster
   install`, with running workspaces untouched. The forwarder sends the
