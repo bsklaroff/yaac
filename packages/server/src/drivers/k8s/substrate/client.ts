@@ -50,6 +50,8 @@ export function getBatchApi(): BatchV1Api {
 type PathAction = 'read' | 'list' | 'create'
 
 interface SendOptions {
+  /** A subresource of the object (`resize`, `status`), appended to its path. */
+  subresource?: string
   query?: Record<string, string>
   body?: unknown
   contentType?: string
@@ -110,7 +112,8 @@ export class ObjectClient extends KubernetesObjectApi {
   ): Promise<unknown> {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.sendOnce(method, await this.specUriPath(spec, action), opts)
+        const path = await this.specUriPath(spec, action)
+        return await this.sendOnce(method, opts.subresource !== undefined ? `${path}/${opts.subresource}` : path, opts)
       } catch (err) {
         const delay = attempt < MAX_ATTEMPTS ? transientDelayMs(err, attempt) : null
         if (delay === null) throw err

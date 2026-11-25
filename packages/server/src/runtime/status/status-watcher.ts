@@ -247,9 +247,8 @@ export class WorkspaceStatusWatcher {
 
 /**
  * Keeps one `WorkspaceStatusWatcher` per running workspace. `sync` is driven
- * by the driver's workspace set: a new workspace (or a newly claimed spare)
- * gets a watcher; a vanished one has its watcher stopped and its store entry
- * evicted. Prewarmed spares run no agent, so they are not watched.
+ * by the driver's workspace set: a new workspace gets a watcher; a vanished
+ * one has its watcher stopped and its store entry evicted.
  */
 export class StatusWatcherManager {
   private readonly watchers = new Map<string, WorkspaceStatusWatcher>()
@@ -263,7 +262,7 @@ export class StatusWatcherManager {
   sync(workspaces: RuntimeHandle[]): void {
     const wanted = new Map<string, RuntimeHandle>()
     for (const p of workspaces) {
-      if (!p.running || !p.workspaceId || !p.projectId || p.prewarmed) continue
+      if (!p.running || !p.workspaceId || !p.projectId) continue
       wanted.set(p.workspaceId, p)
     }
     for (const [workspaceId, watcher] of this.watchers) {

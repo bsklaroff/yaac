@@ -7,6 +7,7 @@ import type { WorkspaceMount } from '#drivers/contract'
 import {
   GLOBAL_CLAIM_NAME,
   NODE_LOCAL_NODE_ROOT,
+  NODE_MOUNTS_NODE_ROOT,
   VOLUMES_CLAIM_NAME,
   volumeClaimName,
 } from './storage-constants'
@@ -21,6 +22,29 @@ import {
  */
 export function nodeLocalNodePath(): string {
   return `${NODE_LOCAL_NODE_ROOT}/${installNameKey()}`
+}
+
+/** This install's node-mounts root on a node, beside its node-local one. */
+export function nodeMountsNodePath(): string {
+  return `${NODE_MOUNTS_NODE_ROOT}/${installNameKey()}`
+}
+
+/**
+ * Where a host path is stored, as mountd names it: `shared` (the
+ * global claim), `node` (the node-local root) or `volumes` (kind's volumes
+ * claim), with the path inside it.
+ */
+export function storageTierOf(source: WorkspaceMount['source']): { tier: 'shared' | 'node' | 'volumes'; path: string } {
+  if (source.kind === 'volume') {
+    if (env.volumeStorageClass !== undefined) throw new Error('a byo volume is a claim of its own, not a tier')
+    return { tier: 'volumes', path: source.volumeId }
+  }
+  if (source.kind !== 'hostPath') throw new Error(`a ${source.kind} mount is in no storage tier`)
+  const global = under(source.path, globalRoot())
+  if (global !== null) return { tier: 'shared', path: global || '.' }
+  const nodeLocal = under(source.path, nodeLocalRoot())
+  if (nodeLocal !== null) return { tier: 'node', path: nodeLocal || '.' }
+  throw new Error(`${source.path} is in no storage tier a workspace may mount (${globalRoot()}, ${nodeLocalRoot()})`)
 }
 
 /**
@@ -77,22 +101,6 @@ export function resolveMountSource(m: PodMount | WorkspaceMount): PodMount {
     `mount ${m.mountPath}: ${source.path} is under no storage tier root `
     + `(${globalRoot()}, ${nodeLocalRoot()}) — declare it through a tier helper`,
   )
-}
-
-/**
- * Node-local directories among already-resolved mounts that the pod
- * writes, which its tree container hands to the install uid. Read-only and
- * file mounts are skipped.
- */
-export function nodeLocalDirsOf(mounts: PodMount[]): string[] {
-  const dirs: string[] = []
-  for (const { source, readOnly } of mounts) {
-    if (source.kind !== 'hostPath' || readOnly) continue
-    if (source.type === 'File' || source.type === 'FileOrCreate') continue
-    if (under(source.path, nodeLocalNodePath()) === null) continue
-    if (!dirs.includes(source.path)) dirs.push(source.path)
-  }
-  return dirs
 }
 
 /** `p` relative to `root` when it is `root` or inside it, else null. */

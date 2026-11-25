@@ -1,4 +1,4 @@
-import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileRevokedShares, collectDeletedRepos, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileDiskGuard, reconcileTreeSalvage, collectCheckpointBundles, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileReadyTrees, reconcileRevokedShares, collectDeletedRepos, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileDiskGuard, reconcileTreeSalvage, collectCheckpointBundles, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshRepoOrigins } from '#domain/repos'
 import { reconcileSites } from '#domain/sites'
 import { pruneImageBlobs, reconcileImageSweep } from '#domain/images'
@@ -32,10 +32,13 @@ export function defaultReconcileSteps(): ReconcileStep[] {
   // A spare saves the image pull and pod boot a cold workspace pays. A
   // containerless workspace starts in milliseconds, so it has no pool.
   const pool: ReconcileStep[] = driver.kind === 'containerless' ? [] : [
-    // Keep one prewarmed spare per active project. No-op when the pool size
-    // is 0.
+    // One spare per image and scratch size a workspace running now, or
+    // stopped within a day, uses (docs/generic-workspace-pods.md).
     { name: 'prewarm-pool', triggers: ['workspaces'],
-      run: (ctx) => reconcilePrewarmPool(ctx.snapshot()) },
+      run: () => reconcilePrewarmPool() },
+    // One tree per repo of those workspaces, built ahead where spares wait,
+    // at its default branch's tip, which the origin refresh keeps moving.
+    { name: 'ready-trees', triggers: ['workspaces'], run: () => reconcileReadyTrees() },
   ]
   // Volumes are cluster storage (docs/workspace-volumes.md). A lease ends
   // once its holder's runtime is gone, which a change of the workspace set

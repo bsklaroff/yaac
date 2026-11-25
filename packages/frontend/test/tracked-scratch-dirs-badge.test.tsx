@@ -19,7 +19,7 @@ const KEEP = 'POST /api/workspace/ws-1/keep-scratch-dirs'
 const project = (ignoredTracked: string[] = []): ProjectSummary => ({
   id: 'p-1', name: 'demo', addedAt: '', owner: TEST_USER_ID, workspaceCount: 1, stoppedCount: 0,
   deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [],
-  scratchDirs: { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'target', sizeGiB: 32 }], ignoredTracked },
+  scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], sizeGiB: 32, ignoredTracked },
   portForwards: [],
   cacheVolumes: {},
   npmCache: true,
@@ -32,7 +32,7 @@ const workspace = {
 
 let server: FetchMock
 beforeEach(() => {
-  server = mockFetch({ [PUT]: { dirs: [], ignoredTracked: [] }, [KEEP]: undefined })
+  server = mockFetch({ [PUT]: { dirs: [], sizeGiB: 32, ignoredTracked: [] }, [KEEP]: undefined })
   provision.mockReset()
 })
 

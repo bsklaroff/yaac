@@ -69,7 +69,6 @@ beforeEach(() => {
     list: () => Promise.resolve([
       handleFixture({ workspaceId: ID }),
       handleFixture({ workspaceId: 'ab12cd34-ffff-4000-8000-000000000000', running: false }),
-      handleFixture({ workspaceId: 'ab12cd34-eeee-4000-8000-000000000000', prewarmed: true }),
     ]),
     dialPort: (workspaceId, port) => {
       dialed.push([workspaceId, port])

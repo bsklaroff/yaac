@@ -12,7 +12,7 @@ import {
   runPodToCompletion,
 } from '#drivers/k8s/substrate'
 import { TREE_RESOURCES } from './pod-job'
-import { treeImage, treeMounts } from './tree-mounts'
+import { treeContainerMounts, treeImage } from './tree-mounts'
 
 /**
  * The salvage pod (docs/node-local-workspaces.md "Life cycle"): the
@@ -39,7 +39,7 @@ export async function salvageTree(target: {
   if (node.status?.conditions?.find((c) => c.type === 'Ready')?.status !== 'True') {
     throw new Error(`node ${target.node} is not ready`)
   }
-  await runTreePod('salvage', target.workspaceId, target.tree, treeMounts(target.tree).container, target.node)
+  await runTreePod('salvage', target.workspaceId, target.tree, treeContainerMounts(target.tree), target.node)
   return 'saved'
 }
 
@@ -55,7 +55,7 @@ export async function importTree(target: {
   sharedDir: string
   tree: WorkspaceTree
 }): Promise<void> {
-  const mounts: WorkspaceMount[] = treeMounts(target.tree).container.flatMap((m): WorkspaceMount[] => {
+  const mounts: WorkspaceMount[] = treeContainerMounts(target.tree).flatMap((m): WorkspaceMount[] => {
     if (m.mountPath === '/tree') return [{ source: { kind: 'hostPath', path: target.sharedDir }, mountPath: '/tree', readOnly: true }]
     if (m.mountPath === '/scratch') return [{ source: { kind: 'emptyDir' }, mountPath: '/scratch' }]
     return [m]

@@ -370,14 +370,13 @@ describe('WorkspaceStatusWatcher (pane tools)', () => {
   })
 })
 
-function workspace(opts: { workspaceId: string; running?: boolean; prewarmed?: boolean }): RuntimeHandle {
+function workspace(opts: { workspaceId: string; running?: boolean }): RuntimeHandle {
   return handleFixture({
     workspaceId: opts.workspaceId,
     projectId: 'demo',
     jobName: `yaac-demo-${opts.workspaceId}`,
     running: opts.running !== false,
     state: opts.running === false ? 'pending' : 'running',
-    prewarmed: opts.prewarmed ?? false,
   })
 }
 
@@ -396,14 +395,12 @@ describe('StatusWatcherManager', () => {
     return { manager, children }
   }
 
-  // A spare runs no session, so there is nothing to watch until a claim.
-  it('starts a watcher per running workspace, and none for a spare', () => {
+  it('starts a watcher per running workspace', () => {
     const { manager, children } = makeManager()
     try {
       manager.sync([
         workspace({ workspaceId: 's1' }),
         workspace({ workspaceId: 's2', running: false }),
-        workspace({ workspaceId: 's3', prewarmed: true }),
       ])
       expect(manager.size).toBe(1)
       expect(children).toHaveLength(2)
@@ -435,18 +432,6 @@ describe('StatusWatcherManager', () => {
       expect(children.every((c) => c.killed)).toBe(true)
       expect(readWorkspaceStatus('demo', 's1')).toBe('waiting')
       expect(readWorkspaceWindows('demo', 's1')).toBeUndefined()
-    } finally {
-      manager.stopAll()
-    }
-  })
-
-  it('starts a watcher when a claimed spare loses its prewarm label', () => {
-    const { manager } = makeManager()
-    try {
-      manager.sync([workspace({ workspaceId: 's1', prewarmed: true })])
-      expect(manager.size).toBe(0)
-      manager.sync([workspace({ workspaceId: 's1' })])
-      expect(manager.size).toBe(1)
     } finally {
       manager.stopAll()
     }

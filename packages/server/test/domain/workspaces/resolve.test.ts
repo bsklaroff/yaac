@@ -33,7 +33,6 @@ function handle(over: Partial<RuntimeHandle> = {}): RuntimeHandle {
     state: 'running',
     labels: {},
     createdAtMs: 0,
-    prewarmed: false,
     terminating: false,
     deathCause: { reason: 'pod-stopped' },
     ...over,

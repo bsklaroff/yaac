@@ -63,7 +63,7 @@ function liveWorkspaces(room: GroupRoom): Set<string> {
   for (const p of listProvisioning()) {
     if (p.error !== undefined || !mine(p)) continue
     ids.add(p.workspaceId)
-    // A create that claimed a spare runs under the spare's id.
+    // A create that took a spare runs under the spare's id.
     if (p.claimedId !== undefined) ids.delete(p.claimedId)
   }
   for (const [id, r] of reserved) if (mine(r)) ids.add(id)

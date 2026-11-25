@@ -29,11 +29,10 @@ import { workspaceLives } from '#db/schema'
 import { eq } from 'drizzle-orm'
 import {
   claimDeletion,
+  claimProvisioning,
   clearAllProvisioningForTests,
   provision,
   registerProvisioning,
-  settleSpare,
-  spawningSpares,
 } from '#domain/workspaces/provisioning'
 import { handleFixture, installFakeWorkspaceDriver, snapshotFixture } from '#test/support/fake-driver'
 
@@ -142,43 +141,45 @@ describe('gcOrphanScratchDirs', () => {
     await expect(fs.access(slugSession)).rejects.toThrow()
   })
 
-  it('spares a session the process is still creating, a spare included', async () => {
-    // No listing shows a create until its unit exists, and a spare's dirs
-    // can sit unwritten for longer than the sweep's slack while it warms;
-    // sweeping either would delete dirs its pod is about to mount.
+  it('spares a session the process is still creating, one in a spare it took included', async () => {
+    // No listing shows a create until its unit exists; sweeping would
+    // delete dirs its pod is about to mount. One that took a spare runs
+    // under the spare's id.
     const staging = await seedWorkspacesDir(PROJ_A, 'creating-1')
-    const warming = await seedWorkspacesDir(PROJ_A, 'spare-1')
-    publishInFlight(['creating-1'])
-    spawningSpares.set('spare-1', PROJ_A)
+    const inSpare = await seedWorkspacesDir(PROJ_A, 'spare-1')
+    publishInFlight(['creating-1', 'creating-2'])
+    claimProvisioning('creating-2', 'spare-1')
 
     await gcOrphanScratchDirs(view)
 
     await expect(fs.access(staging)).resolves.toBeUndefined()
-    await expect(fs.access(warming)).resolves.toBeUndefined()
+    await expect(fs.access(inSpare)).resolves.toBeUndefined()
   })
 
-  // A pass reads its listing before the pool step warms a spare, and sweeps
-  // after it. A create that settles in between is in neither the listing
-  // nor the registry, and its pod has already mounted these dirs.
+  // A pass reads its listing before it sweeps. A create that settles in
+  // between is in neither the listing nor the registry, and its pod has
+  // already mounted these dirs.
   it('spares a session whose create settled after the listing was read', async () => {
-    const spare = await seedWorkspacesDir(PROJ_A, 'spare-1')
     const created = await seedWorkspacesDir(PROJ_A, 'created-1')
-    spawningSpares.set('spare-1', PROJ_A)
-    const run = provision({ workspaceId: 'created-1', projectId: PROJ_A, tool: 'claude', kind: 'create' },
-      () => Promise.resolve({ workspaceId: 'created-1' }))
     const before = view
-    settleSpare('spare-1')
-    await run()
+    await provision({ workspaceId: 'created-1', projectId: PROJ_A, tool: 'claude', kind: 'create' },
+      () => Promise.resolve({ workspaceId: 'created-1' }))()
+
+    // So does one that took a spare and settled under the spare's id.
+    const taken = await seedWorkspacesDir(PROJ_A, 'spare-1')
+    await provision({ workspaceId: 'created-2', projectId: PROJ_A, tool: 'claude', kind: 'create' }, () => {
+      claimProvisioning('created-2', 'spare-1')
+      return Promise.resolve({ workspaceId: 'spare-1' })
+    })()
 
     await gcOrphanScratchDirs(before)
-    await expect(fs.access(spare)).resolves.toBeUndefined()
     await expect(fs.access(created)).resolves.toBeUndefined()
+    await expect(fs.access(taken)).resolves.toBeUndefined()
 
-    // A listing read after they settled would show them if they were alive.
+    // A listing read after it settled would show it if it were alive.
     await new Promise((resolve) => setTimeout(resolve, 2))
     seeRunning([])
     await gcOrphanScratchDirs(view)
-    await expect(fs.access(spare)).rejects.toThrow()
     await expect(fs.access(created)).rejects.toThrow()
   })
 
@@ -234,7 +235,7 @@ describe('reapOrphanNodeLocal', () => {
       [handleFixture({ workspaceId: 'live-1', projectId: PROJ_A })],
       // A unit mid-recreate appears only as a stray, and its replacement is
       // about to mount its dirs.
-      [{ workspaceId: 'job-only-1', unitName: 'yaac-proj-b-job-only-1', projectId: PROJ_B, createdAtMs: 0, prewarmed: false }],
+      [{ workspaceId: 'job-only-1', unitName: 'yaac-proj-b-job-only-1', projectId: PROJ_B, createdAtMs: 0 }],
     )
 
     await reapOrphanNodeLocal(view)

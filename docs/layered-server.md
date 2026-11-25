@@ -146,27 +146,27 @@ happens a layer up, in `recordedTranscript`.
   of its own), `events.ts` (the snapshot hub), `ws-routes.ts` (the
   WebSocket routes: the events stream, the auth daemon's socket, and the
   pty, forward and acp attaches).
-- **`domain/`**: `workspaces/` (the lifecycle verbs: create, restart,
-  stop, cleanup, list, detail, resolve; plus the prewarm pool, discovery
-  sweeps, prompt capture, the provisioning registry, the stale reaper,
-  checkout seeding, each workspace's conversations on disk, generated
-  titles, who a workspace's `yaac-mama` call acts as (`callingWorkspace`)
-  and what it reads of and sends its siblings, and the file editor's reads
-  and writes of a checkout), `projects/` (which projects exist
-  and what each keeps on disk: the repos it links and the two config
+- **`domain/`**: `workspaces/` (the lifecycle verbs: create, restart, stop,
+  cleanup, list, detail, resolve; plus the prewarm pool and ready trees,
+  discovery sweeps, prompt capture, the provisioning registry, the stale
+  reaper, checkout seeding, each workspace's conversations on disk,
+  generated titles, who a workspace's `yaac-mama` call acts as
+  (`callingWorkspace`) and what it reads of and sends its siblings, and the
+  file editor's reads and writes of a checkout), `projects/` (which projects
+  exist and what each keeps on disk: the repos it links and the two config
   layers), `images/` (named images, their revisions and support files, the
-  build queue and its records; docs/image-builds.md), `repos/` (each user's git repos: the main
-  clone and its branches, the remote of a repo the server hosts, which git
-  credential it uses and who may use it; docs/project-repos.md), `git/`
-  (domain's one process boundary onto git; docs/server-git.md),
-  `auth/` (each user's tool sign-ins and git credentials), `skills/`,
-  `sites/` (public sites' settings, deploys and the replacement of a
-  release that died, over `workspaces/`; docs/public-sites.md),
-  `access/` (who may act on what: a caller is a person, a delegate or the
-  server; the verbs that make a user-caused write take it and check it at
-  a level with `authorizeProject`, hold a delegate to its ceiling, and read
-  a person's own id through `personId`; docs/multi-user.md
-  "Authorization").
+  build queue and its records; docs/image-builds.md), `repos/` (each user's
+  git repos: the main clone and its branches, the remote of a repo the
+  server hosts, which git credential it uses and who may use it;
+  docs/project-repos.md), `git/` (domain's one process boundary onto git;
+  docs/server-git.md), `auth/` (each user's tool sign-ins and git
+  credentials), `skills/`, `sites/` (public sites' settings, deploys and the
+  replacement of a release that died, over `workspaces/`;
+  docs/public-sites.md), `access/` (who may act on what: a caller is a
+  person, a delegate or the server; the verbs that make a user-caused write
+  take it and check it at a level with `authorizeProject`, hold a delegate
+  to its ceiling, and read a person's own id through `personId`;
+  docs/multi-user.md "Authorization").
 
   Config and credentials live in domain because writing them is policy: a
   saved allowed host or port forward applies to every future workspace of
@@ -206,13 +206,14 @@ happens a layer up, in `recordedTranscript`.
   `driver.ts`, `containerless/`, and `k8s/`.
 
   `k8s/`'s barrel is its assembly (`createK8sDriver`) over five sealed
-  folders: `workspaces` (launch and the Job manifest, locate, claim,
+  folders: `workspaces` (launch and the Job manifest, locate, spares,
   teardown, port forwards, the
   node-local orphan sweep, the per-pass snapshot, and the mapping from a
   pod to a `RuntimeHandle`), `images` (builder pods, which run the builds
   `#domain/images` queues, and the main registry and node image GC),
-  `egress`, `cluster` (the in-cluster datapath, the main registry and its
-  client, and every image tag), and `substrate` (client, informers, exec,
+  `egress`, `cluster` (the in-cluster datapath, mountd, the main
+  registry and its client, and every image tag), and `substrate` (client,
+  informers, exec,
   pod-spec fragments, the streaming child-process runner, the datapath's
   names and ports). Beside them are only `lifecycle.ts` (attach and
   detach), `steps.ts` (the driver's reconcile steps) and `usage.ts` (the
@@ -317,7 +318,7 @@ OAuth rotations into).
 the prewarm pool counts just-reaped workspaces), the queued-workspace
 backstop (a launch interrupted by a restart; `stopWorkspace` launches
 queued workspaces directly, so this only rides the resync), the prewarm
-pool (k8s only), the conversation sweep, orphan-module
+pool and the ready trees (k8s only), the conversation sweep, orphan-module
 GC, credential adoption (k8s) or sync (containerless), origin refresh, and
 title generation last so a just-captured opening message is eligible in the
 same pass.
@@ -334,8 +335,8 @@ come from one cached substrate view, so "a unit with no workspace" is never
 a comparison across two moments, which is what makes the reaper's deletes
 safe. The project list and each project's config come from lazy per-pass
 accessors (`PassContext`), so a driver step never reads a row or config
-file itself. Domain steps read their own (the prewarm pool resolves what to
-warm each spare as when it spawns it).
+file itself. Domain steps read their own (the prewarm pool resolves each
+recent project's image and scratch size to decide its pools).
 
 The reaper reads `desiredWorkspaces()` at the start of its own step, so it
 only judges absence against a set from the same pass. A failed read skips

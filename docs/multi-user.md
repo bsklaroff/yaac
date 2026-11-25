@@ -380,8 +380,10 @@ A user's `Dockerfile.user` is the one image in their user scope
 they may read or change it. A project's `yaac-user-<projectId>` layer is
 built from its owner's. A project's images and builds are its owner's to
 read, change, build and cancel. The driver is handed the chain's sources
-rather than looking them up. The prewarm pool is per project, hence per
-owner.
+rather than looking them up. A prewarmed spare belongs to no project or
+owner and holds nothing of anyone's until its claim, so projects of
+different owners on one image share its pool
+(docs/generic-workspace-pods.md).
 
 ## Snapshot and webapp
 

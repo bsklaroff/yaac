@@ -1,67 +1,53 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+/**
+ * How the k8s driver starts a workspace (docs/generic-workspace-pods.md "A
+ * claim"). The cluster, the registry, mountd's HTTP API and
+ * streamd's claim call are the boundaries, so every manifest, patch and
+ * request is built for real and asserted on as the outside world gets it.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest'
+import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { PROJECT_CONFIG_DEFAULTS } from '@yaac/test-utils/project-fixture'
-import { fakeCluster } from '@yaac/test-utils/k8s-stub'
-import { installId } from '#drivers/k8s/substrate'
-// A setup value, not a unit under test.
-import { PRE_STOP_GRACE_SECONDS, TREE_FINAL_PASS_SECONDS } from '#drivers/k8s/workspaces/pod-job'
+import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
+import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
+import { fakeRegistry } from '#test/support/fake-registry'
+import { fakeMountd } from '#test/drivers/k8s/fake-mountd'
 
+vi.hoisted(() => { process.env.YAAC_BUILD_ID = 'build-1' })
+
+// streamd is the process boundary of a claim: its request is what the
+// workspace is told.
+const mockPodClaim = vi.hoisted(() => vi.fn())
 vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
   ...(await importOriginal<typeof streamRelayModule>()),
-  podStreamToken: vi.fn().mockResolvedValue('stream-token'),
+  podClaim: mockPodClaim,
 }))
-
-// Mock the proxy rollout. The registration ConfigMap lands in the fake
-// cluster like the Job, so the manifests are built for real and asserted on.
-const mockEnsureRunning = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/egress/proxy-client', () => ({
-  PROXY_CA_PATH: '/etc/yaac/certs/proxy-ca.pem',
-  proxyClient: {
-    ensureRunning: mockEnsureRunning,
-    getCaTrustEnv: () => ['SSL_CERT_FILE=/etc/yaac/certs/proxy-ca.pem'],
-  },
-}))
-
-// Mock the cluster barrel, which runs pods of its own.
-const mockProxyClusterIp = vi.hoisted(() => vi.fn().mockResolvedValue('10.96.0.5'))
-const mockNpmCacheUrl = vi.hoisted(() => vi.fn())
-vi.mock('#drivers/k8s/cluster', async (importOriginal) => ({
-  ...(await importOriginal<typeof clusterModule>()),
-  proxyServiceClusterIp: mockProxyClusterIp,
-  servingNpmCacheUrl: mockNpmCacheUrl,
-  ensureUtilityImage: () => Promise.resolve('registry.local/podman-stable:v5.5'),
-  // The tree container's image, which hashing the Dockerfiles would name.
-  resolveTrustedLayers: () => Promise.resolve({ base: { tag: 'yaac-base:abc' } }),
-}))
-
-vi.mock('node:fs/promises', () => ({
-  default: {
-    mkdir: vi.fn().mockResolvedValue(undefined),
-    writeFile: vi.fn().mockResolvedValue(undefined),
-  },
-}))
+// The pod's readiness is a watch of it.
+vi.mock('#drivers/k8s/substrate/pod-wait', () => ({ waitForJobPodReady: vi.fn().mockResolvedValue(undefined) }))
 
 import type * as streamRelayModule from '#drivers/k8s/substrate/stream-relay'
-import type * as clusterModule from '#drivers/k8s/cluster'
-import { launchWorkspace, prepareWorkspaceSubstrate,
-} from '#drivers/k8s/workspaces/launch'
-import type { WorkspaceSpec, WorkspaceSubstrate, WorkspaceTree } from '#drivers/contract'
-import path from 'node:path'
-import { globalPath, setDataDir } from '@yaac/shared/paths'
+import { awaitWorkspaceReady, launchWorkspace, prepareWorkspaceSubstrate, reapSpare, takeSpare } from '#drivers/k8s/workspaces'
+import { PROXY_AUTH_SECRET_NAME, installId, k8sNamespace, nodeMountsNodePath } from '#drivers/k8s/substrate'
+import { resetProxyClusterIpCache } from '#drivers/k8s/cluster'
+import { UTILITY_MIRROR_TAG } from '#drivers/k8s/cluster/utility-image'
+import { proxyClient } from '#drivers/k8s/egress'
+import type { RuntimeHandle, SubstrateIntent, WorkspaceSpec, WorkspaceSubstrate, WorkspaceTree } from '#drivers/contract'
+import { globalRoot, nodeLocalRoot } from '@yaac/shared/paths'
+import { LIVES_DIR, START_FILE, type StartInstruction } from '@yaac/shared/tree-records'
 import {
-  opencodeDataDir,
   claudeDir,
-  projectDir,
+  opencodeDataDir,
+  repoDir,
   secretKeyPath,
   workspaceCheckpointsDir,
   workspaceDir,
   workspaceTreeDir,
 } from '@yaac/shared/project-paths'
 
-// Mount sources depend on each path's tier, so paths must be real tier paths.
-setDataDir('/data/yaac')
-const NODE_ROOT = `/var/lib/yaac/node/${installId()}`
-
 const PROJECT_ID = '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c'
+const AUTH_SECRET = 'relay-secret'
+const GiB = 1024 ** 3
 const INTENT = {
   projectId: PROJECT_ID,
   workspaceId: 's1',
@@ -72,25 +58,21 @@ const INTENT = {
   proxySecretRules: {},
 }
 
-function specOf(
-  substrate: WorkspaceSubstrate,
-  overrides: Partial<WorkspaceSpec> = {},
-): WorkspaceSpec {
+function specOf(substrate: WorkspaceSubstrate, overrides: Partial<WorkspaceSpec> = {}): WorkspaceSpec {
   return {
     projectId: PROJECT_ID,
     workspaceId: 's1',
-    prewarm: false,
     image: 'localhost:5000/img:tag',
     env: ['CALLER_SAID=yes'],
     secretEnvKeys: [],
-    mounts: [{ source: { kind: 'hostPath', path: workspaceDir(PROJECT_ID, 's1') }, mountPath: '/workspace' }],
+    mounts: [],
     scratchDirs: [],
+    scratchBytes: 8 * GiB,
     resources: {
       memoryRequestBytes: 1, memoryLimitBytes: 2,
       cpuRequestMillis: 3, cpuLimitMillis: 4,
       ephemeralStorageRequestBytes: 5, ephemeralStorageLimitBytes: 6,
     },
-    postStartExec: ['/usr/local/bin/yaac-workspace-init'],
     cwd: '',
     gitCredentials: [],
     substrate,
@@ -98,70 +80,146 @@ function specOf(
   }
 }
 
-interface JobManifest {
-  kind: string
-  metadata: { name: string; namespace: string; labels: Record<string, string> }
-  spec: {
-    template: {
-      metadata: { labels: Record<string, string> }
-      spec: {
-        terminationGracePeriodSeconds?: number
-        initContainers?: Array<{ name: string; image: string; command: string[]; volumeMounts: Array<{ name: string; mountPath: string }> }>
-        containers: Array<{
-          image: string
-          env: Array<{ name: string; value: string }>
-          lifecycle?: { postStart?: { exec?: { command: string[] } }; preStop?: { exec?: { command: string[] } } }
-          volumeMounts: Array<{ name: string; mountPath: string; subPath?: string; readOnly?: boolean }>
-        }>
-        volumes: Array<{
-          name: string
-          hostPath?: { path: string; type: string }
-          persistentVolumeClaim?: { claimName: string }
-        }>
-      }
-    }
+/** A life's tree for workspace `s1`, with a checkout at its root and one in `web`. */
+function treeOf(over: Partial<WorkspaceTree> = {}): WorkspaceTree {
+  return {
+    life: 'L1',
+    lifeDir: workspaceTreeDir(PROJECT_ID, 's1', 'L1'),
+    checkpointsDir: workspaceCheckpointsDir(PROJECT_ID, 's1'),
+    checkouts: [
+      { id: 'r1', path: '', gitDir: path.join(workspaceDir(PROJECT_ID, 's1'), '.git') },
+      { id: 'r2', path: 'web', gitDir: path.join(workspaceDir(PROJECT_ID, 's1'), 'git', 'r2') },
+    ],
+    mainClones: [repoDir('r1')],
+    program: '/unused',
+    restoring: false,
+    ...over,
   }
 }
 
-/** A life's tree for workspace `s1`, with one checkout at its root. */
-const TREE: WorkspaceTree = {
-  life: 'L1',
-  lifeDir: workspaceTreeDir(PROJECT_ID, 's1', 'L1'),
-  checkpointsDir: workspaceCheckpointsDir(PROJECT_ID, 's1'),
-  checkouts: [{ id: 'r1', path: '', gitDir: path.join(workspaceDir(PROJECT_ID, 's1'), '.git') }],
-  mainClones: [],
-  program: globalPath('workspace-bin', 'yaac-tree'),
-  restoring: false,
+/** The domain's start instruction for life `L1`, on the shared tier. */
+async function writeStart(over: Partial<StartInstruction> | string = {}): Promise<void> {
+  const file = path.join(workspaceCheckpointsDir(PROJECT_ID, 's1'), LIVES_DIR, 'L1', START_FILE)
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.writeFile(file, typeof over === 'string' ? over : JSON.stringify({
+    version: 1, life: 'L1', uid: 1000, gid: 1000,
+    // Listed innermost first: the bind builds the root's tree first.
+    checkouts: [
+      { id: 'r2', path: 'web', gitDir: '/git/r2', commit: 'c2', kept: [] },
+      { id: 'r1', path: '', gitDir: '/git/r1', commit: 'c1', kept: [] },
+    ],
+    excluded: ['node_modules'],
+    ...over,
+  }))
 }
 
-/** The manifests applied, in order. */
-const applied = (): Array<{ kind: string }> =>
-  fakeCluster.callsOf('apply').map((c) => c.body as unknown as { kind: string })
+/** A running workspace pod for `workspaceId` on `node`, as the Job made it. */
+function seedPod(workspaceId: string, node: string | null = 'n2'): void {
+  fakeCluster.seed({
+    apiVersion: 'v1',
+    kind: 'Pod',
+    metadata: {
+      name: `yaac-${workspaceId}-x`,
+      namespace: k8sNamespace(),
+      labels: {
+        'batch.kubernetes.io/job-name': `yaac-${workspaceId}`,
+        'yaac.workspace-id': workspaceId,
+        'yaac.project-id': PROJECT_ID,
+        'yaac.install-id': installId(),
+      },
+    },
+    spec: node === null ? {} : { nodeName: node },
+    status: { phase: 'Running' },
+  })
+}
+
+interface JobManifest {
+  metadata: { name: string; labels: Record<string, string> }
+  spec: { template: { metadata: { labels: Record<string, string> }; spec: {
+    priorityClassName: string
+    affinity: unknown
+    initContainers?: Array<{ name: string; image: string; command: string[] }>
+    containers: Array<{ env: Array<{ name: string; value?: string; valueFrom?: unknown }>; resources: { requests: Record<string, string> }; volumeMounts: Array<{ name: string; mountPath: string }> }>
+    volumes: Array<{ name: string; hostPath?: { path: string }; persistentVolumeClaim?: { claimName: string } }>
+  } } }
+}
+
+const appliedJobs = (): JobManifest[] => fakeCluster.callsOf('apply', 'Job').map((c) => c.body as unknown as JobManifest)
 
 function appliedJob(): JobManifest {
-  const job = applied().find((m) => m.kind === 'Job')
+  const [job] = appliedJobs()
   expect(job).toBeDefined()
-  return job as unknown as JobManifest
+  return job
 }
 
-function containerEnv(): Record<string, string> {
-  return Object.fromEntries(
-    appliedJob().spec.template.spec.containers[0].env.map((e) => [e.name, e.value]),
+const containerEnv = (job = appliedJob()): Record<string, string | undefined> =>
+  Object.fromEntries(job.spec.template.spec.containers[0].env.map((e) => [e.name, e.value]))
+
+const nodesOf = (job: JobManifest): string[] =>
+  (job.spec.template.spec.affinity as { nodeAffinity: { requiredDuringSchedulingIgnoredDuringExecution: {
+    nodeSelectorTerms: Array<{ matchFields: Array<{ values: string[] }> }>
+  } } }).nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms.flatMap((t) => t.matchFields[0].values)
+
+interface ClaimRequest {
+  env: Record<string, string>
+  git: { name: string; email: string; safeDirectories: string[] }
+  npmRegistry?: string
+  cwd: string
+  statusRight: string
+  startedMarker?: string
+  waitMs?: number
+}
+
+/** What the pod is told when its launch is awaited (its pod on `n2`). */
+async function claimOf(handle: RuntimeHandle): Promise<ClaimRequest> {
+  seedPod(handle.workspaceId)
+  mockPodClaim.mockClear()
+  await awaitWorkspaceReady(handle)
+  expect(mockPodClaim).toHaveBeenCalledTimes(1)
+  return mockPodClaim.mock.calls[0][1] as ClaimRequest
+}
+
+/** A shared-tier and a node-local path, as mountd names them. */
+const shared = (p: string): string => path.relative(globalRoot(), p)
+const nodeLocal = (p: string): string => path.relative(nodeLocalRoot(), p)
+
+let dataDir: string
+/** The proxy's rollout, which deploys it: only that it was asked for. */
+let ensureRunning: MockInstance
+
+beforeEach(async () => {
+  dataDir = await createTempDataDir()
+  resetProxyClusterIpCache()
+  mockPodClaim.mockReset().mockResolvedValue(undefined)
+  ensureRunning = vi.spyOn(proxyClient, 'ensureRunning').mockResolvedValue(undefined)
+  fakeRegistry.install()
+  fakeRegistry.mirror(UTILITY_MIRROR_TAG)
+  fakeCluster.seed(
+    { apiVersion: 'v1', kind: 'Service', metadata: { name: 'yaac-proxy', namespace: k8sNamespace() }, spec: { clusterIP: '10.96.0.5' } },
+    {
+      apiVersion: 'v1', kind: 'Secret', metadata: { name: PROXY_AUTH_SECRET_NAME, namespace: k8sNamespace() },
+      data: { secret: Buffer.from(AUTH_SECRET).toString('base64') },
+    },
   )
-}
-
-beforeEach(() => {
-  vi.clearAllMocks()
-  mockProxyClusterIp.mockResolvedValue('10.96.0.5')
-  mockEnsureRunning.mockResolvedValue(undefined)
-  mockNpmCacheUrl.mockResolvedValue(null)
+  await fakeMountd.install(['n1', 'n2'])
+  await fakeMountd.settle(['n1', 'n2'])
 })
 
-/** The registration ConfigMap a prepare applied, decoded. */
+afterEach(async () => {
+  vi.useRealTimers()
+  // A take this process holds outlives its test; the start gives back one
+  // its launch never adopted.
+  await reapSpare('s1')
+  vi.restoreAllMocks()
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
+  await cleanupTempDir(dataDir)
+})
+
+/** The registration ConfigMap a launch applied, decoded. */
 function appliedRegistration(): { name: string; labels: Record<string, string>; payload: Record<string, unknown> } | undefined {
-  const cm = applied()
-    .map((m) => m as { kind: string; metadata: { name: string; labels: Record<string, string> }; data: Record<string, string> })
-    .find((m) => m.kind === 'ConfigMap')
+  const [call] = fakeCluster.callsOf('apply', 'ConfigMap')
+  const cm = call?.body as { metadata: { name: string; labels: Record<string, string> }; data: Record<string, string> } | undefined
   return cm && {
     name: cm.metadata.name,
     labels: cm.metadata.labels,
@@ -170,19 +228,18 @@ function appliedRegistration(): { name: string; labels: Record<string, string>; 
 }
 
 describe('prepareWorkspaceSubstrate', () => {
-  it('rolls the proxy and assembles the registration the launch will write', async () => {
+  it('rolls the proxy and assembles the registration the launch writes before its pod', async () => {
     // Prepare writes nothing: it overlaps the image build, and a
     // registration without a Job for that long would be swept as orphaned.
     const substrate = await prepareWorkspaceSubstrate({
       ...INTENT,
       proxySecretRules: { TOKEN: { hosts: ['api.example.com'], header: 'Authorization' } },
     })
-    expect(mockEnsureRunning).toHaveBeenCalled()
-    expect(applied()).toEqual([])
+    expect(ensureRunning).toHaveBeenCalled()
+    expect(fakeCluster.callsOf('apply')).toEqual([])
 
-    // Applied right before the Job.
     await launchWorkspace(specOf(substrate))
-    expect(applied().map((m) => m.kind)).toEqual(['ConfigMap', 'Job'])
+    expect(fakeCluster.callsOf('apply').map((c) => c.kind)).toEqual(['ConfigMap', 'Job'])
     const reg = appliedRegistration()
     expect(reg?.name).toBe('yaac-proxy-reg-s1')
     expect(reg?.labels).toMatchObject({
@@ -199,152 +256,26 @@ describe('prepareWorkspaceSubstrate', () => {
       injections: [{ action: 'set_header', name: 'Authorization', secretRef: `${PROJECT_ID}/TOKEN` }],
     }])
   })
-})
 
-describe('launchWorkspace', () => {
-  it('stamps the identity labels the observers read a workspace back by', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    const handle = await launchWorkspace(specOf(substrate))
-
-    const job = appliedJob()
-    expect(job.metadata.name).toBe('yaac-s1')
-    expect(job.metadata.namespace).toBe('yaac')
-    expect(job.metadata.labels).toMatchObject({
-      'yaac.project-id': PROJECT_ID,
-      'yaac.workspace-id': 's1',
-      'yaac.install-id': installId(),
-    })
-    expect(job.metadata.labels['yaac.prewarmed']).toBeUndefined()
-
-    expect(handle).toMatchObject({
-      workspaceId: 's1', projectId: PROJECT_ID, jobName: 'yaac-s1',
-      running: false, prewarmed: false, terminating: false,
-    })
-  })
-
-  it('marks a prewarmed spare with its own label', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    await launchWorkspace(specOf(substrate, { prewarm: true }))
-
-    expect(appliedJob().metadata.labels).toMatchObject({ 'yaac.prewarmed': 'true' })
-  })
-
-  // docs/public-sites.md: the router may reach it, the proxy refuses its
-  // calls to the server, and node pressure evicts dev workspaces first.
-  it('labels a site release, ranks it above workspaces, and pins it beside the holder of a volume claim', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    await launchWorkspace(specOf(substrate, { siteId: 'site-1', colocateWith: 'old' }))
-    let job = appliedJob() as JobManifest & { spec: { template: { spec: { priorityClassName?: string; affinity?: unknown } } } }
-    expect(job.spec.template.metadata.labels).toMatchObject({ 'yaac.site-id': 'site-1' })
-    expect(job.spec.template.spec.priorityClassName).toBe('yaac-release')
-    // On kind every volume is a subPath of one claim, so no node is named.
-    expect(job.spec.template.spec.affinity).toBeUndefined()
-
-    vi.stubEnv('YAAC_VOLUME_STORAGE_CLASS', 'hcloud-volumes')
-    fakeCluster.reset()
-    fakeCluster.seed({
-      apiVersion: 'v1', kind: 'Pod',
-      metadata: { name: 'yaac-old-x', namespace: 'yaac', labels: { 'yaac.workspace-id': 'old' } },
-      spec: { nodeName: 'node-b' },
-    })
-    await launchWorkspace(specOf(substrate, {
-      siteId: 'site-1', colocateWith: 'old',
-      mounts: [{ source: { kind: 'volume', volumeId: 'v1' }, mountPath: '/home/yaac/volume' }],
-    }))
-    job = appliedJob()
-    expect(JSON.stringify(job.spec.template.spec.affinity)).toContain('"key":"metadata.name","operator":"In","values":["node-b"]')
-
-    // A holder not on a node yet could land anywhere, so nothing launches.
-    fakeCluster.reset()
-    fakeCluster.seed({
-      apiVersion: 'v1', kind: 'Pod',
-      metadata: { name: 'yaac-old-x', namespace: 'yaac', labels: { 'yaac.workspace-id': 'old' } },
-      spec: {},
-    })
-    await expect(launchWorkspace(specOf(substrate, {
-      siteId: 'site-1', colocateWith: 'old',
-      mounts: [{ source: { kind: 'volume', volumeId: 'v1' }, mountPath: '/home/yaac/volume' }],
-    }))).rejects.toThrow('not on a node yet')
-    expect(applied().some((m) => m.kind === 'Job')).toBe(false)
-    vi.unstubAllEnvs()
-  })
-
-  it('adds the transport token and CA trust the caller could not have named', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    await launchWorkspace(specOf(substrate))
-
-    const env = containerEnv()
-    expect(env.CALLER_SAID).toBe('yes')
-    expect(env.YAAC_STREAM_TOKEN).toBe('stream-token')
-    expect(env.SSL_CERT_FILE).toBe('/etc/yaac/certs/proxy-ca.pem')
-  })
-
-  it('reads run secrets by key from the project\'s run-secrets Secret, so no value is in the Job', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    await launchWorkspace(specOf(substrate, { runSecrets: ['P8_KEY'] }))
-    expect(appliedJob().spec.template.spec.containers[0].env).toContainEqual({
-      name: 'P8_KEY',
-      valueFrom: { secretKeyRef: { name: `yaac-run-secrets-${PROJECT_ID}`, key: 'P8_KEY' } },
-    })
-    // One that shadows another variable is refused, not silently dropped.
-    await expect(launchWorkspace(specOf(substrate, { runSecrets: ['CALLER_SAID'] }))).rejects.toThrow(/shares its name/)
-  })
-
-  // pnpm's SQLite store index cannot be shared between pods, so each pod
-  // has its own store on the same volume as `.pnpm`, letting pnpm hardlink.
-  it('backs each scratch dir with its own volume and keeps pnpm\'s store inside the root one', async () => {
-    const plain = await prepareWorkspaceSubstrate(INTENT)
-    const web = { path: '/workspace/packages/web/node_modules', sizeBytes: 8 * 1024 ** 3 }
-    await launchWorkspace(specOf(plain, {
-      scratchDirs: [{ path: '/workspace/node_modules', sizeBytes: 8 * 1024 ** 3 }, web],
-    }))
-
-    const job = appliedJob().spec.template
-    const volumes = job.spec.volumes.map((v) => v.name)
-    expect(volumes).toContain('scratch-0')
-    expect(volumes).toContain('scratch-1')
-    const mounts = job.spec.containers[0].volumeMounts
-    expect(mounts).toContainEqual({ name: 'scratch-0', mountPath: '/workspace/node_modules' })
-    expect(mounts).toContainEqual({ name: 'scratch-1', mountPath: '/workspace/packages/web/node_modules' })
-    expect(job.metadata).toMatchObject({
-      annotations: {
-        'dev.gvisor.spec.mount.scratch-0.type': 'bind',
-        'dev.gvisor.spec.mount.scratch-1.type': 'bind',
-      },
-    })
-    expect(job.spec.initContainers).toBeUndefined()
-    // Both spellings: pnpm 10 reads only npm_config_.
-    expect(containerEnv()).toMatchObject({
-      pnpm_config_store_dir: '/workspace/node_modules/.pnpm-store',
-      npm_config_store_dir: '/workspace/node_modules/.pnpm-store',
-    })
-
-    // Without a root scratch dir the store stays off the checkout.
-    fakeCluster.calls = []
-    await launchWorkspace(specOf(plain, { scratchDirs: [web] }))
-    expect(containerEnv()).toMatchObject({
-      pnpm_config_store_dir: '/home/yaac/.local/share/pnpm/store',
-      npm_config_store_dir: '/home/yaac/.local/share/pnpm/store',
-    })
-  })
-
-  // Passed to the init script, which writes it below the project's own
-  // .npmrc; an env var would override a project's own registry.
+  // Passed to the claim, which writes it below the project's own .npmrc;
+  // an env var would override a project's own registry.
   it('admits a workspace to the npm cache per its project, and points it there only while it serves', async () => {
-    const url = 'http://yaac-npm-cache.yaac.svc.cluster.local:4873/'
-    await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT)))
-    expect(containerEnv()).not.toHaveProperty('YAAC_NPM_REGISTRY')
-
+    const launchAndClaim = async (intent: SubstrateIntent = INTENT): Promise<ClaimRequest> => {
+      fakeCluster.calls = []
+      return claimOf(await launchWorkspace(specOf(await prepareWorkspaceSubstrate(intent))))
+    }
     // Not serving yet: no registry, but the label is set per the project.
+    expect(await launchAndClaim()).not.toHaveProperty('npmRegistry')
     expect(appliedJob().spec.template.metadata.labels['yaac.npm-cache']).toBe('true')
 
-    mockNpmCacheUrl.mockResolvedValue(url)
-    fakeCluster.calls = []
-    await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT)))
-    expect(containerEnv().YAAC_NPM_REGISTRY).toBe(url)
-    for (const key of ['pnpm_config_registry', 'npm_config_registry']) {
-      expect(containerEnv()).not.toHaveProperty(key)
-    }
+    fakeCluster.seed({
+      apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice',
+      metadata: { name: 'yaac-npm-cache-x', namespace: k8sNamespace(), labels: { 'kubernetes.io/service-name': 'yaac-npm-cache' } },
+      endpoints: [{ conditions: { ready: true } }],
+    })
+    const claim = await launchAndClaim()
+    expect(claim.npmRegistry).toBe(`http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/`)
+    for (const key of ['pnpm_config_registry', 'npm_config_registry']) expect(claim.env).not.toHaveProperty(key)
 
     // Each keeps the workspace off the cache (no registry, no label):
     //  - the project turned it off;
@@ -353,161 +284,459 @@ describe('launchWorkspace', () => {
     for (const intent of [
       { ...INTENT, config: { ...PROJECT_CONFIG_DEFAULTS, npmCache: false } },
       { ...INTENT, allowlist: { hosts: ['github.com', 'api.anthropic.com'], defaults: false } },
-      {
-        ...INTENT,
-        proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'], header: 'Authorization' } },
-      },
+      { ...INTENT, proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'], header: 'Authorization' } } },
     ]) {
-      fakeCluster.calls = []
-      await launchWorkspace(specOf(await prepareWorkspaceSubstrate(intent)))
-      expect(containerEnv()).not.toHaveProperty('YAAC_NPM_REGISTRY')
+      expect(await launchAndClaim(intent)).not.toHaveProperty('npmRegistry')
       expect(appliedJob().spec.template.metadata.labels).not.toHaveProperty('yaac.npm-cache')
     }
   })
+})
 
-  it('routes an SSH workspace through the tunnel sentinel, with no key, agent or host key file of its own', async () => {
+describe('launchWorkspace', () => {
+  it('makes a generic pod on demand on the ready nodes, labelled as its project\'s workspace, holding only what any pod of its id holds', async () => {
     const substrate = await prepareWorkspaceSubstrate(INTENT)
-    await launchWorkspace(specOf(substrate, {
-      ssh: { knownHostsFile: path.join(projectDir(PROJECT_ID), 'known_hosts') },
+    const handle = await launchWorkspace(specOf(substrate, {
+      env: ['CALLER_SAID=yes', 'YAAC_GIT_NAME=Ada'],
+      tree: treeOf(),
     }))
 
-    const env = containerEnv()
-    expect(env.GIT_SSH_COMMAND).toContain('--proxy 198.18.0.2:10259')
-    expect(env.GIT_SSH_COMMAND).toContain('--proxy-type http')
-    expect(env.GIT_SSH_COMMAND).toContain('StrictHostKeyChecking=yes')
-    // The proxy ends the session: the pod trusts the proxy's host key, from
-    // the ConfigMap every pod mounts, and the proxy checks the git host's.
+    const job = appliedJob()
+    expect(job.metadata.name).toBe('yaac-s1')
+    expect(job.metadata.labels).toEqual({
+      'yaac.project-id': PROJECT_ID,
+      'yaac.workspace-id': 's1',
+      'yaac.install-id': installId(),
+      'yaac.npm-cache': 'true',
+    })
+    expect(nodesOf(job)).toEqual(['n1', 'n2'])
+    // The caller's variables go to the claim, never the cluster.
+    const env = containerEnv(job)
+    expect(env).not.toHaveProperty('CALLER_SAID')
+    expect(env).not.toHaveProperty('YAAC_GIT_NAME')
+    expect(env.YAAC_WORKSPACE_ID).toBe('s1')
+    expect(env.YAAC_STREAM_TOKEN).toBe(crypto.createHmac('sha256', AUTH_SECRET).update('s1').digest('hex'))
+    expect(env.SSL_CERT_FILE).toBe('/etc/yaac/certs/proxy-ca.pem')
+    // ssh reaches the proxy, which ends the session and checks host keys:
+    // no key, agent or host key file of the workspace's own.
     expect(env.GIT_SSH_COMMAND).toContain('UserKnownHostsFile=/etc/yaac/certs/ssh_known_hosts')
     expect(env.GIT_SSH_COMMAND).toContain('HostKeyAlias=yaac-proxy')
     expect(env).not.toHaveProperty('SSH_AUTH_SOCK')
-    expect(env).not.toHaveProperty('YAAC_SSH_AGENT_UPSTREAM')
-    const mounts = appliedJob().spec.template.spec.containers[0].volumeMounts
-    expect(mounts.map((m) => m.mountPath).filter((p) => p.includes('known_hosts') || p.includes('ssh'))).toEqual([])
+    const pod = job.spec.template.spec
+    expect(pod.containers[0].resources.requests.cpu).toBe('3m')
+    expect(pod.priorityClassName).toBe('yaac-workspace')
+    expect(pod.volumes.find((v) => v.name === 'node-mounts')?.hostPath?.path).toMatch(new RegExp(`^${nodeMountsNodePath()}/s1\\.[0-9a-f]{8}$`))
+    expect(pod.initContainers?.map((c) => c.name)).toEqual(['tree'])
+    expect(pod.initContainers?.[0].image).toMatch(/-base:[0-9a-f]+$/)
 
-    // A workspace with no ssh remote gets no ssh command at all.
+    expect(handle).toMatchObject({
+      workspaceId: 's1', projectId: PROJECT_ID, jobName: 'yaac-s1', running: false, state: 'pending', terminating: false,
+    })
+    expect(handle).not.toHaveProperty('prewarmed')
+
+    // A site release keeps its files on the shared tier: no tree container.
     fakeCluster.calls = []
     await launchWorkspace(specOf(substrate))
-    expect(containerEnv()).not.toHaveProperty('GIT_SSH_COMMAND')
+    expect(appliedJob().spec.template.spec.initContainers).toBeUndefined()
   })
 
-  it('tells the init script where the workspace\'s shells start', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    await launchWorkspace(specOf(substrate, { cwd: 'web' }))
-    expect(containerEnv().YAAC_CWD).toBe('web')
-    fakeCluster.calls = []
-    await launchWorkspace(specOf(substrate))
-    expect(containerEnv().YAAC_CWD).toBe('')
-  })
-
-  it('builds the same env twice from one spec, because a retry relaunches it', async () => {
-    // Retries reuse the spec, so it must not be mutated.
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    const spec = specOf(substrate, { ssh: { knownHostsFile: path.join(projectDir(PROJECT_ID), 'known_hosts') } })
-
+  it('builds the same pod environment twice from one spec, because a retry relaunches it', async () => {
+    const spec = specOf(await prepareWorkspaceSubstrate(INTENT))
     await launchWorkspace(spec)
-    const first = appliedJob().spec.template.spec.containers[0].env
-    fakeCluster.calls = []
     await launchWorkspace(spec)
-    const second = appliedJob().spec.template.spec.containers[0].env
-
-    expect(second).toEqual(first)
-    expect(second.filter((e) => e.name === 'YAAC_STREAM_TOKEN')).toHaveLength(1)
+    const [first, second] = appliedJobs()
+    expect(second.spec.template.spec.containers[0].env).toEqual(first.spec.template.spec.containers[0].env)
+    expect(second.spec.template.spec.containers[0].env.filter((e) => e.name === 'YAAC_STREAM_TOKEN')).toHaveLength(1)
   })
 
-  it('resolves every mount from its tier: global subPaths, node paths handed over by the tree container, and no hostPath under the data dir', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    await launchWorkspace(specOf(substrate, {
-      mounts: [
-        {
-          source: { kind: 'hostPath', path: path.join(claudeDir(PROJECT_ID), 'settings.json'), type: 'File' },
-          mountPath: '/home/yaac/.claude/settings.json',
+  it('adopts the spare its start took: labels it its project\'s, raises its CPU request in place, and binds its own node-mounts dir', async () => {
+    fakeCluster.seed(
+      {
+        apiVersion: 'batch/v1', kind: 'Job',
+        metadata: { name: 'yaac-s1', namespace: k8sNamespace(), labels: { 'yaac.workspace-id': 's1', 'yaac.install-id': installId(), 'yaac.prewarmed': 'true' } },
+      },
+      {
+        apiVersion: 'v1', kind: 'Pod',
+        metadata: {
+          name: 'yaac-s1-x', namespace: k8sNamespace(),
+          labels: { 'batch.kubernetes.io/job-name': 'yaac-s1', 'yaac.workspace-id': 's1', 'yaac.install-id': installId(), 'yaac.prewarmed': 'true' },
+          annotations: { 'yaac.scratch-bytes': String(8 * GiB) },
         },
-        { source: { kind: 'hostPath', path: opencodeDataDir(PROJECT_ID, 's1') }, mountPath: '/home/yaac/.local/share/opencode' },
+        spec: {
+          nodeName: 'n1',
+          containers: [{ name: 'workspace', image: 'localhost:5000/img:tag', resources: { requests: { cpu: '100m', memory: '1' } } }],
+          volumes: [{ name: 'node-mounts', hostPath: { path: `${nodeMountsNodePath()}/s1.0a0b0c0d` } }],
+        },
+        status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] },
+      },
+    )
+    await expect(takeSpare({ image: 'localhost:5000/img:tag', scratchBytes: 8 * GiB, madeSince: 0 })).resolves.toBe('s1')
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    fakeCluster.calls = []
+
+    const handle = await launchWorkspace(specOf(substrate))
+
+    // The registration beside the adoption (nothing in a spare reaches out
+    // before its claim call), and no Job of its own.
+    const writes = fakeCluster.calls.filter((c) => c.verb !== 'list' && c.verb !== 'read')
+    expect(writes.map((c) => `${c.verb} ${c.kind}${c.subresource !== undefined ? `/${c.subresource}` : ''}`).sort())
+      .toEqual(['apply ConfigMap', 'patch Job', 'patch Pod', 'patch Pod/resize'])
+    expect(appliedJobs()).toEqual([])
+    const labels = { 'yaac.project-id': PROJECT_ID, 'yaac.workspace-id': 's1', 'yaac.install-id': installId(), 'yaac.npm-cache': 'true' }
+    expect(fakeCluster.get<{ metadata: { labels: Record<string, string> } }>('Pod', 'yaac-s1-x')?.metadata.labels)
+      .toEqual({ 'batch.kubernetes.io/job-name': 'yaac-s1', ...labels })
+    // The Job loses its spare label, so nothing counts it as one again.
+    expect(fakeCluster.get<{ metadata: { labels: Record<string, string> } }>('Job', 'yaac-s1')?.metadata.labels).toEqual(labels)
+    const resized = fakeCluster.get<{ spec: { containers: Array<{ resources: { requests: Record<string, string> } }> } }>('Pod', 'yaac-s1-x')
+    expect(resized?.spec.containers[0].resources.requests).toEqual({ cpu: '3m', memory: '1' })
+    expect(handle).toMatchObject({ workspaceId: 's1', projectId: PROJECT_ID, jobName: 'yaac-s1' })
+
+    // Bound on its own node, at the node-mounts dir it was created with.
+    await awaitWorkspaceReady(handle)
+    expect(fakeMountd.sent('/bind')).toEqual([expect.objectContaining({
+      node: 'n1', body: expect.objectContaining({ pod: 'yaac-s1-x', dir: 's1.0a0b0c0d' }) as unknown,
+    })])
+  })
+
+  it('adopts a spare on its own CPU request when the resize fails, and fails on one that is gone', async () => {
+    const seedSpare = (): void => fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: {
+        name: 'yaac-s1-x', namespace: k8sNamespace(),
+        labels: { 'yaac.workspace-id': 's1', 'yaac.install-id': installId(), 'yaac.prewarmed': 'true' },
+        annotations: { 'yaac.scratch-bytes': String(8 * GiB) },
+      },
+      spec: {
+        nodeName: 'n1',
+        containers: [{ name: 'workspace', image: 'localhost:5000/img:tag' }],
+        volumes: [{ name: 'node-mounts', hostPath: { path: `${nodeMountsNodePath()}/s1.0a0b0c0d` } }],
+      },
+      status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] },
+    }, {
+      apiVersion: 'batch/v1', kind: 'Job',
+      metadata: { name: 'yaac-s1', namespace: k8sNamespace(), labels: { 'yaac.workspace-id': 's1', 'yaac.install-id': installId(), 'yaac.prewarmed': 'true' } },
+    })
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+
+    seedSpare()
+    await takeSpare({ image: 'localhost:5000/img:tag', scratchBytes: 8 * GiB, madeSince: 0 })
+    fakeCluster.intercept((c) => { if (c.subresource === 'resize') throw apiError(422, 'resize is not supported') })
+    await expect(launchWorkspace(specOf(substrate))).resolves.toMatchObject({ jobName: 'yaac-s1' })
+    expect(fakeCluster.get<{ metadata: { labels: Record<string, string> } }>('Pod', 'yaac-s1-x')?.metadata.labels)
+      .toHaveProperty('yaac.project-id', PROJECT_ID)
+
+    fakeCluster.reset()
+    seedSpare()
+    await takeSpare({ image: 'localhost:5000/img:tag', scratchBytes: 8 * GiB, madeSince: 0 })
+    fakeCluster.remove('Pod', 'yaac-s1-x', k8sNamespace())
+    await expect(launchWorkspace(specOf(substrate))).rejects.toThrow(/404[\s\S]*yaac-s1-x/)
+  })
+
+  it('makes a pod on demand, deleting the spare it took, for an image built since the take', async () => {
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: {
+        name: 'yaac-s1-x', namespace: k8sNamespace(),
+        labels: { 'yaac.workspace-id': 's1', 'yaac.install-id': installId(), 'yaac.prewarmed': 'true' },
+        annotations: { 'yaac.scratch-bytes': String(8 * GiB) },
+      },
+      spec: {
+        nodeName: 'n1',
+        containers: [{ name: 'workspace', image: 'localhost:5000/img:tag' }],
+        volumes: [{ name: 'node-mounts', hostPath: { path: `${nodeMountsNodePath()}/s1.0a0b0c0d` } }],
+      },
+      status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] },
+    }, {
+      apiVersion: 'batch/v1', kind: 'Job',
+      metadata: { name: 'yaac-s1', namespace: k8sNamespace(), labels: { 'yaac.workspace-id': 's1', 'yaac.install-id': installId(), 'yaac.prewarmed': 'true' } },
+    })
+    await expect(takeSpare({ image: 'localhost:5000/img:tag', scratchBytes: 8 * GiB, madeSince: 0 })).resolves.toBe('s1')
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    fakeCluster.calls = []
+    await launchWorkspace(specOf(substrate, { image: 'localhost:5000/img:newer' }))
+    expect(fakeCluster.callsOf('delete').map((c) => `${c.kind} ${c.name}`).sort()).toEqual(['Job yaac-s1', 'Pod yaac-s1-x'])
+    expect((appliedJob().spec.template.spec.containers[0] as { image?: string }).image).toBe('localhost:5000/img:newer')
+  })
+
+  it('refuses a spec it cannot launch: one with no image, or a receipt this driver did not prepare', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    await expect(launchWorkspace(specOf(substrate, { image: undefined }))).rejects.toThrow('launch yaac-s1: no image on the spec')
+    await expect(launchWorkspace(specOf({ kind: 'workspace-substrate' }))).rejects.toThrow(/receipt the k8s runtime did not prepare/)
+    expect(fakeCluster.callsOf('apply')).toEqual([])
+  })
+
+  it('waits a while for a node whose mountd is ready, then refuses with why the one it needs is not', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    await fakeMountd.install(['n1', 'n2'])
+    fakeMountd.reports.set('n1', await fakeMountd.goodReport({ build: 'build-0' }))
+    fakeMountd.reports.set('n2', await fakeMountd.goodReport({ build: 'build-0' }))
+    await fakeMountd.settle([])
+    vi.useFakeTimers()
+
+    const anyNode = expect(launchWorkspace(specOf(substrate))).rejects.toThrow(/no node can take a new workspace \(any node: no mountd is ready\)/)
+    await vi.advanceTimersByTimeAsync(121_000)
+    await anyNode
+
+    // Beside a byo volume's holder, only its node will do.
+    vi.stubEnv('YAAC_VOLUME_STORAGE_CLASS', 'hcloud-volumes')
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: 'yaac-old-x', namespace: k8sNamespace(), labels: { 'yaac.workspace-id': 'old' } },
+      spec: { nodeName: 'n2' },
+    })
+    const holder = expect(launchWorkspace(specOf(substrate, {
+      siteId: 'site-1', colocateWith: 'old', mounts: [{ source: { kind: 'volume', volumeId: 'v1' }, mountPath: '/home/yaac/volume' }],
+    }))).rejects.toThrow('(n2: its mountd runs build build-0, not the server\'s)')
+    await vi.advanceTimersByTimeAsync(121_000)
+    await holder
+    expect(appliedJobs()).toEqual([])
+  })
+
+  it('reads run secrets by key from the project\'s run-secrets Secret, in a pod of its own even when its start took a spare, refusing one the claim\'s variables would hide before anything is written', async () => {
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: {
+        name: 'yaac-s1-x', namespace: k8sNamespace(),
+        labels: { 'yaac.workspace-id': 's1', 'yaac.install-id': installId(), 'yaac.prewarmed': 'true' },
+        annotations: { 'yaac.scratch-bytes': String(8 * GiB) },
+      },
+      spec: {
+        nodeName: 'n1',
+        containers: [{ name: 'workspace', image: 'localhost:5000/img:tag' }],
+        volumes: [{ name: 'node-mounts', hostPath: { path: `${nodeMountsNodePath()}/s1.0a0b0c0d` } }],
+      },
+      status: { phase: 'Running', conditions: [{ type: 'Ready', status: 'True' }] },
+    }, {
+      apiVersion: 'batch/v1', kind: 'Job',
+      metadata: { name: 'yaac-s1', namespace: k8sNamespace(), labels: { 'yaac.workspace-id': 's1', 'yaac.install-id': installId(), 'yaac.prewarmed': 'true' } },
+    })
+    await expect(takeSpare({ image: 'localhost:5000/img:tag', scratchBytes: 8 * GiB, madeSince: 0 })).resolves.toBe('s1')
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    fakeCluster.calls = []
+    await launchWorkspace(specOf(substrate, { runSecrets: ['P8_KEY'] }))
+    expect(fakeCluster.callsOf('delete').map((c) => `${c.kind} ${c.name}`).sort()).toEqual(['Job yaac-s1', 'Pod yaac-s1-x'])
+    expect(fakeCluster.callsOf('patch')).toEqual([])
+    expect(appliedJob().metadata.labels).toHaveProperty('yaac.project-id', PROJECT_ID)
+    expect(appliedJob().spec.template.spec.containers[0].env).toContainEqual({
+      name: 'P8_KEY',
+      valueFrom: { secretKeyRef: { name: `yaac-run-secrets-${PROJECT_ID}`, key: 'P8_KEY' } },
+    })
+
+    fakeCluster.calls = []
+    await expect(launchWorkspace(specOf(substrate, { runSecrets: ['CALLER_SAID'] }))).rejects.toThrow(/run secret CALLER_SAID shares its name/)
+    expect(fakeCluster.callsOf('apply')).toEqual([])
+  })
+
+  // docs/public-sites.md: the router may reach it, the proxy refuses its
+  // calls to the server, and node pressure evicts dev workspaces first.
+  it('labels a site release, ranks it above workspaces, and pins it beside the holder of a byo volume\'s claim', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    await launchWorkspace(specOf(substrate, { siteId: 'site-1', colocateWith: 'old' }))
+    let job = appliedJob()
+    expect(job.spec.template.metadata.labels).toMatchObject({ 'yaac.site-id': 'site-1' })
+    expect(job.spec.template.spec.priorityClassName).toBe('yaac-release')
+    // On kind every volume is in one claim mountd mounts, so the
+    // pod may go to any ready node.
+    expect(nodesOf(job)).toEqual(['n1', 'n2'])
+
+    vi.stubEnv('YAAC_VOLUME_STORAGE_CLASS', 'hcloud-volumes')
+    const volume = { source: { kind: 'volume' as const, volumeId: 'v1' }, mountPath: '/home/yaac/volume' }
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: 'yaac-old-x', namespace: k8sNamespace(), labels: { 'yaac.workspace-id': 'old' } },
+      spec: { nodeName: 'n2' },
+    })
+    fakeCluster.calls = []
+    await launchWorkspace(specOf(substrate, { siteId: 'site-1', colocateWith: 'old', mounts: [volume] }))
+    job = appliedJob()
+    expect(nodesOf(job)).toEqual(['n2'])
+    // The claim kubelet attaches, its root handed over by the utility image.
+    expect(job.spec.template.spec.volumes).toContainEqual({ name: 'pv-0', persistentVolumeClaim: { claimName: 'yaac-volume-v1' } })
+    expect(job.spec.template.spec.containers[0].volumeMounts).toContainEqual({ name: 'pv-0', mountPath: '/home/yaac/volume' })
+    expect(job.spec.template.spec.initContainers?.[0]).toMatchObject({ name: 'volume-root', image: expect.stringContaining('@sha256:') as unknown })
+
+    // A holder not on a node yet could land anywhere, so nothing launches.
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: 'yaac-old-x', namespace: k8sNamespace(), labels: { 'yaac.workspace-id': 'old' } },
+      spec: {},
+    })
+    fakeCluster.calls = []
+    await expect(launchWorkspace(specOf(substrate, { siteId: 'site-1', colocateWith: 'old', mounts: [volume] })))
+      .rejects.toThrow('not on a node yet')
+    expect(appliedJobs()).toEqual([])
+  })
+})
+
+describe('awaitWorkspaceReady', () => {
+  it('binds what the workspace owns once its start instruction names each commit, then claims the pod', async () => {
+    const tree = treeOf()
+    const opencode = opencodeDataDir(PROJECT_ID, 's1')
+    const handle = await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT), {
+      tree,
+      mounts: [
+        { source: { kind: 'hostPath', path: path.join(claudeDir(PROJECT_ID), 'settings.json'), type: 'File' }, mountPath: '/home/yaac/.claude/settings.json', readOnly: true },
+        { source: { kind: 'hostPath', path: opencode }, mountPath: '/home/yaac/.local/share/opencode' },
+        // A source the tree container mounts too is mounted once, at both.
+        { source: { kind: 'hostPath', path: tree.checkpointsDir }, mountPath: '/home/yaac/.yaac/checkpoints' },
+        { source: { kind: 'emptyDir' }, mountPath: '/home/yaac/.codex/tmp' },
+        // The pod's own tmux volume, never a folder of the claim's.
         { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },
       ],
-      tree: TREE,
-      preStopExec: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'],
+      scratchDirs: ['/workspace/node_modules', '/workspace/web/node_modules'],
     }))
-
-    const pod = appliedJob().spec.template.spec
-    const byMount = Object.fromEntries(pod.containers[0].volumeMounts.map((m) => [m.mountPath, m]))
-    const volume = (name: string) => pod.volumes.find((v) => v.name === name)
-    // GLOBAL: subPaths of the global claim, including a file.
-    expect(volume(byMount['/workspace/.git'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
-    expect(byMount['/workspace/.git'].subPath).toBe(`projects/${PROJECT_ID}/workspaces/s1/.git`)
-    expect(volume(byMount['/home/yaac/.claude/settings.json'].name)?.persistentVolumeClaim).toEqual({ claimName: 'yaac-global' })
-    expect(byMount['/home/yaac/.claude/settings.json'].subPath).toBe(`projects/${PROJECT_ID}/claude/settings.json`)
-    // NODE-LOCAL: the pod's own leaves of the node's directory.
-    const nodeTree = `${NODE_ROOT}/projects/${PROJECT_ID}/trees/s1/L1`
-    const opencode = `${NODE_ROOT}/projects/${PROJECT_ID}/opencode-data/s1`
-    expect(volume(byMount['/workspace'].name)?.hostPath).toEqual({ path: `${nodeTree}/tree`, type: 'DirectoryOrCreate' })
-    expect(volume(byMount['/home/yaac/.local/share/opencode'].name)?.hostPath).toEqual({ path: opencode, type: 'DirectoryOrCreate' })
-    // No hostPath under the data dir, and none above a leaf.
-    const hostPaths = pod.volumes.flatMap((v) => (v.hostPath ? [v.hostPath.path] : []))
-    expect([...new Set(hostPaths)].sort()).toEqual([opencode, `${nodeTree}/scratch`, `${nodeTree}/tree`])
-    // The tree container, the pod's one init container, mounts each
-    // node-local leaf and is told which the workspace alone uses, to hand
-    // them all to the install uid.
-    expect(pod.initContainers?.map((c) => c.name)).toEqual(['tree'])
-    const [tree] = pod.initContainers ?? []
-    expect(tree.image).toMatch(/yaac-base:abc$/)
-    const treeMount = (at: string) => volume(tree.volumeMounts.find((m) => m.mountPath === at)?.name ?? '')?.hostPath?.path
-    expect(treeMount('/tree')).toBe(`${nodeTree}/tree`)
-    expect(treeMount('/scratch')).toBe(`${nodeTree}/scratch`)
-    expect(treeMount('/own/0')).toBe(opencode)
-    expect(tree.command.slice(-2)).toEqual(['--own', '/own/0'])
-    // A grace period long enough for the preStop hook and the final pass.
-    expect(pod.terminationGracePeriodSeconds).toBe(PRE_STOP_GRACE_SECONDS + TREE_FINAL_PASS_SECONDS)
-    expect(pod.containers[0].lifecycle?.preStop).toEqual({
-      exec: { command: ['/usr/local/bin/yaac-opencode-checkpoint', 'stop'] },
+    const dir = (fakeCluster.callsOf('apply', 'Job')[0].body as unknown as JobManifest).spec.template.spec.volumes
+      .find((v) => v.name === 'node-mounts')?.hostPath?.path.split('/').at(-1)
+    seedPod('s1')
+    await writeStart()
+    mockPodClaim.mockImplementation(() => {
+      // The tree container binds from what mountd mounted.
+      expect(fakeMountd.sent('/bind')).toHaveLength(1)
+      return Promise.resolve()
     })
-  })
 
-  it('refuses a node-local mount inside another: kubelet follows a link there, and the tree container chowns what it finds', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    fakeCluster.calls = []
-    const opencode = opencodeDataDir(PROJECT_ID, 's1')
-    await expect(launchWorkspace(specOf(substrate, {
-      mounts: [
-        { source: { kind: 'hostPath', path: opencode }, mountPath: '/home/yaac/.local/share/opencode' },
-        { source: { kind: 'hostPath', path: path.join(opencode, 'planted') }, mountPath: '/home/yaac/inner' },
+    await awaitWorkspaceReady(handle)
+
+    const treeDir = path.join(tree.lifeDir, 'tree')
+    const scratch = path.join(tree.lifeDir, 'scratch')
+    const [bind] = fakeMountd.sent('/bind')
+    expect(bind.node).toBe('n2')
+    expect(bind.body).toEqual({
+      token: `yaac-s1:${String(dir)}`,
+      pod: 'yaac-s1-x',
+      workspaceId: 's1',
+      dir,
+      life: 'L1',
+      // Outermost first, each at the commit the instruction names.
+      trees: [
+        { repo: 'r1', commit: 'c1', dest: nodeLocal(treeDir), index: nodeLocal(path.join(scratch, 'arborist', 'r1.index')) },
+        { repo: 'r2', commit: 'c2', dest: nodeLocal(path.join(treeDir, 'web')), index: nodeLocal(path.join(scratch, 'arborist', 'r2.index')) },
       ],
-      tree: TREE,
-    }))).rejects.toThrow(/opencode-data\/s1\/planted is inside another/)
-    // One under the tree, which the workspace container writes, is the same.
-    await expect(launchWorkspace(specOf(substrate, {
-      mounts: [{ source: { kind: 'hostPath', path: path.join(TREE.lifeDir, 'tree', 'sub') }, mountPath: '/x' }],
-      tree: TREE,
-    }))).rejects.toThrow(/tree\/sub is inside another/)
-    expect(applied()).toEqual([])
-  })
-
-  it('refuses a node-local mount in a pod with no tree container, which nothing would hand to the install uid', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    fakeCluster.calls = []
-    await expect(launchWorkspace(specOf(substrate, {
-      mounts: [{ source: { kind: 'hostPath', path: opencodeDataDir(PROJECT_ID, 's1') }, mountPath: '/home/yaac/.local/share/opencode' }],
-    }))).rejects.toThrow(/no tree container/)
-    expect(applied()).toEqual([])
-  })
-
-  it('rejects a server-local mount before anything is applied', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    fakeCluster.calls = []
-    await expect(launchWorkspace(specOf(substrate, {
-      mounts: [{ source: { kind: 'hostPath', path: secretKeyPath() }, mountPath: '/x' }],
-    }))).rejects.toThrow(/SERVER-LOCAL/)
-    expect(applied()).toEqual([])
-  })
-
-  it('passes the caller\'s resources and post-start entry through untouched', async () => {
-    const substrate = await prepareWorkspaceSubstrate(INTENT)
-    await launchWorkspace(specOf(substrate))
-
-    const container = appliedJob().spec.template.spec.containers[0]
-    expect(container.image).toBe('localhost:5000/img:tag')
-    expect(container.lifecycle).toEqual({
-      postStart: { exec: { command: ['/usr/local/bin/yaac-workspace-init'] } },
+      // Node-local folders mountd makes before it mounts: the life's,
+      // each mount point inside the tree, and the workspace's own.
+      dirs: [
+        nodeLocal(treeDir),
+        nodeLocal(scratch),
+        nodeLocal(path.join(treeDir, '.git')),
+        nodeLocal(path.join(treeDir, 'web', '.git')),
+        nodeLocal(path.join(treeDir, 'node_modules')),
+        nodeLocal(opencode),
+      ],
+      mounts: [
+        { tier: 'node', path: nodeLocal(treeDir), workspace: '/workspace', tree: '/tree' },
+        { tier: 'node', path: nodeLocal(scratch), tree: '/scratch' },
+        { tier: 'shared', path: shared(tree.checkpointsDir), tree: '/ckpt', workspace: '/home/yaac/.yaac/checkpoints' },
+        { tier: 'shared', path: shared(tree.checkouts[0].gitDir), workspace: '/workspace/.git', tree: '/git/r1' },
+        { tier: 'shared', path: shared(tree.checkouts[1].gitDir), workspace: '/workspace/web/.git', tree: '/git/r2' },
+        // A main clone at the server's own path, since alternates name it.
+        { tier: 'shared', path: shared(repoDir('r1')), workspace: repoDir('r1'), tree: repoDir('r1'), readOnly: true },
+        { tier: 'shared', path: shared(path.join(claudeDir(PROJECT_ID), 'settings.json')), workspace: '/home/yaac/.claude/settings.json', readOnly: true },
+        { tier: 'node', path: nodeLocal(opencode), workspace: '/home/yaac/.local/share/opencode' },
+      ],
+      folders: [
+        { from: 'local', target: '/home/yaac/.codex/tmp' },
+        { from: 'scratch', target: '/workspace/node_modules' },
+        { from: 'scratch', target: '/workspace/web/node_modules' },
+      ],
+      roots: { scratch: '/yaac-scratch', local: '/yaac-local' },
     })
+    expect(bind.authorization).toMatch(/^Bearer [0-9a-f]{64}$/)
+
+    // The claim waits for the tree container's marker of this life.
+    expect(mockPodClaim).toHaveBeenCalledTimes(1)
+    const [jobName, claim, opts] = mockPodClaim.mock.calls[0] as [string, ClaimRequest, { timeoutMs: number }]
+    expect(jobName).toBe('yaac-s1')
+    expect(claim).toMatchObject({ startedMarker: '/yaac-trigger/started.L1', waitMs: 10 * 60_000 })
+    expect(opts.timeoutMs).toBeGreaterThan(10 * 60_000)
+
+    // A restore of a large checkpoint may take hours.
+    mockPodClaim.mockReset().mockResolvedValue(undefined)
+    const restoring = await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT), { tree: treeOf({ restoring: true }) }))
+    await awaitWorkspaceReady(restoring)
+    expect(mockPodClaim.mock.calls[0][1]).toMatchObject({ waitMs: 4 * 60 * 60_000 })
+  })
+
+  it('waits for the life\'s start instruction, past one written partway and one of another life', async () => {
+    vi.useFakeTimers()
+    const startFile = path.join(workspaceCheckpointsDir(PROJECT_ID, 's1'), LIVES_DIR, 'L1', START_FILE)
+    const readFile = vi.spyOn(fs, 'readFile')
+    const reads = (): number => readFile.mock.calls.filter(([file]) => file === startFile).length
+    /** Let the poll read the file at least once more. */
+    const pollPast = async (): Promise<void> => {
+      const seen = reads()
+      await vi.waitFor(() => { expect(reads()).toBeGreaterThan(seen + 1) })
+    }
+    const handle = await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT), { tree: treeOf() }))
+    seedPod('s1')
+    let done = false
+    const ready = awaitWorkspaceReady(handle).then(() => { done = true })
+
+    await pollPast()
+    await writeStart('{"version": 1, "life": "L')
+    await pollPast()
+    await writeStart({ life: 'L0' })
+    await pollPast()
+    expect(done).toBe(false)
+    expect(fakeMountd.sent('/bind')).toEqual([])
+
+    await writeStart()
+    await vi.waitFor(() => { expect(done).toBe(true) })
+    await ready
+    expect((fakeMountd.sent('/bind')[0].body as { trees: unknown[] }).trees).toHaveLength(2)
+  })
+
+  it('tells the claim the caller\'s variables, the identity and trusted checkouts, the shells\' cwd, and pnpm\'s store', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+    const claim = await claimOf(await launchWorkspace(specOf(substrate, {
+      env: [
+        'CALLER_SAID=yes', 'YAAC_GIT_NAME=Ada', 'YAAC_GIT_EMAIL=ada@example.com',
+        'YAAC_CHECKOUTS=.:web', 'YAAC_STATUS_RIGHT= s1 ',
+      ],
+      cwd: 'web',
+      scratchDirs: ['/workspace/node_modules'],
+    })))
+    expect(claim.env.CALLER_SAID).toBe('yes')
+    expect(claim.git).toEqual({ name: 'Ada', email: 'ada@example.com', safeDirectories: ['/workspace', '/workspace/web'] })
+    expect(claim.statusRight).toBe(' s1 ')
+    expect(claim.cwd).toBe('/workspace/web')
+    // pnpm's SQLite store index cannot be shared between pods, so each has
+    // its own, inside the root scratch dir so pnpm hardlinks. Both
+    // spellings: pnpm 10 reads only npm_config_.
+    expect(claim.env).toMatchObject({
+      pnpm_config_store_dir: '/workspace/node_modules/.pnpm-store',
+      npm_config_store_dir: '/workspace/node_modules/.pnpm-store',
+    })
+    // No tree, so nothing to wait for.
+    expect(claim).not.toHaveProperty('startedMarker')
+
+    const plain = await claimOf(await launchWorkspace(specOf(substrate)))
+    expect(plain.cwd).toBe('/workspace')
+    expect(plain.env.pnpm_config_store_dir).toBe('/home/yaac/.local/share/pnpm/store')
+  })
+
+  it('binds and claims a launch once, and only waits for a pod it did not launch', async () => {
+    const handle = await launchWorkspace(specOf(await prepareWorkspaceSubstrate(INTENT)))
+    await claimOf(handle)
+    mockPodClaim.mockClear()
+    await awaitWorkspaceReady(handle)
+    expect(mockPodClaim).not.toHaveBeenCalled()
+    expect(fakeMountd.sent('/bind')).toHaveLength(1)
+  })
+
+  it('fails before the claim when the pod has no node, a mount is in no tier a workspace may use, or mountd refuses the bind', async () => {
+    const substrate = await prepareWorkspaceSubstrate(INTENT)
+
+    seedPod('s1', null)
+    await expect(awaitWorkspaceReady(await launchWorkspace(specOf(substrate)))).rejects.toThrow('pod is not on a node')
+
+    seedPod('s1')
+    await expect(awaitWorkspaceReady(await launchWorkspace(specOf(substrate, {
+      mounts: [{ source: { kind: 'hostPath', path: secretKeyPath() }, mountPath: '/x' }],
+    })))).rejects.toThrow(/is in no storage tier a workspace may mount/)
+    expect(fakeMountd.sent('/bind')).toEqual([])
+
+    fakeMountd.refusals.set('POST /bind', 'mount point is a symlink')
+    await expect(awaitWorkspaceReady(await launchWorkspace(specOf(substrate))))
+      .rejects.toThrow('mountd refused /bind: mount point is a symlink')
+    expect(mockPodClaim).not.toHaveBeenCalled()
   })
 })

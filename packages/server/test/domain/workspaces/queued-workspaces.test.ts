@@ -34,7 +34,7 @@ import {
   startScheduledWorkspaces,
   updateQueuedWorkspace,
 } from '#domain/workspaces'
-import { clearQueuedLaunchesForTests, startQueuedChildren } from '#domain/workspaces/queued-workspaces'
+import { clearQueuedLaunchesForTests, startQueuedChildren, startWaitingWorkspaces } from '#domain/workspaces/queued-workspaces'
 import { createWorkflow, editWorkflow, listProjectWorkflows, resolveWorkflow, setRunSecret } from '#domain/projects'
 import {
   clearAllProvisioningForTests,
@@ -83,15 +83,31 @@ const agent = workspaceDelegate(BUILT_IN_USER_ID, P)
 const mockCreate = vi.mocked(createWorkspace)
 let tmpDir: string
 
-beforeEach(async () => {
-  tmpDir = await createTempDataDir()
-  // The runtime runs every workspace with no stop: the create is stubbed,
-  // so a row is all a workspace here has.
+/**
+ * The runtime runs every workspace with no stop: the create is stubbed, so
+ * a row is all a workspace here has. It hands a take each of `spares` in
+ * turn, recording each it hands out and each reaped.
+ */
+function installDriver(spares: string[] = []): { taken: string[]; reaped: string[] } {
+  const taken: string[] = []
+  const reaped: string[] = []
   installFakeWorkspaceDriver({
     list: async (projectId) => [...(await getProjectWorkspaceRows(projectId ?? PROJ)).values()]
       .filter((r) => r.stoppedAt === undefined)
       .map((r) => handleFixture({ workspaceId: r.workspaceId, projectId: r.projectId })),
+    takeSpare: () => {
+      const id = spares.shift()
+      if (id !== undefined) taken.push(id)
+      return Promise.resolve(id)
+    },
+    reapSpare: (id) => { reaped.push(id); return Promise.resolve() },
   })
+  return { taken, reaped }
+}
+
+beforeEach(async () => {
+  tmpDir = await createTempDataDir()
+  installDriver()
   clearAllProvisioningForTests()
   clearQueuedLaunchesForTests()
   await fs.mkdir(projectDir(PROJ), { recursive: true })
@@ -463,11 +479,16 @@ describe('queueWorkspace', () => {
     expect(entry).not.toHaveProperty('parentQueuedId')
     expect(mockCreate).not.toHaveBeenCalled()
 
-    // One slot frees with no trigger; the next queue fills it, oldest first.
+    // One slot frees with no trigger; the next queue fills it, oldest first,
+    // counted once though it runs under a spare's id. The launch that finds
+    // the group full again takes no spare.
+    const spares = installDriver(['spare-1', 'spare-2'])
     await setWorkspaceGroupLimit(PROJ, groupId, 2)
     const later = await queueWorkspace(local, PROJ, { prompt: 'later', group: groupId })
     await launched(1)
-    expect(mockCreate.mock.calls[0][1]).toMatchObject({ session: { prompt: 'wait' }, groupId })
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({ session: { prompt: 'wait' }, groupId, workspaceId: 'spare-1' })
+    await startWaitingWorkspaces(PROJ)
+    expect(spares).toEqual({ taken: ['spare-1'], reaped: [] })
     await settled(entry.id, true)
     expect(await getQueuedWorkspaceRow(later.id)).toMatchObject({ prompt: 'later' })
   })
@@ -676,6 +697,26 @@ describe('runQueuedWorkspace', () => {
     expect(mockCreate.mock.calls[1][1]).not.toHaveProperty('title')
     expect(mockCreate.mock.calls[1][1]).not.toHaveProperty('imageId')
     expect(rows).toEqual([expect.objectContaining({ title: 'Generated' })])
+  })
+
+  // A spare's id is the workspace's, so the launch takes one before it
+  // names its workspace, and reaps it when the launch fails.
+  it('names the workspace with a spare it takes, and reaps the spare of a launch that fails', async () => {
+    await workspace(P)
+    const spares = installDriver(['spare-1', 'spare-2'])
+    const entry = await queueWorkspace(local, PROJ, { parent: P, prompt: 'go' })
+
+    expect(await runQueuedWorkspace(local, entry.id)).toEqual({ workspaceId: 'spare-1' })
+    await launched(1)
+    expect(mockCreate.mock.calls[0][1]).toMatchObject({ workspaceId: 'spare-1', session: { prompt: 'go' } })
+    await settled(entry.id, true)
+    expect(spares.reaped).toEqual([])
+
+    const failing = await queueWorkspace(local, PROJ, { parent: P, prompt: 'fails' })
+    mockCreate.mockRejectedValueOnce(new Error('pod never became ready'))
+    expect(await runQueuedWorkspace(local, failing.id)).toEqual({ workspaceId: 'spare-2' })
+    await settled(failing.id, false)
+    expect(spares).toEqual({ taken: ['spare-1', 'spare-2'], reaped: ['spare-2'] })
   })
 
   it('keeps the prompt when the launch fails, and shows the error once, on the entry', async () => {

@@ -14,7 +14,6 @@ import { listWorkspaceConversations, recordConversations } from '#db/conversatio
 import { applyWorkspaceEvent, getSessionRow, holdSessionPrompt, insertSession, type SessionRow } from '#db'
 import { _resetPromptCaptureForTests } from '#domain/workspaces/prompt-capture'
 import { _resetTitleCaptureForTests } from '#domain/workspaces/title-capture'
-import { claiming } from '#domain/workspaces/prewarm'
 import { recordWorkspaceCreated } from '#db/workspace-store'
 import { _resetCodexRolloutReadsForTests } from '#runtime/agents/codex'
 import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
@@ -162,14 +161,10 @@ describe('reconcileConversations', () => {
     expect((await row('conv-a'))?.firstPrompt).toBe('already captured')
   })
 
-  it('leaves the rows alone until a live set arrives, and for a prewarmed spare', async () => {
+  it('leaves the rows alone until a live set arrives', async () => {
     await recordConversations(DEMO_PROJECT_ID, 'wt-1', [{ tool: 'claude', conversationId: 'conv-a' }])
     // A stream gap must never read as "every agent exited".
     await sweep()
-    expect(await rows()).toEqual([['conv-a', true, undefined]])
-
-    live([await claudeOn('%0', 'conv-warm')])
-    await sweep({ prewarmed: true })
     expect(await rows()).toEqual([['conv-a', true, undefined]])
   })
 
@@ -367,19 +362,6 @@ describe('reconcileConversations', () => {
     await vi.waitFor(() => expect(next).toHaveBeenCalledWith('add shared projects'))
     await settle()
     expect(await held()).toBeUndefined()
-  })
-
-  // A claim launches its session itself, so the sweep leaves it alone.
-  it('records nothing for a spare mid-claim', async () => {
-    live([{ handle: 'claude', tool: 'claude', conversationId: 'acp-warm' }])
-    connected('claude', 'acp-warm')
-    claiming.add('yaac-demo-wt-1')
-    try {
-      await sweep()
-    } finally {
-      claiming.delete('yaac-demo-wt-1')
-    }
-    expect(await rows()).toEqual([])
   })
 
   it('fails the step without reporting anything when the cluster is unreachable', async () => {

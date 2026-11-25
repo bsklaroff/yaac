@@ -1,5 +1,5 @@
 // Barrel for the k8s driver's per-workspace half: locating and describing
-// workspaces as contract `RuntimeHandle`s, launch, prewarm claim, teardown,
+// workspaces as contract `RuntimeHandle`s, launch, spares, teardown,
 // the node-local orphan sweep, the root remover for files a workspace's
 // root left, volumes, and port forwards.
 //
@@ -14,10 +14,10 @@
 // Each name exported here needs a unit test in
 // packages/server/test/drivers/k8s/workspaces/.
 export { runtimeHandleFromPod } from './handle'
-export { claimSpareWorkspace, registerWorkspace, unmarkClaimedJobs } from './claim'
 export { dialWorkspacePort, forwardWorkspacePort } from './forward-port'
-export { launchWorkspace, prepareWorkspaceSubstrate, readyTimeoutMs } from './launch'
+export { awaitWorkspaceReady, launchWorkspace, prepareWorkspaceSubstrate } from './launch'
 export { buildPodJobManifest } from './pod-job'
+export { keepReadyTrees, listSpares, reapSpare, reconcileHelpersGc, takeSpare, warmSpare } from './spares'
 export {
   countWorkspaces,
   findWorkspace,

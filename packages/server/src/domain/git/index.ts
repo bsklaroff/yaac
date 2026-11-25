@@ -33,6 +33,7 @@ export {
   fetchOrigin,
   fetchUpstream,
   getDefaultBranch,
+  hasCommit,
   lastFetchedAtMs,
   listRemoteBranches,
   listTrackedPaths,

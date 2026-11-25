@@ -1,42 +1,16 @@
 #!/bin/sh
-# yaac-workspace-init — in-pod workspace setup, run as the workspace container's
-# postStart hook (staged and File-mounted read-only at /usr/local/bin like
-# every workspace-bin script, so it always tracks the installed yaac version).
+# yaac-workspace-init — the generic half of a workspace pod's setup, run as
+# the workspace container's postStart hook, so the kubelet holds the pod's
+# Ready until it is done. It prepares nothing of any one workspace: the
+# server does that with one `claim` call to streamd once the pod is a
+# workspace's (docs/generic-workspace-pods.md "A claim"), which writes
+# the git identity and npm registry, restores opencode's history and opens
+# the tmux session with the workspace's environment.
 #
-# Everything here used to be a chain of per-command `kubectl exec` round
-# trips from the server (~300ms each through the apiserver + gVisor exec
-# machinery); running it in-pod at container start makes it a few local
-# milliseconds, and the kubelet holds the container's Ready transition until
-# the hook finishes — so "pod Ready" now implies this base setup is done.
-#
-# Steps that need host coordination stay server-side and ride the stream
-# relay once streamd (started last, below) answers:
-#   - the checkout's alternates line and origin refresh (must wait for the
-#     host-side checkout, which runs concurrently with pod boot),
-#   - init windows + the agent respawn (need the populated workspace).
-#
-# Inputs (env, set by session-create): YAAC_GIT_NAME,
-# YAAC_GIT_EMAIL, YAAC_STATUS_RIGHT, YAAC_CHECKOUTS (the workspace's
-# checkouts, relative to /workspace, `.` for one at its root, separated by
-# `:`; empty with no repos), YAAC_CWD (where the tmux session starts,
-# relative to /workspace; empty for /workspace itself), and for installs
-# through the npm cache YAAC_NPM_REGISTRY.
+# Here: the running uid gets the image's `yaac` identity, the tmux server
+# starts with no session, and streamd starts last, since its answering is
+# the server's signal that this is done.
 set -eu
-
-# When this hook starts and ends, kept as the mtimes of two files in the
-# terminal log dir, which the server reads for its start timing
-# (docs/start-timing.md; keep the names in sync with
-# `timeInPod` in the server). Written by the shell itself, since a `date`
-# costs a process start inside the sandbox. Keep the dir in sync with
-# CONTAINER_TERMINAL_LOG_DIR (packages/shared/src/paths.ts).
-#
-# The dir is the workspace's own and outlives a pod, so an agent may have
-# left a link or a FIFO in a marker's place: a write would follow the link,
-# or block on the FIFO and hold the pod from ever being ready. Only a
-# regular file, or nothing, is written.
-TIMING_DIR=/home/yaac/.yaac-logs
-mark() { [ ! -h "$1" ] && { [ ! -e "$1" ] || [ -f "$1" ]; } && { echo > "$1"; } 2>/dev/null || true; }
-mark "$TIMING_DIR/.init-start"
 
 # Give the running uid the image's `yaac` identity, before anything that
 # depends on it.
@@ -77,120 +51,21 @@ if [ "$(id -un 2>/dev/null)" != yaac ]; then
   fi
 fi
 
-# Keep in sync with CONTAINER_TMUX_SOCK (packages/shared/src/paths.ts): the
-# socket lives on the host-mounted tmux dir so host-side probes can find it.
-TMUX="tmux -S /tmp/yaac-tmux/server"
-
-# opencode's history: restore the NODE-LOCAL working copy from the GLOBAL
-# checkpoint. The checkpoint is the only source of truth: whatever the
-# node held — the leftovers of another workspace that once had this id, or
-# the copy an unclean stop left — is discarded, never merged. One exception
-# keeps an unclean stop from costing anything on a node that survived it:
-# a working copy whose database (or its WAL) is NEWER than the checkpoint's
-# is checkpointed first; the copy of an earlier life on another node is
-# older, and loses. The checkpoint's own sidecars (`-wal`, `-shm`,
-# `-journal`) are restored with it; the next checkpoint folds them in and
-# removes them. A pod that runs no opencode has an empty checkpoint and
-# this costs it two `rm`s.
-# Keep the paths in sync with CONTAINER_OPENCODE_DATA /
-# CONTAINER_OPENCODE_CHECKPOINT (packages/shared/src/paths.ts) and with
-# yaac-opencode-checkpoint.
-OPENCODE_DATA="$HOME/.local/share/opencode"
-OPENCODE_CHECKPOINT="$HOME/.yaac/opencode-checkpoint"
-# How often the running pod checkpoints; a killed pod loses at most this
-# much of a conversation (docs/workspace-storage.md "opencode").
-OPENCODE_CHECKPOINT_INTERVAL_SECONDS=300
-if [ -d "$OPENCODE_DATA" ]; then
-  if [ -d "$OPENCODE_CHECKPOINT" ]; then
-    for wdb in "$OPENCODE_DATA"/*.db; do
-      [ -f "$wdb" ] || continue
-      cdb="$OPENCODE_CHECKPOINT/$(basename "$wdb")"
-      newer=0
-      for f in "$wdb" "$wdb-wal"; do
-        if [ -e "$f" ] && { [ ! -e "$cdb" ] || [ "$f" -nt "$cdb" ]; }; then newer=1; fi
-      done
-      if [ "$newer" = 1 ]; then
-        yaac-opencode-checkpoint || echo "yaac: could not salvage $wdb into the checkpoint" >&2
-      fi
-      break
-    done
-  fi
-  rm -rf "$OPENCODE_DATA"/* "$OPENCODE_DATA"/.[!.]* 2>/dev/null || true
-  if [ -d "$OPENCODE_CHECKPOINT" ]; then
-    for entry in "$OPENCODE_CHECKPOINT"/* "$OPENCODE_CHECKPOINT"/.[!.]*; do
-      [ -e "$entry" ] || continue
-      case "$(basename "$entry")" in .tmp-*.db) continue ;; esac
-      cp -a "$entry" "$OPENCODE_DATA"/ || echo "yaac: could not restore $entry" >&2
-    done
-  fi
-fi
-
-# Run from /, never the container's /workspace workingDir: the host-side
-# checkouts populate /workspace CONCURRENTLY with this hook, and git does
-# repository discovery from the cwd even for `config --global` — from /
-# there is no half-made repo to discover.
+# Run from /, never the container's /workspace workingDir, which a claim
+# fills while processes may already be running.
 cd /
 
-# Git identity and trust for each checkout. --global writes the image-local
-# ~/.gitconfig (not a shared mount), so this is per-pod and never races
-# another session.
-git config --global user.name "$YAAC_GIT_NAME"
-git config --global user.email "$YAAC_GIT_EMAIL"
-IFS=:
-for checkout in ${YAAC_CHECKOUTS:-}; do
-  case "$checkout" in
-    .) git config --global --add safe.directory /workspace ;;
-    *) git config --global --add safe.directory "/workspace/$checkout" ;;
-  esac
-done
-unset IFS
-# Write a large checkout's files from 8 processes at once: on the shared
-# tier each file costs network round trips, which this overlaps. Keep in
-# sync with CHECKOUT_WORKERS (packages/server/src/domain/git/repo.ts).
-git config --global checkout.workers 8
-
-# The install's npm cache as the DEFAULT registry, at user-config
-# precedence: pnpm (10 and 11) and npm read ~/.npmrc below the project's own
-# .npmrc, so a project that names a registry of its own keeps it — which an
-# env var would override. Skipped when the image already names one. The
-# file is created here, owned by the pod's uid, for the reason
-# Dockerfile.default gives for keeping npm's prefix out of it.
-if [ -n "${YAAC_NPM_REGISTRY:-}" ] && ! grep -qs '^registry=' "$HOME/.npmrc"; then
-  printf 'registry=%s\n' "$YAAC_NPM_REGISTRY" >> "$HOME/.npmrc" \
-    || echo "yaac: could not write the npm cache into ~/.npmrc; installs go to npmjs" >&2
-fi
-
-# Open the tmux session on its keeper window (`sleep infinity`), which holds
-# the tmux server open whatever the workspace's agents do; each agent gets a
-# window of its own once the server has populated the workspace. The server
-# renames the keeper from `_yaac-starting` to `_yaac` when its setup is done
-# (`KEEPER_STARTING` in the server's driver contract).
+# Start the tmux server with no session: the claim opens one, at the
+# workspace's cwd, once the environment is set (`exit-empty off` keeps the
+# server up meanwhile).
 #
-# `-x`/`-y` set generous initial dimensions so every window inherits a size
-# larger than any realistic terminal. On attach, tmux shrinks the window to
-# fit the client — shrink-then-render is reliable for TUI apps. Without
-# this, the session is created at tmux's default 80x24 and a race against an
-# agent's startup render can leave it stuck at 80x24 until a host-terminal
-# resize forces a fresh SIGWINCH.
+# `env COLORTERM=truecolor` seeds the server's environment, which every pane
+# inherits. TUIs decide whether to emit 24-bit color from COLORTERM; without
+# it they see only TERM=tmux-256color and quantize their themes to the
+# 256-color palette before the RGB passthrough below can help.
 #
-# `env COLORTERM=truecolor` seeds the tmux *server* environment (the server
-# forks from this first client), which every pane on it inherits — the
-# agent, init windows, and scratch shells. TUIs decide whether to emit
-# 24-bit color from COLORTERM in their own environment; without it they see
-# only TERM=tmux-256color and quantize their themes to the 256-color
-# palette before the RGB passthrough configured below can help.
-#
-# `-c` pins the session's start directory (we cd'd to / above) to the
-# workspace's default cwd, /workspace or one checkout's folder, which the
-# server made before the pod started: shell and step windows start there
-# (`-c '#{session_path}'`).
-#
-# history-limit is set before the session: tmux fixes a pane's limit when the
-# pane is created.
-env COLORTERM=truecolor $TMUX -u start-server \; set-option -g history-limit 200000 \; \
-  new-session -d -s yaac -n _yaac-starting -x 500 -y 200 -c "/workspace${YAAC_CWD:+/$YAAC_CWD}" 'sleep infinity'
-
-# Session UX options, one tmux invocation (command sequence via `\;`):
+# history-limit is set before any pane: tmux fixes a pane's limit when the
+# pane is created. Then the session UX options:
 #  - monitor-bell/bell-action: propagate terminal bells (\a) from any window
 #    through to the attached client so the user's emulator can surface
 #    notifications.
@@ -200,15 +75,16 @@ env COLORTERM=truecolor $TMUX -u start-server \; set-option -g history-limit 200
 #    plain newline (pi warns at startup when it's off).
 #  - default-terminal + terminal-features RGB: advertise 24-bit color so
 #    tmux forwards RGB escapes to the attached terminal instead of
-#    quantizing to the 256-color palette (what made delta's diff
-#    backgrounds unreadable).
+#    quantizing to the 256-color palette.
 #  - escape-time 10: tmux holds a lone ESC this long to see whether it
 #    starts a key sequence. The 500ms default delays every Esc press (how an
 #    agent turn is interrupted); a sequence arrives in one write, so 10ms
 #    still reassembles one a slow link splits.
-#  - bind-key k: C-b k kills the whole tmux server (session then reaped as
-#    a zombie) — guard the one-keystroke session killer with a confirm.
-$TMUX \
+#  - bind-key k: C-b k kills the whole tmux server, so it asks first.
+# Keep the socket in sync with CONTAINER_TMUX_SOCK (packages/shared/src/paths.ts).
+env COLORTERM=truecolor tmux -S /tmp/yaac-tmux/server -u start-server \; \
+  set-option -s exit-empty off \; \
+  set-option -g history-limit 200000 \; \
   set-option -s escape-time 10 \; \
   set-option -g mouse on \; \
   set-option -g focus-events on \; \
@@ -219,25 +95,13 @@ $TMUX \
   set-option -g extended-keys on \; \
   set-option -g default-terminal tmux-256color \; \
   set-option -as terminal-features ',*:RGB' \; \
-  set-option -t yaac status-right-length 80 \; \
-  set-option -t yaac status-right "$YAAC_STATUS_RIGHT" \; \
   bind-key k confirm-before -p 'kill this yaac session? (y/n)' kill-server
 
 # streamd LAST: its reachability over the stream relay is the server's
-# "in-pod setup done" signal — anything the relay can exec is guaranteed to
-# see the git config and tmux server configured above. Idempotent (a second
-# daemon exits on EADDRINUSE); the status watcher's self-heal re-runs the
-# same command via kubectl exec if it ever dies.
+# "in-pod setup done" signal, so anything the relay runs sees the tmux server
+# above. Idempotent (a second daemon exits on EADDRINUSE); the status
+# watcher's self-heal re-runs the same command via kubectl exec if it ever
+# dies.
 setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &
 
-# The opencode checkpoint timer, after streamd because it gates nothing.
-# Backgrounded with setsid like the daemons above, so the hook's exec
-# stream can close while it keeps running under the pod's init; the pod's
-# preStop hook runs the same script one last time with `stop`.
-if [ -d "$OPENCODE_DATA" ] && [ -d "$OPENCODE_CHECKPOINT" ]; then
-  setsid sh -c "while sleep $OPENCODE_CHECKPOINT_INTERVAL_SECONDS; do yaac-opencode-checkpoint; done" \
-    >>/tmp/opencode-checkpoint.log 2>&1 </dev/null &
-fi
-
-mark "$TIMING_DIR/.init-end"
 exit 0

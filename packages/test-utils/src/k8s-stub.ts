@@ -11,7 +11,9 @@
  * The setup file resets it before every test.
  *
  * The fake is deliberately simple: a server-side apply replaces the stored
- * object rather than merging field ownership, and selectors support the
+ * object rather than merging field ownership, a strategic merge patch
+ * merges lists of named objects by name and nothing else, and selectors
+ * support the
  * forms yaac uses (`k=v`, `k!=v`, `k`, `!k`, `k in (…)`, and dotted-path
  * field selectors).
  *
@@ -74,6 +76,8 @@ export interface FakeCall {
   body?: Record<string, unknown>
   labelSelector?: string
   fieldSelector?: string
+  /** The subresource a patch went to (`resize`, `status`). */
+  subresource?: string
 }
 
 const clone = <T>(v: T): T => structuredClone(v)
@@ -90,6 +94,29 @@ function mergePatch(target: unknown, patch: unknown): unknown {
   for (const [k, v] of Object.entries(patch)) {
     if (v === null) delete out[k]
     else out[k] = mergePatch(out[k], v)
+  }
+  return out
+}
+
+/** A merge patch, except that a list whose items all carry a `name` merges
+ *  into the stored list item by item, as Kubernetes merges `containers`. */
+function strategicMerge(target: unknown, patch: unknown): unknown {
+  const named = (v: unknown): v is Array<{ name: string }> => Array.isArray(v) && v.length > 0
+    && v.every((i) => i !== null && typeof i === 'object' && typeof (i as { name?: unknown }).name === 'string')
+  if (named(patch) && named(target)) {
+    const out = target.map((item) => {
+      const change = patch.find((p) => p.name === item.name)
+      return change === undefined ? clone(item) : strategicMerge(item, change)
+    })
+    return [...out, ...patch.filter((p) => !target.some((t) => t.name === p.name)).map(clone)]
+  }
+  if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) return clone(patch)
+  const out: Record<string, unknown> = target && typeof target === 'object' && !Array.isArray(target)
+    ? { ...(target as Record<string, unknown>) }
+    : {}
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null) delete out[k]
+    else out[k] = strategicMerge(out[k], v)
   }
   return out
 }
@@ -195,6 +222,12 @@ class FakeCluster {
     for (const obj of objects) this.put(clone(obj) as FakeObject)
   }
 
+  /** Take an object out of the cluster without recording a call, as
+   *  something outside the code under test would (a pod evicted). */
+  remove(kind: string, name: string, namespace?: string): void {
+    this.store.delete(keyOf(kind, name, namespace))
+  }
+
   /** The stored object of `kind` named `name`, if any. */
   get<T = FakeObject>(kind: string, name: string, namespace?: string): T | undefined {
     const hit = namespace !== undefined
@@ -265,7 +298,7 @@ class FakeCluster {
         if (!existing) return notFound()
         this.put(Array.isArray(call.body)
           ? jsonPatch(existing, call.body as Parameters<typeof jsonPatch>[1])
-          : mergePatch(existing, call.body) as FakeObject)
+          : (call.subresource !== undefined ? strategicMerge : mergePatch)(existing, call.body) as FakeObject)
         return clone(this.store.get(key))
       }
       case 'delete':
@@ -330,7 +363,10 @@ function respond(req: FakeRequest): ReturnType<typeof response> {
       ? response(404, { kind: 'Status', code: 404, message: `no answer seeded for ${req.path}` })
       : response(200, answer)
   }
-  const at = JSON.parse(req.path) as Pick<FakeCall, 'apiVersion' | 'kind' | 'name' | 'namespace'>
+  // A subresource is appended to the object's path (`<json>/resize`).
+  const end = req.path.lastIndexOf('}') + 1
+  const subresource = req.path.slice(end + 1) || undefined
+  const at = JSON.parse(req.path.slice(0, end)) as Pick<FakeCall, 'apiVersion' | 'kind' | 'name' | 'namespace'>
   const body = req.body === undefined ? undefined : JSON.parse(req.body) as Record<string, unknown>
   const contentType = req.headers['Content-Type']
   let call: FakeCall
@@ -345,11 +381,16 @@ function respond(req: FakeRequest): ReturnType<typeof response> {
   } else if (req.method === 'POST') {
     call = { verb: 'create', ...at, name: (body?.metadata as { name?: string } | undefined)?.name, body }
   } else if (req.method === 'PATCH') {
+    // A strategic merge patch only to a subresource (`resizePodCpu`).
+    const strategic = contentType === PatchStrategy.StrategicMergePatch && subresource !== undefined
     if (contentType !== PatchStrategy.ServerSideApply && contentType !== PatchStrategy.MergePatch
-      && contentType !== PatchStrategy.JsonPatch) {
+      && contentType !== PatchStrategy.JsonPatch && !strategic) {
       unavailable(`a ${String(contentType)} patch`)
     }
-    call = { verb: contentType === PatchStrategy.ServerSideApply ? 'apply' : 'patch', ...at, body }
+    call = {
+      verb: contentType === PatchStrategy.ServerSideApply ? 'apply' : 'patch', ...at, body,
+      ...(subresource !== undefined ? { subresource } : {}),
+    }
   } else {
     call = { verb: 'delete', ...at }
   }

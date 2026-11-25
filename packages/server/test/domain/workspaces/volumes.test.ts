@@ -162,7 +162,7 @@ describe('reconcileVolumeLeases', () => {
     await holding('ws-job', 'starting')
     // ws-job has a Job and no pod yet: live, as far as its lease goes.
     await reconcileVolumeLeases(snapshotFixture([held('ws-live')], [
-      { workspaceId: 'ws-job', unitName: 'ws-job', projectId: DEMO_PROJECT_ID, createdAtMs: Date.now(), prewarmed: false },
+      { workspaceId: 'ws-job', unitName: 'ws-job', projectId: DEMO_PROJECT_ID, createdAtMs: Date.now() },
     ]))
     expect((await findVolumeByName(DEMO_PROJECT_ID, 'starting'))?.holderWorkspaceId).toBe('ws-job')
     expect((await findVolumeByName(DEMO_PROJECT_ID, 'live'))).toMatchObject({ holderWorkspaceId: 'ws-live' })
@@ -188,7 +188,7 @@ describe('reconcileVolumeLeases', () => {
 describe('workspacesAlive', () => {
   it('counts a listed unit, a Job with no pod yet and a launch in flight, and nothing else', async () => {
     const alive = await workspacesAlive(snapshotFixture([held('ws-pod')], [
-      { workspaceId: 'ws-job', unitName: 'ws-job', projectId: DEMO_PROJECT_ID, createdAtMs: Date.now(), prewarmed: false },
+      { workspaceId: 'ws-job', unitName: 'ws-job', projectId: DEMO_PROJECT_ID, createdAtMs: Date.now() },
     ]))
     expect(['ws-pod', 'ws-job', 'ws-gone'].map(alive)).toEqual([true, true, false])
   })

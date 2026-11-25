@@ -10,13 +10,15 @@ each checkout's `.git`, and a checkpoint of the work git does not hold yet.
 
 - Each checkout's `.git` is on the shared tier. Commits, branches, the
   stash and staged content are durable as git writes them.
-- Everything else under `/workspace` is one node-local directory. A second
-  container in the pod, the **tree container**, fills it at start, and the
-  workspace's container starts once it is filled.
+- Everything else under `/workspace` is one node-local directory, which
+  mountd builds from the main clone (docs/generic-workspace-pods.md
+  "Trees"). A second container in the pod, the **tree container**, fills it
+  in at start, and the workspace's session opens once it has.
 - The tree container checkpoints unsaved work to the shared tier every 30
   seconds, after each save from the file editor, and when the pod stops. A
   checkpoint is a git bundle appended to the workspace's checkpoint log.
-- A restart checks out each checkout's HEAD and applies the log.
+- A restart applies the log onto a tree the node built at each checkout's
+  start commit.
 - A pod killed without warning leaves its tree on the node, and a one-shot
   pod on that node takes the final checkpoint.
 - A node whose disk is filling is noticed before kubelet acts, and the
@@ -26,9 +28,8 @@ Under `containerless` none of this applies: the files are already on local
 disk, and a stop removes a checkout's ignored files instead
 (docs/workspace-storage.md). On kind the layout is the same as on byo.
 
-On `fluxerapp/fluxer` (16,519 files) checking the tree out onto node disk
-takes 4 to 6 seconds, a pass with nothing changed under half a second to a
-second, a restore 4 to 10 seconds, and removing the tree under 2 seconds.
+On `fluxerapp/fluxer` (16,519 files) a pass with nothing changed takes
+under half a second to a second, and removing the tree under 2 seconds.
 
 ## Layout
 
@@ -40,16 +41,16 @@ second, a restore 4 to 10 seconds, and removing the tree under 2 seconds.
 | `projects/<p>/trees/<w>/<life>/tree/` | NODE-LOCAL | everything else under `/workspace` | workspace container at `/workspace`; tree container at `/tree` |
 | `projects/<p>/trees/<w>/<life>/scratch/` | NODE-LOCAL | the tree container's scratch repository | tree container only |
 
-A checkout in a folder is a plain subdirectory of the tree, with its `.git`
-mounted in from the shared tier. The server makes each `.git` directory
-before applying the Job, since a missing subPath is created root-owned, and
-`createCheckout` fills it in place without writing a working tree.
+mountd binds each of these into the pod at its claim
+(docs/generic-workspace-pods.md "A claim"). A checkout in a folder is a
+plain subdirectory of the tree, with its `.git` bound in from the shared
+tier. `createCheckout` fills the `.git` in place without writing a working
+tree.
 
-A life's directory is made for one pod. For a create or a restart `<life>`
-is `lifeDirName` of the life's start time; a spare's is named for the time
-it was warmed. The name is recorded on the life (`workspace_lives.treeDir`)
-and read from there ever after, so a pod always starts on an empty
-directory and never on files an earlier agent left.
+A life's directory is made for one pod. `<life>` is `lifeDirName` of the
+life's start time. The name is recorded on the life
+(`workspace_lives.treeDir`) and read from there ever after, so a pod always
+starts on an empty directory and never on files an earlier agent left.
 
 Checkpoints are laid out so no two pods ever write one file: a bundle is
 written once under a name of its own, and the one file a pass replaces is
@@ -68,27 +69,28 @@ finds it and has only the last changes to stage.
 
 A native sidecar (an init container with `restartPolicy: Always`), so
 Kubernetes starts it before the workspace container and stops it after. It
-runs the bundled `yaac-tree` program (`drivers/k8s/workspaces/tree/`) from
-the base image, with no credentials and no tool homes. Every k8s workspace
-has one, a workspace with no repos included, since its root is saved too.
+runs the `yaac-tree` program (`drivers/k8s/workspaces/tree/`) from the
+server build's helpers folder on the base image, with no credentials and no
+tool homes. Every k8s workspace has one, a workspace with no repos
+included, since its root is saved too.
 
 It runs as root inside the sandbox with every capability dropped but
-`DAC_OVERRIDE`, `CHOWN`, `FOWNER`, `SETUID` and `SETGID`. An agent has
-`sudo`, so it can leave files its own uid cannot read; as the install uid a
-pass would skip them and they would be gone after a stop. Root is also what
-lets it hand the pod's node-local folders, which kubelet makes root-owned,
-to the install uid. Checkout and
-restore run as the install uid through `setpriv`, so what they write is the
-agent's to edit. It mounts the tree and each git dir at separate paths and
-names them to git explicitly, each main clone read-only at its server path
-(a checkout's alternates line is absolute), the checkpoints, and the
-scratch repository.
+`DAC_OVERRIDE`, `CHOWN`, `FOWNER`, `SETUID` and `SETGID`, and `SYS_ADMIN`
+and `SETPCAP` only until it has made its binds. An agent has `sudo`, so it
+can leave files its own uid cannot read; as the install uid a pass would
+skip them and they would be gone after a stop. Fill and restore run as the
+install uid through `setpriv`, so what they write is the agent's to edit.
+It sees the tree and each git dir at separate paths and names them to git
+explicitly, each main clone read-only at its server path (a checkout's
+alternates line is absolute), the checkpoints, and the scratch
+repository.
 
 ### Trust
 
 The tree container is not a security boundary and does not need to be one.
-It has no more privilege in the sandbox than the agent's `sudo`, no
-credentials, no service account token and the pod's own network policy.
+Once its binds are made it has no more privilege in the sandbox than the
+agent's `sudo`, no credentials, no service account token and the pod's own
+network policy.
 The one thing it reaches that the agent cannot is this workspace's
 checkpoint log, so code an agent ran in it could only spoil its own
 checkpoints.
@@ -113,74 +115,46 @@ Outside the sandbox:
 
 ### Start
 
-1. Wait for the start instruction, which the server writes beside the
+1. Wait for mountd's list in the pod's node-mounts directory
+   (`yaac-tree start`), then make the binds it names and drop `SYS_ADMIN`
+   and `SETPCAP` from every set (`sandbox-bind tree-start`) before running
+   `yaac-tree run` (docs/generic-workspace-pods.md "A claim"). By then the
+   mountd has made the life's node-local folders, owned by the install
+   uid, and moved the arborist's build of each start commit into the
+   tree.
+2. Wait for the start instruction, which the server writes beside the
    life's manifest once every `.git` is complete. It names each checkout's
    commit and, for a restart, the checkpoint to restore. A fresh create's
    commit is the one its main clone already has, so the instruction never
    waits for the create's fetch of origin; the workspace container moves
    the checkout to a newer tip once the fetch lands (docs/server-git.md
    "Starting a workspace").
-2. Hand the pod's node-local folders to the install uid: the tree, the
-   scratch repository, and those only the workspace container uses
-   (opencode's working copy), which are mounted into the tree container for
-   this alone. hostPath ignores `fsGroup` and kubelet makes a missing one
-   as root. Only each mount's own root changes owner, so nothing an agent
-   left inside one is followed. A mount source that was itself a link would
-   be: kubelet resolves it, and the container sees a plain directory. So
-   the launch refuses a node-local source inside another, which leaves no
-   source whose parent a workspace can write.
-3. With nothing to restore, check each commit out through the scratch
-   repository and copy the index that leaves into the `.git` as its first
-   index; otherwise restore (below).
-4. Set `core.checkStat=minimal` in each `.git`. gVisor numbers each
-   container's mount's inodes on its own, so with git's default checks
-   every entry the tree container wrote is stale in the workspace container
-   and the first `git status` hashes every file. `minimal` compares only the
-   whole-second mtime, size and mode; it misses a rewrite that keeps the
-   size and restores the old mtime until the file changes again. The tree
-   container's own indexes keep git's defaults, so a pass still saves such a
-   rewrite.
+3. With nothing to restore, fill each checkout from the arborist's
+   index: a checkout whose HEAD is not the built commit gets the difference
+   written, and the index is copied into the `.git` as its first index
+   (docs/generic-workspace-pods.md "Trees"). Otherwise restore onto the
+   build (below).
+4. Set `core.checkStat=minimal` in each `.git`. The index carries the
+   node's inode numbers, and gVisor numbers each container's mount's inodes
+   on its own, so with git's default checks every entry is stale in the
+   workspace container and the first `git status` hashes every file.
+   `minimal` compares only the whole-second mtime, size and mode; it misses
+   a rewrite that keeps the size and restores the old mtime until the file
+   changes again. The tree container's own indexes keep git's defaults, so
+   a pass still saves such a rewrite.
 5. Create the mount points the workspace container needs inside the tree
-   (each `.git`, scratch dir and volume under `/workspace`), then report
-   ready through a startup probe, so the workspace container starts only on
-   a filled tree. The probe allows hours, since a large restore takes
-   minutes and a probe that gave up would restart the container mid-way;
-   the server's wait for the pod is as patient.
-
-Kubernetes runs a probe at most once a second, and a filled tree waiting
-for the next one is start-up time spent on nothing. So each probe waits
-most of its period for the tree, inside its one process, and passes the
-moment the tree is filled; a loop of short commands would spend that time
-starting processes, which is slow inside the sandbox. Its timeout is far
-longer than its wait, for a process slow to start on a loaded node. A
-probe is not a `postStart` hook because a hook has no timeout, and kubelet
-does nothing else for the pod, deleting it included, while one runs.
-
-Two more steps lie between a passed probe and the workspace container, and
-both are kubelet's (read at v1.37):
-
-- **A wait of up to a second, half on average.** Kubelet creates the
-  container in the pod's next sync, and a sync waits for a listing of the
-  pod's containers newer than the sync before it. Kubelet lists a pod at
-  once after a sync that changed something, but the sync that follows the
-  tree container's start changes nothing, so the one the probe asks for
-  waits for kubelet's listing of every pod, which runs once a second. A
-  restore longer than that second waits for nothing. The period is a
-  constant with no setting, and the `EventedPLEG` feature gate lists a pod
-  early only when one of its containers stops.
-- **About 6 ms for each `subPath` mount of the workspace container**, which
-  kubelet binds one after another before it asks the runtime for the
-  container: about a third of a second for sixty. Two thirds of them are the
-  built-in skills, mounted once per skill per tool, and the helper commands,
-  mounted one file each.
+   (each `.git`, scratch dir and volume under `/workspace`), then write the
+   started marker beside the trigger file. streamd's claim call waits for
+   it before it opens the workspace's session, for up to four hours on a
+   restore, since a large one takes minutes.
 
 Each start's `[timing]` line in the server log times these steps
 (docs/start-timing.md).
 
-A restarted sidecar finds its life's marker in the scratch repository and
-goes straight to its passes, never checking out over a tree in use or
-changing its owner. A salvage or import pod changes no owner either: the
-folders it mounts are a life's that has started, or the shared tier's.
+A restarted tree container makes its binds again, finds its life's marker
+in the scratch repository and goes straight to its passes, never filling a
+tree in use. A salvage or import pod changes no owner: the folders it
+mounts are a life's that has started, or the shared tier's.
 
 ### While running
 
@@ -263,10 +237,8 @@ Only the server deletes a bundle (the hourly `checkpoint-gc` step), and
 only an old one no kept manifest names. It keeps the manifests of the two
 newest lives that have one (by their start, not a node's clock), any lost
 life's, and an import's until a life has saved. A workspace with no
-recorded life keeps every bundle, since a prewarmed spare saves for as long
-as it waits and its life is recorded only when it is claimed. So does a
-workspace with a manifest it cannot read, for a `--restore-newest` to work
-from.
+recorded life keeps every bundle. So does a workspace with a manifest it
+cannot read, for a `--restore-newest` to work from.
 
 A node dying mid-write cannot leave a log that does not restore:
 
@@ -322,10 +294,9 @@ and a later retry may still save it.
 ## Life cycle
 
 - **Create.** The server writes each `.git` and the start instruction; the
-  tree container checks out. The life records the node its pod runs on, as
-  the runtime reports it.
-- **Spare.** A pod with its tree on its node; the pool and a claim move its
-  checkouts to another commit or branch inside the workspace container.
+  mountd moves in the arborist's build and the tree container
+  fills from it. The life records the node its pod runs on, as the runtime
+  reports it. A spare holds no tree until its claim.
 - **Stop, drain, an eviction with its grace period.** The final pass. The
   `tree-salvage` step stamps the life `final` (`checkpointedAt`) when it
   finds its manifest final.

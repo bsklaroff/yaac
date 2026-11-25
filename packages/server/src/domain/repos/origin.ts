@@ -158,7 +158,7 @@ export async function seedRepoOrigin(repoId: string, author: { name: string; ema
 export async function refreshRepoOrigins(view: RuntimeSnapshot): Promise<void> {
   if (testEnv.e2eSkipFetch) return
   const now = Date.now()
-  const running = (await view.workspaces()).filter((h) => h.running && !h.prewarmed).map((h) => h.workspaceId)
+  const running = (await view.workspaces()).filter((h) => h.running).map((h) => h.workspaceId)
   const repoIds = new Set([...(await listWorkspaceReposFor(running)).values()].flat().map((r) => r.repoId))
   // A deleted repo has no remote to fetch.
   const deleted = new Set((await listRepos()).filter((r) => r.deletedAt !== undefined).map((r) => r.id))

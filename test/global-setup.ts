@@ -12,7 +12,7 @@ import {
   pushBuilderImage,
 } from '@yaac/server/drivers/k8s/install/builtin-images'
 import { registryReachable } from '@yaac/server/drivers/k8s/cluster/registry'
-import { NETD_DIR, PROXY_DIR, TAILGATE_DIR } from '@yaac/shared/project-paths'
+import { NETD_DIR, MOUNTD_DIR, PROXY_DIR, TAILGATE_DIR } from '@yaac/shared/project-paths'
 import { buildCliBundle } from '#support/cli-bundle'
 import { buildTestServerImage, testServerImageTag } from '#support/deployed-server'
 import { TEST_IMAGE_PREFIX, testContainerOwnerLabel } from '@yaac/test-utils/setup'
@@ -137,6 +137,9 @@ export async function setup(): Promise<void> {
   const netdTag = `yaac-test-netd:${netdHash}`
   await ensureImageByTag(netdTag, path.join(NETD_DIR, 'Dockerfile'), NETD_DIR)
 
+  const mountdTag = `yaac-test-mountd:${await contextHash(MOUNTD_DIR)}`
+  await ensureImageByTag(mountdTag, path.join(MOUNTD_DIR, 'Dockerfile'), MOUNTD_DIR)
+
   const tailgateTag = `yaac-test-tailgate:${await contextHash(TAILGATE_DIR)}`
   await ensureImageByTag(tailgateTag, path.join(TAILGATE_DIR, 'Dockerfile'), TAILGATE_DIR)
 
@@ -148,7 +151,7 @@ export async function setup(): Promise<void> {
     // workers look up. The chain is built and pushed by a host buildkitd.
     await ensureTrustedChain((m) => console.log(`[global-setup] ${m.trim()}`), TEST_IMAGE_PREFIX, testContainerOwnerLabel())
     await pushBuilderImage(TEST_IMAGE_PREFIX)
-    for (const tag of [proxyTag, netdTag, tailgateTag]) {
+    for (const tag of [proxyTag, netdTag, mountdTag, tailgateTag]) {
       await pushImageToRegistry(tag)
     }
     // Digest-pinned upstreams every install mirrors (Envoy, podman, curl,
@@ -168,7 +171,7 @@ export async function setup(): Promise<void> {
   // runs `pnpm gc:test-images` while every rig is idle.
   if (process.env.YAAC_TEST_SHARED_ENGINE !== '1') {
     const ownTags = [
-      await resolveBuilderImageTag(TEST_IMAGE_PREFIX), proxyTag, netdTag, tailgateTag, await testServerImageTag(),
+      await resolveBuilderImageTag(TEST_IMAGE_PREFIX), proxyTag, netdTag, mountdTag, tailgateTag, await testServerImageTag(),
     ]
     const retired = await gcTestImages(ownTags).catch((err: unknown) => {
       console.log(`[global-setup] could not sweep stale test images: ${String(err)}`)

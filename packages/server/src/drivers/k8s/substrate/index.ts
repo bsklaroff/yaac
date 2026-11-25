@@ -34,6 +34,7 @@ export {
   readObject,
   readPath,
   removeLabelIf,
+  resizePodCpu,
 } from './api'
 export type { ObjectRef } from './api'
 export { buildContextFiles, streamBuildContext } from './build-context-tar'
@@ -41,8 +42,9 @@ export { bindInstall, installId, installNameKey, legacyDataDirHash, legacyNameKe
 export type { LegacyKeys } from './install-id'
 export { legacyHashOf, relabelLegacyObjects } from './legacy-labels'
 export {
-  nodeLocalDirsOf,
   nodeLocalNodePath,
+  nodeMountsNodePath,
+  storageTierOf,
   resolveMountSource,
 } from './mount-sources'
 export { k8sWorkspacePaths } from './workspace-paths'
@@ -96,7 +98,6 @@ export {
   LABEL_PROJECT_ID,
   LABEL_WORKSPACE_ID,
   findWorkspacePod,
-  isPrewarmed,
   listWorkspaceJobs,
   listWorkspacePods,
   workspaceIdFromJobName,
@@ -115,6 +116,9 @@ export {
   NETD_APP_NAME,
   DISK_APP_NAME,
   DISK_PORT,
+  MOUNTD_APP_NAME,
+  MOUNTD_PORT,
+  ARBORIST_PORT,
   NETD_LISTENER_PORT_BASE,
   NETD_LISTENER_PORT_END,
   NETD_LISTENER_SLOTS,
@@ -187,6 +191,7 @@ export {
   dialPtyStream,
   relayDial,
   podExec,
+  podClaim,
   podStreamToken,
   readProxyAuthSecret,
   waitForStreamd,

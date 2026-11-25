@@ -195,12 +195,11 @@ describe('PortDetectorManager', () => {
     expect(getUnforwardedPorts('s1')).toEqual([8080])
   })
 
-  it('ignores prewarmed and non-running pods, and clears state when a pod goes away', async () => {
+  it('ignores non-running pods, and clears state when a pod goes away', async () => {
     const onChange = vi.fn()
     const m = makeManager(onChange)
     m.sync([
       pod('s1'),
-      pod('s2', { labels: { 'yaac.prewarmed': 'true' } }),
       pod('s3', { running: false }),
     ])
     await flush()

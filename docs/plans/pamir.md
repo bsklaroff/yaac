@@ -22,7 +22,7 @@ doing these things for yaac and nothing else:
 | Machines join and leave, and their capacity is known | kubelet registration, the Node object |
 | A sandbox is started on a chosen machine, watched and stopped | Job, pod, kubelet, informers |
 | A machine is chosen for a sandbox | the scheduler: memory request, the workspace pool's taint, a release's node pin |
-| Some programs run on every machine | DaemonSets: netd, the node agent, the gVisor installer |
+| Some programs run on every machine | DaemonSets: netd, mountd, the gVisor installer |
 | The server reaches a sandbox on another machine | the pod network, then netd's relay |
 | A machine has the image a sandbox needs | the in-cluster registry and containerd's pull |
 | Machines are added when a sandbox does not fit and removed when empty | cluster-autoscaler with its Hetzner provider |
@@ -216,7 +216,7 @@ reachable. Start with the first.
 
 **Where yaac's own node programs live.** netd's relay becomes Pamir's
 socket carrying, so it leaves yaac. What stays yaac's on every node is the
-node-mounter, the node-arborist, the swap bound and the pressure kill.
+mountd, the arborist, the swap bound and the pressure kill.
 They can run as units Pamir starts on every node, as DaemonSets do today,
 or be compiled into yaac's own build of the node program through the
 library. Units keep Pamir and yaac releasing separately, and are how

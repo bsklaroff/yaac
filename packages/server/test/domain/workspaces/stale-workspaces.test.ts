@@ -11,9 +11,6 @@ vi.mock('#runtime/status/liveness', () => ({
 }))
 vi.mock('#domain/workspaces/cleanup', () => ({
   cleanupWorkspaceDetached: vi.fn().mockResolvedValue(undefined),
-  // A spare's reap: the awaited teardown, then its files.
-  cleanupWorkspace: vi.fn().mockResolvedValue(true),
-  deleteWorkspaceState: vi.fn().mockResolvedValue(true),
 }))
 
 
@@ -22,8 +19,6 @@ vi.mock('#domain/workspaces/cleanup', () => ({
 vi.mock('#db', () => ({
   applyWorkspaceEvent: vi.fn(),
   desiredWorkspaces: vi.fn(),
-  // A spare has no row.
-  findWorkspaceRow: vi.fn().mockResolvedValue(undefined),
   // After a death, queued children wait instead of starting
   // (docs/queued-workspaces.md), while what waits for room in a group is
   // looked for (docs/workspace-groups.md).
@@ -31,14 +26,16 @@ vi.mock('#db', () => ({
   listQueuedWorkspaceRows: vi.fn().mockResolvedValue([]),
 }))
 
-import { probeTmuxLiveness, probeSetupState } from '#runtime/status/liveness'
-import { cleanupWorkspace, cleanupWorkspaceDetached, deleteWorkspaceState } from '#domain/workspaces/cleanup'
+import { forgetLiveness, probeTmuxLiveness, probeSetupState } from '#runtime/status/liveness'
+import { cleanupWorkspaceDetached } from '#domain/workspaces/cleanup'
 import type * as CleanupModule from '#domain/workspaces/cleanup'
 import { markWorkspaceTerminating, _clearTerminatingForTests } from '#runtime/status/terminating'
 import { serverLog } from '#lib/log'
 import { testEnv } from '@yaac/shared/env'
 import { applyWorkspaceEvent, desiredWorkspaces, listQueuedWorkspaceRows, releaseQueuedChildren } from '#db'
-import { claimProvisioning, clearAllProvisioningForTests, registerProvisioning } from '#domain/workspaces/provisioning'
+import {
+  claimProvisioning, clearAllProvisioningForTests, failProvisioning, registerProvisioning, removeProvisioning,
+} from '#domain/workspaces/provisioning'
 import type { WorkspaceEvent } from '#db'
 import {
   reconcileStaleWorkspaces,
@@ -87,8 +84,8 @@ function pod(workspaceId: string, running = true): RuntimeHandle {
 }
 
 /** A runtime unit with no workspace behind it. */
-function stray(workspaceId: string, createdAtMs = 1, prewarmed = false): StrayUnit {
-  return { workspaceId, unitName: `yaac-proj-${workspaceId}`, projectId: 'proj', createdAtMs, prewarmed }
+function stray(workspaceId: string, createdAtMs = 1): StrayUnit {
+  return { workspaceId, unitName: `yaac-proj-${workspaceId}`, projectId: 'proj', createdAtMs }
 }
 
 function loggedLines(): string {
@@ -181,10 +178,10 @@ describe('reconcileStaleWorkspaces', () => {
     expect(mockCleanup).not.toHaveBeenCalled()
   })
 
-  // A claimed spare runs under its own id, not the create's. Once relabelled
-  // it is reaped like any workspace, so a dead one would be torn down here
-  // while the claim's own failure path tears it down too.
-  it('keeps a dead spare a create has claimed until the create settles', async () => {
+  // A create that took a spare runs under the spare's id, not its own. Once
+  // launched it is reaped like any workspace, so a dead one would be torn
+  // down here while the create's own failure path tears it down too.
+  it('keeps a dead workspace in a spare a create took until the create settles', async () => {
     mockWorkspaces.mockResolvedValue([pod('claimed-1')])
     mockProbe.mockResolvedValue('dead')
     setDesired({ provisioning: ['req-1'] })
@@ -193,10 +190,21 @@ describe('reconcileStaleWorkspaces', () => {
     await reconcileStaleWorkspaces(view, wakeAt)
     expect(mockCleanup).not.toHaveBeenCalled()
 
-    // A claim that falls back to a cold create releases it.
-    claimProvisioning('req-1', undefined)
+    // A create that failed has rolled back, and shields nothing.
+    failProvisioning('req-1', 'boom')
     await reconcileStaleWorkspaces(view, wakeAt)
     expect(mockCleanup).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'claimed-1' }))
+  })
+
+  // A spare's pod is older than the startup grace, so a `dead` cached
+  // before its session opened would reap the new workspace once its create
+  // no longer shields it.
+  it('has a settled create forget what was probed of the spare it took', () => {
+    setDesired({ provisioning: ['req-1'] })
+    claimProvisioning('req-1', 'claimed-1')
+    vi.mocked(forgetLiveness).mockClear()
+    removeProvisioning('req-1')
+    expect(vi.mocked(forgetLiveness).mock.calls).toEqual([['proj', 'req-1'], ['proj', 'claimed-1']])
   })
 
   it('reaps a not-yet-Running pod once its create has failed', async () => {
@@ -369,29 +377,6 @@ describe('reconcileStaleWorkspaces', () => {
       }),
     )
     expect(loggedLines()).toContain('orphan Job')
-  })
-
-  // A spare has no row, so once its unit is gone nothing would say its
-  // files were a spare's. Its pod, then its files, then its Job go, each
-  // only after the last; a dead spare's Job alone still says what it was.
-  it('reaps a stale spare, or a dead spare\'s Job, as a spare: files before the Job', async () => {
-    const destroy = vi.fn(() => Promise.resolve(true))
-    installFakeWorkspaceDriver({ destroy })
-    mockWorkspaces.mockResolvedValue([{ ...pod('spare-1', false), prewarmed: true }])
-    mockStrays.mockResolvedValue([stray('spare-2', 1, true)])
-
-    await reconcileStaleWorkspaces(view, wakeAt)
-    await new Promise((r) => setTimeout(r, 0))
-
-    expect(mockCleanup).not.toHaveBeenCalled()
-    for (const id of ['spare-1', 'spare-2']) {
-      expect(cleanupWorkspace).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: id, keepRecord: true }))
-      expect(deleteWorkspaceState).toHaveBeenCalledWith('proj', id)
-      expect(destroy).toHaveBeenCalledWith(
-        { projectId: 'proj', workspaceId: id, unitName: `yaac-proj-${id}` },
-      )
-    }
-    expect(loggedLines()).toContain('reaping spare=spare-2')
   })
 
   it('fails without reaping when pod listing fails', async () => {

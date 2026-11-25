@@ -9,6 +9,7 @@ import {
   LABEL_ROLE,
   LABEL_WORKSPACE_ID,
   NETD_APP_NAME,
+  MOUNTD_APP_NAME,
   NPM_CACHE_APP_NAME,
   POD_GLOBAL_ROOT,
   POD_SERVER_LOCAL_ROOT,
@@ -209,6 +210,7 @@ function bucketKey(pod: PodObject): string | undefined {
     case NPM_CACHE_APP_NAME: return 'npm-cache'
     case PROXY_APP_NAME: return 'proxy'
     case NETD_APP_NAME: return 'netd'
+    case MOUNTD_APP_NAME: return 'mountd'
     case SERVER_FRONT_APP_NAME: return 'server-front'
     // The one-shot GC and sweep pods, and the gVisor installer.
     default: return 'maintenance'
@@ -222,6 +224,7 @@ function emptyBuckets(): Bucket[] {
     { key: 'npm-cache', label: 'npm cache', pods: [] },
     { key: 'proxy', label: 'egress proxy', pods: [] },
     { key: 'netd', label: 'netd', counted: true, pods: [] },
+    { key: 'mountd', label: 'mountd', counted: true, pods: [] },
     { key: 'server-front', label: 'server front', pods: [] },
     { key: 'builders', label: 'image builders', counted: true, pods: [] },
     { key: 'spares', label: 'prewarmed spares', counted: true, pods: [] },

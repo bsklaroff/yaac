@@ -37,9 +37,9 @@ dir bound as `/workspace`. Plain `git clone` can't do this: it refuses a
 non-empty destination, copies local branches rather than remote-tracking
 ones, and writes its own alternates path. The tree is written by eight
 processes at once (`checkout.workers`, which a workspace's own git also
-gets). Under k8s the server builds only the `.git`, in place, and the
-workspace's tree container checks the tree out on its node
-(docs/node-local-workspaces.md).
+gets). Under k8s the server builds only the `.git`, in place, and the node
+agent builds the tree natively on the workspace's node
+(docs/generic-workspace-pods.md "Trees").
 
 The git dir comes from one `git init`, kept because it probes the filesystem
 for settings such as macOS's `core.ignorecase`, with the files ref format
@@ -92,8 +92,8 @@ other checkouts directly (docs/containerless-driver.md).
 ## Starting a workspace
 
 A start fetches origin, but nothing on its way to the agent's window waits
-for that fetch, whether it claims a prewarmed spare or provisions cold. Both
-follow one sequence (`pickStart` in `checkouts.ts` and `origin-catch-up.ts`,
+for that fetch, whether it takes a prewarmed spare or not. Every start
+follows one sequence (`pickStart` in `checkouts.ts` and `origin-catch-up.ts`,
 in `#domain/workspaces`):
 
 1. **Pick the start commit** from the main clone: the tip it has for the
@@ -101,16 +101,16 @@ in `#domain/workspaces`):
    lacks (one never fetched, or an empty origin's) waits for the fetch, and
    the start is refused if the branch is still missing then. So a branch
    that does not exist is refused before anything launches.
-2. **Get a workspace at that commit.** A cold create writes the checkout's
+2. **Get a workspace at that commit.** The create writes the checkout's
    `.git` there and, under k8s, the tree container's start instruction at
-   once. A claim takes a spare, moving it first if it stands on another
-   commit or branch.
+   once. mountd builds the tree at that commit, or hands over the
+   one it kept ready when that commit is the default branch's tip.
 3. **Launch the agent.**
 4. **Catch up** once the workspace is up and the fetch has landed, whichever
    comes later. A fetch that has landed by the time the agent's window is
    about to open is caught up with in the command that opens it, ahead of
    the window, so the agent never sees the older tree. That is the usual
-   case for a cold create, whose pod takes longer to boot than a fetch. A
+   case for a pod made on demand, which takes longer to boot than a fetch. A
    fetch that lands within five seconds after the launch is caught up with
    then. A later one leaves the workspace behind origin, like any workspace
    whose base moved after it started, and the server logs it.
@@ -142,13 +142,6 @@ recorded start commit moved with it. The command runs with the repo's hooks
 off, so a `post-merge` hook (a package install, say) does not fire because
 the server moved the checkout. Each checkout of a workspace with several
 repos catches up on its own repo's fetch.
-
-The same command moves a spare: to a new tip in the background, so a claim
-finds it current (`refreshSpares`), and to the commit or branch a claim
-starts at. Nothing has touched a spare, so it is reset wherever a
-fast-forward is refused, its untracked files removed but for the mount
-points (scratch dirs and cache volumes), and a spare that still does not
-reach its target is reaped.
 
 What this costs:
 
@@ -206,15 +199,12 @@ A checkout's `origin/*` refs are its own, so they change only when something
 copies them over (`origin.ts` in `#domain/repos` fetches,
 `origin-fanout.ts` in `#domain/workspaces` copies):
 
-- **Every server fetch fans out.** `fetchRepoOrigin` (create, spare
-  claims, the branch picker's refresh, a base branch change, the timer
-  below) schedules
+- **Every server fetch fans out.** `fetchRepoOrigin` (create, the branch
+  picker's refresh, a base branch change, the timer below) schedules
   `maintainRepo` and refreshes the checkout of the repo in every running
   workspace that has one, in any project, a few at a time, without making
   the caller wait. Fan-outs are coalesced per repo, so a burst of creates
-  costs at most two rounds. A spare that a create is claiming is refreshed
-  only once the claim is over, so the command that opens its session never
-  queues behind the refresh in the pod.
+  costs at most two rounds.
 - **A timer fetches.** The `origin-refresh` reconcile step fetches every
   repo that a running workspace has a checkout of and that was not fetched
   in the last five minutes. A failure is logged and retried next interval.
@@ -266,8 +256,8 @@ A start's catch-up ("Starting a workspace") also sets the checkout's
 - **Never against a checkout's git dir after that.** Anything that needs a
   checkout's state runs inside the workspace, in that checkout's directory,
   so only while it runs: the changes diff, the file explorer, the git status
-  bar's ahead/behind count (docs/file-editor.md), a spare's HEAD, the move
-  of a spare or a starting workspace to its branch's tip, a stop's removal
+  bar's ahead/behind count (docs/file-editor.md), the move of a starting
+  workspace to its branch's tip, a stop's removal
   of ignored files, and the refresh above. The one
   exception is that removal's fallback for a stopped workspace, which runs
   git on the checkout as root in a one-shot gVisor pod that mounts nothing

@@ -16,7 +16,7 @@ import { UTILITY_MIRROR_TAG } from '#drivers/k8s/cluster/utility-image'
 import { reapNodeLocal } from '#drivers/k8s/workspaces'
 // The sweep's script, run here against a node-like tree; not a unit under test.
 import { buildNodeLocalSweepScript } from '#drivers/k8s/workspaces/node-local-sweep'
-import { LABEL_INSTALL_ID, LABEL_WORKSPACE_ID, installId, k8sNamespace } from '#drivers/k8s/substrate'
+import { LABEL_INSTALL_ID, LABEL_PROJECT_ID, LABEL_WORKSPACE_ID, installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 interface PodManifest {
@@ -52,7 +52,7 @@ function stageNodes(names: string[], podHostPaths: string[] = []): void {
     metadata: {
       name: 'workspace-pod',
       namespace: k8sNamespace(),
-      labels: { [LABEL_INSTALL_ID]: installId(), [LABEL_WORKSPACE_ID]: 'w1' },
+      labels: { [LABEL_INSTALL_ID]: installId(), [LABEL_WORKSPACE_ID]: 'w1', [LABEL_PROJECT_ID]: LIVE },
     },
     spec: { volumes: podHostPaths.map((p) => ({ hostPath: { path: p } })) },
   })

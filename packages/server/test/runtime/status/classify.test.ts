@@ -53,22 +53,6 @@ describe('classifyWorkspaces', () => {
     expect(result.indeterminate).toEqual([])
   })
 
-  it('still classifies prewarmed spares (the reaper must keep seeing them)', async () => {
-    // The stale reaper relies on this so a stuck spare gets reaped.
-    const live = { ...pod({ jobName: 'yaac-proj-spare', workspaceId: 'sp1' }), labels: { 'yaac.prewarmed': 'true' } }
-    const liveRes = await classifyWorkspaces([live], now(), probe('alive'), GRACE_MS)
-    expect(liveRes.running).toEqual([live])
-
-    const stuck = { ...pod({ jobName: 'yaac-proj-stuck', workspaceId: 'sp2', ageMs: GRACE_MS + 5_000 }), labels: { 'yaac.prewarmed': 'true' } }
-    const stuckRes = await classifyWorkspaces([stuck], now(), probe('dead'), GRACE_MS)
-    expect(stuckRes.stale).toEqual([
-      {
-        jobName: 'yaac-proj-stuck', projectId: 'proj', workspaceId: 'sp2', zombie: true,
-        deathCause: { reason: 'agent-exited' },
-      },
-    ])
-  })
-
   it('classifies old running pods with a conclusively dead tmux as zombie stale', async () => {
     const p = pod({ jobName: 'yaac-proj-zombie', workspaceId: 'z1' })
     const result = await classifyWorkspaces([p], now(), probe('dead'), GRACE_MS)

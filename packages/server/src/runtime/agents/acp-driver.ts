@@ -106,9 +106,9 @@ const PROMPT_ATTACH_TIMEOUT_MS = 60_000
 
 /**
  * Pane option holding `<pane pid>:<session id>` once a fresh conversation's
- * `session/new` answers. A reattach needs the id, and a prewarmed spare's
- * conversation has no row to recover it from after a server restart; the
- * pane outlives the server.
+ * `session/new` answers. A reattach needs the id, which a conversation not
+ * yet recorded has no row to recover from after a server restart; the pane
+ * outlives the server.
  */
 const SESSION_PANE_OPTION = '@yaac-acp-session'
 

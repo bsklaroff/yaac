@@ -6,8 +6,8 @@
  * (docs/workspace-groups.md).
  *
  * Settings are resolved when queued, so the sidebar shows exactly what will
- * launch. Launches go through `prepareStart` without claiming a spare,
- * since children already point at the new id. Only `stopWorkspace` releases
+ * launch. A launch takes a spare before it names its workspace, since
+ * children point at that id, then goes through `prepareStart`. Only `stopWorkspace` releases
  * children; a workspace that died holds them until the user runs or discards
  * them. A released entry, or one with no parent, launches once its group
  * has room (`startWaitingWorkspaces`).
@@ -26,6 +26,7 @@ import {
 } from './provisioning'
 import { resolveWorkspace } from './resolve'
 import { workspaceDriver } from '#drivers/driver'
+import { takeSpareFor } from './prewarm'
 import { bringsSteps, checkStartCommits, checkStartSteps, prepareStart, startOf } from './start'
 import { resolveStart, storedSelection, type StartRequest } from './checkouts'
 import { toStoppedEntries } from './stopped-list'
@@ -483,19 +484,36 @@ async function launch(
 ): Promise<{ workspaceId: string } | 'full' | undefined> {
   if (launching.has(row.id)) return undefined
   const [room, nextTick] = await Promise.all([readGroupRoom(row.projectId, row.groupId), nextRunOf(row)])
-  const workspaceId = crypto.randomUUID()
   // Synchronous from here to the reservation, so the slot is ours.
   if (launching.has(row.id)) return undefined
-  if (groupFull(room, workspaceId)) return 'full'
+  if (groupFull(room, '')) return 'full'
   launching.add(row.id)
-  const freeSlot = room !== undefined ? reserveGroupSlot(room.projectId, room.groupId, workspaceId) : () => {}
+  const reserve = (id: string): (() => void) => (room !== undefined ? reserveGroupSlot(room.projectId, room.groupId, id) : () => {})
+  let workspaceId: string = crypto.randomUUID()
+  let freeSlot = reserve(workspaceId)
+  // A spare's id is the workspace's, so it is taken before the claim names
+  // one, and the reservation moves onto it in one synchronous step. A
+  // non-interactive run gets its workflow's run secrets, which only a pod
+  // made on demand carries.
+  let spare: { id: string; done: () => void } | undefined
+  const giveBack = (): void => {
+    spare?.done()
+    if (spare !== undefined) void workspaceDriver().reapSpare(spare.id).catch(() => {})
+  }
   let claimed = false
   try {
+    spare = row.nonInteractive ? undefined : await takeSpareFor(row.projectId, row.imageId)
+    if (spare !== undefined) {
+      freeSlot()
+      workspaceId = spare.id
+      freeSlot = reserve(workspaceId)
+    }
     claimed = await claimQueuedLaunch(row.id, workspaceId)
   } finally {
     if (!claimed) {
       launching.delete(row.id)
       freeSlot()
+      giveBack()
     }
   }
   if (!claimed) return undefined
@@ -505,6 +523,7 @@ async function launch(
     : undefined)
   void (async () => {
     let failed = false
+    let started = false
     try {
       if (deadline !== undefined && deadline.getTime() <= Date.now()) {
         // Run again, a routine's run counts from its tick once more, so only
@@ -547,15 +566,19 @@ async function launch(
         groupId: row.groupId ?? null,
         ...(deadline !== undefined ? { deadline } : {}),
         rememberDefaults: false,
-        // Children point at `workspaceId`; a spare has a different id.
+        // Its id is named already, a spare's if one was taken.
         claimSpare: false,
       })
       await run()
+      started = true
       // The listings say "ended at next run" for such a stop, not "timed out".
       if (nextTick !== undefined) await markDeadlineIsNextRun(row.projectId, workspaceId)
       await finishQueuedLaunch(row.id, workspaceId)
     } catch (err) {
       failed = true
+      // A take no launch adopted, or the pod of one that failed after; never
+      // a workspace that started.
+      if (!started) giveBack()
       // Show the error on the queued row only, not as a provisioning row. A
       // stop is no error: the entry just goes back to waiting, except one
       // that would relaunch at once: one with no parent, or one whose start
@@ -569,6 +592,7 @@ async function launch(
         .catch((e: unknown) => serverLog(`[queue] recording a failed launch failed: ${String(e)}`))
       removeProvisioning(workspaceId)
     } finally {
+      spare?.done()
       launching.delete(row.id)
       freeSlot()
     }

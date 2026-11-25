@@ -33,8 +33,8 @@ const BUILTIN_DIR_NAME = 'builtin-skills'
 
 /**
  * In-pod personal skills root for each agent tool. Skills are mounted in all
- * of them, not just the active tool's, because mounts are fixed at pod
- * create and a spare may be claimed for any tool. Mirrors the per-tool
+ * of them, not just the active tool's, because a workspace may start an
+ * agent of any tool. Mirrors the per-tool
  * `personal` readers in discover.ts.
  */
 export const TOOL_SKILL_ROOTS = [

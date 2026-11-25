@@ -60,18 +60,18 @@ Other flags:
 
 ## Images are built here, and only here
 
-Every image yaac ships is built on the machine running the CLI and pushed
-to the in-cluster registry. The builder image (BuildKit), the egress proxy,
-netd, tailgate and the server are `podman build`s; the base/tools workspace
-chain is built by a BuildKit container run from the builder image, since
-only BuildKit keeps the base image's `SHELL` (docs/image-builds.md "The
-trusted chain"). Install also mirrors the digest-pinned upstream images
-yaac uses (Envoy, podman-stable for root utility pods, curl for the gVisor
-installer, Verdaccio and nginx for the npm cache).
-Tags carry a content hash, so an unchanged source tree costs one registry
-HEAD per image and re-running install is cheap. The server image's hash is
-taken over the built bundle (`dist/`), so a rebuilt server is a new image
-and therefore a rollout.
+Every image yaac ships is built on the machine running the CLI and pushed to
+the in-cluster registry. The builder image (BuildKit), the egress proxy,
+netd, mountd, tailgate and the server are `podman build`s; the
+base/tools workspace chain is built by a BuildKit container run from the
+builder image, since only BuildKit keeps the base image's `SHELL`
+(docs/image-builds.md "The trusted chain"). Install also mirrors the
+digest-pinned upstream images yaac uses (Envoy, podman-stable for root
+utility pods, curl for the gVisor installer, Verdaccio and nginx for the npm
+cache). Tags carry a content hash, so an unchanged source tree costs one
+registry HEAD per image and re-running install is cheap. The server image's
+hash is taken over the built bundle (`dist/`), so a rebuilt server is a new
+image and therefore a rollout.
 
 Install records the digest podman pushed each mirror (and the builder
 image) as, in the
@@ -479,7 +479,7 @@ Host-side loops over the node list apply the kind node fixups and write
 the main registry's `hosts.toml`. A node added later gets its `hosts.toml`
 and is admitted by the node-address policies through the server's
 node-sync (see "Bring your own cluster"); DaemonSets (the gVisor
-installer, Calico, netd) cover it on their own.
+installer, Calico, netd, mountd) cover it on their own.
 
 The registry stores blobs on an RWO PVC. Under kind's default `standard`
 class (rancher local-path, `WaitForFirstConsumer`) the directory is on one
@@ -653,8 +653,8 @@ says otherwise, through the `yaac.workspaces` key:
   builds share the pool with workspaces. The server, the registry, npm cache
   and proxy declare no tolerations, so a rollout (an upgrade, `yaac server
   restart`) cannot move them onto a node an autoscaler may drain. Only
-  per-node pods tolerate everything: the gVisor installer, netd and the
-  one-shot node-write pods.
+  per-node pods tolerate everything: the gVisor installer, netd, the node
+  agent and the one-shot node-write pods.
 - **The label `yaac.workspaces=false`** makes a node infrastructure-only.
   The gVisor installer still runs there, since every node needs its
   containerd registry config to pull yaac's images, but it removes the
@@ -672,8 +672,9 @@ reports a pool node where one is missing.
 `yaac cluster check` reports infrastructure-only nodes as skipped. When no
 Ready node takes workspaces and at least one is infrastructure-only, as
 with an autoscaled pool at zero, the `nodes` gate warns and the gates that
-run a sandboxed pod (`gvisor`, `probe`, `egress`, `npm-cache`, `sites`,
-`per-node`, `storage-semantics`) skip rather than fail.
+run a sandboxed pod (`gvisor`, `probe`, `mountd`, `egress`,
+`npm-cache`, `sites`, `per-node`, `storage-semantics`) skip rather than
+fail.
 Re-run the check while a workspace node is up to cover them.
 
 ### The CNI gate
@@ -732,7 +733,8 @@ with no per-pod rules, which looks like a healthy netd. Running it on every
 The install and registry namespaces are labelled for the `privileged` Pod
 Security Standard. This does nothing on kind, but matters on a byo cluster
 whose default is `baseline` or `restricted`: netd is `hostNetwork` with
-`NET_ADMIN`/`NET_RAW`, and the node-write pods hostPath-mount `certs.d`. PSS
+`NET_ADMIN`/`NET_RAW`, mountd is privileged in the host pid
+namespace, and the node-write pods hostPath-mount `certs.d`. PSS
 is per namespace, so nothing outside them is relaxed.
 
 Three environment variables cover what a foreign cluster does not expose:
@@ -796,11 +798,12 @@ status.
 
 Each workspace container requests **500m cpu, 2Gi memory and 2Gi ephemeral
 storage**, and is limited to **8 cores, 16Gi memory and 16Gi ephemeral
-storage**. A workspace with scratch dirs (by default `node_modules` and
-`target`) adds 2Gi to the storage request, the install it really holds, and
-each scratch dir's volume cap, its size plus 1Gi, to the limit. Requests are
-what the scheduler reserves, and they sit well under the limits: the node is
-deliberately overcommitted, to fit many mostly-idle workspaces.
+storage**. Its scratch volume (docs/generic-workspace-pods.md "Scratch
+dirs") adds 2Gi to the storage request, the install it really holds, and
+its size plus 1Gi to the limit. Requests are what the scheduler reserves,
+and they sit well under the limits: the node is deliberately overcommitted,
+to fit many mostly-idle workspaces. A prewarmed spare requests 100m cpu
+until a start takes it and raises it in place.
 
 On a cluster with several nodes, workspaces carry a soft topology spread
 constraint on the node hostname, so the scheduler places each one on the
@@ -960,6 +963,11 @@ order:
   trip is cross-node: the coherence figure an NFS class is judged by. The
   check never touches this machine's copy of the data dir, so it works the
   same when the claims live elsewhere.
+- `mountd`: a probe pod shaped like a workspace pod is bound for real
+  by its node's mountd: a node-local folder mounted read-only under its
+  node-mounts directory and a folder of a pod-local volume, both bound
+  inside the sandbox, must show up there read-only and writable
+  (docs/generic-workspace-pods.md "Platforms").
 - `egress`: a workspace-labelled pod cannot reach the API server and cannot
   dial the proxy's transparent ports directly, nor on byo the global
   volume's NFS server (on EFS, the mount target of each zone the nodes are
@@ -1042,8 +1050,8 @@ Before the delete, the command changes the owner of everything under
 `<dataDir>/node-local` to that folder's own owner, the user who ran install
 (`chown -hR`, run in a node), so running it under `sudo` hands nothing to
 root.
-kubelet makes the folders above a workspace's node-local mounts as root, and
-a workspace still running writes its scratch repository as root; on Linux
+kubelet makes a missing `hostPath` folder as root, and a workspace still
+running writes its scratch repository as root; on Linux
 the node's root is the host's, so the data dir could otherwise be neither
 removed nor moved to another disk without `sudo`. If the node is not
 running, the command says so and prints the `sudo chown -hR` that does the

@@ -8,6 +8,7 @@
  * allowlist, each command's options, the mapping of options onto a route's
  * input, and every line the agent reads.
  */
+import { WORKSPACE_ID_HEADER } from '#routes/provisioned-stream'
 import crypto from 'node:crypto'
 import type { createApiClient } from '@yaac/shared/api-core'
 import { ServerError } from '@yaac/shared/errors'
@@ -768,7 +769,7 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
   const workspaceId = crypto.randomUUID()
   // Refused before the route streams, the last point the caller can see a
   // refusal: the create itself runs on.
-  drain(await api.workspace.create.$post({
+  const res = await api.workspace.create.$post({
     json: {
       project: projectId,
       workspaceId,
@@ -779,9 +780,11 @@ async function runCreate(caller: MamaCaller, request: MamaRequestInput): Promise
       ...(timeout !== undefined ? { timeout } : {}),
       ...(request.args.volume !== undefined ? { volume: request.args.volume } : {}),
     },
-  }))
-  // The id alone, so `id=$(yaac-mama create "…")` works: the new workspace's.
-  return { ok: true, output: workspaceId }
+  })
+  drain(res)
+  // The id alone, so `id=$(yaac-mama create "…")` works: the new workspace's,
+  // a spare's when the start took one.
+  return { ok: true, output: res.headers.get(WORKSPACE_ID_HEADER) ?? workspaceId }
 }
 
 /** Let a provisioning stream run to its end unread: the launch it reports

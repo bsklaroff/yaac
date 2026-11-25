@@ -29,7 +29,6 @@ describe('runtimeHandleFromPod', () => {
       state: 'running',
       labels: {},
       createdAtMs: NOW,
-      prewarmed: false,
       terminating: false,
       deathCause: { reason: 'pod-stopped' },
     })
@@ -39,11 +38,6 @@ describe('runtimeHandleFromPod', () => {
     const h = runtimeHandleFromPod(pod({ running: false, phase: 'Failed' }))
     expect(h.state).toBe('failed')
     expect(h.running).toBe(false)
-  })
-
-  it('reads the prewarm label, so a spare is one by its own account', () => {
-    expect(runtimeHandleFromPod(pod({ labels: { 'yaac.prewarmed': 'true' } })).prewarmed).toBe(true)
-    expect(runtimeHandleFromPod(pod()).prewarmed).toBe(false)
   })
 
   it('carries the terminating mark through', () => {

@@ -143,8 +143,7 @@ changes it, whoever it is shared with.
 What has already chosen a branch keeps it: a running or stopped workspace's
 checkout stays on the base branch it was created on. What resolves the default
 only when it launches takes the new one: a queued workspace or routine
-that names no branch, and a prewarmed spare, which is moved onto the
-current default when claimed.
+that names no branch.
 
 **The `pre-receive` hook** refuses a branch named `HEAD`, which every clone
 would find ambiguous. While a repo's default-branch guard is on
@@ -249,7 +248,7 @@ than fail, and start once the hold lifts, on the new remote. Then:
    up on a remote that stops answering, so a stalled remote cannot hold the
    repo for long.
 2. **Stop every workspace** holding a checkout of the repo, whoever owns
-   it, keeping its checkout, and reap the spares warmed with it. A create
+   it, keeping its checkout. A create
    or restart already past its last checkpoint is waited for, then stopped
    with the rest. They were launched to push to yaac, and a k8s workspace's
    egress registration is fixed at launch. A workspace of a linking project

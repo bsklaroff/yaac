@@ -96,6 +96,7 @@ function seed(): void {
     pod('registry-1', { app: 'yaac-main-registry' }, { claims: ['yaac-registry-storage'] }),
     pod('netd-a', { app: 'yaac-netd' }),
     pod('netd-b', { app: 'yaac-netd' }, { node: 'node-b' }),
+    pod('agent-a', { app: 'yaac-mountd' }),
     pod('builder-1', { 'yaac.role': 'builder' }),
     pod('gc-1', { app: 'yaac-node-image-gc' }),
     // A finished one-shot is not running, so not counted.
@@ -125,6 +126,7 @@ function seed(): void {
         volume: [{ name: 'data', pvcRef: { name: 'yaac-registry-storage', namespace: k8sNamespace() }, usedBytes: 30 * GIB, capacityBytes: 100 * GIB }],
       }),
       podStats('netd-a', 0.1, 200),
+      podStats('agent-a', 0.05, 50),
       podStats('builder-1', 1, 1000),
       podStats('gc-1', 0, 10),
       podStats('coredns', 0.01, 20, {}, 'kube-system'),
@@ -210,7 +212,7 @@ describe('k8sUsage', () => {
 
     const byKey = Object.fromEntries(usage.components.map((c) => [c.key, c]))
     expect(Object.keys(byKey)).toEqual([
-      'server', 'main-registry', 'netd', 'builders', 'spares', 'maintenance', 'system',
+      'server', 'main-registry', 'netd', 'mountd', 'builders', 'spares', 'maintenance', 'system',
     ])
     expect(byKey.server).toMatchObject({ cpuCores: 0.5, memoryBytes: 400 * MIB })
     // The workspace mounts the global claim too; the server lists it.
@@ -219,11 +221,12 @@ describe('k8sUsage', () => {
       { name: 'yaac-registry-storage', usedBytes: 30 * GIB, capacityBytes: 100 * GIB },
     ])
     expect(byKey.netd).toMatchObject({ count: 2, memoryBytes: 400 * MIB })
+    expect(byKey['mountd']).toMatchObject({ count: 1, memoryBytes: 50 * MIB })
     expect(byKey.builders).toMatchObject({ count: 1, cpuCores: 1 })
     expect(byKey.spares).toMatchObject({ count: 1, memoryBytes: 300 * MIB })
     expect(byKey.maintenance).toMatchObject({ count: 1, memoryBytes: 10 * MIB })
     // What the nodes use beyond yaac's pods, kube-system's among it.
-    const yaacMib = 400 + 100 + 200 + 1000 + 10 + 200 + 2560 + 300
+    const yaacMib = 400 + 100 + 200 + 50 + 1000 + 10 + 200 + 2560 + 300
     expect(byKey.system.memoryBytes).toBe(10 * GIB - yaacMib * MIB)
 
     expect(usage.workspaces).toEqual({

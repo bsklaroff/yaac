@@ -119,10 +119,10 @@ can produce is one the server already tolerates.
   often enough that it would come up on most restores.
 
   This depends on no sweep deleting files because of a row that might be
-  stale, and none does. A spare has no row until it is claimed, and its
-  files are deleted only while its Job still carries the `prewarmed` label
-  and no row has its id (docs/workspace-storage.md). A restore starts with
-  no Jobs (below), so nothing it brings back qualifies.
+  stale, and none does. A spare has no row and no files
+  (docs/generic-workspace-pods.md), and a reap deletes only its Job. A
+  restore starts with no Jobs (below), so nothing it brings back
+  qualifies.
 - **Git refs before git objects.** git writes an object before any ref points
   to it, and objects never change after they are written. So a ref copied in
   pass 1 names an object that exists, and pass 2, which runs later, copies that
@@ -174,9 +174,9 @@ replaces them.
    running at backup time comes back stopped, and the stale reaper records
    it so. On a refusal, scale the server back up untouched.
 
-A spare's checkout in the backup has no row, so it comes back as an inert
-directory that nothing reads. A workspace created or a spare claimed during
-the walk is in the same state: its files are kept, but it is not listed.
+A workspace created during the walk has files in the backup and no row,
+so it comes back as an inert directory that nothing reads: its files are
+kept, but it is not listed.
 
 Restoring into a new cluster means `yaac cluster install --byo`, then
 `backup configure` with the same bucket and password, then `restore`.

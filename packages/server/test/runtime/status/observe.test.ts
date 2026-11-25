@@ -94,18 +94,6 @@ describe('observeWorkspaces', () => {
     expect(w.status).toBe('waiting')
   })
 
-  it('hides prewarmed spares, which are not workspaces until claimed', async () => {
-    list.mockResolvedValue([
-      workspace({ workspaceId: 'spare', prewarmed: true }),
-      workspace(),
-    ])
-    streaming('proj', 'w1')
-
-    const report = await observeWorkspaces()
-
-    expect(report.workspaces.map((w) => w.workspaceId)).toEqual(['w1'])
-  })
-
   it('reports a marked workspace as terminating, with no status read', async () => {
     // The store was cleared at teardown and would default to `waiting`.
     markWorkspaceTerminating('w1')

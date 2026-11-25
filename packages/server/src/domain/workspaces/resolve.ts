@@ -92,7 +92,7 @@ export type WorkspaceResolution =
 /**
  * Resolve a workspace id or unique prefix against rows (any state). The only
  * place prefixes are expanded; drivers take exact ids. An exact id beats a
- * prefix match. Unclaimed spares never match. `projectId` limits the
+ * prefix match. `projectId` limits the
  * search to one project (for `yaac-mama` and the group routes).
  * `provisioning` also matches creates still in flight, whose row may not
  * exist yet (for a stop).
@@ -103,10 +103,11 @@ export async function resolveWorkspace(
 ): Promise<WorkspaceResolution> {
   const trimmed = idOrPrefix.trim()
   if (trimmed === '') return { ok: false, reason: 'not-found' }
+  // A create in a spare counts under the spare's id too, which it runs as.
   const inFlight = opts.provisioning !== true ? [] : listProvisioning()
     .filter((p) => p.error === undefined
       && (opts.projectId === undefined || p.projectId === opts.projectId))
-    .map((p) => p.workspaceId)
+    .flatMap((p) => (p.claimedId !== undefined ? [p.workspaceId, p.claimedId] : [p.workspaceId]))
   // Exact ids are the common case and hit the primary key.
   const exact = await findWorkspaceRow(trimmed)
   if (inFlight.includes(trimmed)

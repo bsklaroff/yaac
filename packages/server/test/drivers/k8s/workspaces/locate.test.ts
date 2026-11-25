@@ -8,7 +8,7 @@ vi.mock('#drivers/k8s/substrate/pods', async (importOriginal) => ({
   listWorkspacePods: vi.fn(),
 }))
 
-import { LABEL_PREWARMED, listWorkspaceJobs, listWorkspacePods, type PodInfo } from '#drivers/k8s/substrate/pods'
+import { listWorkspaceJobs, listWorkspacePods, type PodInfo } from '#drivers/k8s/substrate/pods'
 import type * as podsModule from '#drivers/k8s/substrate/pods'
 import { setActiveClusterCache, type ClusterCache } from '#drivers/k8s/substrate/cluster-cache'
 import {
@@ -69,7 +69,6 @@ describe('findWorkspace', () => {
       state: 'running',
       labels: { 'yaac.npm-cache': 'true' },
       createdAtMs: 1_700_000_000_000,
-      prewarmed: false,
       terminating: false,
       deathCause: { reason: 'pod-stopped' },
     })
@@ -79,14 +78,12 @@ describe('findWorkspace', () => {
     expect(await findWorkspace('nope')).toBeUndefined()
   })
 
-  // Prefix matching happens in domain; unclaimed spares are not workspaces.
-  it('matches the exact workspace id only, and never a spare', async () => {
+  // Prefix matching happens in domain.
+  it('matches the exact workspace id only', async () => {
     mockList.mockResolvedValue([pod()])
     for (const input of ['abc123', '', 'yaac-proj-abc123', 'yaac-proj-abc123-xyz']) {
       expect(await findWorkspace(input), input).toBeUndefined()
     }
-    mockList.mockResolvedValue([pod({ labels: { [LABEL_PREWARMED]: 'true' } })])
-    expect(await findWorkspace('abc123def456')).toBeUndefined()
   })
 
   it('reports a non-running pod with its lowercased phase', async () => {
@@ -142,29 +139,19 @@ describe('findWorkspace', () => {
 })
 
 describe('findWorkspaceForTeardown', () => {
-  // A failed prewarm tears down its own spare; a stop must never reach one,
-  // even through its Job, which outlives a dead spare's pod.
-  it('reaches a spare by its exact id only when asked for spares', async () => {
-    mockList.mockResolvedValue([pod({ labels: { [LABEL_PREWARMED]: 'true' } })])
-    mockJobs.mockResolvedValue([
-      { jobName: 'yaac-proj-abc123', workspaceId: 'abc123def456', projectId: 'proj', createdAtMs: 0, prewarmed: true },
-      { jobName: 'yaac-proj-dead', workspaceId: 'dead-spare', projectId: 'proj', createdAtMs: 0, prewarmed: true },
-    ])
-    expect(await findWorkspaceForTeardown('abc123def456', { spares: true })).toEqual({
+  it('finds a running workspace by its pod, matching it exactly, before any Job is listed', async () => {
+    mockList.mockResolvedValue([pod()])
+    expect(await findWorkspaceForTeardown('abc123def456')).toEqual({
       projectId: 'proj', workspaceId: 'abc123def456', unitName: 'yaac-proj-abc123',
     })
-    expect(await findWorkspaceForTeardown('abc123def456')).toBeUndefined()
-    expect(await findWorkspaceForTeardown('abc123', { spares: true })).toBeUndefined()
-    expect(await findWorkspaceForTeardown('dead-spare')).toBeUndefined()
-    expect(await findWorkspaceForTeardown('dead-spare', { spares: true })).toEqual({
-      projectId: 'proj', workspaceId: 'dead-spare', unitName: 'yaac-proj-dead',
-    })
+    expect(mockJobs).not.toHaveBeenCalled()
+    expect(await findWorkspaceForTeardown('abc123')).toBeUndefined()
   })
 
   // A pod deleted out-of-band leaves its Job, which still needs deleting.
   it('falls through to the Job when the pod is gone, matching it exactly', async () => {
     mockJobs.mockResolvedValue([
-      { jobName: 'yaac-proj-orphan', workspaceId: 'orphan-1', projectId: 'proj', createdAtMs: 0, prewarmed: false },
+      { jobName: 'yaac-proj-orphan', workspaceId: 'orphan-1', projectId: 'proj', createdAtMs: 0 },
     ])
     expect(await findWorkspaceForTeardown('orphan-1')).toEqual({
       projectId: 'proj', workspaceId: 'orphan-1', unitName: 'yaac-proj-orphan',
@@ -196,12 +183,11 @@ describe('listWorkspaces', () => {
 })
 
 describe('countWorkspaces', () => {
-  it('counts per project, ignoring spares and unlabelled pods', async () => {
+  it('counts per project, ignoring unlabelled pods', async () => {
     mockList.mockResolvedValue([
       pod({ projectId: 'foo' }),
       pod({ projectId: 'foo' }),
       pod({ projectId: 'bar' }),
-      pod({ projectId: 'bar', labels: { [LABEL_PREWARMED]: 'true' } }),
       pod({ projectId: '' }),
     ])
     expect(await countWorkspaces()).toEqual({ foo: 2, bar: 1 })

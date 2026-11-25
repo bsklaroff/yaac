@@ -23,6 +23,9 @@
  * - ports {}            push the pod's localhost-reachable LISTEN ports
  *                       (see ports.js) as JSON lines {ports:[...]}; see
  *                       handlePorts.
+ * - claim {bytes: n}    make the pod one workspace's from the n bytes of
+ *                       JSON that follow, then send one JSON line
+ *                       {ok, error?} and close (see claim.js).
  *
  * The token is per workspace (derived from the install's proxy secret),
  * handed to the pod as YAAC_STREAM_TOKEN. It is defense in depth alongside
@@ -36,6 +39,7 @@ import * as pty from '@lydell/node-pty'
 import { FRAME_DATA, FRAME_RESIZE, FRAME_SIGNAL, FRAME_EXIT, FrameParser, encodeFrame } from './framing.js'
 import { createOutputBatcher } from './batcher.js'
 import { readListeningPorts } from './ports.js'
+import { handleClaim } from './claim.js'
 
 export const DEFAULT_STREAM_PORT = 10300
 
@@ -386,7 +390,7 @@ export function createStreamd({
       }
 
       const leftover = buf.subarray(nl + 1)
-      const handlers = { tcp: handleTcp, ctrl: handleCtrl, exec: handleExec, pty: handlePty, ports: handlePorts }
+      const handlers = { tcp: handleTcp, ctrl: handleCtrl, exec: handleExec, pty: handlePty, ports: handlePorts, claim: handleClaim }
       const handler = handlers[params.kind]
       if (!handler) {
         refuse(`unknown kind ${JSON.stringify(params.kind)}`)

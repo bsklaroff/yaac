@@ -21,7 +21,6 @@ export function handleFixture(overrides: Partial<RuntimeHandle> = {}): RuntimeHa
     state: 'running',
     labels: {},
     createdAtMs: 1_000,
-    prewarmed: false,
     terminating: false,
     deathCause: { reason: 'pod-stopped' },
     ...overrides,
@@ -164,7 +163,12 @@ function defaultRuntime(): WorkspaceDriver {
     dialCtrl: () => deadStreamChild(),
     dialPty: () => deadStreamPty(),
     reviveStatusStream: () => Promise.resolve(),
-    claimSpare: () => Promise.resolve({ unmarked: Promise.resolve() }),
+    // No spare waits unless a test puts one there.
+    listSpares: () => Promise.resolve([]),
+    warmSpare: () => Promise.resolve('spare'),
+    takeSpare: () => Promise.resolve(undefined),
+    reapSpare: () => Promise.resolve(),
+    keepReadyTrees: () => Promise.resolve(),
     assertCanLaunch: () => Promise.resolve(),
     ensureRuntimeReachable: () => Promise.resolve(),
     // A chain of the stock image plus each source, tagged by content; all
@@ -195,7 +199,6 @@ function defaultRuntime(): WorkspaceDriver {
       workspaceId: spec.workspaceId,
       projectId: spec.projectId,
       jobName: `unit-${spec.projectId}-${spec.workspaceId}`,
-      prewarmed: spec.prewarm,
       running: false,
       state: 'pending',
     })),
@@ -204,7 +207,6 @@ function defaultRuntime(): WorkspaceDriver {
     declareForwards: (_w, forwards) =>
       Promise.resolve(forwards.map(({ containerPort }) => ({ containerPort, hostPort: containerPort }))),
     dialPort: () => Promise.reject(new Error('fake driver has no port to dial')),
-    registerWorkspace: () => Promise.resolve(),
     deregisterWorkspace: () => Promise.resolve(),
     runInStoppedCheckout: () => Promise.resolve(),
     // Defaults to "it really went away"; timeout cases override it.

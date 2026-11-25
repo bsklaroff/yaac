@@ -23,7 +23,6 @@ export {
   buildProxyRegistration,
   deregisterWorkspaceEgress,
   reconcileRegistrationGc,
-  registerWorkspaceEgress,
   type ProxyRegistration,
 } from './proxy-registration'
 export {

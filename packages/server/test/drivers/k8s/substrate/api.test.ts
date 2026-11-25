@@ -29,6 +29,7 @@ import {
   readObject,
   readPath,
   removeLabelIf,
+  resizePodCpu,
 } from '#drivers/k8s/substrate'
 // A state-reset hook, to load the kubeconfig afresh.
 import { _resetK8sClientForTests } from '#drivers/k8s/substrate/client'
@@ -164,6 +165,31 @@ describe('removeLabelIf', () => {
     expect(apiStatus(await removeLabelIf(ref('a'), 'example.com/spare', 'true').catch((e: unknown) => e))).toBe(422)
     expect(apiStatus(await removeLabelIf(ref('a'), 'keep', '2').catch((e: unknown) => e))).toBe(422)
     expect(fakeCluster.get<{ metadata: { labels: object } }>('ConfigMap', 'a', 'yaac')?.metadata.labels).toEqual({ keep: '1' })
+  })
+})
+
+describe('resizePodCpu', () => {
+  it('patches one container\'s CPU request through the pod\'s resize subresource, leaving its other resources and containers', async () => {
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod', metadata: { name: 'p', namespace: 'yaac' },
+      spec: { containers: [
+        { name: 'tree', resources: { requests: { cpu: '50m' } } },
+        { name: 'workspace', resources: { requests: { cpu: '100m', memory: '2Gi' }, limits: { cpu: '2' } } },
+      ] },
+    })
+    await resizePodCpu({ apiVersion: 'v1', kind: 'Pod', name: 'p', namespace: 'yaac' }, 'workspace', 500)
+    expect(fakeCluster.calls.map((c) => [c.verb, c.subresource])).toEqual([['patch', 'resize']])
+    expect(fakeCluster.get<{ spec: { containers: object[] } }>('Pod', 'p', 'yaac')?.spec.containers).toEqual([
+      { name: 'tree', resources: { requests: { cpu: '50m' } } },
+      { name: 'workspace', resources: { requests: { cpu: '500m', memory: '2Gi' }, limits: { cpu: '2' } } },
+    ])
+  })
+
+  it('rejects with the API\'s status where the cluster refuses an in-place resize', async () => {
+    fakeCluster.seed({ apiVersion: 'v1', kind: 'Pod', metadata: { name: 'p', namespace: 'yaac' }, spec: { containers: [{ name: 'workspace' }] } })
+    fakeCluster.intercept((c) => { if (c.subresource === 'resize') throw apiError(422, 'resize is not supported') })
+    const err = await resizePodCpu({ apiVersion: 'v1', kind: 'Pod', name: 'p', namespace: 'yaac' }, 'workspace', 500).catch((e: unknown) => e)
+    expect(apiStatus(err)).toBe(422)
   })
 })
 

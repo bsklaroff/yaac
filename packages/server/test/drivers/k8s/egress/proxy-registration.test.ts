@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PROJECT_CONFIG_DEFAULTS } from '@yaac/test-utils/project-fixture'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 
 // The cluster is the fake behind client-node. The manifest builders in
@@ -12,7 +11,6 @@ import {
   buildProxyRegistration,
   deregisterWorkspaceEgress,
   reconcileRegistrationGc,
-  registerWorkspaceEgress,
   type ProxyRegistration,
 } from '#drivers/k8s/egress/proxy-registration'
 import { DEFAULT_ALLOWED_HOSTS } from '@yaac/shared/allowed-hosts'
@@ -179,46 +177,12 @@ describe('applyProxyRegistration', () => {
     })
     expect(payloadOf(cm)).toEqual({ ...REG, upstreamRedirects: { 'h': { host: 'mock', port: 1 } } })
   })
-})
 
-describe('registerWorkspaceEgress', () => {
-  // The caller decides which config and allowlist apply; this turns
-  // those decisions into an allowlist and rule set.
-  it('assembles the registration from the caller’s decisions, applies it, and answers with it', async () => {
-    const written = await registerWorkspaceEgress({
-      workspaceId: 'w1',
-      projectId: 'demo',
-      owner: 'o',
-      config: PROJECT_CONFIG_DEFAULTS,
-      allowlist: { hosts: ['api.example.com'], defaults: true },
-      proxySecretRules: {},
-    })
-
-    expect(applied()).toHaveLength(1)
-    const [cm] = applied()
-    expect(cm.metadata.labels['yaac.workspace-id']).toBe('w1')
-    const state = payloadOf(cm)
-    expect(state.projectId).toBe('demo')
-    expect(state.owner).toBe('o')
-    expect(state.allowedHosts).toContain('api.example.com')
-    // A registration is the whole allowlist, not a patch, so it must
-    // include the defaults.
-    expect(state.allowedHosts).toEqual(expect.arrayContaining([...DEFAULT_ALLOWED_HOSTS]))
-    expect(written).toEqual(state)
-  })
-
-  // A claimed spare re-registers, and a failed registration must fail the
-  // claim.
-  it('propagates a failed registration', async () => {
+  // A launch writes it before the pod is its workspace's, so a failed
+  // write must fail the launch rather than leave a pod with no egress.
+  it('propagates a failed write', async () => {
     fakeCluster.intercept(() => { throw apiError(503, 'apiserver down') })
-    await expect(registerWorkspaceEgress({
-      workspaceId: 'w1',
-      projectId: 'demo',
-      owner: 'o',
-      config: PROJECT_CONFIG_DEFAULTS,
-      allowlist: DEFAULTS,
-      proxySecretRules: {},
-    })).rejects.toThrow('apiserver down')
+    await expect(applyProxyRegistration('w1', REG)).rejects.toThrow('apiserver down')
   })
 })
 

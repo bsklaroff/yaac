@@ -699,18 +699,46 @@ export async function finish(c: TreeContext): Promise<Manifest | null> {
   return takePass(c, { final: true })
 }
 
+/** Where the arborist's index of a checkout's tree is put, in the
+ *  life's scratch folder (docs/generic-workspace-pods.md "Trees"). */
+const arboristIndex = (c: TreeContext, co: StartCheckout): string => path.join(c.scratch, 'arborist', `${co.id}.index`)
+
 /**
- * Fill a new life's tree: each checkout's HEAD checked out (its start
- * commit on a fresh create), its index copied into its git dir as the
- * first index, and `core.checkStat=minimal` set there, since the workspace
- * container sees this tree under other inode numbers
+ * Write `treeish` into a checkout's tree, which holds the arborist's
+ * build of its start commit, through the index named `idx`, which starts as
+ * the arborist's: git writes only the paths that differ. Nothing has
+ * run on the tree since the build (the take moves it straight into a life
+ * no process has started in), so trusting whole-second mtime and size is
+ * sound; with git's default checks every file would differ, since the
+ * arborist's index carries the node's inode numbers.
+ */
+async function writeOnto(c: TreeContext, co: StartCheckout, idx: string, treeish: string): Promise<void> {
+  const worktree = path.join(c.tree, co.path)
+  await fs.copyFile(arboristIndex(c, co), indexFile(c, idx))
+  await own(c, indexFile(c, idx))
+  const env = { GIT_WORK_TREE: worktree, GIT_INDEX_FILE: indexFile(c, idx) }
+  if (treeish !== co.commit) {
+    await git(c, [
+      '-c', 'core.checkStat=minimal', '-c', 'checkout.workers=8', '-c', 'checkout.thresholdForParallelism=100',
+      'read-tree', '-u', '--reset', treeish,
+    ], { asOwner: true, env })
+  }
+  if (await fs.stat(path.join(worktree, '.gitmodules')).then(() => true, () => false)) await pinGitlinks(c, env, worktree)
+}
+
+/**
+ * Fill a new life's tree, which the arborist built at each checkout's
+ * start commit: a checkout whose HEAD has moved from it since (a restart's)
+ * gets the difference written, and the index is copied into its git dir as
+ * the first index, with `core.checkStat=minimal` set there, since the
+ * workspace container sees this tree under other inode numbers
  * (docs/node-local-workspaces.md "Start").
  */
-export async function checkOut(c: TreeContext): Promise<void> {
+export async function fill(c: TreeContext): Promise<void> {
   await prepareScratch(c, checkoutObjects(c))
   for (const co of c.start.checkouts) {
     const idx = key('checkout', co.path)
-    await writeTree(c, path.join(c.tree, co.path), idx, (await readHead(co.gitDir)) ?? co.commit)
+    await writeOnto(c, co, idx, (await readHead(co.gitDir)) ?? co.commit)
     const target = path.join(co.gitDir, 'index')
     await fs.copyFile(indexFile(c, idx), target)
     await own(c, target)
@@ -727,7 +755,9 @@ export class ChainError extends Error {
 
 /**
  * Restore the checkpoint `manifestRel` names into the tree: unpack its
- * chain, then write each unit outermost first. A checkout whose HEAD moved
+ * chain, then write each unit outermost first, a checkout's onto the
+ * arborist's build of its start commit (`writeOnto`), so only what
+ * the checkpoint changed is written. A checkout whose HEAD moved
  * after the checkpoint gets the checkpoint merged onto its new HEAD, HEAD
  * winning every conflict. The life then starts its own manifest from that
  * chain, so a later pass writes only what changes.
@@ -773,7 +803,7 @@ export async function restore(c: TreeContext, manifestRel: string, opts: { newes
       case 'checkout': {
         const co = c.start.checkouts.find((x) => x.id === u.id)
         if (!co) break
-        await writeTree(c, path.join(c.tree, co.path), key('checkout', co.path), await ontoHead(c, co.gitDir, u.head, entry))
+        await writeOnto(c, co, key('checkout', co.path), await ontoHead(c, co.gitDir, u.head, entry))
         break
       }
       case 'submodule': {
@@ -803,7 +833,7 @@ export async function restore(c: TreeContext, manifestRel: string, opts: { newes
   // its HEAD.
   for (const co of c.start.checkouts) {
     if (!m.units.some((u) => u.kind === 'checkout' && u.id === co.id)) {
-      await writeTree(c, path.join(c.tree, co.path), key('checkout', co.path), (await readHead(co.gitDir)) ?? co.commit)
+      await writeOnto(c, co, key('checkout', co.path), (await readHead(co.gitDir)) ?? co.commit)
     }
   }
   const mine: Manifest = { ...m, life: c.start.life, final: false, takenAt: new Date().toISOString() }

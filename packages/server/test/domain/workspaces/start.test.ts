@@ -25,14 +25,14 @@ import {
   prepareStart,
   queueWorkspace,
   startOf,
-  reconcilePrewarmPool,
+  createVolume,
   saveDraftWorkspace,
   stopWorkspace,
 } from '#domain/workspaces'
 import { MAX_DELEGATE_LAUNCHES } from '#domain/workspaces/start'
 import { _clearTerminatingForTests } from '#runtime/status/terminating'
 import { clearAllProvisioningForTests } from '#domain/workspaces/provisioning'
-import { clearPrewarmStateForTests, refreshing } from '#domain/workspaces/prewarm'
+import { clearPrewarmStateForTests } from '#domain/workspaces/prewarm'
 import { setWorkspaceBinDir } from '#domain/workspaces/workspace-bin'
 import type { StartWorkspaceRequest } from '#domain/workspaces/start'
 import type { WorkspaceCreateResult } from '#domain/workspaces/create'
@@ -48,7 +48,6 @@ import {
   handleFixture,
   installFakeWorkspaceDriver,
   resetWorkspaceDriver,
-  snapshotFixture,
   substrateFixture,
   workspacePathsFixture,
 } from '#test/support/fake-driver'
@@ -79,10 +78,8 @@ import { cloneRepo, initHostedRepo } from '#domain/git'
 import {
   BUILT_IN_USER_ID,
   createWorkspaceGroup,
-  deleteWorkspaceGroup,
   getWorkspaceRow,
   insertGitCredential,
-  listWorkspaceConversations,
   listWorkspaceGroupRows,
   listWorkspaceSessions,
   setGitIdentity,
@@ -103,11 +100,9 @@ import { EFFORTS } from '@yaac/shared/tool-providers.generated'
 import { ServerError } from '@yaac/shared/errors'
 import {
   KEEPER_STARTING,
-  KEEPER_WINDOW,
   WorkspaceExecError,
   type RuntimeHandle,
   type WorkspaceDriver,
-  type WorkspaceRegistration,
   type WorkspaceSpec,
 } from '#drivers/contract'
 import { STOCK_IMAGE_ID, type AgentTool } from '@yaac/shared/types'
@@ -160,11 +155,11 @@ async function saveToolAuth(tool: AgentTool, apiKey: string, provider?: string):
 /**
  * Starts run to completion against a fake runtime over a real project
  * (`seedProject`) and a real database. The assertions land on what reaches
- * the runtime (the launch spec, the commands run in the workspace, the
- * registrations) and on the rows.
+ * the runtime (the launch spec, the commands run in the workspace) and on
+ * the rows.
  *
- * The fake runtime keeps the units it launched, so a spare the pool warms
- * is listed, claimed and torn down like a real one.
+ * The fake runtime keeps the units it launched, and offers the spares in
+ * `offered` to a take.
  */
 describe('prepareStart', () => {
   let tmpDir: string
@@ -173,9 +168,13 @@ describe('prepareStart', () => {
   /** Each teardown's `unitOnly`: true keeps the prepared substrate. */
   let destroys: boolean[]
   let deregistered: string[]
-  let registrations: WorkspaceRegistration[]
   let units: RuntimeHandle[]
-  let claims: string[]
+  /** Spares a take may have, each for one image and scratch size. */
+  let offered: Array<{ id: string; image: string; scratchBytes: number }>
+  /** What each take asked for. */
+  let takes: Array<{ image: string; scratchBytes: number }>
+  /** Spares reaped. */
+  let reaped: string[]
   /** What `rev-parse HEAD` reads in a workspace; origin's main unless a case
    *  moves it. */
   let head: string
@@ -193,18 +192,6 @@ describe('prepareStart', () => {
     if (targets.length === 0) return cmd.includes('rev-parse -q --verify HEAD') ? `${head}\n` : ''
     if (stuck === undefined) head = targets[targets.length - 1]
     return targets.map((t) => `yaac-at:${stuck ?? t}\n`).join('')
-  }
-
-  /** Settle `started` with fake time, which has to pass while it also
-   *  waits on real disk and git work. */
-  async function settleWithFakeTime<T>(started: Promise<T>): Promise<T> {
-    let done = false
-    void started.finally(() => { done = true }).catch(() => {})
-    for (let i = 0; i < 200 && !done; i++) {
-      await vi.advanceTimersByTimeAsync(250)
-      await new Promise((r) => setImmediate(r))
-    }
-    return await started
   }
 
   /** What the server has logged, one message a line. */
@@ -266,7 +253,6 @@ describe('prepareStart', () => {
           workspaceId: spec.workspaceId,
           projectId: spec.projectId,
           jobName: `yaac-demo-${spec.workspaceId}`,
-          prewarmed: spec.prewarm,
           createdAtMs: Date.now(),
         })
         units.push(unit)
@@ -290,13 +276,12 @@ describe('prepareStart', () => {
         }
         return Promise.resolve({ stdout: answer(cmd), stderr: '' })
       },
-      registerWorkspace: (registration) => { registrations.push(registration); return Promise.resolve() },
-      claimSpare: (id) => {
-        claims.push(id)
-        const unit = units.find((u) => u.workspaceId === id)
-        if (unit) Object.assign(unit, { prewarmed: false })
-        return Promise.resolve({ unmarked: Promise.resolve() })
+      takeSpare: (args) => {
+        takes.push(args)
+        const i = offered.findIndex((s) => s.image === args.image && s.scratchBytes === args.scratchBytes)
+        return Promise.resolve(i < 0 ? undefined : offered.splice(i, 1)[0].id)
       },
+      reapSpare: (id) => { reaped.push(id); return Promise.resolve() },
       destroy: (target, opts) => {
         destroys.push(opts?.unitOnly === true)
         units = units.filter((u) => u.workspaceId !== target.workspaceId)
@@ -345,9 +330,10 @@ describe('prepareStart', () => {
     execs = []
     destroys = []
     deregistered = []
-    registrations = []
     units = []
-    claims = []
+    offered = []
+    takes = []
+    reaped = []
     clearAllProvisioningForTests()
     clearPrewarmStateForTests()
     _clearTmuxAliveCacheForTests()
@@ -696,6 +682,17 @@ describe('prepareStart', () => {
       expect(outcomes.map((o) => o.status).sort()).toEqual(['fulfilled', 'rejected', 'rejected'])
       expect(listProvisioning().filter((p) => p.groupId === groupId)).toHaveLength(1)
     })
+
+    it('checks the last slot after taking a spare, so creates that each take one still fit, giving back the refused ones\' spares', async () => {
+      const groupId = await limited(2)
+      await running(groupId)
+      offered = ['spare-1', 'spare-2', 'spare-3'].map((id) => ({ id, image: 'registry.test/fake-tools:t', scratchBytes: 32 * 1024 ** 3 }))
+      const outcomes = await Promise.allSettled([1, 2, 3].map(() => prepare(groupId, { claimSpare: true })))
+      expect(outcomes.map((o) => o.status).sort()).toEqual(['fulfilled', 'rejected', 'rejected'])
+      expect(listProvisioning().filter((p) => p.groupId === groupId)).toHaveLength(1)
+      expect(takes).toHaveLength(3)
+      await vi.waitFor(() => { expect(reaped).toHaveLength(2) })
+    })
   })
 
   describe('a cold create', () => {
@@ -744,7 +741,7 @@ describe('prepareStart', () => {
         'substrate ready', 'launching', 'Creating workspace from dev...', 'Starting Codex...',
       ]))
       // No spare was looked for.
-      expect(claims).toEqual([])
+      expect(takes).toEqual([])
 
       // The clone borrows from the main clone at the path the server sees it
       // at, mounted read-only there. The checkout wrote that itself, so
@@ -754,7 +751,7 @@ describe('prepareStart', () => {
         .toBe(`${repoDir(DEMO_PROJECT_ID)}/.git/objects\n`)
       expect(execOf('objects/info/alternates')).toBeUndefined()
       expect(sessionExec()).toContain('--no-optional-locks status')
-      const { mounts, postStartExec, preStopExec } = specs[0]
+      const { mounts } = specs[0]
       expect(mounts).toContainEqual({
         source: { kind: 'hostPath', path: `${repoDir(DEMO_PROJECT_ID)}/.git` },
         mountPath: `${repoDir(DEMO_PROJECT_ID)}/.git`,
@@ -778,13 +775,17 @@ describe('prepareStart', () => {
         mountPath: '/home/yaac/.omp/agent/sessions',
       })
       expect((await fs.stat(path.join(ompDir(DEMO_PROJECT_ID), 'agent', 'sessions'))).isDirectory()).toBe(true)
-      expect(postStartExec).toEqual(['/usr/local/bin/yaac-workspace-init'])
-      // The shipped helper commands are mounted where the agent finds them.
-      const helpers = mounts.map((m) => m.mountPath).filter((p) => p.startsWith('/usr/local/bin/'))
-      expect(helpers).toEqual(expect.arrayContaining(['/usr/local/bin/yaac-mama', '/usr/local/bin/yaac-watch-prs']))
-      expect(preStopExec).toEqual(['/usr/local/bin/yaac-opencode-checkpoint', 'stop'])
-      // Every tool's home is mounted whatever the tool, since spares are
-      // retoolable. A package tree shared by every pod would be a channel
+      // The shipped helper commands are mounted where the agent finds them,
+      // read-only from the server build's folder, which every pod it makes
+      // shares, a spare's included.
+      const helpers = mounts.filter((m) => m.mountPath.startsWith('/usr/local/bin/'))
+      expect(helpers.map((m) => m.mountPath)).toEqual(expect.arrayContaining(['/usr/local/bin/yaac-mama', '/usr/local/bin/yaac-watch-prs']))
+      for (const { source, readOnly } of helpers) {
+        expect(readOnly).toBe(true)
+        expect(source).toMatchObject({ kind: 'hostPath', path: expect.stringMatching(/\/run\/helpers\/[^/]+\/bin\/[^/]+$/) as string })
+      }
+      // Every tool's home is mounted whatever the tool, since an agent of
+      // any tool may start in it. A package tree shared by every pod would be a channel
       // between them, so the project's package cache is not.
       const sources = mounts.flatMap((m) => (m.source.kind === 'hostPath' ? [m.source.path] : []))
       expect(sources).toEqual(expect.arrayContaining([
@@ -808,8 +809,7 @@ describe('prepareStart', () => {
       // The workspace runs as the server's uid, so a chown would only corrupt
       // host-side ownership.
       expect(cmds().some((c) => c.includes('chown') || c.startsWith('sudo '))).toBe(false)
-      // Onboarding state is seeded whatever the tool, since spares are
-      // retoolable.
+      // Onboarding state is seeded whatever the tool.
       const claudeJson = JSON.parse(
         await fs.readFile(path.join(claudeDir(DEMO_PROJECT_ID), '.claude.json'), 'utf8'),
       ) as { hasCompletedOnboarding?: boolean }
@@ -828,8 +828,8 @@ describe('prepareStart', () => {
       expect(env().map((e) => e.split('=')[0])).not.toContain('ANTHROPIC_API_KEY')
     })
 
-    // Every credentialed tool's key is seeded on any workspace (a spare may be
-    // retooled at claim), as a placeholder the proxy swaps. opencode and pi
+    // Every credentialed tool's key is seeded on any workspace (an agent of
+    // any tool may start in it), as a placeholder the proxy swaps. opencode and pi
     // each read theirs from a variable of their own, so neither collides with
     // claude's or codex's.
     it.each<{ name: string; tool: AgentTool; key: string; kind: 'api-key' | 'oauth'; provider?: string; want: Record<string, string>; not: string[] }>([
@@ -1042,10 +1042,9 @@ describe('prepareStart', () => {
       // entry would match nothing. The project's workspaces share one
       // claude.json, and a lost entry opens claude's trust dialog. Asked for
       // a spare, it creates cold: containerless keeps no pool.
-      const list = vi.fn(() => Promise.resolve([]))
-      installDriver({ kind: 'containerless', list })
+      installDriver({ kind: 'containerless' })
       const created = await Promise.all([1, 2, 3].map(() => start({ claimSpare: true })))
-      expect(list).not.toHaveBeenCalled()
+      expect(takes).toEqual([])
       const config = JSON.parse(await fs.readFile(path.join(claudeDir(DEMO_PROJECT_ID), '.claude.json'), 'utf8')) as {
         projects: Record<string, unknown>
       }
@@ -1058,7 +1057,11 @@ describe('prepareStart', () => {
       expect(settings).not.toHaveProperty('permissions')
     })
 
-    it('stages the helper commands each launch, mounting each read-only onto /usr/local/bin', async () => {
+    // A pod mounts its server build's folder, staged once
+    // (docs/generic-workspace-pods.md "The pod"); a containerless workspace
+    // copies them each launch.
+    it('stages the helper commands each containerless launch, mounting each read-only onto /usr/local/bin', async () => {
+      installDriver({ kind: 'containerless' })
       const src = path.join(tmpDir, 'workspace-bin')
       await fs.mkdir(path.join(src, 'subdir'), { recursive: true })
       for (const name of ['yaac-workspace-init', 'a-tool', '.hidden']) {
@@ -1414,17 +1417,14 @@ describe('prepareStart', () => {
       await commitTo('refs/remotes/origin/agent/wt-tracked', 'web/node_modules/pkg/index.js')
       await git(repo, ['checkout', '-q', 'main'])
       await setScratchDirs(local, DEMO_PROJECT_ID, {
-        dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'target', sizeGiB: 32 }, { path: 'web/node_modules', sizeGiB: 2 }],
+        dirs: [{ path: 'node_modules' }, { path: 'target' }, { path: 'web/node_modules' }],
+        sizeGiB: 42,
       })
 
       await start({ workspaceId: 'wt-tracked', branch: 'tracked' })
-      // Each with its own cap.
-      const GIB = 1024 ** 3
-      expect(specs[0].scratchDirs).toEqual([
-        { path: '/workspace/node_modules', sizeBytes: 8 * GIB },
-        { path: '/workspace/target', sizeBytes: 32 * GIB },
-        { path: '/workspace/web/node_modules', sizeBytes: 2 * GIB },
-      ])
+      // All of them share the project's size.
+      expect(specs[0].scratchDirs).toEqual(['/workspace/node_modules', '/workspace/target', '/workspace/web/node_modules'])
+      expect(specs[0].scratchBytes).toBe(42 * 1024 ** 3)
       expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'wt-tracked')).toMatchObject({
         // What its stop removes, whatever the project lists by then.
         scratchDirs: ['node_modules', 'target', 'web/node_modules'],
@@ -1444,7 +1444,6 @@ describe('prepareStart', () => {
       await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)
       const after = await start()
       expect(env()).toContain('TZ=Asia/Tokyo')
-      // Recorded, so a spare claim can tell which zone it launched in.
       expect((await getWorkspaceRow(DEMO_PROJECT_ID, after.workspaceId))?.timeZone).toBe('Asia/Tokyo')
     })
   })
@@ -1759,494 +1758,127 @@ describe('prepareStart', () => {
   })
 
   /**
-   * A spare is warmed by the pool (`reconcilePrewarmPool`) with no
-   * session. A claim hands it over under its own id, moving its checkout to
-   * another branch or a newer tip, and opens the create's session in it.
-   * Anything that goes wrong falls back to a cold create under the
-   * requested id.
+   * A create takes a spare of its image and scratch size, when one waits,
+   * before it names its workspace: the workspace then has the spare's id,
+   * and its provisioning row names it as `claimedId`. The launch is the
+   * same as a cold one's; a spare cannot carry what only a pod made on
+   * demand has (docs/generic-workspace-pods.md "A claim").
    */
-  describe('claiming a prewarmed spare', () => {
-    /** A running workspace of the project, which is what makes the pool
-     *  warm a spare for it. */
-    const user = handleFixture({ workspaceId: 'user-ws', projectId: DEMO_PROJECT_ID, jobName: 'yaac-demo-user-ws' })
+  describe('taking a spare', () => {
+    const GIB = 1024 ** 3
+    const STOCK = 'registry.test/fake-tools:t'
 
-    /** Whether `unit` finished its warm, which ends by renaming its keeper. */
-    const warmed = (unit: RuntimeHandle): boolean =>
-      execs.some((x) => x.jobName === unit.jobName && x.cmd.includes(`rename-window -t =yaac:=${KEEPER_STARTING} ${KEEPER_WINDOW}`))
+    it('takes one of the project\'s image and scratch size, and the workspace has its id', async () => {
+      await setScratchDirs(local, DEMO_PROJECT_ID, { sizeGiB: 8 })
+      offered = [{ id: 'spare-1', image: STOCK, scratchBytes: 8 * GIB }]
+      let row: ReturnType<typeof listProvisioning>[number] | undefined
+      installDriver({
+        missingImageLayers: () => {
+          row = listProvisioning()[0]
+          return Promise.resolve([])
+        },
+      })
+      const progress: string[] = []
 
-    /** Warm one spare as the pool does, and wait until it is up. */
-    async function warm(): Promise<RuntimeHandle> {
-      await reconcilePrewarmPool(snapshotFixture([user, ...units]))
-      let spare: RuntimeHandle | undefined
-      await vi.waitFor(() => {
-        spare = units.find((u) => u.prewarmed && warmed(u))
-        expect(spare).toBeDefined()
-      }, { timeout: 30_000 })
-      // The pool's spawn settles after its create returns.
-      await new Promise((r) => setTimeout(r, 20))
-      execs = []
-      return spare!
-    }
+      const result = await start({ workspaceId: 'asked-1', claimSpare: true, prompt: 'go', onProgress: (m) => progress.push(m) })
 
-    /** Commands run in `unit` since the spare was warmed. */
-    const ranIn = (unit: RuntimeHandle): string[] =>
-      execs.filter((e) => e.jobName === unit.jobName).map((e) => e.cmd)
+      expect(takes).toEqual([{ image: STOCK, scratchBytes: 8 * GIB, madeSince: expect.any(Number) as number }])
+      expect(result.workspaceId).toBe('spare-1')
+      expect(row).toMatchObject({ workspaceId: 'asked-1', claimedId: 'spare-1', prompt: 'go' })
+      expect(progress).toContain('Using a prewarmed workspace...')
+      expect(specs.map((s) => [s.workspaceId, s.image, s.scratchBytes])).toEqual([['spare-1', STOCK, 8 * GIB]])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'spare-1')).toBeDefined()
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, 'asked-1')).toBeUndefined()
+      expect(reaped).toEqual([])
+      // With none left, the next create launches under its own id.
+      expect((await start({ workspaceId: 'asked-2', claimSpare: true })).workspaceId).toBe('asked-2')
+      expect(takes).toHaveLength(2)
+    })
 
-    beforeEach(async () => {
+    it('lets only one of two concurrent creates have a single spare, the other launching under its own id', async () => {
+      offered = [{ id: 'spare-1', image: STOCK, scratchBytes: 32 * GIB }]
+      const results = await Promise.all(['asked-1', 'asked-2'].map((workspaceId) => start({ workspaceId, claimSpare: true })))
+      const ids = results.map((r) => r.workspaceId)
+      expect(ids.filter((id) => id === 'spare-1')).toHaveLength(1)
+      expect(ids.filter((id) => id.startsWith('asked-'))).toHaveLength(1)
+    })
+
+    // Its launch never adopted it, or adopted it and failed after.
+    it('reaps the spare a failed create took', async () => {
+      offered = [{ id: 'spare-1', image: STOCK, scratchBytes: 32 * GIB }]
+      installDriver({ awaitReady: () => Promise.reject(new Error('pod never became ready')) })
+
+      await expect(start({ claimSpare: true })).rejects.toThrow('pod never became ready')
+
+      expect(takes).toHaveLength(1)
+      expect(reaped).toEqual(['spare-1'])
+    })
+
+    // The user stops it by the id it was asked under, while it runs under
+    // the spare's.
+    it('rolls back a create the user stops while it runs in a spare, reaping the spare', async () => {
+      offered = [{ id: 'spare-1', image: STOCK, scratchBytes: 32 * GIB }]
+      // The take asks the registry too, whether the pool's image is built;
+      // the stop lands once the spare is held.
+      installDriver({
+        missingImageLayers: async () => {
+          if (offered.length === 0) await stopWorkspace(local, 'asked-1')
+          return []
+        },
+      })
+
+      await expect(start({ workspaceId: 'asked-1', claimSpare: true })).rejects.toMatchObject({ code: 'CONFLICT' })
+
+      expect(specs).toEqual([])
+      expect(reaped).toEqual(['spare-1'])
+
+      // Or by the spare's id, which a yaac-mama create prints.
+      offered = [{ id: 'spare-2', image: STOCK, scratchBytes: 32 * GIB }]
+      installDriver({
+        missingImageLayers: async () => {
+          if (offered.length === 0) expect(await stopWorkspace(local, 'spare-2')).toMatchObject({ provisioning: true })
+          return []
+        },
+      })
+      await expect(start({ workspaceId: 'asked-2', claimSpare: true })).rejects.toMatchObject({ code: 'CONFLICT' })
+      expect(specs).toEqual([])
+      expect(reaped).toEqual(['spare-1', 'spare-2'])
+    })
+
+    // A byo volume's claim, a run's secret variables and a build not yet
+    // made are in a pod's spec from its creation, and a named image is no
+    // pool's.
+    it('takes none for a create a spare cannot carry, or when pools are off', async () => {
+      offered = [{ id: 'spare-1', image: STOCK, scratchBytes: 32 * GIB }]
+      await createVolume(local, DEMO_PROJECT_ID, 'queue')
+      await setRunSecret(local, DEMO_PROJECT_ID, { name: 'P8_KEY', value: 'pem' })
+      await createWorkflow(local, DEMO_PROJECT_ID, { name: 'relay', steps: { t: { run: 'true' } }, secrets: ['P8_KEY'] })
+
+      await start({ claimSpare: true, volume: 'queue' })
+      await start({ claimSpare: true, nonInteractive: true, noSession: true, commit: head, workflow: 'relay' })
+      await start({ claimSpare: true, awaitBuild: true })
+      await start({ claimSpare: true, image: STOCK })
+      vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '0')
+      await start({ claimSpare: true })
       vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '1')
-      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { mode: 'tui' })
-    })
-
-    it('warms a spare with no row or session, then hands it over under its own id, opening the create\'s session in it', async () => {
-      const spare = await warm()
-      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
-      expect(await listWorkspaceSessions(spare.workspaceId, { all: true })).toEqual([])
-      expect(specs.at(-1)?.prewarm).toBe(true)
-      registrations = []
-      // The owner's git identity has changed since the spare was warmed.
-      await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada L', email: 'ada@example.com' })
-
-      const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Reviews', null)
-      const result = await start({
-        workspaceId: 'req', claimSpare: true, prompt: 'fix the bug', title: 'Bug fix', group: group.groupId,
-      })
-
-      const [session] = await listWorkspaceSessions(spare.workspaceId)
-      expect(result).toEqual({ workspaceId: spare.workspaceId, jobName: spare.jobName, forwardedPorts: [], sessionId: session.id })
-      expect(claims).toEqual([spare.workspaceId])
-      expect(specs.filter((s) => !s.prewarm)).toEqual([])
-      // Re-registered from the project as it is now, and given the current
-      // git identity.
-      expect(registrations).toEqual([expect.objectContaining({
-        workspaceId: spare.workspaceId, projectId: DEMO_PROJECT_ID, owner: 'install',
-      })])
-      // The claim runs two commands in the spare. The first asks whether it
-      // can be claimed and where its checkout is.
-      const [probe, launch] = execs.filter((e) => e.jobName === spare.jobName)
-      expect(probe.cmd).toMatch(/has-session -t yaac && \{ git -C \/workspace rev-parse -q --verify HEAD \|\| echo; \}$/)
-      // Recorded as a cold create records it: filed, titled, its session
-      // holding the prompt, which the agent of the window it opens is
-      // launched with.
-      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toMatchObject({
-        groupId: group.groupId, title: 'Bug fix', cwd: '',
-      })
-      expect(await checkout(spare.workspaceId)).toMatchObject({ repoId: DEMO_PROJECT_ID, path: '', baseBranch: 'main' })
-      expect(session).toMatchObject({ tool: 'claude', mode: 'tui', permissionMode: 'bypass', firstPrompt: 'fix the bug' })
-      expect(session.launchedAt).toBeInstanceOf(Date)
-      // The second leaves the prompt, sets the changed identity, and has
-      // one tmux source the life's log hooks and then open the window.
-      expect(launch.stdin).toBe('fix the bug')
-      const at = (needle: string): number => launch.cmd.indexOf(needle)
-      expect(at(`{ cat > /tmp/.yaac-opening-${session.window} `)).toBe(0)
-      expect(at("git config --global user.name 'Ada L' 2>&1 && git config --global user.email 'ada@example.com' 2>&1")).toBeGreaterThan(0)
-      expect(at('hooks.conf')).toBeGreaterThan(at('git config --global'))
-      expect(launch.cmd).toMatch(new RegExp(`source-file '[^']*hooks\\.conf' \\\\; new-window -d -t =yaac: -n ${session.window} `))
-      expect((await checkout(spare.workspaceId))?.startCommit).toBe(head)
-      expect(listProvisioning()).toEqual([])
-    })
-
-    it('leaves the spare alone for a create into a group at its workspace limit', async () => {
-      const spare = await warm()
-      const { groupId } = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Workers', null)
+      // Refused for a full group before its run, so before any take.
+      const { groupId } = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Full', null)
       await setWorkspaceGroupLimit(DEMO_PROJECT_ID, groupId, 1)
       await running(groupId)
+      await expect(start({ claimSpare: true, groupId })).rejects.toMatchObject({ code: 'CONFLICT' })
 
-      await expect(start({ claimSpare: true, group: 'Workers' })).rejects.toMatchObject({ code: 'CONFLICT' })
-      expect(claims).toEqual([])
-      expect(units.find((u) => u.workspaceId === spare.workspaceId)?.prewarmed).toBe(true)
+      expect(takes).toEqual([])
+      expect(offered).toHaveLength(1)
     })
 
-    // A pass lists pods before it plans, so a claim can finish in between.
-    // The pass then sees a spare with no warm-time settings and no claim in
-    // progress, the only workspace of its project: stale and idle twice
-    // over. It must leave the user's workspace running.
-    it('keeps a claimed spare that a pass listed before the claim', async () => {
-      const spare = await warm()
-      const listedBefore = snapshotFixture([{ ...spare }])
+    // The create route asks for one for every caller, so a delegate's
+    // workspace has the spare's id too, which the result hands back.
+    it('takes one for a delegate\'s create too', async () => {
+      offered = [{ id: 'spare-1', image: STOCK, scratchBytes: 32 * GIB }]
+      await saveToolAuth('claude', 'k')
+      const agent = workspaceDelegate(BUILT_IN_USER_ID, 'spare-caller', { projectId: DEMO_PROJECT_ID })
 
-      await start({ claimSpare: true, prompt: 'fix the bug' })
-      await reconcilePrewarmPool(listedBefore)
-      await new Promise((r) => setTimeout(r, 50))
-
-      expect(destroys).toEqual([])
-      expect(units.map((u) => u.workspaceId)).toContain(spare.workspaceId)
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.stoppedAt).toBeUndefined()
-    })
-
-    it('opens a session of any tool and posture in a spare, and moves its checkout to another branch', async () => {
-      const spare = await warm()
-      await saveToolAuth('codex', 'sk-oai')
-
-      const result = await start({ claimSpare: true, tool: 'codex', permissionMode: 'read-only', branch: 'dev' })
-
-      expect(result).toMatchObject({ workspaceId: spare.workspaceId })
-      expect(claims).toEqual([spare.workspaceId])
-      const ran = ranIn(spare)
-      // One command moves the checkout to dev's tip before the session
-      // opens: `origin/dev` is set and made its upstream, then a
-      // fast-forward, or for a spare, which nothing has touched, a reset
-      // that keeps the mount points.
-      const tip = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/dev'])).trim()
-      const move = ran.findIndex((c) => c.includes('merge --ff-only'))
-      expect(ran[move]).toContain(`git -C '/workspace' update-ref 'refs/remotes/origin/dev' ${tip}`)
-      expect(ran[move]).toContain("git -C '/workspace' branch --set-upstream-to 'origin/dev'")
-      expect(ran[move]).toMatch(new RegExp(
-        `-c core\\.hooksPath=/dev/null merge --ff-only ${tip} .*\\|\\| \\{ git -C '/workspace' reset --hard ${tip} .*clean -fd -e 'node_modules'`,
-      ))
-      expect(ran[move]).not.toContain('status --porcelain')
-      expect(move).toBeLessThan(ran.findIndex((c) => SESSION_WINDOW.test(c)))
-      const [session] = await listWorkspaceSessions(spare.workspaceId)
-      expect(session).toMatchObject({ tool: 'codex', permissionMode: 'read-only', model: FALLBACK_MODELS.codex })
-      expect(ran.filter((c) => SESSION_WINDOW.test(c))).toEqual([
-        expect.stringMatching(new RegExp(`-n ${session.window} [^']*'[^']*exec codex .*--sandbox read-only`)),
-      ])
-      expect((await checkout(spare.workspaceId))?.baseBranch).toBe('dev')
-    })
-
-    // A chat session's conversation has no id until its agent answers, so
-    // the claim leaves the prompt on the session for the sweep to send.
-    it('holds a claimed chat session\'s prompt for its conversation', async () => {
-      const spare = await warm()
-      expect(await start({ claimSpare: true, mode: 'acp', prompt: 'go' })).toMatchObject({ workspaceId: spare.workspaceId })
-      const [session] = await listWorkspaceSessions(spare.workspaceId)
-      expect(session).toMatchObject({ mode: 'acp', pendingPrompt: 'go' })
-      expect(ranIn(spare).some((c) => c.includes('.yaac-prompt-'))).toBe(false)
-    })
-
-    it('opens a pi session in a spare on the owner\'s pi provider', async () => {
-      const spare = await warm()
-      await saveToolAuth('pi', 'sk-or', 'openrouter')
-
-      expect(await start({ claimSpare: true, tool: 'pi' })).toMatchObject({ workspaceId: spare.workspaceId })
-      expect(ranIn(spare).find((c) => SESSION_WINDOW.test(c))).toMatch(/ -n pi-[0-9a-f]{8} [^']*'.*openrouter/)
-    })
-
-    // Nothing on a claim's path waits on the network.
-    it('hands a spare over without waiting for the fetch, then catches the workspace up when it lands', async () => {
-      const spare = await warm()
-      const warmedAt = head
-      const { origin, hold } = await slowRealOrigin()
-      const release = hold()
-      const tip = await pushTo(origin, 'main', 'late.txt')
-
-      expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
-
-      // The session is open where the spare stood, and nothing has moved.
-      expect(ranIn(spare).some((c) => SESSION_WINDOW.test(c))).toBe(true)
-      expect(ranIn(spare).some((c) => c.includes('merge --ff-only'))).toBe(false)
-      expect((await checkout(spare.workspaceId))?.startCommit).toBe(warmedAt)
-
-      release()
-      await vi.waitFor(async () => { expect((await checkout(spare.workspaceId))?.startCommit).toBe(tip) }, { timeout: 30_000 })
-      // An agent may be at work in it by now, so the move only
-      // fast-forwards.
-      const move = ranIn(spare).find((c) => c.includes('merge --ff-only')) ?? ''
-      expect(move).toContain(`merge --ff-only ${tip} `)
-      expect(move).not.toContain('reset --hard')
-    })
-
-    it('leaves a claimed spare behind origin when the fetch outlasts the wait after its launch', async () => {
-      const spare = await warm()
-      const { origin, hold } = await slowRealOrigin()
-      hold()
-      await pushTo(origin, 'main', 'too-late.txt')
-      expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
-      await vi.waitFor(() => {
-        expect(logged()).toMatch(new RegExp(`${spare.workspaceId}: the checkout is left behind origin/main: the fetch took longer than 5s`))
-      }, { timeout: 30_000 })
-      expect(ranIn(spare).some((c) => c.includes('merge --ff-only'))).toBe(false)
-    })
-
-    // A background refresh can take minutes (a slow reset, init windows);
-    // a cold create beats waiting that long.
-    it('creates cold rather than wait out a refresh that outlasts the wait', async () => {
-      const spare = await warm()
-      installDriver({
-        exec: (jobName, cmd) => {
-          execs.push({ jobName, cmd })
-          // The pool's refresh never finishes its move.
-          if (cmd.includes('merge --ff-only')) return new Promise(() => { /* held */ })
-          return Promise.resolve({ stdout: answer(cmd), stderr: '' })
-        },
-      })
-      await reconcilePrewarmPool(snapshotFixture([user, ...units]))
-      await vi.waitFor(() => { expect(ranIn(spare).some((c) => c.includes('merge --ff-only'))).toBe(true) })
-
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
-      let result: WorkspaceCreateResult
-      try {
-        result = await settleWithFakeTime(start({ claimSpare: true }))
-      } finally {
-        vi.useRealTimers()
-      }
-      expect(result.workspaceId).not.toBe(spare.workspaceId)
-      expect(claims).toEqual([])
-    })
-
-    it('moves a spare that is behind the main clone\'s tip up to it before opening the session there', async () => {
-      const spare = await warm()
-      head = 'an-older-commit'
-      await createWorkflow(local, DEMO_PROJECT_ID, { name: 'init', steps: { install: { run: 'pnpm install' } }, init: true })
-
-      expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
-
-      const ran = ranIn(spare)
-      const move = ran.findIndex((c) => c.includes('merge --ff-only'))
-      expect(move).toBeGreaterThanOrEqual(0)
-      // The claim starts its life after the move, with the project's init
-      // workflows, and sources its log hooks before the session opens. It
-      // starts at the tip the move took it to.
-      const launch = ran.slice(move + 1).find((c) => c.includes('hooks.conf'))
-      expect(launch?.indexOf('hooks.conf')).toBeLessThan(launch?.search(SESSION_WINDOW) ?? -1)
-      expect((await checkout(spare.workspaceId))?.startCommit)
-        .toBe((await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'origin/main'])).trim())
-      expect((await listWorkspaceSteps(spare.workspaceId)).map((s) => `${s.workflowName}.${s.name}`)).toEqual(['init.install'])
-    })
-
-    it('waits out a background refresh, then claims the refreshed spare', async () => {
-      const spare = await warm()
-      head = 'an-older-commit'
-      let release!: () => void
-      const held = new Promise<void>((resolve) => { release = resolve })
-      installDriver({
-        exec: async (jobName, cmd) => {
-          execs.push({ jobName, cmd })
-          if (cmd.includes('merge --ff-only')) await held
-          return { stdout: answer(cmd), stderr: '' }
-        },
-      })
-      // The pool starts moving the spare to the tip in the background.
-      await reconcilePrewarmPool(snapshotFixture([user, ...units]))
-      await vi.waitFor(() => { expect(ranIn(spare).some((c) => c.includes('merge --ff-only'))).toBe(true) })
-
-      let claimed = false
-      const claim = start({ claimSpare: true }).finally(() => { claimed = true })
-      await new Promise((r) => setTimeout(r, 50))
-      expect(claimed).toBe(false)
-      release()
-
-      expect((await claim).workspaceId).toBe(spare.workspaceId)
-      // Already current, so the claim moved it no further.
-      expect(ranIn(spare).filter((c) => c.includes('merge --ff-only'))).toHaveLength(1)
-    })
-
-    it('refuses a branch missing from origin, putting the spare back untouched', async () => {
-      const spare = await warm()
-
-      await expect(start({ workspaceId: 'req', claimSpare: true, branch: 'ghost' }))
-        .rejects.toMatchObject({ code: 'VALIDATION', message: expect.stringContaining('branch "ghost" not found') as unknown })
-
-      // No cold create was tried, and the spare is a spare again, with no
-      // row.
-      expect(specs.filter((s) => !s.prewarm)).toEqual([])
-      expect(claims).toEqual([])
-      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
-      expect(await listWorkspaceConversations(DEMO_PROJECT_ID, spare.workspaceId)).toEqual([])
-      expect(listProvisioning()).toEqual([expect.objectContaining({ workspaceId: 'req', error: expect.stringContaining('ghost') as unknown })])
-      // The next claim takes it.
-      expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
-    })
-
-    it('reaps a spare a failed move or commit left half-changed, and creates cold instead', async () => {
-      const spare = await warm()
-      installDriver({
-        exec: (jobName, cmd) => {
-          execs.push({ jobName, cmd })
-          if (cmd.includes('merge --ff-only') && jobName === spare.jobName) {
-            return Promise.reject(new WorkspaceExecError('reset', 1, '', 'disk full'))
-          }
-          return Promise.resolve({ stdout: answer(cmd), stderr: '' })
-        },
-      })
-
-      const result = await start({ workspaceId: 'req', claimSpare: true, branch: 'dev' })
-
-      expect(result).toMatchObject({ workspaceId: 'req' })
-      expect(specs.filter((s) => !s.prewarm).map((s) => s.workspaceId)).toEqual(['req'])
-      // Torn down whole: the claim's row, then the pod, checkout and Job.
-      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
-      await vi.waitFor(async () => {
-        expect(destroys).toEqual([false, false])
-        await expect(fs.access(workspaceDir(DEMO_PROJECT_ID, spare.workspaceId))).rejects.toThrow()
-      }, { timeout: 30_000 })
-      expect(units.some((u) => u.workspaceId === spare.workspaceId)).toBe(false)
-
-      // A commit that lost a race looks like one whose response was lost
-      // after it landed, so that spare is reaped too. So is one whose commit
-      // landed beside a registration that failed, or whose unmarking could
-      // not finish, though by then its window has opened.
-      const won = (): Promise<{ unmarked: Promise<void> }> => Promise.resolve({ unmarked: Promise.resolve() })
-      for (const broken of [
-        { claimSpare: () => Promise.reject(new Error('already claimed')) },
-        { claimSpare: won, registerWorkspace: () => Promise.reject(new Error('apiserver down')) },
-        { claimSpare: () => Promise.resolve({ unmarked: Promise.reject(new Error('apiserver down')) }) },
-      ] satisfies Array<Partial<WorkspaceDriver>>) {
-        installDriver()
-        const next = await warm()
-        installDriver(broken)
-        expect((await start({ claimSpare: true })).workspaceId).not.toBe(next.workspaceId)
-        expect(await getWorkspaceRow(DEMO_PROJECT_ID, next.workspaceId)).toBeUndefined()
-        await vi.waitFor(() => { expect(units.some((u) => u.workspaceId === next.workspaceId)).toBe(false) })
-      }
-
-      // So is one its move left short of the commit the claim starts at.
-      installDriver()
-      const short = await warm()
-      head = 'an-older-commit'
-      stuck = head
-      expect((await start({ claimSpare: true })).workspaceId).not.toBe(short.workspaceId)
-      await vi.waitFor(() => { expect(units.some((u) => u.workspaceId === short.workspaceId)).toBe(false) })
-    })
-
-    // Once the claim is won the workspace is the user's, so a launch that
-    // fails is the create's own failure: nothing is reaped, and the session
-    // stays recorded for the next pass to launch.
-    it('fails the create, keeping the workspace, when the session cannot be opened in a spare it has claimed', async () => {
-      const spare = await warm()
-      installDriver({
-        exec: (jobName, cmd) => {
-          execs.push({ jobName, cmd })
-          if (cmd.includes('new-window')) return Promise.reject(new WorkspaceExecError('launch', 1, '', 'no server running'))
-          return Promise.resolve({ stdout: answer(cmd), stderr: '' })
-        },
-      })
-
-      await expect(start({ claimSpare: true, prompt: 'fix the bug' })).rejects.toThrow('launch')
-
-      expect(claims).toEqual([spare.workspaceId])
-      expect(specs.filter((s) => !s.prewarm)).toEqual([])
-      expect(destroys).toEqual([])
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.stoppedAt).toBeUndefined()
-      const [session] = await listWorkspaceSessions(spare.workspaceId)
-      expect(session).toMatchObject({ firstPrompt: 'fix the bug' })
-      expect(session.launchedAt).toBeUndefined()
-    })
-
-    it('passes over a spare it cannot use, creating cold', async () => {
-      const spare = await warm()
-      const cold = async (over: Partial<StartWorkspaceRequest> = {}): Promise<void> => {
-        const result = await start({ claimSpare: true, ...over })
-        expect(result.workspaceId).not.toBe(spare.workspaceId)
-        expect(claims).toEqual([])
-        expect(await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId)).toBeUndefined()
-      }
-
-      // It cannot be reached, or its tmux is gone: left alone, before any
-      // change.
-      for (const failure of [new Error('no transport'), new WorkspaceExecError('probe', 1, '', 'no server')]) {
-        installDriver({ exec: (jobName, cmd) => {
-          execs.push({ jobName, cmd })
-          return jobName === spare.jobName && cmd.includes('has-session')
-            ? Promise.reject(failure)
-            : Promise.resolve({ stdout: '', stderr: '' })
-        } })
-        await cold()
-        expect(ranIn(spare)).toHaveLength(1)
-        execs = []
-      }
-      // An image the project no longer builds: its chain resolves to another
-      // tag now, as after a new stock image.
-      installDriver({ resolveImageChain: () => Promise.resolve({ layers: [{ name: 'tools', tag: 'fake-tools:edited' }], finalTag: 'fake-tools:edited' }) })
-      await cold()
-      installDriver()
-      // A zone the user has left, which `TZ` fixed at warm time.
-      await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', false)
-      await cold()
-    })
-
-    // The workspace is already usable, so neither is worth burning the spare.
-    it('hands a spare over even when its git identity or group cannot be re-applied', async () => {
-      const spare = await warm()
-      await setGitIdentity(BUILT_IN_USER_ID, { name: 'Ada L', email: 'ada@example.com' })
-      const group = await createWorkspaceGroup(DEMO_PROJECT_ID, 'Gone soon', null)
-      installDriver({
-        exec: async (jobName, cmd) => {
-          // The group goes after the start resolved it, before the claim
-          // records the row.
-          if (cmd.includes('has-session')) await deleteWorkspaceGroup(DEMO_PROJECT_ID, group.groupId)
-          // The launch command prints only what the identity write failed with.
-          if (cmd.includes('git config --global')) return { stdout: 'error: could not lock config file\n', stderr: '' }
-          return { stdout: answer(cmd), stderr: '' }
-        },
-      })
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-
-      expect((await start({ claimSpare: true, group: group.groupId })).workspaceId).toBe(spare.workspaceId)
-
-      expect((await getWorkspaceRow(DEMO_PROJECT_ID, spare.workspaceId))?.groupId).toBeUndefined()
-      expect(warn.mock.calls.map(([m]) => String(m)).join('\n')).toContain('not applied (the warmed-in one stands): error: could not lock')
-      warn.mockRestore()
-    })
-
-    it('hands a spare over where it stands when the fetch of origin fails, saying so', async () => {
-      const spare = await warm()
-      // Nothing listens on this host's 443, so the fetch fails at once.
-      vi.stubEnv('YAAC_E2E_SKIP_FETCH', '')
-      await setRemote('https://127.0.0.1/o/r.git')
-
-      expect((await start({ claimSpare: true })).workspaceId).toBe(spare.workspaceId)
-
-      await vi.waitFor(() => {
-        expect(logged()).toMatch(new RegExp(`${spare.workspaceId}: the checkout starts from the last commit fetched: `))
-      }, { timeout: 30_000 })
-      expect(ranIn(spare).some((c) => c.includes('merge --ff-only'))).toBe(false)
-    })
-
-    // A claim that waits (here, out a refresh) can find its first choice
-    // taken by a claim that started and finished meanwhile. It moves on to
-    // the next spare rather than reserving a workspace that is no longer a
-    // spare and falling back to a cold create.
-    it('claims the newest of several spares that match, passing over one another claim took meanwhile', async () => {
-      vi.stubEnv('YAAC_PREWARM_POOL_SIZE', '2')
-      await reconcilePrewarmPool(snapshotFixture([user]))
-      await vi.waitFor(() => {
-        expect(units.filter((u) => u.prewarmed && warmed(u))).toHaveLength(2)
-      }, { timeout: 30_000 })
-      await new Promise((r) => setTimeout(r, 20))
-      const [newest, older] = [...units].sort((a, b) => b.createdAtMs - a.createdAtMs)
-
-      // The waiting claim subscribes to the refresh; the refresh then ends
-      // as far as later claims can see, but not yet for the waiting one.
-      let finishRefresh = (): void => {}
-      const refreshed = new Promise<void>((r) => { finishRefresh = r })
-      let waiting = false
-      refreshing.set(newest.jobName, {
-        then: (onDone: () => unknown) => { waiting = true; return refreshed.then(onDone) },
-      } as unknown as Promise<void>)
-      const late = start({ claimSpare: true })
-      await vi.waitFor(() => { expect(waiting).toBe(true) })
-      refreshing.delete(newest.jobName)
-
-      expect((await start({ claimSpare: true })).workspaceId).toBe(newest.workspaceId)
-      finishRefresh()
-      expect((await late).workspaceId).toBe(older.workspaceId)
-      expect(specs.filter((s) => !s.prewarm)).toEqual([])
-    })
-
-    // Nothing else records a spare once its unit is gone, so a failed warm
-    // collects its own checkout, like a failed cold create.
-    it('tears down a spare that failed to warm, checkout and all, and never claims it', async () => {
-      installDriver({
-        awaitReady: (handle) => handle.prewarmed ? Promise.reject(new Error('pod never became ready')) : Promise.resolve(),
-      })
-      await reconcilePrewarmPool(snapshotFixture([user]))
-      const spareId = await vi.waitFor(() => {
-        expect(destroys).toEqual([false])
-        return specs[0].workspaceId
-      }, { timeout: 30_000 })
-
-      await vi.waitFor(async () => {
-        await expect(fs.access(workspaceDir(DEMO_PROJECT_ID, spareId))).rejects.toThrow()
-      })
-      expect(await getWorkspaceRow(DEMO_PROJECT_ID, spareId)).toBeUndefined()
-      expect((await start({ claimSpare: true })).workspaceId).not.toBe(spareId)
-    })
-
-    it('lets only one of two concurrent claims have the single spare', async () => {
-      const spare = await warm()
-      const results = await Promise.all([start({ claimSpare: true }), start({ claimSpare: true })])
-      expect(results.filter((r) => r.workspaceId === spare.workspaceId)).toHaveLength(1)
-      expect(claims).toEqual([spare.workspaceId])
+      expect((await start({ actor: agent, claimSpare: true })).workspaceId).toBe('spare-1')
     })
   })
 })

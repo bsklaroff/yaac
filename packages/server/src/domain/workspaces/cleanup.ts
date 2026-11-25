@@ -212,9 +212,7 @@ async function removableTree(dir: string): Promise<boolean> {
  *
  * Not used by an ordinary stop, which keeps the checkout for restart. Used
  * when the workspace itself goes away: a user's or the retention's delete
- * (`deleteWorkspace`), a fresh create or warm that gave up, or a reaped
- * spare (`reapSpare`, which also covers a claim that failed after changing
- * its spare).
+ * (`deleteWorkspace`), or a fresh create that gave up.
  *
  * Callers run this only once the pod is gone, so plain recursive `rm` is
  * safe (it does not follow links, and nothing can swap one in mid-walk).
@@ -229,8 +227,8 @@ async function removableTree(dir: string): Promise<boolean> {
  * The checkouts are the ones the workspace's rows name; with none (a spare
  * has no rows) nothing is kept for last.
  * Returns `false` if anything failed. Callers then keep whatever records the
- * leftover bytes: a row, which still lists a stopped workspace, or a spare's
- * unit, which the next reap retries.
+ * leftover bytes: a row, which still lists a stopped workspace, or an older
+ * server's spare's Job, which the pool's next pass retries.
  */
 export async function deleteWorkspaceState(
   projectId: string,
@@ -305,22 +303,19 @@ async function beginTeardown(params: {
  * so callers removing it must check.
  *
  * This handles the workspace bookkeeping (terminating mark, stop record,
- * status eviction, per-workspace dirs); `destroy` handles the runtime, and
- * `keepRecord` is its option of that name.
+ * status eviction, per-workspace dirs); `destroy` handles the runtime.
  */
 export async function cleanupWorkspace(params: {
   jobName: string
   projectId: string
   workspaceId: string
-  keepRecord?: boolean
 }): Promise<boolean> {
-  const { projectId, workspaceId, keepRecord } = params
+  const { projectId, workspaceId } = params
   const target = await beginTeardown(params)
-  const runtimeGone = await workspaceDriver().destroy(target, keepRecord === true ? { keepRecord } : {})
+  const runtimeGone = await workspaceDriver().destroy(target)
 
   // Remove the workspace's mount sources only if the runtime is confirmed
-  // gone; otherwise it may still be using them (an unreachable runtime may
-  // leave a spare fully alive and claimable). The driver's sweep and the
+  // gone; otherwise it may still be using them. The driver's sweep and the
   // orphan sweep remove them later.
   if (runtimeGone) {
     // Best-effort: a node still unmounting answers EBUSY. A k8s workspace's
@@ -518,8 +513,7 @@ export async function reconcileIgnoredFileCleans(view: RuntimeSnapshot): Promise
 /**
  * Remove the `sessions/<id>` staging dirs that workspaces which no longer
  * exist left behind in the global tier. Runs every resync. A checkout is
- * never removed here: on disk a dead spare's and a stopped workspace's look
- * the same, so spares' are removed by `reapSpare`, from their unit's mark.
+ * never removed here.
  */
 export async function gcOrphanScratchDirs(view: RuntimeSnapshot): Promise<void> {
   // A create the listing missed looks like an orphan. `inUseBySweep`

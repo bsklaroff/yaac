@@ -19,7 +19,7 @@ import { asTailnet, assignTestGitCredential, registerTestProject, setTestProject
 import { requireCluster } from '@yaac/test-utils/setup'
 import { requirePodman, execInJob, cleanupWorkspaceJobs } from '#support/cluster'
 import { k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
-import { nodeLocalNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
+import { nodeLocalNodePath, nodeMountsNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_CLIS, promptFits } from '@yaac/shared/types'
 import type { ProjectConfig, ProjectSummary, ResourceReport, SessionEntry } from '@yaac/shared/types'
@@ -527,11 +527,12 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         'test', '-f', '/tmp/yaac-prompt',
       ])).rejects.toThrow()
 
-      // Every volume is the global claim, the node-local tree, an emptyDir
-      // or the CA ConfigMap; nothing is a hostPath into the data dir
-      // (docs/server-in-cluster.md, "Storage claims"). The workspace's files
-      // are its tree on the node, with its `.git` from the global claim
-      // (docs/node-local-workspaces.md).
+      // The pod's spec holds nothing of its project's: every volume is the
+      // global claim (this build's helpers), its node-mounts directory, an
+      // emptyDir or the CA ConfigMap, and nothing is a hostPath into the data
+      // dir (docs/generic-workspace-pods.md). The workspace's files are its
+      // tree on the node, with its `.git` from the global claim, bound in at
+      // claim.
       const volumes = (await readObject<{
         spec: { template: { spec: {
           initContainers?: Array<{ name: string }>
@@ -539,19 +540,19 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           volumes: Array<{ name: string; hostPath?: { path: string }; persistentVolumeClaim?: { claimName: string }; emptyDir?: unknown; configMap?: unknown }>
         } } }
       }>({ apiVersion: 'batch/v1', kind: 'Job', name: jobName, namespace: k8sNamespace() }))!.spec.template.spec
-      const mountedAt = (at: string): typeof volumes.volumes[number] | undefined =>
-        volumes.volumes.find((v) => v.name === volumes.containers[0].volumeMounts.find((m) => m.mountPath === at)?.name)
-      expect(mountedAt('/workspace')?.hostPath?.path).toMatch(new RegExp(`/projects/${idOf('kitchen')}/trees/${workspaceId}/[^/]+/tree$`))
-      expect(mountedAt('/workspace/.git')?.persistentVolumeClaim?.claimName).toBe('yaac-global')
-      // The workspace's own git writes big checkouts in parallel.
-      expect((await execInJob(jobName, ['git', 'config', '--global', 'checkout.workers'])).stdout.trim()).toBe('8')
       for (const v of volumes.volumes) {
         const ok = v.persistentVolumeClaim?.claimName === 'yaac-global'
-          || v.hostPath?.path.startsWith(nodeLocalNodePath()) === true
+          || v.hostPath?.path.startsWith(`${nodeMountsNodePath()}/`) === true
           || v.emptyDir !== undefined || v.configMap !== undefined
         expect(ok, `volume ${v.name}: ${JSON.stringify(v)}`).toBe(true)
         expect(v.hostPath?.path.startsWith(testEnv.dataDir)).not.toBe(true)
       }
+      expect(volumes.containers[0].volumeMounts.map((m) => m.mountPath)).not.toContain('/workspace')
+      const { stdout: procMounts } = await execInJob(jobName, ['cat', '/proc/mounts'])
+      const mountPoints = procMounts.split('\n').map((l) => l.split(' ')[1])
+      expect(mountPoints).toEqual(expect.arrayContaining(['/workspace', '/workspace/.git']))
+      // The workspace's own git writes big checkouts in parallel.
+      expect((await execInJob(jobName, ['git', 'config', '--global', 'checkout.workers'])).stdout.trim()).toBe('8')
       // The tree container is the pod's one init container, and has handed
       // the node-local folders kubelet made as root to the pod's own uid.
       expect(volumes.initContainers?.map((c) => c.name)).toEqual(['tree'])
@@ -1338,10 +1339,11 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await waitForListStatus('waiting', 30_000)
     }, 240_000)
 
-    it('keeps each scratch dir and pnpm\'s store on pod-local volumes, installing through the npm cache', async () => {
+    it('keeps each scratch dir and pnpm\'s store on the pod\'s scratch volume, installing through the npm cache', async () => {
       // Last kitchen test: it stops the workspace.
-      // Each scratch dir is a real directory on its own tmpfs, not a symlink
-      // (which would break pnpm's mkdir).
+      // Each scratch dir is a real directory, a folder of the pod's one
+      // scratch tmpfs mounted at its path, not a symlink (which would break
+      // pnpm's mkdir).
       await expect(execInJob(jobName, [
         'readlink', '/workspace/node_modules',
       ])).rejects.toThrow()
@@ -1977,6 +1979,20 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       }, { timeout: 120_000, interval: 500 })
       expect(fromStdin.stdout).toMatch(/attach with `yaac workspace attach --agent [0-9a-f-]{36} [0-9a-f-]{36}`/)
     }, 180_000)
+
+    // A send runs a command in the pod through the server's own exec, which
+    // reads the workspace's variables (CLAUDE_CONFIG_DIR) as a window does.
+    it('sends a message to the running agent', async () => {
+      const said = `sent-to-a-running-agent-${crypto.randomUUID()}`
+      await vi.waitFor(async () => {
+        const sent = await runYaac(serverEnv, 'workspace', 'send', workspaceId, '--prompt', said)
+        expect(sent.exitCode, `${sent.stdout}\n${sent.stderr}`).toBe(0)
+      }, { timeout: 60_000, interval: 2_000 })
+      await vi.waitFor(async () => {
+        const sent = (await mockLLM!.transcript()).filter((e) => e.method === 'POST' && e.url.startsWith('/v1/messages'))
+        expect(sent.some((e) => e.body.includes(said))).toBe(true)
+      }, { timeout: 120_000, interval: 500 })
+    }, 240_000)
 
     // Last, since it deletes the workspace.
     it('deletes the stopped workspace past a root-owned dir its sudo left, through a root pod', async () => {

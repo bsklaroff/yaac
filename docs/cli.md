@@ -549,9 +549,9 @@ yaac config                     Each setting prints given no value, and is
                                 for confirmation, so it needs a terminal)
   scratch-dirs <project> [dirs...]
                                 Show or replace the dirs each workspace keeps
-                                off its checkout, each `path` or `path:GiB`
-                                (docs/project-config.md)
+                                off its checkout (docs/project-config.md)
     --none                      Keep every dir in the checkout
+    --size <GiB>                What they may hold together (default 32)
   init-workflows <project> [workflows...]
                                 Print the init workflows, each with its repos
                                 and steps, or make exactly the named ones the

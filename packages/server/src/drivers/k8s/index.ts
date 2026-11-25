@@ -1,5 +1,4 @@
 import {
-  claimSpareWorkspace,
   countWorkspaces,
   createRuntimeSnapshot,
   declareWorkspaceForwards,
@@ -16,15 +15,19 @@ import {
   forwardWorkspacePort,
   getUnforwardedPorts,
   getWorkspacePorts,
+  awaitWorkspaceReady,
   launchWorkspace,
-  readyTimeoutMs,
+  keepReadyTrees,
+  listSpares,
+  reapSpare,
+  takeSpare,
+  warmSpare,
   salvageTree,
   importTree,
   listWorkspaces,
   pinVolumes,
   prepareWorkspaceSubstrate,
   reapNodeLocal,
-  registerWorkspace,
   removeAsRoot,
   removeWorkspaceForwarder,
   resizeVolume,
@@ -47,7 +50,6 @@ import {
   ensureKubernetes,
   k8sWorkspacePaths,
   podExec,
-  waitForJobPodReady,
   waitForStreamd,
   workspaceIdFromJobName,
 } from '#drivers/k8s/substrate'
@@ -78,7 +80,7 @@ export function createK8sDriver(): WorkspaceDriver {
     release: () => releaseK8sDriver(),
 
     find: (workspaceId, opts) => findWorkspace(workspaceId, opts),
-    findForTeardown: (workspaceId, opts) => findWorkspaceForTeardown(workspaceId, opts),
+    findForTeardown: (workspaceId) => findWorkspaceForTeardown(workspaceId),
     list: (projectId, opts) => listWorkspaces(projectId, opts),
     count: () => countWorkspaces(),
     snapshot: (resync) => createRuntimeSnapshot(resync),
@@ -102,7 +104,11 @@ export function createK8sDriver(): WorkspaceDriver {
     dialPty: (jobName, argv, size) => dialPtyStream(workspaceIdFromJobName(jobName), argv, size),
     reviveStatusStream: (jobName) => bootStreamd(jobName),
 
-    claimSpare: (workspaceId) => claimSpareWorkspace(workspaceId),
+    listSpares: () => listSpares(),
+    warmSpare: (args) => warmSpare(args),
+    takeSpare: (args) => takeSpare(args),
+    reapSpare: (workspaceId, opts) => reapSpare(workspaceId, opts),
+    keepReadyTrees: (trees) => keepReadyTrees(trees),
 
     // The image decides at build time which tools it ships, so there is
     // nothing to check or install here. A missing tool surfaces in the
@@ -118,13 +124,12 @@ export function createK8sDriver(): WorkspaceDriver {
     syncProjectSecrets: (projectId, values, runValues) => syncProjectSecrets(projectId, values, runValues),
     refreshedCredentials: () => refreshedCredentials(),
     launch: (spec) => launchWorkspace(spec),
-    awaitReady: (handle) => waitForJobPodReady(handle.jobName, readyTimeoutMs(handle.jobName)),
+    awaitReady: (handle) => awaitWorkspaceReady(handle),
     salvageTree: (target) => salvageTree(target),
     importTree: (target) => importTree(target),
     declareForwards: (workspaceId, forwards) => Promise.resolve(declareWorkspaceForwards(workspaceId, forwards)),
     dialPort: (workspaceId, containerPort) => dialWorkspacePort(workspaceId, containerPort),
 
-    registerWorkspace: (reg) => registerWorkspace(reg),
     deregisterWorkspace: (workspaceId) => deregisterWorkspace(workspaceId),
     destroy: (target, opts) => destroyWorkspace(target, opts),
     detachedTeardownCommand: (target) => detachedTeardownCommand(target),

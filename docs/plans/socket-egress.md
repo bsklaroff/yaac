@@ -20,9 +20,9 @@ driver run workspaces with no cluster at all
 
 ## What this builds on
 
-- **docs/plans/generic-prewarm-pool.md has shipped.** Every workspace pod
-  has one shape, with an id from creation, and a spare belongs to no
-  project until its claim.
+- **Generic workspace pods have shipped** (docs/generic-workspace-pods.md).
+  Every workspace pod has one shape, with an id from creation, and a spare
+  belongs to no project until its claim.
 - **BuildKit builds have shipped** (docs/image-builds.md). A builder pod is
   redirected and policed like a workspace pod: it has a registration, the
   proxy tunnels its traffic under the project's allowlist and injects
@@ -195,11 +195,11 @@ through before the pod is programmed, which was disqualifying while a
 workspace's wall was a policy. After this plan every pod that runs
 untrusted code has no interface. The policies that remain surround yaac's
 own pods (the server, the proxy, the registries, the npm cache, the site
-router and tunnels, netd, the node agent), and on a kind cluster nothing
+router and tunnels, netd, mountd), and on a kind cluster nothing
 else has an address to dial them from. A moment of open policy at one of
 those pods' birth exposes it to no one, and the two checks that matter
 most do not rest on policy at all: the proxy's non-public guard refuses a
-steered dial to a cluster address, and netd, the node agent and the proxy
+steered dial to a cluster address, and netd, mountd and the proxy
 each ask their caller for a secret.
 
 So `k8s/kind-config.yaml` drops `disableDefaultCNI`, and install drops the

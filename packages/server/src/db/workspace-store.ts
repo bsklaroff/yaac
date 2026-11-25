@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { and, count, desc, eq, exists, getTableColumns, gt, ilike, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql, type AnyColumn, type SQL } from 'drizzle-orm'
+import { and, count, desc, eq, exists, getTableColumns, gt, gte, ilike, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql, type AnyColumn, type SQL } from 'drizzle-orm'
 import { getDb } from './client'
 import { conversations, sessions, workspaceConversations, workspaceGroups, workspaceLives, workspaceRepos, workspaces, type CheckpointOutcome } from './schema'
 import { deleteWorkspaceConversations } from './conversation-store'
@@ -28,8 +28,7 @@ import type { StepsOutcome } from '@yaac/shared/steps'
  *  - Everything else is an UPDATE, which no-ops for a missing row, so
  *    workspaces from a foreign data dir stay invisible without checks.
  *  - The row is written before the runtime starts, so every user workspace
- *    has one. A prewarmed spare has none until a claim inserts it
- *    (docs/workspace-storage.md).
+ *    has one; a spare, which belongs to no project, has none.
  *  - A stop never deletes a row: the workspaces whose current life has a
  *    stop are the stopped listing. Rows are deleted only when the project
  *    is removed (`deleteProjectWorkspaces`), or one workspace is deleted or
@@ -713,4 +712,13 @@ export async function listLiveWorkspaceRows(): Promise<Array<{
 export async function deleteProjectWorkspaces(projectId: string): Promise<void> {
   const db = await getDb()
   await db.delete(workspaces).where(eq(workspaces.projectId, projectId))
+}
+
+/** Workspaces whose current life runs, or stopped at or after `since`: what
+ *  the prewarmed pool and the ready trees follow. */
+export async function listRecentWorkspaces(since: Date): Promise<Array<{ projectId: string; workspaceId: string }>> {
+  const db = await getDb()
+  return await db.select({ projectId: workspaces.projectId, workspaceId: workspaces.workspaceId })
+    .from(workspaces).innerJoin(workspaceLives, currentLife)
+    .where(or(isNull(workspaceLives.stoppedAt), gte(workspaceLives.stoppedAt, since)))
 }

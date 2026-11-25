@@ -47,11 +47,12 @@ host never collide. A tmux socket gives full control of its workspace, so a
 launch first makes sure the temp dir is private (`ensureInstallTmpDir`,
 docs/git-credentials.md) and fails rather than use one another OS user made.
 
-The tmux session has the same shape as the one
-`workspace-bin/yaac-workspace-init` creates in a pod (the keeper window the
-stale reaper looks at, `sleep 2147483647` here because macOS's sleep has no
-`infinity`, docs/sessions.md; the tmux options the webapp terminal needs),
-because that machinery is shared by both drivers.
+The tmux session has the same shape as the one a pod gets from
+`workspace-bin/yaac-workspace-init` and its claim
+(docs/generic-workspace-pods.md "A claim"): the keeper window the stale
+reaper looks at, `sleep 2147483647` here because macOS's sleep has no
+`infinity` (docs/sessions.md), and the tmux options the webapp terminal
+needs, because that machinery is shared by both drivers.
 
 ### Stopping one
 
@@ -389,12 +390,12 @@ same on both drivers.
 
 ## Builtin skills
 
-In a pod, yaac's skills are a per-workspace staging dir mounted read-only
-over each tool's skills root. Here a create links them into the project's
-shared skills roots instead:
+In a pod, yaac's skills come from the server build's helpers folder on the
+shared tier, bound read-only over each tool's skills root. Here a create
+links them into the project's shared skills roots instead:
 `<data>/projects/<project-id>/{claude,codex,…}/skills/<name>` points at the
-install's `builtin-skills/<name>`. Every tool's roots are written. They
-are per project because those dirs are already shared, and links rather than
+install's `builtin-skills/<name>`. Every tool's roots are written. They are
+per project because those dirs are already shared, and links rather than
 copies keep them in step with the running yaac version.
 
 Only yaac's own links are written or removed. A name the user owns (a real

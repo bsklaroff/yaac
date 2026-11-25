@@ -25,6 +25,14 @@ export const NETD_SA_NAME = 'yaac-netd'
  */
 export const DISK_APP_NAME = 'yaac-disk'
 export const DISK_PORT = 8790
+/**
+ * The mountd DaemonSet (drivers/k8s/cluster/mountd.ts): mountd answers the
+ * server on MOUNTD_PORT, and the arborist beside it answers only mountd, on
+ * the pod's loopback.
+ */
+export const MOUNTD_APP_NAME = 'yaac-mountd'
+export const MOUNTD_PORT = 10340
+export const ARBORIST_PORT = 10341
 /** Secret holding the server→proxy bearer secret. */
 export const PROXY_AUTH_SECRET_NAME = 'yaac-proxy-auth'
 /** Port the proxy serves inside the cluster (container + Service port). */

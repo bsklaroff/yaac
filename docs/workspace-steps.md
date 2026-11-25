@@ -198,8 +198,8 @@ inserts the workspace and its first life together, and a restart adds the
 next, so earlier lives keep what they recorded. A restart's life starts
 later than the one before it even if the clock has gone back since.
 
-`launchedAt` is when the life's runtime came up, stamped once its create,
-claim or restart finishes. A restart that fails after starting its life
+`launchedAt` is when the life's runtime came up, stamped once its create
+or restart finishes. A restart that fails after starting its life
 removes that life again, and the workspace reads as the restart found it. A
 server that dies partway through a restart cannot do that, so the stale
 reaper does it on the next server: a current life that is a restart, never
@@ -227,11 +227,6 @@ life and its workflow's name, so the workflow's id is held once. A named
 workflow already run in a life cannot be added to it again; one whose row
 has no steps (skipped, or empty when the life started) has not run, so
 adding it takes that row.
-
-A prewarmed spare runs no steps; a claim starts the life with the project's
-init workflows that apply to the claim's selection, which is the one the
-spare was warmed with. A create that brings its own graph, or starts at a
-commit, never claims one.
 
 ## Start point and base branch
 

@@ -14,7 +14,9 @@ import { PROJECT_CONFIG_DEFAULTS, recordTestProject } from '@yaac/test-utils/pro
 import { projectConfigDir } from '@yaac/shared/project-paths'
 import { applyWorkspaceEvent, BUILT_IN_USER_ID, getProjectRow, getWorkspaceRow, setProjectConfig } from '#db'
 import type * as dbModule from '#db'
-import { createWorkflow, importProjectConfigFiles, listInitWorkflows, resolveProjectConfig } from '#domain/projects'
+import { createWorkflow, importProjectConfigFiles, listInitWorkflows } from '#domain/projects'
+// Internal, to read the stored settings back.
+import { resolveProjectConfig } from '#domain/projects/config'
 import { installFakeWorkspaceDriver } from '#test/support/fake-driver'
 import { serverLog } from '#lib/log'
 import type * as logModule from '#lib/log'

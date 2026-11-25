@@ -93,6 +93,7 @@ import { readInstallRecord } from '@yaac/shared/install-record'
 import { pushImageToRegistry } from './host-images'
 import { PACKAGE_ROOT, globalRoot, serverLocalRoot, volumesRoot } from '@yaac/shared/paths'
 import type { CheckResult } from '@yaac/shared/types'
+import { runMountdProbe } from './mountd-gate'
 
 /** Probe image used for the end-to-end registry-pull + hostPath check. */
 const PROBE_SOURCE_IMAGE = 'docker.io/library/busybox:1.36'
@@ -256,7 +257,7 @@ export async function runClusterCheck(
   if (token !== null) add(token)
 
   const PROBE_GATES = [
-    'node-fixups', 'gvisor', 'gvisor-installer', 'probe', 'egress', 'npm-cache', 'sites',
+    'node-fixups', 'gvisor', 'gvisor-installer', 'probe', 'mountd', 'egress', 'npm-cache', 'sites',
     'datapath', 'veth-source', 'per-node', 'storage-semantics', 'vap', 'node-local-fs',
   ] as const
   const skipFrom = (from: (typeof PROBE_GATES)[number], detail: string): void => {
@@ -284,7 +285,7 @@ export async function runClusterCheck(
   let sandboxResults: CheckResult[]
   if (idlePool) {
     sandboxResults = [
-      'probe', 'egress', 'npm-cache', 'sites', 'per-node', 'storage-semantics',
+      'probe', 'mountd', 'egress', 'npm-cache', 'sites', 'per-node', 'storage-semantics',
     ].map(idleSkip)
   } else {
     // Probe pods run as the workspace uid/gid recorded on the server
@@ -306,6 +307,7 @@ export async function runClusterCheck(
     // which is slow, and they share no pods or files.
     sandboxResults = await Promise.all([
       runEndToEndProbe(identity),
+      ensureProbeImage().then((image) => runMountdProbe(image, identity)),
       runNetworkPolicyProbe(),
       runNpmCacheProbe(),
       runSitesProbe(),
@@ -314,9 +316,10 @@ export async function runClusterCheck(
     ])
   }
   const [
-    probeResult, egressResult, npmCacheResult, sitesResult, perNodeResult, semanticsResult,
+    probeResult, mountdResult, egressResult, npmCacheResult, sitesResult, perNodeResult, semanticsResult,
   ] = sandboxResults
   add(probeResult)
+  add(mountdResult)
   add(egressResult)
   add(npmCacheResult)
   add(sitesResult)

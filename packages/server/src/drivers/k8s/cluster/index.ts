@@ -66,6 +66,18 @@ export {
 } from './netd'
 export { buildDiskDaemonSetManifest, buildDiskIngressNpManifest } from './disk-pod'
 export {
+  ensureMountd,
+  mountdBind,
+  mountdKeepReady,
+  mountdReports,
+  nodeUnreadyReason,
+  readyNodes,
+  resolveMountdImageTag,
+  serverBuild,
+  watchMountd,
+  type MountdReport,
+} from './mountd'
+export {
   buildBuildRegistrationConfigMapManifest,
   buildBuilderRoleGuardBindingManifest,
   buildBuilderRoleGuardPolicyManifest,

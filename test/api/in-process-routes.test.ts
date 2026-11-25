@@ -83,7 +83,7 @@ const OTHER = '0a0a0a0a-0000-4000-8000-000000000004'
 describe('scratch dirs route', () => {
   const SCRATCH = '0a0a0a0a-0000-4000-8000-000000000010'
 
-  it('sets either part, keeping the other, and refuses a path outside the checkout or a bad cap', async () => {
+  it('sets any part, keeping the others, and refuses a path outside the checkout, a per-dir cap or a bad size', async () => {
     await recordTestProject(SCRATCH)
     const client = makeTestApiClient(buildApp({ buildId: 'test' }))
     const scratch = client.project[':projectId']['scratch-dirs']
@@ -91,14 +91,17 @@ describe('scratch dirs route', () => {
 
     expect((await scratch.$put({ param, json: { ignoredTracked: ['target/'] } })).status).toBe(200)
     // Answered as stored: normalized and deduplicated.
-    const res = await scratch.$put({
-      param, json: { dirs: [{ path: 'node_modules/', sizeGiB: 4 }, { path: 'node_modules', sizeGiB: 9 }] },
-    })
-    const stored = { dirs: [{ path: 'node_modules', sizeGiB: 4 }], ignoredTracked: ['target'] }
-    expect(await res.json()).toEqual(stored)
+    const res = await scratch.$put({ param, json: { dirs: [{ path: 'node_modules/' }, { path: 'node_modules' }] } })
+    const dirsSet = { dirs: [{ path: 'node_modules' }], sizeGiB: 32, ignoredTracked: ['target'] }
+    expect(await res.json()).toEqual(dirsSet)
+    const sized = await scratch.$put({ param, json: { sizeGiB: 48 } })
+    const stored = { ...dirsSet, sizeGiB: 48 }
+    expect(await sized.json()).toEqual(stored)
     expect((await getProjectRow(SCRATCH))?.scratchDirs).toEqual(stored)
-    expect((await scratch.$put({ param, json: { dirs: [{ path: '../up', sizeGiB: 8 }] } })).status).toBe(400)
-    expect((await scratch.$put({ param, json: { dirs: [{ path: 'target', sizeGiB: 0 }] } })).status).toBe(400)
+    expect((await scratch.$put({ param, json: { dirs: [{ path: '../up' }] } })).status).toBe(400)
+    // A dir has no size of its own.
+    expect((await scratch.$put({ param, json: { dirs: [{ path: 'target', sizeGiB: 8 }] } as never })).status).toBe(400)
+    for (const sizeGiB of [0, 1025, 1.5]) expect((await scratch.$put({ param, json: { sizeGiB } })).status).toBe(400)
     expect((await getProjectRow(SCRATCH))?.scratchDirs).toEqual(stored)
   })
 })

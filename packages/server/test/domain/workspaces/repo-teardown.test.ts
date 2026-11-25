@@ -55,8 +55,6 @@ const KEEPER = '6cc61f49-c2ae-433a-8d09-1f22d7868752'
 
 const mockList = vi.fn<(projectId?: string) => Promise<RuntimeHandle[]>>()
 const mockDeregister = vi.fn<(workspaceId: string) => Promise<void>>()
-/** The workspaces destroyed outright: reaped spares. */
-const mockDestroy = vi.fn<(target: { workspaceId: string }) => Promise<boolean>>()
 /** What the runtime was last handed to inject, by owner key. */
 const mockSync = vi.fn<(bundles: Record<string, CredentialBundle>) => Promise<void>>()
 
@@ -66,10 +64,9 @@ beforeEach(async () => {
   tmpDir = await createTempDataDir()
   mockList.mockReset().mockResolvedValue([])
   mockDeregister.mockReset().mockResolvedValue(undefined)
-  mockDestroy.mockReset().mockResolvedValue(true)
   mockSync.mockReset().mockResolvedValue(undefined)
   clearAllProvisioningForTests()
-  installFakeWorkspaceDriver({ list: mockList, deregisterWorkspace: mockDeregister, destroy: mockDestroy, syncCredentials: mockSync })
+  installFakeWorkspaceDriver({ list: mockList, deregisterWorkspace: mockDeregister, syncCredentials: mockSync })
 })
 
 afterEach(async () => {
@@ -112,7 +109,6 @@ describe('unshareRepo', () => {
     await holding(project, 'mine', repo.id)
     mockList.mockResolvedValue([
       running(ADA_PROJECT, 'hers'), running(ADA_PROJECT, 'empty'), running(project, 'mine'),
-      { ...running(ADA_PROJECT, 'spare'), prewarmed: true },
     ])
 
     await expect(unshareRepo(adaActor, repo.id, ada)).rejects.toMatchObject({ code: 'FORBIDDEN' })
@@ -121,8 +117,8 @@ describe('unshareRepo', () => {
     await unshareRepo(local, repo.id, ada)
 
     expect(await listRepoShares()).toEqual([])
-    // Only her workspace with a checkout of it: not the one without, not
-    // the owner's, and the spare is the prewarm pool's to reap.
+    // Only her workspace with a checkout of it: not the one without, nor
+    // the owner's.
     expect(mockDeregister.mock.calls).toEqual([['hers']])
     await vi.waitFor(async () => expect(await stoppedIds()).toEqual(['hers']))
     // Her link and checkout stay, to work again if it is shared again.
@@ -154,7 +150,6 @@ describe('reconcileRevokedShares', () => {
     const snapshot = snapshotFixture([
       running(ADA_PROJECT, 'late'),
       running(ADA_PROJECT, 'stuck'),
-      { ...running(ADA_PROJECT, 'spare'), prewarmed: true },
       { ...running(ADA_PROJECT, 'going'), terminating: true },
       running(project, 'source'),
     ])
@@ -223,7 +218,6 @@ describe('moveRepoToRemote', () => {
     await recordWorkspaceCreated({ projectId: project, workspaceId: 'elsewhere' })
     const handles = [
       running(project, 'a'), running(ADA_PROJECT, 'b'), running(project, 'elsewhere'),
-      { ...running(project, 'spare'), prewarmed: true },
     ]
     mockList.mockImplementation(() => Promise.resolve(handles))
     // A create in Ada's project starting with the repo, past its last
@@ -273,9 +267,8 @@ describe('moveRepoToRemote', () => {
     expect((await listWorkspaceRepos('a')).map((c) => c.repoId)).toEqual([repo.id])
     expect((await getProjectRow(project))?.repos.map((l) => l.repo.id)).toEqual([repo.id])
     await vi.waitFor(() => expect(fetchOrigin).toHaveBeenCalledWith(repoDir(repo.id), GITHUB, credential))
-    // The workspaces stop with their checkouts kept; the spare is reaped.
+    // The workspaces stop with their checkouts kept.
     await vi.waitFor(async () => expect(await stoppedIds()).toEqual(['a', 'b', 'late']))
-    await vi.waitFor(() => expect([...new Set(mockDestroy.mock.calls.map(([t]) => t.workspaceId))]).toEqual(['spare']))
     // The hold is lifted, and it has moved.
     await expect(authorizeProject(local, project)).resolves.toBeUndefined()
     await expect(moveRepoToRemote(local, repo.id, GITHUB, token)).rejects.toThrow(/is not hosted by yaac/)
@@ -353,7 +346,6 @@ describe('previewRepoMove', () => {
       running(project, 'a'),
       running(ADA_PROJECT, 'b'),
       running(project, 'elsewhere'),
-      { ...running(project, 'spare'), prewarmed: true },
       { ...running(project, 'going'), terminating: true },
     ])
 

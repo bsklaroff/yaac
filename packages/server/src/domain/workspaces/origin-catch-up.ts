@@ -2,8 +2,7 @@
  * Moving a checkout to its branch's tip on origin (docs/server-git.md
  * "Starting a workspace"). A workspace starts at the commit its repo's main
  * clone already has (`pickStart`), so its start never waits on the network,
- * and catches up once it is up and the start's fetch has landed. The same
- * move takes a spare to a new tip or to another branch.
+ * and catches up once it is up and the start's fetch has landed.
  *
  * The move runs inside the workspace, as the agent's own user: the server
  * resolves the target commit from the main clone, whose objects the
@@ -11,7 +10,7 @@
  */
 import path from 'node:path'
 import { workspaceDriver } from '#drivers/driver'
-import { applyWorkspaceEvent, getProjectRow, type ProjectRow } from '#db'
+import { applyWorkspaceEvent } from '#db'
 import { resolveRemoteRef } from '#domain/git'
 import { errorText, serverLog } from '#lib/log'
 import { ofCheckout, timingOf } from '#lib/start-timing'
@@ -49,8 +48,6 @@ interface CheckoutMove {
   target: string
   /**
    * What to do where git refuses the fast-forward:
-   * - `reset`: reset to the target and remove untracked files. For a spare,
-   *   which nothing has touched and nothing runs in.
    * - `untouchedAt`: reset only a checkout still on that commit, the one it
    *   was put at, with nothing modified or untracked. For a workspace in
    *   which nothing runs yet: the test and the reset are separate
@@ -58,10 +55,7 @@ interface CheckoutMove {
    * - `leave`: leave the checkout as it is. For a workspace whose agent or
    *   steps may be running.
    */
-  otherwise: 'reset' | { untouchedAt: string } | 'leave'
-  /** Make `origin/<branch>` the checked-out branch's upstream: a spare
-   *  moving to another branch. */
-  retrack?: boolean
+  otherwise: { untouchedAt: string } | 'leave'
 }
 
 /** Starts the line a move prints: the commit its checkout ended at, and
@@ -69,22 +63,10 @@ interface CheckoutMove {
 const ENDED_AT = 'yaac-at:'
 
 /**
- * The paths under a checkout at `dir` that are mount points (its scratch
- * dirs, and cache volumes inside it), as `git clean` exclusions: removing
- * one fails with EBUSY.
- */
-function mountExclusions(project: Pick<ProjectRow, 'scratchDirs' | 'cacheVolumes'> | undefined, dir: string): string {
-  const inside = Object.values(project?.cacheVolumes ?? {})
-    .flatMap((p) => (p.startsWith(`${dir}/`) ? [p.slice(dir.length + 1)] : []))
-  return [...(project?.scratchDirs.dirs.map((d) => d.path) ?? []), ...inside]
-    .map((p) => ` -e '${shellEscape(p)}'`).join('')
-}
-
-/**
  * The shell command that moves a checkout to `target` if that is safe, and
  * prints where it ended up. It fast-forwards, which git refuses when the
  * checkout has commits of its own or a change the incoming commits would
- * overwrite. Where git refuses (a force-pushed branch, another branch),
+ * overwrite. Where git refuses (a force-pushed branch),
  * `otherwise` says whether the checkout is reset or left as it is.
  *
  * `origin/<branch>` is set to the target either way: the checkout's own
@@ -95,18 +77,16 @@ function mountExclusions(project: Pick<ProjectRow, 'scratchDirs' | 'cacheVolumes
  * and submodule modes, so no git config can narrow it. The command always
  * succeeds, so it can ride the one that opens a window.
  */
-function moveCommand(move: CheckoutMove, exclusions: string): string {
+function moveCommand(move: CheckoutMove): string {
   const git = `git -C ${shellQuote(move.dir)}`
   const quiet = '>/dev/null 2>&1'
   const upstream = `origin/${shellEscape(move.branch)}`
   const head = `$(${git} rev-parse -q --verify HEAD)`
   const reset = `${git} reset --hard ${move.target} ${quiet}`
   const otherwise = move.otherwise === 'leave' ? ''
-    : move.otherwise === 'reset' ? ` || { ${reset} && ${git} clean -fd${exclusions} ${quiet} && yaac_how=reset; }`
-      : ` || { [ "${head}" = ${move.otherwise.untouchedAt} ]`
-        + ` && [ -z "$(${git} status --porcelain --untracked-files=all --ignore-submodules=none 2>&1)" ] && ${reset} && yaac_how=reset; }`
+    : ` || { [ "${head}" = ${move.otherwise.untouchedAt} ]`
+      + ` && [ -z "$(${git} status --porcelain --untracked-files=all --ignore-submodules=none 2>&1)" ] && ${reset} && yaac_how=reset; }`
   return `{ yaac_how=skipped; ${git} update-ref 'refs/remotes/${upstream}' ${move.target} ${quiet}; `
-    + (move.retrack === true ? `${git} branch --set-upstream-to '${upstream}' ${quiet}; ` : '')
     + `${git} -c core.hooksPath=/dev/null merge --ff-only ${move.target} ${quiet} && yaac_how=ff${otherwise}; `
     + `echo "${ENDED_AT}${head} $yaac_how"; }`
 }
@@ -123,24 +103,6 @@ function endedAt(stdout: string): Array<{ at: string; how: string }> {
     const [at = '', how = ''] = l.slice(ENDED_AT.length).split(' ')
     return [{ at, how }]
   })
-}
-
-/**
- * Move a spare's checkouts, each to a commit of a branch: to a new tip in
- * the background, or to what a claim starts with. Nothing has touched a
- * spare, so each ends at its target or this throws, and the caller reaps
- * the spare.
- */
-export async function moveSpare(
-  spare: { jobName: string; projectId: string },
-  moves: Array<{ dir: string; branch: string; target: string; retrack?: boolean }>,
-): Promise<void> {
-  const project = await getProjectRow(spare.projectId)
-  const ended = endedAt(await runMoves(spare.jobName, moves.map((m) => moveCommand({ ...m, otherwise: 'reset' }, mountExclusions(project, m.dir)))))
-  for (const [i, m] of moves.entries()) {
-    const at = ended[i]?.at
-    if (at !== m.target) throw new Error(`the checkout at ${m.dir} is at ${at || 'no commit'}, not ${m.target}`)
-  }
 }
 
 /** A workspace's catch-up with the fetches that have landed. */
@@ -206,7 +168,7 @@ export async function catchUp(
   return {
     cmds: due.map(({ f, target }) => {
       const dir = path.posix.join(workspaceDir, f.path)
-      return moveCommand({ dir, branch: f.branch, target, otherwise: live ? 'leave' : { untouchedAt: f.at } }, '')
+      return moveCommand({ dir, branch: f.branch, target, otherwise: live ? 'leave' : { untouchedAt: f.at } })
     }),
     settle: async (stdout) => {
       const ended = endedAt(stdout)

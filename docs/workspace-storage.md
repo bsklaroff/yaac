@@ -27,8 +27,8 @@ checkout that holds files but no `.git` is refused: checking out into it would
 overwrite every tracked file, so the restart fails naming the directory and
 the row stays stopped.
 
-Every sweep is driven by a record, a row or a prewarmed spare's runtime mark
-(below), so a checkout with neither is never collected automatically.
+Every sweep is driven by a row, so a checkout with none is never collected
+automatically.
 Guessing "garbage" from disk alone is how a sweep deletes the only copy of
 someone's work. The code paths that delete a row therefore delete its files
 too.
@@ -73,38 +73,17 @@ running workspace at a time mounts, on a cluster.
 - **Everything else is an UPDATE**, which does nothing when the row does not
   exist. That keeps workspaces from another data dir invisible without any
   existence check.
-- **A prewarmed spare has no row until it is claimed.** Its only record is
-  the `yaac.prewarmed` label on its pod and its Job. What it was warmed with
-  (agent mode, model, posture, effort, zone, base branch, image), which claims and
-  the pool match on, is held in the server's memory, so after a server
-  restart every spare counts as stale and is reaped and rewarmed. A claim's
-  commit point is inserting the row (`workspace-created`, with the claimed
-  settings, title, group and base branch), before it changes the spare. It
-  never waits for its fetch of origin: the workspace starts at the commit
-  the main clone has, a spare on another commit or branch is moved there
-  first, and the checkout catches up once the fetch lands (docs/server-git.md
-  "Starting a workspace"). Once
-  it has, it removes the label from the pod, in one write the API server
-  refuses unless the pod still has it, then from the Job. The pod's write
-  wins the claim, so the session's window opens while the Job's is in
-  flight, but the claim is not done until both have landed. A claim that
-  fails before changing the spare deletes its row and the spare returns to
-  the pool. One that fails after deletes its row and reaps the spare.
-- **A spare's files are deleted only when its unit is labelled prewarmed and
-  no row has its id** (`reapSpare`). A failed row lookup deletes nothing. A
-  row always wins. The reap's listing may predate a claim that has since
-  finished, so a spare with a row is looked up again, and one no longer
-  labelled is the user's workspace and is left running. One still labelled
-  was left by a server that died between a claim's insert and its relabel;
-  the reap tears it down like a stop, keeping the files. The reap deletes the
-  pod, then the files, then the Job,
-  each only once the previous step succeeded, so whatever a failure leaves is
-  still labelled and the next reap retries it. A dead spare's Job
-  (`backoffLimit: 0`) outlives its pod, so the stale reaper still knows a
-  spare whose pod is gone and hands it to the same reap. Because the label
-  lives in the cluster, a database restored from before a claim cannot make
-  the claimed workspace look reapable. (A workspace an older server claimed
-  kept the label on its Job; see docs/legacy-compat-shims.md.)
+- **A prewarmed spare has no row.** It belongs to no project: its only
+  record is its pod and Job, labelled `yaac.prewarmed` and with no project
+  label, so no workspace listing sees it (docs/generic-workspace-pods.md).
+  A start takes one before it names its workspace, by removing the pod's
+  label in one write the API server refuses unless the pod still has it,
+  and the workspace then has the spare's id. Its row is inserted as for any
+  create, and only then does the launch give the pod and Job their project
+  label. A take no launch adopted, and a pod with neither label that a dead
+  server took, are reaped (`reapSpare`): a spare has no files and no row,
+  so its Job is all there is to delete. Spares do not outlive the server
+  that made them.
 - **No stop deletes a row.** A workspace whose current life has `stoppedAt`
   set is a stopped workspace. A restart reuses the id and starts its next
   life, which has no stop; the workspace keeps its title and sidebar group,
@@ -126,8 +105,8 @@ running workspace at a time mounts, on a cluster.
     restart on its committed work, rather than bytes no record points at.
     Stopped-workspace auto-delete makes the same delete (see "Retention"
     below).
-  - A fresh create or a spare claim rolling back its own insert. A fresh
-    create also removes its staged checkout. A failed restart leaves the
+  - A fresh create rolling back its own insert, which also removes its
+    staged checkout. A failed restart leaves the
     workspace stopped as it found it, since its checkout is the work the
     user came back for.
 - Reads and writes propagate errors. A teardown logs a failed stop write and
@@ -397,8 +376,8 @@ a fresh session and the JSON stays on disk.
 SQLite does not work on a network filesystem, so a k8s pod runs opencode
 against a **node-local working copy**
 (`node-local/projects/<project id>/opencode-data/<id>`, mounted at
-`~/.local/share/opencode`; the pod's tree container mounts it too, to hand
-it to the install uid before opencode starts). The durable copy is the **checkpoint** on the
+`~/.local/share/opencode`, which mountd makes owned by the install
+uid at the claim). The durable copy is the **checkpoint** on the
 global tier, `global/projects/<project id>/opencode-data/<id>`
 (`opencodeCheckpointDir`, mounted at `~/.yaac/opencode-checkpoint`).
 
@@ -410,15 +389,15 @@ global tier, `global/projects/<project id>/opencode-data/<id>`
   session's `session_message` rows. This export is how the server shows a
   sandboxed workspace's conversation, since it never opens a database the
   workspace wrote; a checkpoint with no export shows an empty transcript.
-- `yaac-workspace-init` runs it every five minutes. The pod's preStop hook runs
-  it once more with `stop`, which also empties the working copy, so a cleanly
-  stopped workspace leaves nothing on its node. A crashed one leaves a copy for
-  the node-local sweep.
-- A start restores from the checkpoint and discards whatever the node held,
-  with one exception: if a surviving working copy's database or WAL is newer
-  than the checkpoint, it is checkpointed first, so an unclean stop on a node
-  that came back loses nothing. If the node did not come back, at most five
-  minutes of conversation are lost.
+- streamd's claim call starts a loop that runs it every five minutes. The
+  pod's preStop hook runs it once more with `stop`, which also empties the
+  working copy, so a cleanly stopped workspace leaves nothing on its node. A
+  crashed one leaves a copy for the node-local sweep.
+- The claim call restores from the checkpoint and discards whatever the node
+  held, with one exception: if a surviving working copy's database or WAL is
+  newer than the checkpoint, it is checkpointed first, so an unclean stop on
+  a node that came back loses nothing. If the node did not come back, at
+  most five minutes of conversation are lost.
 
 Two things make the preStop hook actually run. The teardown's
 `kubectl delete job` is a waited foreground cascade, because the next step
@@ -850,16 +829,16 @@ started with, files git tracks in them included (docs/project-config.md
 
 ### Under k8s
 
-Each scratch dir is its own pod-local emptyDir volume, which the gVisor mount
-hints (`sentryTmpfsAnnotations`) turn into a tmpfs inside the gVisor sentry,
-backed by a file in the emptyDir: node disk rather than pinned memory, and file
-metadata traffic that never crosses the gofer. The hint applies per volume, so
-each dir gets its own volume rather than a subPath. The volume goes with the pod
-(a workspace Job never restarts in place). Each dir is capped at its own size
-from the project's settings, and the pod's ephemeral-storage limit grows by
-every dir's cap, so a full dir fails its own writes rather than evicting the
-pod. The request grows by one typical
-install only, since the scheduler packs pods by request.
+A pod has one scratch volume, an emptyDir which the gVisor mount hints
+(`sentryTmpfsAnnotations`) turn into a tmpfs inside the gVisor sentry, backed
+by a file in the emptyDir: node disk rather than pinned memory, and file
+metadata traffic that never crosses the gofer. Each scratch dir is a folder
+of it, bound over the dir's path at the claim (docs/generic-workspace-pods.md
+"Scratch dirs"). The volume goes with the pod (a workspace Job never restarts
+in place). Its size is the project's, shared by every scratch dir, and the
+pod's ephemeral-storage limit grows by it, so a full volume fails writes
+rather than evicting the pod. The request grows by one typical install only,
+since the scheduler packs pods by request.
 
 pnpm's store is also per pod, set in both `pnpm_config_store_dir` and
 `npm_config_store_dir` (pnpm 11+ reads only the first, a corepack-pinned pnpm 10
@@ -869,7 +848,7 @@ only the second). It sits inside the root scratch dir,
 scratch dirs leave out the root one, the store goes on the pod's own disk, never
 in the checkout. In a pnpm workspace the nested scratch dirs only hold symlinks
 into the root one. Scratch dirs that are independent installs (with their own
-lockfiles) each hold a full copy, each within its own cap.
+lockfiles) each hold a full copy, all within the one size.
 
 A store shared between pods is not possible. pnpm indexes the store in one
 SQLite database in WAL mode, which needs every writer on one kernel, and each
@@ -908,8 +887,8 @@ keys, `pnpm audit signatures` finds none for the cache, checks no package, and
 still reports success. Installs need neither endpoint: pnpm reads attestations
 only for a publish time, and falls back to the metadata's `time` field.
 
-The cache is only ever the **default** registry. The init script writes it to
-the workspace's user-level `~/.npmrc` (from `YAAC_NPM_REGISTRY`). pnpm 10+
+The cache is only ever the **default** registry. streamd's claim call writes it
+to the workspace's user-level `~/.npmrc`. pnpm 10+
 and npm all read that below a project's own `.npmrc`, so a project that names a
 registry there, globally or per scope, keeps it. That is also the opt-out:
 `registry=https://registry.npmjs.org/` in the project `.npmrc`. A project that
@@ -924,15 +903,14 @@ allowed by NetworkPolicy) when any of these hold:
   proxy, see docs/workspace-egress.md);
 - its project authenticates to npmjs through a proxied secret.
 
-Whether a new workspace is pointed at the cache is decided at each create, by
-whether a cache pod is ready. A cache that is down or rolling leaves new
-workspaces on npmjs, which is only slower. A prewarmed spare is decided at
-warm-up and again at claim, which rewrites the cache line in its `~/.npmrc`.
-A workspace already pointed at the cache fails its installs while the cache is
-down. It is a single replica, so a rollout or a node drain is such a window;
-the main registry has the same exposure for image pulls. Nothing prunes the
-cache, and any workspace can grow it by fetching public packages. On kind its
-volume claim is node disk with no quota.
+Whether a new workspace is pointed at the cache is decided at each create,
+by whether a cache pod is ready. A cache that is down or rolling leaves new
+workspaces on npmjs, which is only slower. A workspace already pointed at
+the cache fails its installs while the cache is down. It is a single
+replica, so a rollout or a node drain is such a window; the main registry
+has the same exposure for image pulls. Nothing prunes the cache, and any
+workspace can grow it by fetching public packages. On kind its volume claim
+is node disk with no quota.
 
 ### Under containerless
 

@@ -111,12 +111,12 @@ export async function probeTmuxLiveness(target: ProbeTarget): Promise<TmuxLivene
     if (cached.kind === 'inflight') return cached.promise
     if (cached.expiresAt > now) return cached.value
   }
-  const promise = probeTmuxLivenessUncached(target).then((value) => {
-    tmuxAliveCache.set(key, {
-      kind: 'settled',
-      value,
-      expiresAt: Date.now() + TMUX_ALIVE_TTL_MS,
-    })
+  const promise: Promise<TmuxLiveness> = probeTmuxLivenessUncached(target).then((value) => {
+    // A `forgetLiveness` while the probe ran wants nothing it saw kept.
+    const current = tmuxAliveCache.get(key)
+    if (current?.kind === 'inflight' && current.promise === promise) {
+      tmuxAliveCache.set(key, { kind: 'settled', value, expiresAt: Date.now() + TMUX_ALIVE_TTL_MS })
+    }
     return value
   })
   tmuxAliveCache.set(key, { kind: 'inflight', promise })

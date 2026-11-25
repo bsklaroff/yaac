@@ -307,6 +307,7 @@ export {
   getProjectWorkspaceRows,
   getWorkspaceRow,
   listStoppedWorkspaceRows,
+  listRecentWorkspaces,
   listUncleanedStoppedWorkspaces,
   listUnstampedTreeLives,
   listTreeLives,

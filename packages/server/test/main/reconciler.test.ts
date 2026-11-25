@@ -11,7 +11,8 @@ import type * as teardownModule from '#domain/workspaces/repo-teardown'
 // driver; these tests check which steps run and in what order, not what
 // they do. The real driver is installed only to read its step list.
 vi.mock('#domain/workspaces/stale-workspaces', () => ({ reconcileStaleWorkspaces: vi.fn() }))
-vi.mock('#domain/workspaces/prewarm-reconcile', () => ({ reconcilePrewarmPool: vi.fn() }))
+vi.mock('#domain/workspaces/prewarm', () => ({ reconcilePrewarmPool: vi.fn() }))
+vi.mock('#domain/workspaces/ready-trees', () => ({ reconcileReadyTrees: vi.fn() }))
 vi.mock('#domain/workspaces/conversation-registry', () => ({
   reconcileConversations: vi.fn(),
   reconcileStoppedConversations: vi.fn(),
@@ -38,7 +39,8 @@ import { startReconciler } from '#main/reconciler'
 import { defaultReconcileSteps } from '#main/reconcile-steps'
 import type { PassContext, ReconcileStep, ReconcileTrigger } from '#drivers/contract'
 import { reconcileStaleWorkspaces } from '#domain/workspaces/stale-workspaces'
-import { reconcilePrewarmPool } from '#domain/workspaces/prewarm-reconcile'
+import { reconcilePrewarmPool } from '#domain/workspaces/prewarm'
+import { reconcileReadyTrees } from '#domain/workspaces/ready-trees'
 import { reconcileConversations } from '#domain/workspaces/conversation-registry'
 import { gcOrphanScratchDirs, reapOrphanNodeLocal } from '#domain/workspaces/cleanup'
 import { adoptRefreshedToolCredentials } from '#domain/auth/runtime-push'
@@ -51,7 +53,7 @@ const runtimeMaintenance = vi.fn<(ctx: PassContext) => Promise<void>>()
 
 const ALL_STEP_FNS = [
   reconcileStaleWorkspaces, reconcileRevokedShares,
-  runtimePrePool, reconcilePrewarmPool,
+  runtimePrePool, reconcilePrewarmPool, reconcileReadyTrees,
   reconcileConversations,
   runtimeMaintenance,
   gcOrphanScratchDirs, reapOrphanNodeLocal, adoptRefreshedToolCredentials,
@@ -451,10 +453,11 @@ describe('defaultReconcileSteps', () => {
     await expectOnly(['proxy-refreshed'], [adoptRefreshedToolCredentials])
   })
 
-  // The pool resolves each project's spare config itself.
-  it('hands the pool the pass view', async () => {
-    await runPass([], { resync: true })
-    expect(vi.mocked(reconcilePrewarmPool)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(reconcilePrewarmPool).mock.calls[0]).toHaveLength(1)
+  // Both follow the set of recent workspaces, so a workspace starting or
+  // stopping moves them in the same pass.
+  it('keeps the pool and the ready trees on a change of the workspace set', async () => {
+    await runPass(['workspaces'])
+    expect(reconcilePrewarmPool).toHaveBeenCalledTimes(1)
+    expect(reconcileReadyTrees).toHaveBeenCalledTimes(1)
   })
 })

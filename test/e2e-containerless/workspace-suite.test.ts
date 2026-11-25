@@ -159,34 +159,37 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     expect(bad.stderr).toContain('not a whole number of days')
   })
 
-  it('yaac config scratch-dirs shows the defaults with their caps, replaces them, clears them with --none, and refuses a bad dir', async () => {
+  it('yaac config scratch-dirs shows the defaults, replaces the dirs, the size or both, clears the dirs with --none, and refuses a bad dir or size', async () => {
     const run = (...args: string[]): ReturnType<typeof runYaac> => runYaac(serverEnv, 'config', 'scratch-dirs', NAME, ...args)
     expect((await run()).stdout)
-      .toContain(`Scratch directories in ${NAME}: node_modules (16 GiB, the default), target (16 GiB, the default)`)
+      .toContain(`Scratch directories in ${NAME}: node_modules, target, holding at most 32 GiB together`)
 
-    // A dir named without a cap gets the default.
-    const set = await run('node_modules:4', 'target:32', 'web/node_modules/')
+    const set = await run('node_modules', 'target', 'web/node_modules/', '--size', '48')
     expect(set.exitCode, set.stderr).toBe(0)
     // What was stored, normalized, not what was typed.
     expect(set.stdout).toContain(
-      `Scratch directories in ${NAME} are now: node_modules (4 GiB), target (32 GiB), web/node_modules (16 GiB, the default).`,
+      `Scratch directories in ${NAME} are now: node_modules, target, web/node_modules, holding at most 48 GiB together.`,
     )
     expect((await run('target')).stdout)
-      .toContain(`Scratch directories in ${NAME} are now: target (16 GiB, the default).`)
+      .toContain(`Scratch directories in ${NAME} are now: target, holding at most 48 GiB together.`)
+    // A size alone leaves the dirs as they are.
+    expect((await run('--size', '8')).stdout)
+      .toContain(`Scratch directories in ${NAME} are now: target, holding at most 8 GiB together.`)
 
     expect((await run('--none')).exitCode).toBe(0)
-    expect((await run()).stdout).toContain(`Scratch directories in ${NAME}: none`)
+    expect((await run()).stdout).toContain(`Scratch directories in ${NAME}: none, holding at most 8 GiB together`)
     const both = await run('target', '--none')
     expect(both.exitCode).toBe(1)
     expect(both.stderr).toContain('not both')
     const bad = await run('../up')
     expect(bad.exitCode).toBe(1)
     expect(bad.stderr).toContain('must not contain')
-    const tooBig = await run('target:2000')
+    const tooBig = await run('--size', '2000')
     expect(tooBig.exitCode).toBe(1)
+    expect(tooBig.stderr).toContain('--size takes a whole number of GiB, from 1 to 1024.')
 
     // Put back what the cases below run with.
-    expect((await run('node_modules', 'target')).exitCode).toBe(0)
+    expect((await run('node_modules', 'target', '--size', '32')).exitCode).toBe(0)
   })
 
   it('creates a workspace as a tmux session on this host, with the project\'s plain variables in its environment', async () => {

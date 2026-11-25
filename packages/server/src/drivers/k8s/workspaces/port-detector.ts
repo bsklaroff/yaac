@@ -1,5 +1,5 @@
 import type net from 'node:net'
-import { type PodInfo, isPrewarmed, relayDial } from '#drivers/k8s/substrate'
+import { type PodInfo, relayDial } from '#drivers/k8s/substrate'
 import { getWorkspacePorts } from './port-forwarders'
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
@@ -222,7 +222,7 @@ class WorkspacePortsWatcher {
 }
 
 /**
- * Keeps one ports stream per running, non-prewarmed workspace pod, synced
+ * Keeps one ports stream per running workspace pod, synced
  * from informer pod updates like `StatusWatcherManager`. `onChange` fires
  * when any workspace's detected set changes.
  */
@@ -241,7 +241,7 @@ export class PortDetectorManager {
   sync(pods: PodInfo[]): void {
     const wanted = new Set<string>()
     for (const p of pods) {
-      if (!p.running || !p.workspaceId || isPrewarmed(p)) continue
+      if (!p.running || !p.workspaceId) continue
       wanted.add(p.workspaceId)
     }
     for (const [workspaceId, watcher] of this.watchers) {

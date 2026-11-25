@@ -7,9 +7,10 @@ import { promisify } from 'node:util'
 import { describe, it, expect } from 'vitest'
 import { buildRespawnExec, buildWindowsExec, finishSetupCommand } from '#runtime/agents/setup-commands'
 import { KEEPER_STARTING, KEEPER_WINDOW } from '#drivers/contract'
-import { WORKSPACE_INIT_SCRIPT, workspaceBinDir } from '#domain/workspaces/workspace-bin'
+import { workspaceBinDir } from '#domain/workspaces/workspace-bin'
 
 import { workspacePathsFixture } from '#test/support/fake-driver'
+import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
 
 // The container paths these commands are written against.
 const PATHS = workspacePathsFixture()
@@ -106,7 +107,7 @@ describe('finishSetupCommand', () => {
 // Pod-side setup is the yaac-workspace-init script (the postStart hook).
 // Pin what the server relies on so the two cannot drift apart.
 describe('yaac-workspace-init script', () => {
-  const scriptPath = path.join(workspaceBinDir(), WORKSPACE_INIT_SCRIPT)
+  const scriptPath = path.join(workspaceBinDir(), 'yaac-workspace-init')
 
   it('ships in workspace-bin and is executable', async () => {
     const st = await fs.stat(scriptPath)
@@ -120,29 +121,15 @@ describe('yaac-workspace-init script', () => {
     expect(body).toContain(`tmux -S ${PATHS.tmuxSock}`)
   })
 
-  it('opens the session on the keeper, named for its start', async () => {
+  it('starts tmux with no session and reads no workspace\'s settings: the claim does both', async () => {
     const body = await fs.readFile(scriptPath, 'utf8')
-    expect(body).toMatch(new RegExp(`new-session -d -s yaac -n ${KEEPER_STARTING} `))
-  })
-
-  it('consumes exactly the env session-create injects', async () => {
-    const body = await fs.readFile(scriptPath, 'utf8')
-    for (const name of [
-      'YAAC_GIT_NAME', 'YAAC_GIT_EMAIL', 'YAAC_STATUS_RIGHT',
-    ]) {
-      // Both plain `$NAME` and defaulted `${NAME:-}` expansions count.
-      expect(body).toMatch(new RegExp(`\\$\\{?${name}`))
-    }
-  })
-
-  it('never does git work from /workspace (the checkout races the hook)', async () => {
-    const body = await fs.readFile(scriptPath, 'utf8')
-    // `cd /` before any git command: git fails on the half-set-up
-    // /workspace repo, even for `config --global`.
-    expect(body.indexOf('\ncd /\n')).toBeGreaterThan(-1)
-    expect(body.indexOf('\ncd /\n')).toBeLessThan(body.indexOf('git config --global'))
-    // Windows still start in the workspace's cwd, under /workspace.
-    expect(body).toContain('new-session -d -s yaac -n _yaac-starting -x 500 -y 200 -c "/workspace${YAAC_CWD:+/$YAAC_CWD}"')
+    expect(body).toContain('set-option -s exit-empty off')
+    expect(body).not.toContain('new-session')
+    expect(body).not.toMatch(/YAAC_(GIT|STATUS|CWD|CHECKOUTS|NPM)/)
+    expect(body).not.toMatch(/^\s*git /m)
+    // The claim opens the session on the keeper, named for its start.
+    const claim = await fs.readFile(path.join(DOCKERFILES_DIR, 'streamd', 'claim.js'), 'utf8')
+    expect(claim).toContain(`'new-session', '-d', '-s', 'yaac', '-n', '${KEEPER_STARTING}'`)
   })
 
   it('starts streamd last, from the path the self-heal exec also uses', async () => {
@@ -150,8 +137,6 @@ describe('yaac-workspace-init script', () => {
     const streamdAt = body.indexOf('node /opt/yaac/streamd/main.js')
     expect(streamdAt).toBeGreaterThan(-1)
     // streamd starts last: its reachability signals that setup is done.
-    expect(body.indexOf('git config --global')).toBeLessThan(streamdAt)
-    expect(body.indexOf('new-session')).toBeLessThan(streamdAt)
-    expect(body.indexOf('podman system service')).toBeLessThan(streamdAt)
+    expect(body.indexOf('start-server')).toBeLessThan(streamdAt)
   })
 })

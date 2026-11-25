@@ -251,7 +251,7 @@ export interface PlannedCheckout {
  * network for a branch the server has seen (docs/server-git.md "Starting a
  * workspace"). Only a branch the clone lacks, one never fetched or an empty
  * origin's, waits for `landed`, the start's fetch, and is refused if it is
- * still missing then. A claim of a spare and a cold create both pick here.
+ * still missing then.
  */
 export async function pickStart(
   repo: Pick<RepoRow, 'id' | 'remoteUrl'>,

@@ -2045,26 +2045,23 @@ export const DEFAULT_IMAGE_CACHE_DAYS = 28
 /**
  * One scratch dir: a checkout-relative dir of installed packages or build
  * output that belongs to a workspace's runtime rather than its checkout. A
- * pod backs it with a pod-local volume holding at most `sizeGiB`, or
- * `DEFAULT_SCRATCH_DIR_GIB` when it names none; a host workspace keeps it in
- * its checkout, uncapped. A stop removes it.
+ * pod backs every one with a folder of one pod-local volume, which holds
+ * at most the project's `sizeGiB` for all of them together; a host
+ * workspace keeps them in its checkout, uncapped. A stop removes them.
  */
 export interface ScratchDir {
   path: string
-  sizeGiB?: number
 }
 
 /** A project's scratch dirs (docs/project-config.md "Scratch directories"). */
 export interface ScratchDirSettings {
   dirs: ScratchDir[]
+  /** What a pod's scratch dirs may hold together, in GiB. */
+  sizeGiB: number
   /** Scratch dirs git tracks that no workspace warns about (see
    *  `WorkspaceListEntry.trackedScratchDirs`). */
   ignoredTracked: string[]
 }
-
-/** The cap of a scratch dir that names none: room for a large monorepo's
- *  root `node_modules`, pnpm store included, or a mid-sized cargo `target`. */
-export const DEFAULT_SCRATCH_DIR_GIB = 16
 
 /**
  * A create or restart in flight, tracked in server memory. The webapp shows

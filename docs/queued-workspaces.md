@@ -127,13 +127,15 @@ at creation (their inputs are local reads), so a still-provisioning parent
 can supply them. A script like
 `id=$(yaac-mama create …); yaac-mama queue --parent-workspace "$id" …` can
 arrive before the row exists. The in-flight create then resolves as a parent
-from its provisioning entry, which carries what the create starts with. This relies
-on `yaac-mama create` never claiming a spare, since a claimed spare lists
-under the spare's id.
+from its provisioning entry, which carries what the create starts with. An
+entry whose create took a prewarmed spare does not resolve this way, since
+that workspace lists under the spare's id (`claimedId`). `yaac-mama create`
+prints the id it asked for, so when its create takes a spare the printed id
+names no workspace and such a script's queue is refused.
 
-A queued launch also **skips the spare claim** (`claimSpare: false`) for the
-same reason: its children already point at the id it creates under. A cold
-create fetches first, so the child forks from origin's latest tip.
+A queued launch **takes its spare before it names its workspace**: the id
+it claims the entry with, which its children follow, is the spare's when
+one waits (docs/generic-workspace-pods.md "A claim").
 
 The **group** is fixed when the entry is queued: the parent's, unless the
 request names one (by id, or by name, where an unknown name creates the
@@ -152,7 +154,8 @@ until its agent gives one (docs/workspace-titles.md).
 ## Launching
 
 A launch goes through `prepareStart`, the same path as the create route and
-`yaac-mama create`, with `rememberDefaults` and `claimSpare` off. It shows a
+`yaac-mama create`, with `rememberDefaults` off and its workspace id, a
+spare's if it took one, already named. It shows a
 normal provisioning row, headed by the entry's title (or its generated one),
 and delivers the prompt like any create.
 

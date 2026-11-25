@@ -122,12 +122,16 @@ export function createContainerlessDriver(): WorkspaceDriver {
     awaitReady: () => awaitReady(),
 
     // No spare pool here (creates are already fast).
-    claimSpare: () => unsupported('claiming a prewarmed spare'),
+    listSpares: () => Promise.resolve([]),
+    warmSpare: () => unsupported('warming a spare'),
+    takeSpare: () => Promise.resolve(undefined),
+    reapSpare: () => Promise.resolve(),
+    // Its workspaces are checkouts on the host, built by git where they run.
+    keepReadyTrees: () => Promise.resolve(),
 
-    // Nothing to register. Deregister must drop the workspace from the
-    // in-process registry, which the detached teardown script cannot reach;
-    // otherwise the stale reaper would reap it on every pass.
-    registerWorkspace: () => Promise.resolve(),
+    // Deregister must drop the workspace from the in-process registry,
+    // which the detached teardown script cannot reach; otherwise the stale
+    // reaper would reap it on every pass.
     deregisterWorkspace: (workspaceId) => {
       dropWorkspace(workspaceId)
       return Promise.resolve()

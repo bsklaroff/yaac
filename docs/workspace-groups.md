@@ -58,9 +58,8 @@ briefly run its limit plus the pods still terminating.
 A group at its limit refuses every way a new live workspace could enter it,
 with a `CONFLICT` naming the group and its limit:
 
-- a create into it: the create route, `yaac-mama create --group`, the
-  new-workspace pane, and a claim of a prewarmed spare (all through
-  `prepareStart`);
+- a create into it: the create route, `yaac-mama create --group` and the
+  new-workspace pane (all through `prepareStart`);
 - a restart of a stopped member: the webapp, the CLI and `yaac-mama restart`
   (`prepareRestart`). A running member already holds its slot;
 - a move of a live workspace into it: `/group/move`, `yaac-mama group move`

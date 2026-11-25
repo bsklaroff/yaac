@@ -52,7 +52,8 @@ export {
   type UpstreamMoveChoices,
 } from './repo-forks'
 export { propagateOrigin } from './origin-fanout'
-export { reconcilePrewarmPool } from './prewarm-reconcile'
+export { reconcilePrewarmPool } from './prewarm'
+export { reconcileReadyTrees } from './ready-trees'
 export { dismissProvisioning, listProvisioning } from './provisioning'
 export {
   discardQueuedWorkspace,

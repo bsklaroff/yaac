@@ -1,6 +1,5 @@
 import { api, resolveProject } from '#commands/api'
 import { formatCacheVolumes, formatPortForwards, onOff } from '#commands/config-launch-settings'
-import { DEFAULT_SCRATCH_DIR_GIB } from '@yaac/shared/types'
 
 /**
  * `yaac config show <project>`: every setting of a project, one per line,
@@ -46,7 +45,7 @@ export async function configShow(project: string): Promise<void> {
     allowlist !== undefined && ['egress-allowlist',
       list([...(allowlist.allowlist.defaults ? ['the defaults'] : []), ...allowlist.allowlist.hosts])],
     ['port-forwards', formatPortForwards(p.portForwards)],
-    ['scratch-dirs', list(p.scratchDirs.dirs.map((d) => `${d.path} (${d.sizeGiB ?? DEFAULT_SCRATCH_DIR_GIB} GiB)`))],
+    ['scratch-dirs', `${list(p.scratchDirs.dirs.map((d) => d.path))} (${String(p.scratchDirs.sizeGiB)} GiB together)`],
     ['kept-ignored-paths', list(p.keptIgnoredPaths ?? [])],
     ['init-workflows', list(workflows.filter((w) => w.init).map((w) => (w.repos.length > 0 ? `${w.name} (${w.repos.join(', ')})` : w.name)))],
     ['workspace-auto-delete', p.stoppedWorkspaceRetentionDays === undefined ? 'off' : `${p.stoppedWorkspaceRetentionDays} days`],

@@ -22,11 +22,11 @@ follow-up, described last.
 
 ## What this builds on
 
-- **docs/plans/generic-prewarm-pool.md has shipped.** Every workspace pod
-  has one shape whose spec holds nothing a project owns. A node agent makes
-  a pod a workspace's by mounting on the node and entering the sandbox with
-  `runsc exec`, and builds working trees natively. Identity arrives at the
-  claim through one streamd call.
+- **Generic workspace pods have shipped** (docs/generic-workspace-pods.md).
+  Every workspace pod has one shape whose spec holds nothing a project
+  owns. A mountd makes a pod a workspace's by mounting on the node and
+  entering the sandbox with `runsc exec`, and builds working trees
+  natively. Identity arrives at the claim through one streamd call.
 - **docs/plans/socket-egress.md has shipped.** A workspace or builder pod
   has no network interface. Its egress and its streams cross two sockets
   in a directory on its node, which netd relays to the proxy and from the
@@ -62,7 +62,7 @@ What it costs is larger than what it does:
   install folder is about 9,000 lines and the driver 14,000 more.
 - **Working around the kubelet.** netd writes pod cgroups because the
   kubelet neither bounds a gVisor pod's swap nor sees its memory pressure.
-  The node agent exists because Kubernetes cannot add a mount to a running
+  mountd exists because Kubernetes cannot add a mount to a running
   pod, and it already does its work beside the kubelet rather than through
   it. docs/plans/snapshot-warm-pool.md waits on an upstream KEP because a
   restore would mean "driving runsc behind the kubelet's back".
@@ -74,7 +74,7 @@ What it costs is larger than what it does:
 client ── origin ──► server ──► Pamir ──► containerd ──► generic sandboxes
                       │ │         ▲                        (runsc, no network)
                       │ │         │ carries /run/yaac/egress.sock, stream.sock
-                      │ └──► node agent: binds, trees
+                      │ └──► mountd: binds, trees
                       └──── feed ──► proxy ──► internet
 ```
 
@@ -84,8 +84,8 @@ of the same Pamir.
 
 ## Decisions
 
-**The sandbox keeps the generic shape, and the node agent keeps its job.**
-The driver asks for the same sandbox a generic pod is, and the node agent
+**The sandbox keeps the generic shape, and mountd keeps its job.**
+The driver asks for the same sandbox a generic pod is, and mountd
 binds it, builds its trees and releases it as it does under k8s. Trees,
 checkpoints, restores and the three tiers therefore work as
 docs/node-local-workspaces.md describes, on one machine as on kind, and
@@ -147,7 +147,7 @@ content-hash rollout carry over, and so does the rule that the server
 binds no host port for a forward (docs/port-forward-tunnel.md). The server
 is a unit on the host's network and binds its loopback port itself. On a
 Mac the VM's port forwarding publishes it, as kind's port mapping does
-today. The node agent and the memory unit are in the set Pamir runs on
+today. mountd and the memory unit are in the set Pamir runs on
 every node.
 
 **No registry on one machine.** containerd's image store is the store.
@@ -172,7 +172,7 @@ are folders of the data dir, as they already are on kind
 | PVCs and static PVs | directories of the data dir |
 | Main registry, write gate, mirror digests | containerd's image store |
 | `podman build` and `push` at install | BuildKit on containerd, straight into its store |
-| The netd and node agent DaemonSets | the set Pamir runs on every node |
+| The netd and mountd DaemonSets | the set Pamir runs on every node |
 | gVisor installer DaemonSet, node tuning | `yaac engine install`, once per machine |
 | PriorityClasses | cgroup weights and OOM scores in a unit's spec |
 | Server Deployment, rollout | the server unit, replaced by install |
@@ -209,7 +209,7 @@ requirement on Pamir:
 - the scratch volume and the tmux dir as disk-backed sentry tmpfs, through
   the same `dev.gvisor.spec.mount.*` annotations the pod spec sets;
 - the socket directory at `/run/yaac`, with its two sockets declared;
-- runsc's state directory where the node-mounter can find it, to enter the
+- runsc's state directory where mountd can find it, to enter the
   sandbox;
 - the tree container beside the workspace container, in one sandbox as in
   a pod, or as two sandboxes over the same directories if Pamir's way of
@@ -269,7 +269,7 @@ with no behavior change:
 - port forwarding (the allocator, the `ports` watcher, `dialWorkspacePort`);
 - the fixed in-workspace paths (`containerWorkspacePaths`);
 - the image chain (`resolveImageChain`, the hash helpers, build rows);
-- the generic sandbox's shape and the node agent's client;
+- the generic sandbox's shape and mountd's client;
 - the egress encoding (registrations, credential files, the CA trust env,
   `GIT_SSH_COMMAND`);
 - the gVisor mount annotations.
@@ -287,7 +287,7 @@ with no behavior change:
   server, writes `install.json` and registers the origin. It refuses a
   data dir recorded as another kind.
 - **The other commands.** `yaac engine start|stop|restart|logs|status|check|uninstall`.
-  `check` runs the node agent's gate (bind into a probe sandbox and enter
+  `check` runs mountd's gate (bind into a probe sandbox and enter
   it) and the socket plan's acceptance test.
 - **Starts.** A start asks Pamir for a generic sandbox and binds it, the
   path a start with no spare takes under k8s.
@@ -310,9 +310,12 @@ node becomes a step of this install.
 Each item removes a `NOT_SUPPORTED` or a difference from k8s:
 
 - **Spare pool.** The generic pool carries over with its policy
-  (`sparePool: true`). A spare is a generic sandbox with no egress
-  registration and nothing bound. The take becomes a conditional update
-  of the spare's row. Spike 1's numbers size the pool.
+  (`sparePool: true`; docs/generic-workspace-pods.md "Pool policy"): one
+  pool per image and scratch size, and ready trees on the nodes that hold
+  a spare. A spare is a generic sandbox with no egress registration and
+  nothing bound, idling on a small CPU share that the take raises. The
+  take, a conditional label removal under k8s, becomes a conditional
+  update of the spare's row. Spike 1's numbers size the pool.
 - **Untrusted layers.** The trust split holds
   (docs/image-builds.md). Each untrusted build runs in a throwaway
   builder sandbox, as it runs in a builder pod. With no registry, its
@@ -321,7 +324,7 @@ Each item removes a `NOT_SUPPORTED` or a difference from k8s:
   GC keeps the live set plus the newest two generations per repo
   (docs/image-gc.md).
 - **Volumes.** A directory of the data dir, as on kind
-  (docs/workspace-volumes.md), bound by the node agent.
+  (docs/workspace-volumes.md), bound by mountd.
 - **Sites.** The router and the tunnels run as units. A release is a
   workspace with a `site.sock`, which the router reaches through Pamir
   where today it dials a pod IP. The flip of a deploy becomes the server's
@@ -368,7 +371,7 @@ with `--byo`.
 
 `packages/server/src/drivers/k8s`, `k8s/netd`'s relay,
 `k8s/kind-config.yaml`, `k8s/tailscale-operator`, the object watches of
-the proxy and the node agent, `packages/test-utils`'s cluster stub, the
+the proxy and mountd, `packages/test-utils`'s cluster stub, the
 `api-k8s`, `e2e` and `apiserver` projects, `infra/hetzner-k3s` in its
 present form, and docs/cluster-setup.md, docs/server-in-cluster.md and
 docs/event-driven-reconcile.md. `yaac cluster` goes with them.
@@ -447,8 +450,6 @@ docs/plans/pamir.md. These are the driver's own:
 
 - **docs/plans/snapshot-warm-pool.md** is blocked on Kubernetes creating a
   pod as a restore. Under this driver the blocker is gone (spike 4).
-- **docs/plans/fewer-subpath-mounts.md** is the kubelet's cost and has no
-  counterpart here.
 - **docs/plans/linux-packaging.md**'s `yaac-cluster` package becomes a
   `yaac-engine` package with no kind or kubectl to fetch.
 - **docs/plans/cluster-backups.md** backs up tiers, which are unchanged.
@@ -470,7 +471,7 @@ no bind mounts, and a VM's shares are fixed when it is created. So an
 Apple sandbox is created for one workspace with its mounts named at
 create, there is no spare pool, and trees are checked out inside the
 guest. That is a second create path and a second mount model beside the
-node agent's. Whether such a sandbox is a second kind of Pamir node or
+mountd's. Whether such a sandbox is a second kind of Pamir node or
 sits outside Pamir is part of what the follow-up would decide.
 
 What is known about `container` (from 1.5.0 and its source):

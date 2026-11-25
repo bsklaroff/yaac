@@ -222,7 +222,7 @@ describe('ClusterCache', () => {
     })])
     expect(cache.workspaceJobs()).toEqual([{
       jobName: 'yaac-alpha-p1', workspaceId: 'sid-p1', projectId: 'alpha',
-      createdAtMs: created.getTime(), prewarmed: false,
+      createdAtMs: created.getTime(),
     }])
     cache.stop()
   })

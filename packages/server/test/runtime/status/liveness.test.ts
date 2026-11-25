@@ -83,6 +83,22 @@ describe('isTmuxSessionAlive', () => {
     expect(await isTmuxSessionAlive(target('p', 's-cache'))).toBe(true)
   })
 
+  // A create that took a spare forgets what was probed before its session
+  // opened; a probe still running then must not put that verdict back.
+  it('keeps a probe that was in flight across a forget out of the cache', async () => {
+    let answer!: (err: Error) => void
+    execMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { answer = reject }))
+    const before = probeTmuxLiveness(target('p', 's-claim'))
+    await vi.waitFor(() => { expect(execMock).toHaveBeenCalledTimes(1) })
+    forgetLiveness('p', 's-claim')
+    answer(new WorkspaceExecError('exit 1', 1, '', "can't find session: yaac"))
+    await expect(before).resolves.toBe('dead')
+
+    execMock.mockResolvedValue({ stdout: '', stderr: '' })
+    await expect(probeTmuxLiveness(target('p', 's-claim'))).resolves.toBe('alive')
+    expect(execMock).toHaveBeenCalledTimes(2)
+  })
+
   it('coalesces concurrent callers onto a single in-flight probe', async () => {
     setProbeResult('p', 's-coalesce', true)
     const p1 = isTmuxSessionAlive(target('p', 's-coalesce'))

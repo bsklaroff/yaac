@@ -42,7 +42,6 @@ import { emptyTrash, moveToTrash } from '#lib/trash'
 import { allowlistAllows } from '@yaac/shared/allowed-hosts'
 import { parseGitRemote } from '@yaac/shared/git-remote'
 import { inFlightCreate, listProvisioning, stopProvisioning } from './provisioning'
-import { reapSpare, spareSettings } from './prewarm'
 import { ServerError } from '@yaac/shared/errors'
 import type { RepoDeletePreview, RepoHolder, RepoMovePreview } from '@yaac/shared/types'
 import { withProjectsHeld, type Actor } from '#domain/access'
@@ -55,36 +54,21 @@ import { withProjectsHeld, type Actor } from '#domain/access'
  */
 
 /**
- * Stop workspaces among `handles`, spares aside, keeping their checkouts,
+ * Stop workspaces among `handles`, keeping their checkouts,
  * after adopting any token their agents refreshed, as a stop does. Answers
  * the ones that could not be stopped, each with why.
  */
 export async function stopWorkspaces(handles: RuntimeHandle[], projects: ProjectRow[]): Promise<string[]> {
-  const own = handles.filter((h) => !h.prewarmed)
-  for (const project of projects.filter((p) => own.some((h) => h.projectId === p.id))) {
+  for (const project of projects.filter((p) => handles.some((h) => h.projectId === p.id))) {
     await harvestToolCredentials(project.owner, { projectId: project.id })
       .catch((err: unknown) => serverLog(`[server] credential harvest for ${project.id} failed: ${String(err)}`))
   }
   const failed: string[] = []
-  for (const h of own) {
+  for (const h of handles) {
     await cleanupWorkspaceDetached({ jobName: h.jobName, projectId: h.projectId, workspaceId: h.workspaceId })
       .catch((err: unknown) => { failed.push(`${h.workspaceId.slice(0, 8)}: ${String(err)}`) })
   }
   return failed
-}
-
-/**
- * Reap every spare warmed with a repo, and one whose settings are unknown.
- * Answers the runtime's units that are not being torn down.
- */
-export async function reapSparesWith(repoId: string): Promise<RuntimeHandle[]> {
-  const handles = (await workspaceDriver().list()).filter((h) => !h.terminating)
-  for (const h of handles) {
-    if (h.prewarmed && spareSettings.get(h.workspaceId)?.repos.some((r) => r.repoId === repoId) !== false) {
-      reapSpare({ jobName: h.jobName, projectId: h.projectId, workspaceId: h.workspaceId })
-    }
-  }
-  return handles
 }
 
 /** The ids of the workspaces holding a checkout of a repo, running or not. */
@@ -151,7 +135,7 @@ export async function unshareRepo(principal: Actor, repoId: string, userId: stri
  * every pass; a workspace that fails is logged and retried next pass.
  */
 export async function reconcileRevokedShares(snapshot: RuntimeSnapshot): Promise<void> {
-  const running = (await snapshot.workspaces()).filter((h) => h.running && !h.prewarmed && !h.terminating)
+  const running = (await snapshot.workspaces()).filter((h) => h.running && !h.terminating)
   if (running.length === 0) return
   const held = await listWorkspaceReposFor(running.map((h) => h.workspaceId))
   if ([...held.values()].every((rows) => rows.length === 0)) return
@@ -192,7 +176,7 @@ export async function previewRepoMove(principal: Actor, repoId: string): Promise
  *  shared with. */
 export async function movePreviewOf(repoId: string): Promise<RepoMovePreview> {
   const holders = await holdersOf(repoId)
-  const running = (await workspaceDriver().list()).filter((h) => holders.has(h.workspaceId) && !h.prewarmed && !h.terminating)
+  const running = (await workspaceDriver().list()).filter((h) => holders.has(h.workspaceId) && !h.terminating)
   const users = new Map((await listUsers()).map((u) => [u.id, u.login ?? u.name]))
   return {
     runningWorkspaces: running.length,
@@ -254,7 +238,7 @@ export async function moveRepoToRemote(
     return await withRepoHeld(repoId, reason, () => withProjectsHeld([...projectIds], reason, async () => {
       await git(() => checkMoveTarget(hosted, remoteUrl, credential))
       const holders = await stopProvisioningWith(repoId, projectIds)
-      const handles = await reapSparesWith(repoId)
+      const handles = (await workspaceDriver().list()).filter((h) => !h.terminating)
       const failed = await stopWorkspaces(handles.filter((h) => holders.has(h.workspaceId)), await listProjectRows())
       if (failed.length > 0) {
         throw new ServerError('RUNTIME_UNAVAILABLE', 'the repo did not move: some of its workspaces could not be '
@@ -374,10 +358,8 @@ export async function deleteRepo(principal: Actor, repoId: string): Promise<{ he
   return withRepoHeld(repoId, 'this repo is being deleted', async () => {
     await unlinkProjectRepo(repoId)
     await removeRepoShares(repoId)
-    // A create that had read the link would fetch a repo that is gone, and
-    // a spare warmed with it can no longer be claimed.
+    // A create that had read the link would fetch a repo that is gone.
     await stopProvisioningWith(repoId, projectIds)
-    await reapSparesWith(repoId).catch(() => { /* the prewarm pool reaps a spare its project no longer matches */ })
     await moveToTrash(hostedRepoDir(repoId), serverLocalTrashDir())
     const heldBy = await repoHolders(repoId)
     if (heldBy.length > 0) await markRepoDeleted(repoId)

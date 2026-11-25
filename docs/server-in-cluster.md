@@ -380,6 +380,8 @@ peers the server dials itself:
   lookups (docs/image-builds.md "The registry");
 - the proxy's control and relay ports, by selector. The relay carries every
   stream into a workspace pod, which the server never dials directly;
+- each node's disk pod and mountd, by selector, for free space and for
+  binding workspaces (docs/generic-workspace-pods.md "mountd");
 - under `YAAC_USE_TOR`, the host's Tor listener at the address in the pod's
   `YAAC_HOST_TOR_SOCKS_URL`. A policy can open only an address, so install
   refuses a URL that names the host before it changes anything.
@@ -714,13 +716,14 @@ The path helpers resolve into the three roots, which the Deployment sets. A
 host process never sets these variables, so under containerless the tiers
 are just three folders of one directory.
 
-NODE-LOCAL holds nothing durable: per project, the pnpm store and the
-per-workspace scratch dirs, and each opencode workspace's working copy
-(docs/workspace-storage.md "opencode"). On a multi-node cluster those bytes are
-on whichever node the workspace ran on, so the server never touches them
-through its own filesystem. kubelet creates what a pod mounts, the pod's tree
-container hands it to the install uid, and `reapNodeLocal` runs one root pod
-per node to remove what no live workspace owns.
+NODE-LOCAL holds nothing durable: workspace trees and their scratch
+repositories (docs/node-local-workspaces.md), the trees mountd keeps
+ready, and each opencode workspace's working copy (docs/workspace-storage.md
+"opencode"). On a multi-node cluster those bytes are on whichever node the
+workspace ran on, so the server never touches them through its own
+filesystem. mountd makes what a workspace binds, owned by the
+install uid, and `reapNodeLocal` runs one root pod per node to remove what
+no live workspace owns.
 
 The claims have **fixed names** and the volumes have **install-keyed names**. A
 claim is namespaced and belongs to one install, so every install namespace
@@ -734,44 +737,38 @@ under the data dir, so `yaac cluster delete` touches no data. Kubernetes
 enforces no access mode on a hostPath, so the same claim spec works with a
 real RWX class on a cloud cluster.
 
-Workspace pods mount **subPaths** of `yaac-global`, never the whole claim,
-and never the server's claim. The k8s driver maps each declared mount by
-the tier its path is under (`resolveMountSource`): a GLOBAL path becomes a
-claim subPath, a NODE-LOCAL path the matching path under the node's
-directory, and a SERVER-LOCAL path is an error. A workspace's files are a
-node-local tree, with each checkout's `.git` a subPath of `yaac-global`
-(docs/node-local-workspaces.md). A `File` mount is a subPath
-to that file, so every global file a pod mounts must exist before its Job
-is applied; kubelet would otherwise create it as a root-owned directory.
-The node-local directories a pod mounts are chowned to the pod's uid by its
-own tree container, running as root (docs/node-local-workspaces.md "Start"),
-because hostPath ignores `fsGroup` and kubelet creates a missing one, and
-every missing folder above it, root-owned. The tree container mounts those
-directories and nothing above them, so it runs the yaac base image as root
-over one workspace's node-local data and no other's. It changes the owner of
-each mount's own root and of nothing below, where an agent may have left a
-link. kubelet follows a link in a mount source, so a launch whose node-local
-sources include one inside another is refused: no workspace can then write
-the parent of a folder that is chowned. A pod with no tree container (a
-site's release) mounts nothing node-local, and a launch that would is
-refused too.
+A workspace pod's spec mounts nothing a project owns
+(docs/generic-workspace-pods.md): its one subPath of `yaac-global` is its
+server build's helpers folder, and it never mounts the server's claim. The
+mountd binds the rest into the pod at its claim, through the pod's
+node-mounts directory. The k8s driver names each declared mount by the tier
+its path is under (`storageTierOf`): a GLOBAL path is a path in the shared
+tier, a NODE-LOCAL path one under the node's directory, and a SERVER-LOCAL
+path is an error. A workspace's files are a node-local tree, with each
+checkout's `.git` on the shared tier (docs/node-local-workspaces.md). The
+mountd opens every source beneath its root by descriptor, following no
+link, and makes each missing node-local folder owned by the install uid,
+so no folder an agent wrote is followed or handed to anyone. A salvage or
+import pod mounts a life's folders directly, as `hostPath` volumes and
+claim subPaths (`resolveMountSource`); those folders exist by then.
 
-The folders above a pod's mounts stay root-owned. Nothing in the cluster
-needs them otherwise: every pod that removes node-local data runs as root.
-On a Linux kind host they are folders of the data dir, which the host user
-could then not remove or move to another disk, so `yaac cluster delete`
-hands the whole node-local folder back before the node goes
-(docs/cluster-setup.md "Deleting the cluster").
+Some folders under the node-local root are still root's: one kubelet makes
+for a `hostPath` volume, and what a tree container, running as root, writes
+into its scratch repository. On a Linux kind host they are folders of the
+data dir, which the host user could then not remove or move to another
+disk, so `yaac cluster delete` hands the whole node-local folder back
+before the node goes (docs/cluster-setup.md "Deleting the cluster").
 
 **Workspace volumes** are stored apart from the tiers
 (docs/workspace-volumes.md). On kind, install makes a fourth static claim,
 `yaac-volumes`, a `Retain` hostPath PV to `<dataDir>/volumes`, which the
-server mounts at `/yaac/volumes` (`YAAC_VOLUMES_ROOT`) and a workspace pod
-mounts one subPath of. On byo each volume is a claim of its own from the RWO
-class, named to the server as `YAAC_VOLUME_STORAGE_CLASS`; the server keeps
-its PV `Retain` and re-binds it after a namespace delete, which is the only
-reason a byo server has PersistentVolume access (`get`, `list`, `patch`;
-docs/workspace-volumes.md says how far that reaches).
+server mounts at `/yaac/volumes` (`YAAC_VOLUMES_ROOT`) and mountd
+binds one folder of into a workspace pod. On byo each volume is a claim of
+its own from the RWO class, named to the server as
+`YAAC_VOLUME_STORAGE_CLASS`; the server keeps its PV `Retain` and re-binds
+it after a namespace delete, which is the only reason a byo server has
+PersistentVolume access (`get`, `list`, `patch`; docs/workspace-volumes.md
+says how far that reaches).
 
 ### Claims on byo
 
@@ -898,17 +895,13 @@ object (newest wins).
   browser sign-in with `yaac auth update` seed it from your machine's git
   config; `yaac cluster install` does not. Edit it in Settings → General
   or with `yaac config git-identity`; no re-install needed. A create for an
-  owner without one is refused, with where to set it. A prewarmed spare has its identity baked
-  in when warmed, so claiming it sets the current identity if it has changed
-  since.
+  owner without one is refused, with where to set it.
 - **The time zone is a per-user setting on the server.** A pod runs in
   UTC, so every workspace launches with `TZ` set to a zone the clients
   report: the web app on load, the desktop app on start, and `yaac
   workspace create`. Picking a zone in Settings → General pins it, and
   reports then leave it alone. A
   project's own `TZ` wins, and a workspace keeps the zone it launched with.
-  A prewarmed spare records its zone, and one warmed in another zone than
-  the current one is never claimed but re-warmed.
 - **`YAAC_USE_TOR`** points at a listener on the host, and a pod's loopback
   is its own. Install rewrites loopback addresses in
   `YAAC_HOST_TOR_SOCKS_URL` to the host's address on the kind network, so

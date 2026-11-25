@@ -12,6 +12,13 @@ vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   k8sNamespace: () => 'test-ns',
 }))
 
+// The mountd gate reaches mountd through a `kubectl port-forward`
+// child; the agent's answer comes from the stubbed `fetch`.
+vi.mock('#drivers/k8s/substrate/port-forward', () => ({
+  resolvePortForward: vi.fn().mockResolvedValue({ host: '127.0.0.1', port: 41236 }),
+  invalidatePortForward: vi.fn(),
+}))
+
 // The fsprobe pod's image; ensuring it would pull and push.
 vi.mock('#drivers/k8s/cluster/utility-image', () => ({
   ensureUtilityImage: vi.fn().mockResolvedValue('localhost:5000/podman-stable:mirror'),
@@ -241,6 +248,12 @@ let probeOwner: number | undefined
 let podLogs: Record<string, string> = {}
 /** Further objects the cluster holds; a case edits. */
 let extraObjects: FakeObject[] = []
+/** Whether a mountd runs on the probe's node; a case edits. */
+let mountdRunning = true
+/** mountd's answer to the probe's bind: null for 200, else its refusal. */
+let mountdRefusal: string | null = null
+/** Each bind mountd received. */
+const mountdBinds: Array<{ authorization: string | null; body: unknown }> = []
 
 /** Healthy probe logs; the end-to-end probe echoes back its peer's nonce. */
 function logsFor(name: string): string {
@@ -345,7 +358,22 @@ function seedCluster(): void {
         numberReady: ready, desiredNumberScheduled: desired,
       })]
     }),
+    // Settled, so a node with no mountd fails at once rather than waiting.
+    daemonSet('yaac-mountd', NS, { desiredNumberScheduled: 1, numberReady: 1 }),
     ...extraObjects,
+    ...(mountdRunning ? [{
+      apiVersion: 'v1',
+      kind: 'Pod',
+      metadata: { name: 'yaac-mountd-0', namespace: NS, labels: { app: 'yaac-mountd', 'yaac.install-id': 'test-install' } },
+      spec: { nodeName: 'yaac-control-plane' },
+      status: { phase: 'Running' },
+    }] : []),
+    {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: { name: 'yaac-mountd-token', namespace: NS },
+      data: { token: Buffer.from('agent-token').toString('base64') },
+    },
     {
       apiVersion: 'v1',
       kind: 'Pod',
@@ -373,6 +401,15 @@ function seedCluster(): void {
     if (call.verb !== 'read' || call.kind !== 'Pod' || !call.name) return
     const pod = fakeCluster.get<FakeObject>('Pod', call.name, call.namespace)
     if (!pod || pod.status) return
+    // The mountd gate's pod stays up, to be bound and entered.
+    if (call.name === 'yaac-cluster-check-mountd') {
+      fakeCluster.seed({
+        ...pod,
+        spec: { ...(pod.spec as object), nodeName: 'yaac-control-plane' },
+        status: { phase: 'Running', containerStatuses: [{ name: 'workspace', state: { running: {} } }] },
+      })
+      return
+    }
     fakeCluster.seed({
       ...pod,
       metadata: { ...pod.metadata, uid: `uid-${call.name}` },
@@ -500,11 +537,23 @@ describe('runClusterCheck', () => {
     netdContainerStatuses = []
     podLogs = {}
     extraObjects = []
+    mountdRunning = true
+    mountdRefusal = null
+    mountdBinds.length = 0
     vi.spyOn(fakeCluster.podLogs, 'get').mockImplementation(logsFor)
     // The registry's write gate refuses an anonymous upload.
     gateStatus = 401
     podReadStatus = 401
     vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      if (url === 'http://127.0.0.1:41236/bind') {
+        mountdBinds.push({
+          authorization: new Headers(init?.headers).get('Authorization'),
+          body: JSON.parse(init?.body as string) as unknown,
+        })
+        return Promise.resolve(mountdRefusal === null
+          ? new Response('', { status: 200 })
+          : new Response(mountdRefusal, { status: 500 }))
+      }
       gateProbes.push({ url, method: init?.method })
       const status = url.includes(':41235/') ? podReadStatus : gateStatus
       return status === null
@@ -538,6 +587,7 @@ describe('runClusterCheck', () => {
       ['gvisor', 'pass'],
       ['gvisor-installer', 'pass'],
       ['probe', 'pass'],
+      ['mountd', 'pass'],
       ['egress', 'pass'],
       ['npm-cache', 'pass'],
       // Nothing deployed to dial (see the sites case).
@@ -623,6 +673,88 @@ describe('runClusterCheck', () => {
     expect(pods).toHaveLength(3)
     for (const pod of pods) expect(pod.spec?.securityContext?.runAsUser).toBe(4242)
     expect(byName(results, 'probe')?.detail).toContain('uid 4242')
+  })
+
+  // docs/generic-workspace-pods.md "Platforms": every start needs its
+  // node's agent to mount under a pod's node-mounts dir and enter its
+  // sandbox, so a probe pod shaped like a workspace's is bound for real.
+  it('binds a probe pod through its node\'s agent and checks the binds from inside the sandbox', async () => {
+    const deps = stage()
+    const { results } = await check()
+    expect(byName(results, 'mountd')).toMatchObject({ status: 'pass' })
+    const pod = appliedPod('yaac-cluster-check-mountd') as AppliedPod & {
+      spec: { runtimeClassName?: string; volumes: Array<{ name: string; hostPath?: { path: string } }> }
+    }
+    expect(pod.spec.runtimeClassName).toBe('gvisor')
+    const dir = pod.spec.volumes.find((v) => v.name === 'node-mounts')?.hostPath?.path.split('/').at(-1)
+    // With the install's token: a node-local folder read-only, and a
+    // folder of the pod's own volume.
+    expect(mountdBinds).toEqual([{
+      authorization: 'Bearer agent-token',
+      body: expect.objectContaining({
+        pod: 'yaac-cluster-check-mountd',
+        dir,
+        mounts: [{ tier: 'node', path: 'ready', workspace: '/mnt/ready', readOnly: true }],
+        folders: [{ from: 'local', target: '/mnt/local' }],
+      }) as unknown,
+    }])
+    const exec = deps.run.mock.calls.find(([, args]) => args.includes('yaac-cluster-check-mountd'))
+    expect(exec?.[1].slice(-1)[0]).toContain('touch /node-mounts/x')
+    // The probe pod never outlives the check.
+    expect(fakeCluster.get('Pod', 'yaac-cluster-check-mountd', NS)).toBeUndefined()
+
+    // Each way it fails names what is wrong.
+    mountdRefusal = 'runsc: container not found'
+    expect(byName((await check()).results, 'mountd')).toMatchObject({
+      status: 'fail', detail: 'mountd could not bind the probe pod: runsc: container not found',
+    })
+    mountdRefusal = null
+    stage({
+      run: vi.fn((file: string, args: string[]) => (args.includes('yaac-cluster-check-mountd')
+        ? Promise.reject(Object.assign(new Error('exit 1'), { stdout: 'a read-only source is writable\n' }))
+        : happyResponses(file, args))),
+    })
+    expect(byName((await check()).results, 'mountd')).toMatchObject({
+      status: 'fail', detail: 'the probe pod\'s binds are wrong: a read-only source is writable',
+    })
+    stage()
+    mountdRunning = false
+    expect(byName((await check()).results, 'mountd')).toMatchObject({
+      status: 'fail', detail: 'no mountd runs on node yaac-control-plane',
+    })
+  })
+
+  // The server applies mountd's DaemonSet when it starts, so the check an
+  // install runs next can find its pods still coming up.
+  it('waits for a mountd the DaemonSet is still bringing up on the probe\'s node', async () => {
+    stage()
+    mountdRunning = false
+    extraObjects = [daemonSet('yaac-mountd', NS, { desiredNumberScheduled: 1, numberReady: 0 })]
+    let looked = false
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      const done = check()
+      // check() starts from a fresh fake cluster, so this goes in after.
+      fakeCluster.intercept((call) => {
+        if (looked || call.verb !== 'read' || call.kind !== 'DaemonSet' || call.name !== 'yaac-mountd') return
+        looked = true
+        fakeCluster.seed({
+          apiVersion: 'v1',
+          kind: 'Pod',
+          metadata: { name: 'yaac-mountd-0', namespace: NS, labels: { app: 'yaac-mountd', 'yaac.install-id': 'test-install' } },
+          spec: { nodeName: 'yaac-control-plane' },
+          status: { phase: 'Running' },
+        })
+      })
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1_000)
+        expect(mountdBinds).toHaveLength(1)
+      })
+      expect(byName((await done).results, 'mountd')).toMatchObject({ status: 'pass' })
+      expect(looked).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('reports an unreadable install identity as itself rather than probing at a guess', async () => {
@@ -812,7 +944,7 @@ describe('runClusterCheck', () => {
           volumes: Array<{ persistentVolumeClaim?: { claimName: string } }>
         }
       })
-      .filter((m) => m.metadata?.name?.startsWith('yaac-cluster-check-node-'))
+      .filter((m) => /^yaac-cluster-check-node-\d+$/.test(m.metadata?.name ?? ''))
     expect(nodePods.map((p) => p.spec?.nodeName).sort()).toEqual(['yaac-worker', 'yaac-worker2'])
     for (const pod of nodePods) {
       expect(pod.spec?.runtimeClassName).toBe('gvisor')
@@ -863,7 +995,7 @@ describe('runClusterCheck', () => {
     expect(perNode?.fix).toContain('extraMount')
     const probed = applied()
       .map((c) => c[0] as { metadata?: { name?: string }; spec?: { nodeName?: string } })
-      .filter((m) => m.metadata?.name?.startsWith('yaac-cluster-check-node-'))
+      .filter((m) => /^yaac-cluster-check-node-\d+$/.test(m.metadata?.name ?? ''))
       .map((m) => m.spec?.nodeName)
     expect(probed).toEqual(['yaac-worker', 'yaac-worker2', 'yaac-worker4'])
   })
@@ -883,7 +1015,7 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'nodes')?.detail).toContain('NotReady: yaac-worker')
     const probed = applied()
       .map((c) => c[0] as { metadata?: { name?: string }; spec?: { nodeName?: string } })
-      .filter((m) => m.metadata?.name?.startsWith('yaac-cluster-check-node-'))
+      .filter((m) => /^yaac-cluster-check-node-\d+$/.test(m.metadata?.name ?? ''))
       .map((m) => m.spec?.nodeName)
     expect(probed).toEqual(['yaac-control-plane'])
     expect(byName(results, 'per-node')).toMatchObject({ status: 'pass' })
@@ -910,7 +1042,7 @@ describe('runClusterCheck', () => {
     )
     const probed = applied()
       .map((c) => c[0] as { metadata?: { name?: string }; spec?: { nodeName?: string } })
-      .filter((m) => m.metadata?.name?.startsWith('yaac-cluster-check-node-'))
+      .filter((m) => /^yaac-cluster-check-node-\d+$/.test(m.metadata?.name ?? ''))
       .map((m) => m.spec?.nodeName)
     expect(probed).toEqual(['yaac-pool-1'])
     expect(byName(results, 'per-node')).toMatchObject({ status: 'pass' })
@@ -933,7 +1065,7 @@ describe('runClusterCheck', () => {
       .toContain(`skipping system-1 (infrastructure only (${WORKSPACE_POOL_KEY}=false))`)
     const probed = applied()
       .map((c) => c[0] as { metadata?: { name?: string }; spec?: { nodeName?: string } })
-      .filter((m) => m.metadata?.name?.startsWith('yaac-cluster-check-node-'))
+      .filter((m) => /^yaac-cluster-check-node-\d+$/.test(m.metadata?.name ?? ''))
       .map((m) => m.spec?.nodeName)
     expect(probed).toEqual(['pool-1'])
 

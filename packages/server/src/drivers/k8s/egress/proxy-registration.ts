@@ -17,7 +17,7 @@ import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import type { EgressAllowlist, SecretProxyRule } from '@yaac/shared/types'
-import type { PassContext, WorkspaceRegistration } from '#drivers/contract'
+import type { PassContext } from '#drivers/contract'
 
 /**
  * A workspace's egress registration: the ConfigMap telling the proxy what
@@ -174,25 +174,6 @@ export async function applyProxyRegistration(
   await applyObject(
     buildRegistrationConfigMapManifest(workspaceId, registration.projectId, registration),
   )
-}
-
-/**
- * Write a workspace's full registration from the config the caller
- * resolved, and return it. Idempotent; a claimed prewarmed
- * workspace calls it again to pick up the project's current allowlist and
- * proxied secrets.
- */
-export async function registerWorkspaceEgress(
-  reg: WorkspaceRegistration,
-): Promise<ProxyRegistration> {
-  const registration = buildProxyRegistration({
-    allowlist: reg.allowlist,
-    projectId: reg.projectId,
-    owner: reg.owner,
-    secretRules: reg.proxySecretRules,
-  })
-  await applyProxyRegistration(reg.workspaceId, registration)
-  return registration
 }
 
 /**

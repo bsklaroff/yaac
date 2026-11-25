@@ -5,13 +5,14 @@ import { saveDraftWorkspace } from './drafts'
 import { ownedGroup, resolveGroup } from './groups'
 import { readGroupRoom, refuseFullGroup } from './group-limits'
 import {
+  claimProvisioning,
   provision,
   ProvisionStoppedError,
   refuseLiveProvision,
   throwIfProvisionStopped,
   type ProvisionRun,
 } from './provisioning'
-import { tryClaimPrewarmed } from './prewarm'
+import { takeSpareFor } from './prewarm'
 import { volumeForLaunch } from './volumes'
 import { VOLUME_NEED } from './steps'
 import { modelDisplayName } from '#domain/auth'
@@ -21,7 +22,7 @@ import { getProjectRow, getWorkflow, listWorkspaceRepos, recordProjectCreate, st
 import { resolveStart, storedSelection, type StartRequest, type WorkspaceStart } from './checkouts'
 import { ServerError } from '@yaac/shared/errors'
 import { FULL_COMMIT_PATTERN, graphHasTask, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
-import { STOCK_IMAGE_ID, type AgentMode, type AgentOptions, type AgentTool, type PermissionMode, type RepoStart } from '@yaac/shared/types'
+import { type AgentMode, type AgentOptions, type AgentTool, type PermissionMode, type RepoStart } from '@yaac/shared/types'
 
 /** A request to start a workspace. */
 export interface StartWorkspaceRequest {
@@ -101,8 +102,8 @@ export interface StartWorkspaceRequest {
   awaitBuild?: boolean
   /** Remember the named settings as project defaults (user creates only). */
   rememberDefaults: boolean
-  /** Try a prewarmed spare first. A spare has its own id, so callers that
-   *  already handed out `workspaceId` pass false. */
+  /** Take a spare, whose id the workspace then has, when one waits. A
+   *  caller that already handed out `workspaceId` passes false. */
   claimSpare: boolean
   /** Set when a create the user stops should keep its prompt as a draft
    *  (updating draft `id`, if it came from one), and with `onFailure` one
@@ -125,7 +126,7 @@ export interface StartWorkspaceRequest {
 export async function prepareStart(
   principal: Actor,
   request: StartWorkspaceRequest,
-): Promise<ProvisionRun<WorkspaceCreateResult>> {
+): Promise<StartRun> {
   await authorizeProject(principal, request.projectId, 'delegate')
   return await withLaunchSlot(principal, () => prepareAuthorizedStart(principal, request))
 }
@@ -143,10 +144,10 @@ const delegateLaunches = new Map<string, number>()
  * taken. Taken before `prepare` awaits anything, so concurrent requests
  * cannot all pass the check. Anyone else launches without one.
  */
-export async function withLaunchSlot<T>(
+export async function withLaunchSlot<T, R extends ProvisionRun<T>>(
   actor: Actor,
-  prepare: () => Promise<ProvisionRun<T>>,
-): Promise<ProvisionRun<T>> {
+  prepare: () => Promise<R>,
+): Promise<R> {
   if (actor.kind !== 'delegate') return await prepare()
   const key = `${actor.via.kind}:${actor.via.id}`
   const taken = delegateLaunches.get(key) ?? 0
@@ -159,21 +160,27 @@ export async function withLaunchSlot<T>(
     if (n <= 0) delegateLaunches.delete(key)
     else delegateLaunches.set(key, n)
   }
-  let run: ProvisionRun<T>
+  let run: R
   try {
     run = await prepare()
   } catch (err) {
     release()
     throw err
   }
-  return async (onProgress) => {
+  const held: ProvisionRun<T> = async (onProgress) => {
     try {
       return await run(onProgress)
     } finally {
       release()
     }
   }
+  // Whatever the run carries (a start's workspace id) stays on it.
+  return Object.assign(held, run)
 }
+
+/** A prepared start, and the id its workspace will have: a spare's when it
+ *  took one, which the caller can hand out before the run ends. */
+export type StartRun = ProvisionRun<WorkspaceCreateResult> & { workspaceId: string }
 
 /** Whether a start brings steps of its own, which run commands as the
  *  workspace does. */
@@ -184,7 +191,7 @@ export function bringsSteps(steps: unknown): boolean {
 async function prepareAuthorizedStart(
   principal: Actor,
   request: StartWorkspaceRequest,
-): Promise<ProvisionRun<WorkspaceCreateResult>> {
+): Promise<StartRun> {
   const { projectId, workspaceId, prompt, generatedTitle } = request
   if ([request.steps, request.workflow, request.workflowId].filter((g) => g !== undefined).length > 1) {
     throw new ServerError('VALIDATION', 'name steps or a workflow, not both')
@@ -229,7 +236,6 @@ async function prepareAuthorizedStart(
     ? `${workflow.name} @ ${start.repos.map((r) => `${start.repos.length > 1 ? `${r.link.dir}@` : ''}${r.commit?.slice(0, 8) ?? r.branch ?? 'default branch'}`).join(' ') || 'no repo'}`
     : undefined)
   const selection = storedSelection(start)
-  const atCommit = start.repos.some((r) => r.commit !== undefined)
   const setup = request.noSession === true ? undefined : await resolveCreate(projectId, {
     ...(request.tool !== undefined ? { tool: request.tool } : {}),
     ...(request.model !== undefined ? { model: request.model } : {}),
@@ -276,8 +282,25 @@ async function prepareAuthorizedStart(
 
   const modelName = setup?.model !== undefined ? modelDisplayName(setup.tool, setup.model) : undefined
   const createdVia = principal.kind === 'delegate' ? principal.via.label : undefined
-  refuseFullGroup(room, workspaceId)
-  return provision({
+  // Taken last, so the spare's id can be handed out before the start runs;
+  // the group's last check below gives it back on a refusal. A pod made on
+  // demand carries what a spare cannot: a byo volume's claim, a run's secret
+  // variables, a site release's priority. A build awaited is no image a
+  // spare is warmed on.
+  const spare = request.claimSpare && volume === undefined && request.siteId === undefined
+    && (flow?.runSecrets === undefined || Object.keys(flow.runSecrets).length === 0)
+    && request.awaitBuild !== true && request.image === undefined
+    ? await takeSpareFor(projectId, request.imageId) : undefined
+  const giveBack = (): void => {
+    spare?.done()
+    if (spare !== undefined) void workspaceDriver().reapSpare(spare.id).catch(() => {})
+  }
+  let run: ProvisionRun<WorkspaceCreateResult>
+  try {
+    // With nothing awaited between it and `provision`'s registration, so two
+    // starts cannot both take a group's last slot (`group-limits.ts`).
+    refuseFullGroup(room, workspaceId)
+    run = provision({
     workspaceId,
     projectId,
     ...(setup !== undefined ? { tool: setup.tool } : {}),
@@ -291,45 +314,39 @@ async function prepareAuthorizedStart(
     selection,
   }, async (onProgress) => {
     try {
-      throwIfProvisionStopped(workspaceId)
-      // Containerless keeps no spare pool (`defaultReconcileSteps`), a
-      // spare's mounts, fixed at launch, have no volume, and a spare starts
-      // the project's init workflows with each repo at a branch.
-      if (request.claimSpare && workspaceDriver().kind !== 'containerless' && volume === undefined
-        && workflow === undefined && !atCommit && await spareImageFits(projectId, request)) {
-        const claimed = await tryClaimPrewarmed(projectId, workspaceId, session, onProgress, {
+      try {
+        throwIfProvisionStopped(workspaceId)
+        if (spare !== undefined) onProgress('Using a prewarmed workspace...')
+        return await createWorkspace(projectId, {
+          workspaceId: spare?.id ?? workspaceId,
+          onProgress,
+          ...(session !== undefined ? { session } : {}),
           start,
+          ...(workflow !== undefined ? { workflow: { id: workflow.id, steps: workflow.steps, name: workflow.name } } : {}),
+          ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
+          ...(request.rerunOf !== undefined ? { rerunOf: request.rerunOf } : {}),
+          ...(flow !== undefined ? { runSecrets: flow.runSecrets } : {}),
           ...(title !== undefined ? { title } : {}),
           ...(generatedTitle !== undefined ? { generatedTitle } : {}),
           ...(groupId !== undefined ? { groupId } : {}),
           ...(request.deadline !== undefined ? { deadline: request.deadline } : {}),
+          ...(volume !== undefined ? { volumeId: volume.id } : {}),
+          ...(request.siteId !== undefined ? { siteId: request.siteId } : {}),
+          ...(request.image !== undefined ? { image: request.image } : {}),
+          ...(request.imageId !== undefined ? { imageId: request.imageId } : {}),
+          ...(request.awaitBuild === true ? { awaitBuild: true } : {}),
+          ...(request.stageVolumeId !== undefined ? { stageVolumeId: request.stageVolumeId } : {}),
+          ...(request.colocateWith !== undefined ? { colocateWith: request.colocateWith } : {}),
           ...(createdVia !== undefined ? { createdVia } : {}),
         })
-        if (claimed) return claimed
+      } catch (err) {
+        // A take no launch adopted (a stop before it began, included), or
+        // the pod of a create that failed after.
+        giveBack()
+        throw err
+      } finally {
+        spare?.done()
       }
-
-      return await createWorkspace(projectId, {
-        workspaceId,
-        onProgress,
-        ...(session !== undefined ? { session } : {}),
-        start,
-        ...(workflow !== undefined ? { workflow: { id: workflow.id, steps: workflow.steps, name: workflow.name } } : {}),
-        ...(request.nonInteractive === true ? { nonInteractive: true } : {}),
-        ...(request.rerunOf !== undefined ? { rerunOf: request.rerunOf } : {}),
-        ...(flow !== undefined ? { runSecrets: flow.runSecrets } : {}),
-        ...(title !== undefined ? { title } : {}),
-        ...(generatedTitle !== undefined ? { generatedTitle } : {}),
-        ...(groupId !== undefined ? { groupId } : {}),
-        ...(request.deadline !== undefined ? { deadline: request.deadline } : {}),
-        ...(volume !== undefined ? { volumeId: volume.id } : {}),
-        ...(request.siteId !== undefined ? { siteId: request.siteId } : {}),
-        ...(request.image !== undefined ? { image: request.image } : {}),
-        ...(request.imageId !== undefined ? { imageId: request.imageId } : {}),
-        ...(request.awaitBuild === true ? { awaitBuild: true } : {}),
-        ...(request.stageVolumeId !== undefined ? { stageVolumeId: request.stageVolumeId } : {}),
-        ...(request.colocateWith !== undefined ? { colocateWith: request.colocateWith } : {}),
-        ...(createdVia !== undefined ? { createdVia } : {}),
-      })
     } catch (err) {
       const { draft } = request
       if (draft === undefined || prompt === undefined || setup === undefined) throw err
@@ -362,6 +379,12 @@ async function prepareAuthorizedStart(
       throw err instanceof ServerError ? new ServerError(err.code, message) : new Error(message, { cause: err })
     }
   })
+  } catch (err) {
+    giveBack()
+    throw err
+  }
+  if (spare !== undefined) claimProvisioning(workspaceId, spare.id)
+  return Object.assign(run, { workspaceId: spare?.id ?? workspaceId })
 }
 
 /** The name of the graph a start brings of its own. A workspace has at most
@@ -463,15 +486,3 @@ export function checkStartSteps(
   return steps
 }
 
-/**
- * Whether a spare may serve this create's image: spares are warmed on the
- * project's last chosen image at its last built revision, so a create
- * naming another image, or waiting for a newer build, starts cold.
- */
-async function spareImageFits(projectId: string, request: StartWorkspaceRequest): Promise<boolean> {
-  if (request.awaitBuild === true || request.image !== undefined) return false
-  const project = await getProjectRow(projectId)
-  if (!project) return false
-  const wanted = request.imageId ?? project.defaultImageId ?? STOCK_IMAGE_ID
-  return wanted === (project.lastImageId ?? STOCK_IMAGE_ID)
-}

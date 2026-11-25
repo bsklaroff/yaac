@@ -1,6 +1,5 @@
 import {
   findWorkspacePod,
-  isPrewarmed,
   listWorkspaceJobs,
   listWorkspacePods,
   readWorkspacePods,
@@ -48,26 +47,17 @@ export async function listWorkspaces(
 }
 
 /**
- * What a stop should target, by exact workspace id. With `spares`, an
- * unclaimed spare also matches (a failed warm tears down its own unit). A
- * pod miss falls through to the Job listing, since a pod deleted
- * out-of-band leaves a Job that still needs deleting.
+ * What a stop should target, by exact workspace id. A pod miss falls
+ * through to the Job listing, since a pod deleted out-of-band leaves a Job
+ * that still needs deleting.
  */
-export async function findWorkspaceForTeardown(
-  workspaceId: string,
-  opts: { spares?: boolean } = {},
-): Promise<TeardownTarget | undefined> {
-  const pods = await listPods()
-  const pod = findWorkspacePod(pods, workspaceId, opts)
+export async function findWorkspaceForTeardown(workspaceId: string): Promise<TeardownTarget | undefined> {
+  const pod = findWorkspacePod(await listPods(), workspaceId)
   if (pod) {
     return { projectId: pod.projectId, workspaceId: pod.workspaceId, unitName: pod.jobName }
   }
-
-  // The pod exists but was skipped as a spare; don't match its Job instead.
-  if (pods.some((p) => p.workspaceId === workspaceId)) return undefined
-
   const job = (await unavailableOnFailure(listWorkspaceJobs()))
-    .find((j) => j.workspaceId === workspaceId && (opts.spares === true || !j.prewarmed))
+    .find((j) => j.workspaceId === workspaceId)
   return job
     ? { projectId: job.projectId, workspaceId: job.workspaceId, unitName: job.jobName }
     : undefined
@@ -82,7 +72,6 @@ export async function countWorkspaces(): Promise<Record<string, number>> {
   const counts: Record<string, number> = {}
   try {
     for (const p of await readWorkspacePods()) {
-      if (isPrewarmed(p)) continue
       if (p.projectId) counts[p.projectId] = (counts[p.projectId] ?? 0) + 1
     }
   } catch {

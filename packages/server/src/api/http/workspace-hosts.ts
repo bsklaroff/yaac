@@ -60,7 +60,7 @@ async function splice(
   }
   const driver = workspaceDriver()
   const matches = (await driver.list())
-    .filter((w) => w.running && !w.prewarmed && w.workspaceId.startsWith(idPrefix))
+    .filter((w) => w.running && w.workspaceId.startsWith(idPrefix))
   if (matches.length !== 1) {
     answerAndClose(socket, 404, matches.length === 0
       ? `no running workspace ${idPrefix} on this server`

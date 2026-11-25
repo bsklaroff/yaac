@@ -19,39 +19,46 @@ afterEach(async () => {
   await cleanupTempDir(tmpDir)
 })
 
-const DEFAULT = { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] }
+/** The schema's default. */
+const DEFAULT = { dirs: [{ path: 'node_modules' }, { path: 'target' }], sizeGiB: 32, ignoredTracked: [] }
 
 describe('scratchDirSettingsPatchSchema', () => {
   const parse = (v: unknown): unknown => scratchDirSettingsPatchSchema.parse(v)
 
   it('strips surrounding slashes and keeps the first of a path listed twice', () => {
     expect(parse({
-      dirs: [{ path: 'node_modules/' }, { path: 'target', sizeGiB: 32 }, { path: 'node_modules', sizeGiB: 2 }],
+      dirs: [{ path: 'node_modules/' }, { path: 'target' }, { path: 'node_modules' }],
+      sizeGiB: 64,
       ignoredTracked: ['target/', 'target'],
-    })).toEqual({ dirs: [{ path: 'node_modules' }, { path: 'target', sizeGiB: 32 }], ignoredTracked: ['target'] })
+    })).toEqual({ dirs: [{ path: 'node_modules' }, { path: 'target' }], sizeGiB: 64, ignoredTracked: ['target'] })
     expect(parse({})).toEqual({})
   })
 
-  it('refuses a path outside the checkout and a cap that is not a whole number of GiB from 1 to 1024', () => {
-    const dir = (path: unknown, sizeGiB: unknown = 8): unknown => ({ dirs: [{ path, sizeGiB }] })
-    expect(() => parse({ dirs: 'node_modules' })).toThrow(/array of \{path, sizeGiB\?\} objects/)
+  // The size is the project's, shared by every dir, so a dir naming its
+  // own is refused rather than silently dropped.
+  it('refuses a path outside the checkout, a size of its own on a dir, and a size that is not a whole number of GiB from 1 to 1024', () => {
+    const dir = (path: unknown): unknown => ({ dirs: [{ path }] })
+    expect(() => parse({ dirs: 'node_modules' })).toThrow(/array of \{path\} objects/)
+    expect(() => parse({ dirs: [{ path: 'target', sizeGiB: 8 }] })).toThrow(/sizeGiB/)
     expect(() => parse(dir(5))).toThrow(/must be a string/)
     expect(() => parse(dir('/etc/passwd'))).toThrow(/relative to \/workspace/)
     expect(() => parse(dir(''))).toThrow(/must not be empty/)
     for (const bad of ['../escape', 'a/./b', 'packages/../escape']) {
       expect(() => parse(dir(bad))).toThrow(/must not contain/)
     }
-    for (const bad of [0, 1.5, 1025, '8']) expect(() => parse(dir('target', bad))).toThrow()
+    for (const bad of [0, 1.5, 1025, '8']) expect(() => parse({ sizeGiB: bad })).toThrow()
+    expect(parse({ sizeGiB: 1024 })).toEqual({ sizeGiB: 1024 })
     expect(() => parse({ ignoredTracked: ['../up'] })).toThrow(/must not contain/)
   })
 })
 
 describe('setScratchDirs', () => {
-  it('defaults to node_modules and target at the default cap, and sets each part without touching the other', async () => {
+  it('defaults to node_modules and target at the default size, and sets each part without touching the others', async () => {
     expect((await getProjectRow(FOO))?.scratchDirs).toEqual(DEFAULT)
     await setScratchDirs(OWNER, FOO, { ignoredTracked: ['target'] })
-    expect(await setScratchDirs(OWNER, FOO, { dirs: [] })).toEqual({ dirs: [], ignoredTracked: ['target'] })
-    expect((await getProjectRow(FOO))?.scratchDirs).toEqual({ dirs: [], ignoredTracked: ['target'] })
+    await setScratchDirs(OWNER, FOO, { sizeGiB: 8 })
+    expect(await setScratchDirs(OWNER, FOO, { dirs: [] })).toEqual({ dirs: [], sizeGiB: 8, ignoredTracked: ['target'] })
+    expect((await getProjectRow(FOO))?.scratchDirs).toEqual({ dirs: [], sizeGiB: 8, ignoredTracked: ['target'] })
   })
 
   it('refuses anyone but the owner', async () => {

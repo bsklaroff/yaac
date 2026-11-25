@@ -52,7 +52,7 @@ export function ofCheckout(name: string, checkoutPath: string): string {
 /** A word safe to put in the line: no spaces or `=`. */
 const word = (s: string): string => s.replace(/[\s=]/g, '_')
 
-/** Open the record of a start of `kind` (`create`, `warm`, `restart`, `claim`). */
+/** Open the record of a start of `kind` (`create` or `restart`). */
 export function startTiming(kind: string, workspaceId?: string): StartTiming {
   const startedAt = Date.now()
   let id: string | undefined

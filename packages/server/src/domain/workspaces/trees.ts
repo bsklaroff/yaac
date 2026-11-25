@@ -17,7 +17,7 @@ import { createKeyedMutex } from '#lib/keyed-mutex'
 import { serverLog } from '#lib/log'
 import { workspaceCheckouts } from './checkouts'
 import { tearingDown } from './cleanup'
-import { workspaceBinDir } from './workspace-bin'
+import { stageHelpers } from './workspace-bin'
 
 /**
  * A k8s workspace's files on its node (docs/node-local-workspaces.md):
@@ -35,26 +35,6 @@ export function treesApply(siteRelease: boolean): boolean {
   return workspaceDriver().kind === 'k8s' && !siteRelease
 }
 
-/** Where the tree program is staged for pods to mount: its own place, since
- *  a workspace's staged helpers go with its stop and a salvage comes after. */
-const programPath = (): string => globalPath('workspace-bin', 'yaac-tree')
-
-/** Stage `yaac-tree` where pods mount it, replacing an older copy whole.
- *  The program is a build output, so running from source (unit tests,
- *  which start no pod) there is none to stage. */
-export async function stageTreeProgram(): Promise<string> {
-  const target = programPath()
-  const source = await fs.readFile(path.join(workspaceBinDir(), 'yaac-tree')).catch(() => null)
-  if (source === null) return target
-  const current = await fs.readFile(target).catch(() => null)
-  if (current?.equals(source)) return target
-  await fs.mkdir(path.dirname(target), { recursive: true })
-  const tmp = `${target}.${randomBytes(6).toString('hex')}`
-  await fs.writeFile(tmp, source, { mode: 0o755 })
-  await fs.rename(tmp, target)
-  return target
-}
-
 /** The checkpoint log's folders a pod mounts, made before it is applied,
  *  since a missing mount source would be made root-owned. */
 export async function prepareCheckpoints(projectId: string, workspaceId: string, life: string): Promise<void> {
@@ -63,7 +43,12 @@ export async function prepareCheckpoints(projectId: string, workspaceId: string,
   await fs.mkdir(path.join(dir, LIVES_DIR, life), { recursive: true })
 }
 
-/** The tree of a life, as the runtime mounts it. */
+/**
+ * The tree of a life, as the runtime mounts it. A salvage or import pod
+ * runs the tree program from this build's helpers folder, as the build's
+ * own pods do, never from the `workspace-bin/yaac-tree` older pods mount
+ * (docs/legacy-compat-shims.md).
+ */
 export async function treeOf(projectId: string, workspaceId: string, life: string, opts: {
   checkouts: Array<{ id: string; path: string; dir: string; mainGitDir: string }>
   restoring: boolean
@@ -74,7 +59,7 @@ export async function treeOf(projectId: string, workspaceId: string, life: strin
     checkpointsDir: workspaceCheckpointsDir(projectId, workspaceId),
     checkouts: opts.checkouts.map((c) => ({ id: c.id, path: c.path, gitDir: path.join(c.dir, '.git') })),
     mainClones: [...new Set(opts.checkouts.map((c) => c.mainGitDir))],
-    program: await stageTreeProgram(),
+    program: path.join((await stageHelpers()).binDir, 'yaac-tree'),
     restoring: opts.restoring,
   }
 }
@@ -386,8 +371,7 @@ const COLLECT_AFTER_MS = 60 * 60_000
  * manifests are the two newest lives' that have one (what a restart
  * restores, and the one before it), an import's until a life has saved,
  * and those of lives lost with their node, in case their tree turns up. A
- * workspace with no recorded life (a prewarmed spare, whose life is
- * recorded only when it is claimed) or with a manifest that cannot be read
+ * workspace with no recorded life or with a manifest that cannot be read
  * keeps everything. A tree container deletes nothing there, so this is the
  * only collection.
  */

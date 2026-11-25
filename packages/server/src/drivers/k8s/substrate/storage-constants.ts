@@ -43,6 +43,13 @@ export const POD_VOLUMES_ROOT = '/yaac/volumes'
 
 /** Parent of every install's node-local tree on a node; see `nodeLocalNodePath`. */
 export const NODE_LOCAL_NODE_ROOT = '/var/lib/yaac/node'
+/**
+ * Parent of every install's node-mounts root on a node (`nodeMountsNodePath`):
+ * beside the node-local roots, never inside one, since the sweep and disk
+ * pods walk those and would reach a project's data through a pod's
+ * node-mounts directory (docs/generic-workspace-pods.md "The pod").
+ */
+export const NODE_MOUNTS_NODE_ROOT = '/var/lib/yaac/node-mounts'
 
 /**
  * Label naming the install namespace on a cluster-scoped object (a

@@ -308,7 +308,7 @@ launch.
 The branch is remembered only for the dialog: `projects.lastBranch` (recorded
 when a create names one) is what the dialog opens on while origin still has
 it, else the remote's default. A create naming no branch uses the remote's
-default, so the CLI and spare pool never depend on the webapp's last pick.
+default, so the CLI never depends on the webapp's last pick.
 
 The resolved posture is stored on the session (`sessions.permissionMode`),
 so a restart relaunches each agent in the posture it was in. A restart
@@ -454,11 +454,3 @@ it writes it down:
 claude's, opencode's and omp's pane option rides the same per-pane tmux subscription
 as the model, filtered inside the format string so a value set by anything
 in the workspace cannot forge control-mode lines.
-
-## Prewarmed spares
-
-A spare runs no session, so no posture is fixed at warm time: a claim opens its
-session with what was asked, as in any running workspace (docs/sessions.md). A
-spare running another image than the project now builds (a Dockerfile edit
-since it was warmed) is skipped, since a pod's image is fixed, and the pool
-replaces it.
