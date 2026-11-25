@@ -1506,6 +1506,12 @@ export interface WorkspaceListEntry {
   /** The name of the public site it is a release of (docs/public-sites.md),
    *  which makes it read-only. */
   site?: string
+  /**
+   * It is a public site release, even once its site is deleted and `site`
+   * is gone. Clients forward its ports on loopback alone
+   * (`ForwardSpec.loopbackOnly`).
+   */
+  release?: true
   /** Its checkouts, and where its shells and steps start relative to the
    *  workspace root (`''`, or one checkout's path). */
   repos: WorkspaceRepo[]

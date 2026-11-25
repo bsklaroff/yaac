@@ -30,6 +30,13 @@ export interface ForwardSpec {
   session: string
   containerPort: number
   hostPort: number
+  /**
+   * A public site release's port, bound on loopback alone
+   * (`createForwardSet`): whatever reaches the listener reaches the port as
+   * its owner, and an admin port checks no one else (docs/public-sites.md
+   * "Admin port").
+   */
+  loopbackOnly?: true
 }
 
 export interface ForwardHandle {

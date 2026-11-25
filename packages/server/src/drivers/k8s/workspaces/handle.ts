@@ -1,4 +1,4 @@
-import type { PodInfo } from '#drivers/k8s/substrate'
+import { LABEL_SITE_ID, type PodInfo } from '#drivers/k8s/substrate'
 import type { RuntimeHandle } from '#drivers/contract'
 import type { WorkspaceDeathCause } from '@yaac/shared/types'
 
@@ -19,6 +19,7 @@ export function runtimeHandleFromPod(pod: PodInfo): RuntimeHandle {
     terminating: pod.terminating,
     deathCause: deriveDeathCause(pod),
     ...(pod.node !== undefined ? { node: pod.node } : {}),
+    ...(pod.labels[LABEL_SITE_ID] !== undefined ? { siteId: pod.labels[LABEL_SITE_ID] } : {}),
   }
 }
 
