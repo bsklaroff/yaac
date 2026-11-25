@@ -1203,6 +1203,11 @@ export const draftWorkspaces = snakeCase.table('draft_workspaces', {
    *  cron and zone. */
   cron: text(),
   timeZone: text(),
+  /** Set when the dialog aimed the agent at a running workspace: its id,
+   *  and the checkout path the agent starts in ('' for the root). Not a
+   *  live reference, like `startAfter`. */
+  inWorkspace: text(),
+  sessionCwd: text(),
 }, (t) => [index().on(t.projectId)])
 
 /**

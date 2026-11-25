@@ -72,8 +72,9 @@ Other exits keep the prompt too:
 
 Every field as the pane showed it: prompt, title, agent, model, effort, UI
 mode, permission mode, the repo rows (which repos, each one's branch), the
-nested toggle, the cwd, group, and **Start**. Reopening the draft restores
-the screen.
+nested toggle, the cwd, group, **Start**, and **Where** (a running
+workspace to open the agent in, with the checkout it starts in;
+docs/sessions.md). Reopening the draft restores the screen.
 
 - Model, the repo rows, the layout and the cwd are empty if the pane had
   not loaded them yet; reopening then uses the default, as a fresh form
@@ -81,6 +82,8 @@ the screen.
   the same way.
 - Start is the id of the workspace or queued entry the create would wait on.
   If that parent is gone when the draft reopens, Start falls back to now.
+- Where is likewise not a live reference: a draft whose workspace no longer
+  runs reopens, and runs, as a new workspace.
 - Deleting the draft's group clears the field. A name typed into the "+ New
   group" box is not saved, because that group does not exist until a create
   or queue makes it; the draft keeps the group picked before the box opened.
@@ -92,14 +95,15 @@ the screen.
   read-only and nothing can be sent, so a save never cuts it short. The
   sidebar's "Run now" on a draft fetches it the same way.
 
-Creating or queueing from a draft deletes it. The request names the draft
-(`draftId`), which claims it (`claimDraft`): a second request naming a draft
-already claimed is refused with `CONFLICT`, and one naming a draft that is
-gone with `NOT_FOUND`, so two tabs or a retry cannot make two workspaces from
-one draft. While the request runs the snapshot leaves the draft out, and the
-server deletes it only after the workspace or queue entry exists, so a failed
-create shows the draft again. The claim is held in memory, so a server
-restart mid-create shows the draft again too.
+Creating, queueing or opening an agent from a draft deletes it. The request
+names the draft (`draftId`), which claims it (`claimDraft`): a second
+request naming a draft already claimed is refused with `CONFLICT`, and one
+naming a draft that is gone with `NOT_FOUND`, so two tabs or a retry cannot
+start two things from one draft. While the request runs the snapshot leaves
+the draft out, and the server deletes it only after the workspace, queue
+entry or session exists, so a failed create shows the draft again. The
+claim is held in memory, so a server restart mid-create shows the draft
+again too.
 
 ## Titles
 
@@ -129,10 +133,12 @@ its generated title until the prompt is changed.
   it replaces that draft's fields; a draft that is gone or belongs to another
   project answers `NOT_FOUND` instead of being re-created.
   `/workspace/draft/discard` deletes one. `/workspace/create` and
-  `/workspace/queue/create` take `draftId`.
+  `/workspace/queue/create` take `draftId`, as does `/workspace/:id/sessions`
+  for a draft aimed at a running workspace.
 - **Snapshot.** `draftWorkspaces`, for every project, oldest first.
 - **Webapp.** A collapsible **Drafts** section at the top of the sidebar,
   newest first, hidden when the project has none. Clicking a draft reopens
   the new-workspace pane on it. Its `…` menu can **Run now**, which creates from the draft
-  straight away with its saved settings (ignoring Start), or discard it.
+  straight away with its saved settings (ignoring Start), or opens its agent
+  in the workspace Where names if that is still running, or discard it.
 - Removing a project deletes its drafts.

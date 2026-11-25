@@ -189,10 +189,12 @@ even while a sibling already waits.
 With `--workspace`, only a session's settings are taken (tool, model,
 effort, posture, UI mode, its title); a workspace's (branch, group,
 timeout, a later start) are refused. A conversation resumes only in the
-workspace that holds it. Queued entries, routines and drafts start a new
-workspace with a session, but for a non-interactive one, which runs steps
-alone (docs/workspace-steps.md). `yaac workspace list` and `yaac-mama list`
-show each running workspace's open sessions under it.
+workspace that holds it. Queued entries and routines start a new workspace
+with a session, but for a non-interactive one, which runs steps alone
+(docs/workspace-steps.md); so does a draft, unless it was saved aimed at a
+workspace that is still running (docs/draft-workspaces.md). `yaac workspace
+list` and `yaac-mama list` show each running workspace's open sessions
+under it.
 
 ## `yaac-mama` and the calling session
 
@@ -245,6 +247,8 @@ workspace or beside it in its own.
   running workspace, which hides the workspace-only fields and opens a
   session there; New agent in a workspace's bar or row menu opens it
   aimed. Its Agent field's None creates a workspace with no session.
+  Leaving it with a typed prompt offers to save a draft, as for a new
+  workspace.
 
 ## Where things live
 

@@ -158,7 +158,8 @@ export function isNewWorkspaceForm(v: unknown): v is NewWorkspaceForm {
  * The form `opts` opens: a queued entry's, a routine's or a draft's every
  * field, or Start set to a parent. A draft's Start falls back to now if that
  * parent is gone or its time has passed, and its group counts as untouched
- * if it is what that Start would give. An entry or routine that is gone
+ * if it is what that Start would give; its Where, to a new workspace if
+ * that one no longer runs (the pane checks). An entry or routine that is gone
  * opens empty, for the pane to say so.
  */
 export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapshot | undefined): NewWorkspaceForm {
@@ -241,6 +242,8 @@ export function seedNewWorkspace(opts: NewWorkspaceOpts, snapshot: ServerSnapsho
     ...(groupId !== undefined ? { groupId } : {}),
     ...(from.imageId !== undefined ? { imageId: from.imageId } : {}),
     ...(workflow !== undefined ? { workflow, ...(nonInteractive ? { kind: 'workflow' as const } : {}) } : {}),
+    ...(draft?.inWorkspace !== undefined ? { inWorkspace: draft.inWorkspace } : {}),
+    ...(draft?.sessionCwd !== undefined ? { sessionCwd: draft.sessionCwd } : {}),
     ...(entry !== undefined ? { editId: entry.id } : routine !== undefined ? { editRoutineId: routine.id } : { draftId: from.id }),
   }
 }

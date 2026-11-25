@@ -41,6 +41,8 @@ function columns(s: DraftWorkspaceSettings): Omit<typeof draftWorkspaces.$inferI
     timeoutMinutes: s.timeout ?? null,
     cron: s.cron ?? null,
     timeZone: s.timeZone ?? null,
+    inWorkspace: s.inWorkspace ?? null,
+    sessionCwd: s.sessionCwd ?? null,
   }
 }
 

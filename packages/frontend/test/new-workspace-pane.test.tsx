@@ -1564,7 +1564,6 @@ describe('NewWorkspacePane sessions', () => {
 
     expect(heading()).toBe('New agent in “Parent work”')
     for (const label of ['Start', 'Group', 'Timeout', 'Base branch']) expect(screen.queryByLabelText(label)).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Save draft' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'More pane actions' })).toBeNull()
 
     typePrompt('review the parser')
@@ -1575,6 +1574,67 @@ describe('NewWorkspacePane sessions', () => {
     await waitFor(() => expect(useUiStore.getState().selectedWorkspaceId).toBe('w-parent'))
     expect(useUiStore.getState().activeTabs['w-parent']).toBe('session:sn')
     expect(useUiStore.getState().newWorkspace).toBeNull()
+  })
+
+  // A draft keeps its Where, which is not a live reference.
+  it('offers a draft aimed at the workspace on leaving, which reopens there and is consumed by its start', async () => {
+    setSnapshot(project({}, 'k8s', { workspaces: [PARENT] }))
+    act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', inWorkspace: 'w-parent' }))
+    mount()
+    await waitFor(() => expect(startSession().title).not.toMatch(/^Loading/))
+    typePrompt('review it later')
+    leave()
+    fireEvent.click(await screen.findByRole('button', { name: 'Save draft' }))
+    await waitFor(() => expect(useUiStore.getState().selectedWorkspaceId).toBe('w-elsewhere'))
+    expect(sent(SAVE_DRAFT)).toEqual([expect.objectContaining({
+      project: 'proj', prompt: 'review it later', inWorkspace: 'w-parent', sessionCwd: '',
+    })])
+    const { project: _, ...settings } = sent(SAVE_DRAFT)[0]
+    const saved = { ...settings, id: 'd1', projectId: 'proj', createdAt: '', updatedAt: '' } as DraftWorkspaceEntry
+
+    cleanup()
+    server.route(OPEN, { sessionId: 'sn', workspaceId: 'w-parent' })
+    setSnapshot(project({}, 'k8s', { workspaces: [PARENT], draftWorkspaces: [saved] }))
+    useUiStore.setState({ selectedWorkspaceId: null })
+    act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', draftId: 'd1' }))
+    mount()
+    await waitFor(() => expect(startSession().title).not.toMatch(/^Loading/))
+    expect(heading()).toBe('New agent in “Parent work”')
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Save draft' }).disabled).toBe(true)
+    fireEvent.click(startSession())
+    await waitFor(() => expect(sent(OPEN)).toHaveLength(1))
+    expect(sent(OPEN)[0]).toMatchObject({ prompt: 'review it later', draftId: 'd1' })
+    await waitFor(() => expect(useUiStore.getState().selectedWorkspaceId).toBe('w-parent'))
+    expect(screen.queryByText('Save as a draft?')).toBeNull()
+
+    // Leaving while a start is in flight has nothing to save: the prompt is
+    // already on its way to the agent.
+    cleanup()
+    let answer!: (v: unknown) => void
+    server.route(OPEN, () => new Promise((resolve) => { answer = resolve }))
+    setSnapshot(project({}, 'k8s', { workspaces: [PARENT] }))
+    useUiStore.setState({ selectedWorkspaceId: null })
+    act(() => useUiStore.getState().openNewWorkspace({ projectId: 'proj', inWorkspace: 'w-parent' }))
+    mount()
+    await waitFor(() => expect(startSession().title).not.toMatch(/^Loading/))
+    typePrompt('right now')
+    fireEvent.click(startSession())
+    await waitFor(() => expect(sent(OPEN)).toHaveLength(2))
+    leave()
+    expect(useUiStore.getState().selectedWorkspaceId).toBe('w-elsewhere')
+    expect(screen.queryByText('Save as a draft?')).toBeNull()
+    act(() => answer({ sessionId: 'sn2', workspaceId: 'w-parent' }))
+    await waitFor(() => expect(useUiStore.getState().selectedWorkspaceId).toBe('w-parent'))
+    expect(sent(SAVE_DRAFT)).toHaveLength(1)
+
+    // Its workspace has stopped since: it reopens as a new workspace, and
+    // that is not a change to save.
+    cleanup()
+    setSnapshot(project({}, 'k8s', { draftWorkspaces: [saved] }))
+    useUiStore.setState({ selectedWorkspaceId: null })
+    await openWith({ draftId: 'd1' })
+    expect(heading()).toBe('New workspace')
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Save draft' }).disabled).toBe(true)
   })
 
   it('opens aimed at a workspace from its New agent', async () => {
