@@ -57,7 +57,7 @@ function echoKey(text: string, images: number): string {
   return `${text}\u0000${String(images)}`
 }
 
-export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted, visible, focused }: {
+export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted, visible, focused, focusKey }: {
   workspaceId: string
   conversationId: string
   /** The message its session was opened with, when this tab drew that
@@ -69,6 +69,9 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
   visible: boolean
   /** The pane the user is in, which Cmd/Ctrl-F searches. */
   focused: boolean
+  /** Set only on the pane focus should go to, and bumped to send it there
+   *  again (a pane shortcut, a tab click, a workspace switch). */
+  focusKey?: number
 }): JSX.Element {
   const stream = useAcpStream(workspaceId, conversationId)
   const { events, busy, queued, connected, refused, send, permissionModes, efforts } = stream
@@ -174,10 +177,16 @@ export function WorkspaceChat({ workspaceId, conversationId, opening, onStarted,
     return () => ro.disconnect()
   }, [view, fitInput])
 
+  /**
+   * Focus the message box when focus is sent to this pane, or on leaving a
+   * subagent's view in the pane the user is in, which a click into it makes
+   * without sending focus. Several chat panes are visible at once in tiles
+   * mode, so being shown is not enough.
+   */
   useEffect(() => {
-    if (!visible || dialogHoldsFocus() || focusRaisesKeyboard()) return
+    if ((focusKey === undefined && !focused) || !visible || dialogHoldsFocus() || focusRaisesKeyboard()) return
     inputRef.current?.focus()
-  }, [visible, view])
+  }, [focusKey, visible, view])
 
   useEffect(() => {
     setChatDraft(workspaceId, conversationId, draft)

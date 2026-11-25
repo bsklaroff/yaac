@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { QueryClientProvider } from '@tanstack/react-query'
-import { screen, cleanup, waitFor, fireEvent, type RenderResult } from '@testing-library/react'
+import { screen, cleanup, waitFor, fireEvent, act, type RenderResult } from '@testing-library/react'
 import type { WorkspaceListEntry } from '@yaac/shared/types'
 
 // No xterm, no sockets: the terminal, chat and log panes are stubs naming
@@ -11,7 +11,9 @@ vi.mock('#components/WorkspaceTerminal', () => ({
   ),
 }))
 vi.mock('#components/WorkspaceChat', () => ({
-  WorkspaceChat: ({ conversationId }: { conversationId: string }) => <div data-testid="chat">{conversationId}</div>,
+  WorkspaceChat: ({ conversationId, focusKey }: { conversationId: string; focusKey?: number }) => (
+    <div data-testid="chat" data-focus-key={focusKey}>{conversationId}</div>
+  ),
 }))
 vi.mock('#components/StepLog', () => ({
   StepLog: ({ life, file }: { life: string; file: string }) => <div data-testid="log">{`${life}/${file}`}</div>,
@@ -23,6 +25,7 @@ import {
   agentEvent, conversation, mockFetch, renderWithClient, serverError, serverSnapshot, sessionEntry, TEST_USER_ID,
   testQueryClient, workspaceEntry, type FetchMock,
 } from './harness'
+import { resizeAll } from './setup'
 
 /*
  * A workspace's sessions as panes (docs/sessions.md): each in its mode's
@@ -58,6 +61,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
 })
 
 /** Render the workspace as `over` describes; called again with the same
@@ -229,5 +233,78 @@ describe('WorkspaceView sessions', () => {
     expect(server.called(SEEN)[0].body).toEqual({ sessionId: 'sa', waitingSinceMs: 7 })
     const sessions = useUiStore.getState().snapshot?.workspaces[0].sessions ?? []
     expect(sessions.map((s) => s.waitingSeenBy)).toEqual([[TEST_USER_ID], undefined])
+  })
+
+  it('in tiles mode, outlines the focused column, sends focus with the pane shortcuts, and not on a click', async () => {
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1000)
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(600)
+    const second = conversation({ conversationId: 'conv-b', sessionId: 'sb', ordinal: 2 })
+    useUiStore.setState({
+      viewMode: 'tiles',
+      layouts: { s1: [{ tabs: ['session:sa'], active: 'session:sa' }, { tabs: ['session:sb'], active: 'session:sb' }] },
+      activeTabs: { s1: 'session:sa' },
+    })
+    const view = show({
+      sessions: [
+        sessionEntry({ sessionId: 'sa', mode: 'acp', conversationId: 'conv-a' }),
+        sessionEntry({ sessionId: 'sb', mode: 'acp', conversationId: 'conv-b', ordinal: 1 }),
+      ],
+      conversations: [held, second],
+    })
+    act(resizeAll)
+    const columns = [...view.container.querySelectorAll<HTMLElement>('section')]
+    const outline = (): HTMLElement | null => view.container.querySelector('.border-accent-outline')
+    const focusedChat = (): string | undefined =>
+      screen.getAllByTestId('chat').find((c) => c.dataset.focusKey !== undefined)?.textContent ?? undefined
+    expect(columns).toHaveLength(2)
+    expect(outline()?.style.left).toBe(columns[0].style.left)
+    expect(focusedChat()).toBe('conv-a')
+
+    fireEvent.keyDown(window, { code: 'KeyL', key: 'l', altKey: true })
+    await waitFor(() => expect(focusedChat()).toBe('conv-b'))
+    expect(outline()?.style.left).toBe(columns[1].style.left)
+
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', altKey: true })
+    await waitFor(() => expect(focusedChat()).toBe('conv-a'))
+    expect(outline()?.style.left).toBe(columns[0].style.left)
+
+    // A press on the other pane's transcript, which focuses nothing, makes
+    // it the focused pane. Focus is not sent to its box, which would drop
+    // the selection the press starts, nor left with the pane it went to.
+    fireEvent.pointerDown(screen.getByText('conv-b'))
+    await waitFor(() => expect(outline()?.style.left).toBe(columns[1].style.left))
+    expect(focusedChat()).toBeUndefined()
+    fireEvent.keyDown(window, { code: 'KeyH', key: 'h', altKey: true })
+    await waitFor(() => expect(focusedChat()).toBe('conv-a'))
+    expect(outline()?.style.left).toBe(columns[0].style.left)
+
+    // Closing the pane focus went to sends it to the one left.
+    fireEvent.keyDown(window, { code: 'KeyL', key: 'l', altKey: true })
+    await waitFor(() => expect(focusedChat()).toBe('conv-b'))
+    show({ sessions: [sessionEntry({ sessionId: 'sa', mode: 'acp', conversationId: 'conv-a' })], conversations: [held] }, view)
+    await waitFor(() => expect(focusedChat()).toBe('conv-a'))
+  })
+
+  /** A tui agent's terminal takes the key only once the agent has started,
+   *  by which time the user may be typing in another pane. */
+  it('in tiles mode, sends no focus to a pane the user has moved out of', async () => {
+    const tui = sessionEntry({ sessionId: 'sb', mode: 'tui', window: 'claude-sb', prompt: 'port the parser', opening: true, ordinal: 1 })
+    const chat = sessionEntry({ sessionId: 'sa', mode: 'acp', conversationId: 'conv-a' })
+    useUiStore.setState({
+      viewMode: 'tiles',
+      layouts: { s1: [{ tabs: ['session:sa'], active: 'session:sa' }, { tabs: ['session:sb'], active: 'session:sb' }] },
+      activeTabs: { s1: 'session:sb' },
+    })
+    const view = show({ sessions: [chat, tui], conversations: [held] })
+    fireEvent.focusIn(screen.getByTestId('chat'))
+    const { opening: _, ...started } = tui
+    show({ sessions: [chat, started], conversations: [held] }, view)
+    expect(screen.getByTestId('terminal').dataset.focusKey).toBeUndefined()
+    expect(screen.getByTestId('chat').dataset.focusKey).toBeUndefined()
+    expect(useUiStore.getState().activeTabs.s1).toBe('session:sa')
+
+    // The next pane shortcut sends focus again.
+    fireEvent.keyDown(window, { code: 'KeyL', key: 'l', altKey: true })
+    await waitFor(() => expect(screen.getByTestId('terminal').dataset.focusKey).toBeDefined())
   })
 })

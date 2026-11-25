@@ -106,6 +106,7 @@ export function SessionPane({ workspace, session, paneTarget, visible, focused, 
             onStarted={() => forgetDrawnStarting(session.sessionId)}
             visible={visible && !onLog}
             focused={focused && !onLog}
+            {...(focusKey !== undefined ? { focusKey } : {})}
           />
         </div>
       ) : !onLog && <AcpStarting session={session} opening={opening} />}
