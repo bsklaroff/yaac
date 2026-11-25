@@ -344,17 +344,32 @@ describe('readWorkspaceChanges', () => {
   // through an alternate, so polls leave nothing in the checkout. Scratch
   // starts over past its cap, and when a blob the private index names has
   // gone from the checkout (the agent added a file, reset it and pruned).
+  // While the index caches its tree a fill is what finds the blob gone, and
+  // the read scans again; once staging another edit has `write-tree` build
+  // the tree again, the scan finds it and starts over by itself.
   it('stages into scratch objects, starting over past the cap or on a missing blob', async () => {
     const w = workspace()
     const objects = path.join(w.scratch(), 'yaac-changes.idx.objects')
     git(w.repo, 'checkout', '-q', '-b', 'agent/x')
-    fs.writeFileSync(path.join(w.repo, 'new.txt'), 'new\n')
+    // Every file is older than the private index, so git trusts its stat
+    // data. It stages a file written in the index's own second again on
+    // every scan, and so builds the tree again whether or not a test edits.
+    // Each edit changes a file's size, which `core.checkStat=minimal` sees.
+    const old = new Date('2000-01-01')
+    const write = (name: string, text: string): void => {
+      fs.writeFileSync(path.join(w.repo, name), text)
+      fs.utimesSync(path.join(w.repo, name), old, old)
+    }
+    write('base.txt', 'base\n')
+    write('new.txt', 'new\n')
     let cap = String(SCRATCH_OBJECTS_CAP_KB)
     w.rewrite((cmd) => cmd.replaceAll(String(SCRATCH_OBJECTS_CAP_KB), cap))
-    const read = async (): Promise<ChangesReading['changes']> => {
+    const read = async (): Promise<ChangesReading['changes'] & { scans: number }> => {
       forgetWorkspaceChanges('ws')
       fs.rmSync(path.join(w.scratch(), 'yaac-changes.idx.entries'), { force: true })
-      return (await w.read()).changes
+      const before = w.runs.length
+      const { changes } = await w.read()
+      return { ...changes, scans: w.runs.slice(before).filter((r) => r.out.startsWith('BASE ')).length }
     }
     const has = (id: string, env: NodeJS.ProcessEnv = {}): boolean => {
       try {
@@ -363,6 +378,15 @@ describe('readWorkspaceChanges', () => {
       } catch {
         return false
       }
+    }
+    // A file the agent adds, so its blob is in the checkout alone, and
+    // after a read has staged it, resets and prunes.
+    const drop = async (name: string): Promise<void> => {
+      write(name, `${name}\n`)
+      git(w.repo, 'add', name)
+      await read()
+      git(w.repo, 'reset', '-q', name)
+      git(w.repo, 'prune', '--expire=now')
     }
     const inScratch = scratchObjectsEnv(w.repo, w.scratch())
     const loose = git(w.repo, 'count-objects')
@@ -373,20 +397,21 @@ describe('readWorkspaceChanges', () => {
     expect([has(blob), has(blob, inScratch), has(first.work), has(first.work, inScratch)]).toEqual([false, true, false, true])
     expect(git(w.repo, 'count-objects')).toBe(loose)
 
-    // Older than the index, so git trusts its stat data rather than hashing
-    // the racily clean file again.
-    const dropped = path.join(w.repo, 'dropped.txt')
-    fs.writeFileSync(dropped, 'dropped\n')
-    fs.utimesSync(dropped, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000))
-    git(w.repo, 'add', 'dropped.txt')
-    await read()
-    git(w.repo, 'reset', '-q', 'dropped.txt')
-    git(w.repo, 'prune', '--expire=now')
-    expect((await read()).diff).toContain('+dropped')
+    await drop('dropped.txt')
+    const filled = await read()
+    expect(filled.diff).toContain('+dropped.txt')
+    expect(filled.scans).toBe(2)
+
+    await drop('gone.txt')
+    write('new.txt', 'new, edited\n')
+    const staged = await read()
+    expect(staged.diff).toContain('+gone.txt')
+    expect(staged.diff).toContain('+new, edited')
+    expect(staged.scans).toBe(1)
 
     fs.writeFileSync(path.join(objects, 'junk'), 'x'.repeat(4096))
     cap = '1'
-    expect((await read()).files.map((f) => f.path)).toEqual(['dropped.txt', 'new.txt'])
+    expect((await read()).files.map((f) => f.path)).toEqual(['dropped.txt', 'gone.txt', 'new.txt'])
     expect(fs.existsSync(path.join(objects, 'junk'))).toBe(false)
   })
 })

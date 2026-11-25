@@ -113,7 +113,10 @@ to the network filesystem: staging 1,000 new files took 2–4s, against
 memory, so past 256 MB the directory starts over with the private index,
 which is seeded again. So does a run that finds a blob missing: the agent
 can add a file, reset it and prune, deleting a blob the private index still
-names, which no stat check notices. `add -A` skips a tracked file that
+names, which no stat check notices. The scan finds it when a diff reads
+the blob, or when staging another change has `write-tree` build that
+folder's tree again; while the index still caches the tree, a fill does
+(below). `add -A` skips a tracked file that
 matches `.gitignore` (one added with `add -f`), so those the agent's index
 tracks are force-added after it, or they would read as deleted. They are
 added by literal name (`--literal-pathspecs`): the names are the agent's,
