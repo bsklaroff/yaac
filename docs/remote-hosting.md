@@ -27,7 +27,9 @@ PHONE: browser or the iPhone app (ios/README.md). Full webapp, tool
 No client holds a credential. The server works out who is calling from the
 request (see "Security model"): in a `tailnet` install every request comes
 through `tailscale serve`, from the **tailnet user** serve names. Nothing in
-the CLI or webapp assumes the server is on the same machine.
+the CLI or webapp assumes the server is on the same machine. The one
+exception is a program off the tailnet, which may hold a token for the
+separate token listener ("Token access").
 
 ## Access modes
 
@@ -37,7 +39,7 @@ var cannot change who the server admits.
 
 | Mode | Admits | Users |
 |---|---|---|
-| `local` | loopback only; anything through `serve` is refused | one built-in user with no login, owning everything |
+| `local` | loopback only (and the token listener, if started); anything through `serve` is refused | one built-in user with no login, owning everything |
 | `tailnet` | only `serve` with a tailnet identity; plain loopback is refused | a user per tailnet login, created on first sight |
 
 - **A fresh install** takes the mode of the command that first starts it:
@@ -68,6 +70,8 @@ var cannot change who the server admits.
   proxy's own relay listener.)
 
 `GET /whoami` returns the caller, with its user id, and the install's users.
+The token listener ("Token access") is outside the modes: it admits a
+token in either one, and nothing else.
 
 ## Server setup
 
@@ -202,6 +206,112 @@ identifies callers there exactly as it does behind `serve`.
   browsers isolate processes by site, so a site's page may share a renderer
   process with the server's.
 
+## Token access
+
+A program on a machine that is not on the tailnet (a CI job, a backend,
+another VM in the same private network) reaches the server through a third
+listener, which admits a caller by bearer token alone and serves the API's
+HTTP routes as a **delegate** of the user the token is bound to
+(docs/multi-user.md "Authorization"): every read, and the writes an agent
+has through `yaac-mama`, in any of that user's projects, up to the token's
+permission-mode ceiling. Never as a person and never with the admin role.
+
+```sh
+# containerless: the server binds exactly this address; give it on every start
+yaac server start --token-listen 10.0.1.2:8443
+# a cluster: kept for later installs until --no-token-listen
+yaac cluster install --token-listen 10.0.1.2:8443
+yaac token create ci --expires 90d          # prints the token, once
+curl --pinnedpubkey 'sha256//…' -H "Authorization: Bearer $TOKEN" https://10.0.1.2:8443/api/whoami
+```
+
+- **The address is one IP literal the machine (or a node) holds**: a
+  private VPC address, loopback for an SSH tunnel, a tailnet address, or a
+  public one if you mean it. A hostname, an interface name and a wildcard
+  are refused, and there is no default. An address that cannot be bound
+  fails the start; the port is never changed for you. How a cluster holds
+  it is docs/server-in-cluster.md "The token endpoint".
+- **TLS ends in the server**, with a certificate yaac generates: an ECDSA
+  P-256 key and a self-signed certificate naming the address, valid ten
+  years. It is `token-tls/` in the server-local tier on a host install and
+  the `yaac-server-token-tls` Secret on a cluster. A pair yaac made is
+  reissued on the same key when the address changes or it nears expiry,
+  never regenerated, so the key fingerprint the start prints (and `yaac
+  server status` / `yaac cluster status` print again) stays what callers
+  pin. A caller pins that fingerprint (`curl --pinnedpubkey`) or trusts the
+  certificate file as its CA (`curl --cacert`), which works because the
+  certificate names the address. The listener re-reads the pair every 30 s
+  and swaps in a new one that is whole and matches, keeping the last good
+  one otherwise; a pair someone else put there is served as it is.
+- **What it serves**: the API's HTTP routes behind the token, `/api/health`
+  included. No SPA and no WebSocket route, so a deleted binding refuses its
+  very next request and has no open socket to outlive it. `Host`,
+  `Tailscale-*` and `X-Forwarded-*` are never read, so no request here is
+  `local`. A token is read from the `Authorization` header only, never a
+  query string, and the header is never logged.
+- **Hardened as a network-facing port**: Node's header and request
+  timeouts, a cap on open connections, and, once an address has failed to
+  authenticate ten times in a minute, 429 for its further failures. A
+  request carrying a valid token is always served: on a cluster the source
+  is the forwarder's or a node's address, which every caller may share, so
+  refusing it would let anyone lock everyone out, and a token cannot be
+  guessed either way. A refusal is logged with its source address and
+  reason and nothing else of the request. An issuer whose discovery fails
+  is not asked again for 30 s.
+- **A server nested in a workspace refuses `--token-listen`.**
+
+**Bindings** are what a token resolves to, made by the user they act as,
+over the main origin (`yaac token …`, or Settings → Credentials → Tokens):
+
+- a **personal access token** (`yaac token create <label>`): `yaac_pat_`
+  and 32 random bytes, shown once; only its SHA-256 is stored;
+- an **OIDC identity** (`yaac token bind <label> --issuer <url> --subject
+  <sub> [--claim name=value]…`): tokens an issuer such as Google or GitHub
+  Actions mints for that exact subject, naming the audience the binding
+  was given (`yaac:` and 16 random bytes). The issuer must be `https` on a
+  public DNS name, and its discovery document must name it exactly; a
+  GitHub Actions binding must also pin `repository_id` and
+  `repository_owner_id`, which survive a rename. A token is checked in
+  this order, so a token naming no binding costs no network I/O: size and
+  shape, its audience picks the binding, its issuer, the signature
+  (`RS256`/`ES256`, keys fetched from the issuer's `jwks_uri` and refetched
+  on an unknown `kid` at most once per cooldown, failing closed), `exp` and
+  `iat` with a minute's tolerance and a lifetime of at most an hour, then
+  the subject and each pinned claim. A verified token for another subject
+  is refused and recorded, and Settings shows it beside the expected one.
+
+Each takes `--expires <duration>` and `--permission-mode <mode>` (the
+ceiling; by default the driver's default mode: `bypass` under `k8s`,
+`accept-edits` under `containerless`, so a containerless token needs
+`--permission-mode bypass` to launch pi or run inline steps). A binding
+stops working from the next request when it is deleted (by its owner, or
+by an admin under Settings → Users or `yaac --user <user> token delete`),
+when it expires, or when its owner's row goes. Removing someone from the
+tailnet changes nothing on the server, so a departed user's bindings work
+until an admin deletes them; an expiry bounds that without anyone acting.
+An identity disabled at its issuer keeps working until the tokens it
+already minted expire, which the one-hour bound limits.
+
+A token cannot list, mint or delete bindings, and an agent cannot mint
+one for its owner: those routes are a person's. `GET /whoami` answers the
+delegate a token resolves to, the request log prints `<login> via token
+<label>`, and a workspace a token created shows `via token <label>`.
+
+**On a host install a token is code execution on that machine, from the
+network the address is on.** A workspace is a process running as the
+server's user with real credentials, and a token can start one with a
+prompt of its choosing; the ceiling decides only whether its agent asks
+before running a command. The start prints this. Bind an address only
+trusted machines reach.
+
+**Never hand a workspace a token.** A k8s workspace whose project
+allowlist names the node address can reach the endpoint through the egress
+proxy; a PAT there would widen it from its own project to all of its
+user's, at the token's ceiling. No agent can mint one itself.
+
+The `yaac` CLI, the desktop app and the browser are not token callers:
+they stay on loopback and the tailnet.
+
 ## Client setup
 
 ```sh
@@ -323,6 +433,7 @@ Things to keep in mind:
   | came through serve, but has no `Tailscale-User-Login` | refused (a tagged device, or Funnel) |
   | did not come through serve, and has a loopback `Host` | the built-in user in `local` mode; refused in `tailnet` mode, bar `yaac-mama` (see "Access modes") |
   | did not come through serve, and has any other `Host` | refused, or local inside a workspace (below) |
+  | reached the token listener with `Authorization: Bearer` naming a binding | a delegate of that binding's user, in either mode ("Token access") |
 
   A tailnet user's row is written on first sight and at most hourly after,
   not on every request.
@@ -347,7 +458,9 @@ Things to keep in mind:
   no identity, a plain TCP exposure, Funnel) is refused.
 - **The only ways to reach the server are loopback and `serve`**, plus the
   tailnet site tunnel for a server name, which stamps identity as `serve`
-  does. In a
+  does, and the token listener ("Token access"), which is a listener of its
+  own: it never runs `identify()` and admits nothing but a token, so no
+  request on it can be taken for loopback. In a
   `local` install a request that did not come through serve and names a
   loopback Host is treated as the owner, so no other path may exist. A host server refuses to start with
   a non-loopback `YAAC_BIND_ADDR`. For the in-cluster server, the ingress

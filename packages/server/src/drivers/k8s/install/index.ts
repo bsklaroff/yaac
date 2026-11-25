@@ -35,3 +35,4 @@ export {
   stopClusterServer,
 } from './server-deploy'
 export { deleteStorageVolumes, ensureStorageClaims, type StorageShape } from './storage'
+export { installedTokenEndpoint } from './token-endpoint'

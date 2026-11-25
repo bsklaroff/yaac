@@ -730,8 +730,12 @@ spec:
 
 and names `metadata.google.internal` in its allowlist. Every workspace of
 every project whose allowlist names it then reads what the metadata server
-hands the node, so open it only where that is what is wanted. Never open it
-on Hetzner, where a worker's metadata holds the cluster join token
+hands the node, so open it only where that is what is wanted. That includes
+minting the node's service-account identity tokens for any audience, so on a
+cluster where it is open, never bind a node's service account to a yaac
+token binding (docs/remote-hosting.md "Token access"): any of those
+workspaces could act as the binding's user. Never open it on Hetzner, where
+a worker's metadata holds the cluster join token
 (infra/hetzner-k3s/README.md "Security notes").
 
 **A model server on a tailnet.** A custom endpoint at a MagicDNS name such

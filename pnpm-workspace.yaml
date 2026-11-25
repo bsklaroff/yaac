@@ -18,10 +18,13 @@ catalog:
   better-auth: 1.7.6
   "@types/node": 24.13.6
   "@types/ws": 8.18.1
+  asn1js: 4.0.0
   commander: 15.0.0
   croner: 10.0.1
   drizzle-orm: 1.0.0-rc.4
   hono: 4.13.9
+  pkijs: 4.0.1
+  jose: 6.2.16
   smol-toml: 1.9.0
   tsup: 8.5.1
   tsx: 4.23.15

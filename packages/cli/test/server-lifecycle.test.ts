@@ -181,6 +181,37 @@ describe('serverStart', () => {
     expect(await readLock()).toMatchObject({ instance: 'inst-1' })
   })
 
+  it('refuses a --token-listen it cannot bind exactly, or inside a workspace, before touching anything', async () => {
+    for (const [tokenListen, why] of [
+      ['8443', /<addr>:<port>/],
+      ['localhost:8443', /<addr>:<port>/],
+      ['eth0:8443', /<addr>:<port>/],
+      ['0.0.0.0:8443', /wildcard/],
+      ['[::]:8443', /wildcard/],
+      ['::1:8443', /<addr>:<port>/],
+      ['127.0.0.1:70000', /1-65535/],
+    ] as const) {
+      await expect(serverStart({ tokenListen }), tokenListen).rejects.toThrow(why)
+    }
+    vi.stubEnv('YAAC_WORKSPACE_ID', 'w1')
+    await expect(serverStart({ tokenListen: '127.0.0.1:8443' })).rejects.toThrow(/inside a workspace takes no --token-listen/)
+    vi.stubEnv('YAAC_WORKSPACE_ID', '')
+    await expect(fs.stat(path.join(tmpDir, 'server-local', 'token-tls'))).rejects.toThrow(/ENOENT/)
+    expect(await readLock()).toBeNull()
+  })
+
+  it('refuses a start whose --token-listen differs from the running server\'s, leaving its certificate alone', async () => {
+    const server = await fakeServer({ ok: true, ready: true, access: 'local', tokenListen: '127.0.0.1:8443' })
+    try {
+      await writeLock({ pid: process.ppid, port: server.port, startedAt: Date.now(), buildId: 'test-build', ...newLeaseFields() })
+      await expect(serverStart({ tokenListen: '127.0.0.1:9443' })).rejects.toThrow(/restart --token-listen 127\.0\.0\.1:9443/)
+      await expect(serverStart()).rejects.toThrow(/running with a token listener on 127\.0\.0\.1:8443/)
+      await expect(fs.stat(path.join(tmpDir, 'server-local', 'token-tls'))).rejects.toThrow(/ENOENT/)
+    } finally {
+      await server.close()
+    }
+  })
+
   it('refuses to start on a k8s install rather than registering a second server', async () => {
     await recordInstall({ driver: 'k8s' })
     await writeServerConfig({ url: 'http://127.0.0.1:9999', saved: [] })

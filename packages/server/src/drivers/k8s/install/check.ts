@@ -77,6 +77,7 @@ import {
 } from '#drivers/k8s/substrate'
 import type { InstallIdentity, NodeTaint, PodToleration } from '#drivers/k8s/substrate'
 import { CALICO_NAMESPACES, assessVethSource, probeWorkloadVeths, readCalicoNode } from './cni-adopt'
+import { tokenEndpointCheck } from './token-endpoint'
 import { GVISOR_INSTALLER_APP_NAME } from './gvisor-installer'
 import { deployedInstallIdentity } from './server-deploy'
 import { kindClusterExists } from './delete'
@@ -251,6 +252,8 @@ export async function runClusterCheck(
 
   add(await runStorageCheck())
   add(await runPriorityClassCheck())
+  const token = await tokenEndpointCheck()
+  if (token !== null) add(token)
 
   const PROBE_GATES = [
     'node-fixups', 'gvisor', 'gvisor-installer', 'probe', 'egress', 'npm-cache', 'sites',

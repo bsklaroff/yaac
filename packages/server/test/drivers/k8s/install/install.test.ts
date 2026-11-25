@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { X509Certificate } from 'node:crypto'
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -202,6 +203,12 @@ function world(c: FakeCall): void {
     )
   } else if (c.kind === 'Pod') {
     fakeCluster.seed({ ...obj, status: { phase: 'Succeeded' } })
+  } else if (c.kind === 'Service' && (obj.spec as { type?: string }).type === 'NodePort') {
+    // The API server picks a NodePort Service's node port.
+    const spec = obj.spec as { ports: Array<Record<string, unknown>> }
+    if (spec.ports[0].nodePort === undefined) {
+      fakeCluster.seed({ ...obj, spec: { ...spec, ports: [{ ...spec.ports[0], nodePort: 31234 }] } })
+    }
   } else if (c.kind === 'Ingress') {
     fakeCluster.seed({
       ...obj,
@@ -2499,5 +2506,118 @@ describe('runClusterInstall', () => {
       'quay.io/calico/node:v3.32.1',
     ])
     expect(pulled).not.toContain('not-a-ref')
+  })
+
+  // -------------------------------------------------------------------
+  // --token-listen: the token endpoint (docs/server-in-cluster.md)
+  // -------------------------------------------------------------------
+
+  /** host podman as the kind forwarder meets it: the node's address, and
+   *  the forwarder as `front` describes it (absent when undefined). */
+  function frontRun(front: { labels: Record<string, string>; running: boolean } | undefined, opts: { publish?: string } = {}): RunMock {
+    return vi.fn((file: string, args: string[]) => {
+      if (file === 'podman' && args[0] === 'inspect' && args.at(-1) === 'yaac-control-plane' && args[2]?.includes('IPAddress')) {
+        return Promise.resolve({ stdout: '10.89.0.2\n', stderr: '' })
+      }
+      if (file === 'podman' && args[0] === 'inspect' && args.at(-1)?.startsWith('yaac-token-front-')) {
+        return front === undefined
+          ? Promise.reject(new Error('no such container'))
+          : Promise.resolve({ stdout: `${JSON.stringify(front.labels)} ${String(front.running)}\n`, stderr: '' })
+      }
+      if (file === 'podman' && args[0] === 'run' && opts.publish !== undefined) return Promise.reject(new Error(opts.publish))
+      if (file === 'ss') return Promise.resolve({ stdout: 'State Recv-Q\nLISTEN 0 nginx pid=7\n', stderr: '' })
+      return happyRun(file, args)
+    })
+  }
+  const podmanCalls = (run: RunMock, verb: string): string[][] =>
+    run.mock.calls.filter(([f, a]) => f === 'podman' && a[0] === verb).map(([, a]) => a)
+  const tokenSecret = (): { data: Record<string, string> } | undefined =>
+    fakeCluster.get('Secret', 'yaac-server-token-tls', 'test-ns')
+
+  it('--token-listen on kind: a certificate, the policy before a NodePort, the pod\'s listener, and a forwarder publishing the address', async () => {
+    const deps = makeDeps({ run: frontRun(undefined) })
+    await runClusterInstall({ tokenListen: '127.0.0.1:8443' }, deps)
+
+    const cert = new X509Certificate(Buffer.from(tokenSecret()?.data['tls.crt'] ?? '', 'base64').toString())
+    expect(cert.subjectAltName).toBe('IP Address:127.0.0.1')
+    const applied = cluster.applied.map((m) => `${m.kind}/${m.metadata.name}`)
+    expect(applied.indexOf('NetworkPolicy/yaac-server-ingress-token')).toBeLessThan(applied.indexOf('Service/yaac-server-token'))
+    expect(appliedOf('Service', 'yaac-server-token')[0].spec).toMatchObject({ type: 'NodePort', ports: [{ port: 8789, targetPort: 8789 }] })
+    expect(serverPod().containers[0].env).toEqual(expect.arrayContaining([
+      { name: 'YAAC_TOKEN_LISTEN', value: '0.0.0.0:8789' },
+      { name: 'YAAC_TOKEN_TLS_DIR', value: '/var/run/yaac/token-tls' },
+    ]))
+    const [run] = podmanCalls(deps.run, 'run')
+    expect(run.join(' ')).toContain('-p 127.0.0.1:8443:10000')
+    expect(run.join(' ')).toContain('--network kind')
+    // Envoy runs directly, as its image's non-root user, past the image's
+    // entrypoint, which a macOS podman machine cannot run.
+    expect(run.join(' ')).toContain('--user 101:101 --entrypoint envoy')
+    expect(run.at(run.indexOf('--config-yaml') - 1)).toMatch(/envoyproxy\/envoy@sha256:/)
+    expect(run.at(run.indexOf('--config-yaml') + 1)).toContain('"address":"10.89.0.2","port_value":31234')
+    expect(logged(deps)).toMatch(/token endpoint answers at https:\/\/127\.0\.0\.1:8443\n {2}key fingerprint: sha256\/\//)
+
+    // A later install without the flag keeps it, and the forwarder it finds.
+    const labels = Object.fromEntries(run.flatMap((a, i) => (run[i - 1] === '--label' ? [a.split('=')] : [])) as Array<[string, string]>)
+    const kept = makeDeps({ run: frontRun({ labels, running: true }) })
+    await runClusterInstall({}, kept)
+    expect(podmanCalls(kept.run, 'run')).toEqual([])
+    expect(serverPod().containers[0].env).toContainEqual({ name: 'YAAC_TOKEN_LISTEN', value: '0.0.0.0:8789' })
+    // One stopped (after a reboot) is started; one run for another address is replaced.
+    const stopped = makeDeps({ run: frontRun({ labels, running: false }) })
+    await runClusterInstall({}, stopped)
+    expect(podmanCalls(stopped.run, 'start')).toHaveLength(1)
+    const moved = makeDeps({ run: frontRun({ labels, running: true }) })
+    await runClusterInstall({ tokenListen: '127.0.0.1:9443' }, moved)
+    expect(podmanCalls(moved.run, 'rm')).toHaveLength(1)
+    expect(podmanCalls(moved.run, 'run')[0].join(' ')).toContain('-p 127.0.0.1:9443:10000')
+    // The key is kept across the address change.
+    const reissued = new X509Certificate(Buffer.from(tokenSecret()?.data['tls.crt'] ?? '', 'base64').toString())
+    expect(reissued.subjectAltName).toBe('IP Address:127.0.0.1')
+    expect(reissued.publicKey.export({ type: 'spki', format: 'der' })).toEqual(cert.publicKey.export({ type: 'spki', format: 'der' }))
+  })
+
+  it('--no-token-listen removes the Service, the policy, the pod\'s listener and the forwarder, and keeps the key', async () => {
+    await runClusterInstall({ tokenListen: '127.0.0.1:8443' }, makeDeps({ run: frontRun(undefined) }))
+    const deps = makeDeps({ run: frontRun(undefined) })
+    await runClusterInstall({ tokenListen: false }, deps)
+    expect(fakeCluster.get('Service', 'yaac-server-token', 'test-ns')).toBeUndefined()
+    expect(fakeCluster.get('NetworkPolicy', 'yaac-server-ingress-token', 'test-ns')).toBeUndefined()
+    expect(serverPod().containers[0].env.map((e) => e.name)).not.toContain('YAAC_TOKEN_LISTEN')
+    expect(podmanCalls(deps.run, 'rm')[0]).toEqual(expect.arrayContaining(['-f', '--ignore']))
+    expect(tokenSecret()).toBeDefined()
+  })
+
+  it('--token-listen reports a port it cannot publish with what holds it, and never moves it', async () => {
+    const deps = makeDeps({ run: frontRun(undefined, { publish: 'rootlessport listen tcp 127.0.0.1:8443: bind: address already in use' }) })
+    await expect(runClusterInstall({ tokenListen: '127.0.0.1:8443' }, deps))
+      .rejects.toThrow(/Could not publish the token endpoint at 127\.0\.0\.1:8443: .*address already in use\n {4}Held by:\n {4}LISTEN 0 nginx pid=7\n.*never changed/s)
+    await expect(runClusterInstall({ tokenListen: '0.0.0.0:8443' }, makeDeps())).rejects.toThrow(/wildcard address/)
+    await expect(runClusterInstall({ tokenListen: '[::1]:8443' }, makeDeps())).rejects.toThrow(/IPv4 address on a cluster install/)
+  })
+
+  it('--token-listen on --byo: an externalIPs Service at a node\'s address, after refusing an address no node has, a taken one and a node\'s port', async () => {
+    stageAdoptCidrs()
+    await expect(runClusterInstall({ ...BYO, tokenListen: '10.0.0.99:8443' }, makeDeps({ run: adoptRun() })))
+      .rejects.toThrow(/10\.0\.0\.99 is no address a node reports; the nodes report 10\.89\.0\.2/)
+    await expect(runClusterInstall({ ...BYO, tokenListen: '10.89.0.2:6443' }, makeDeps({ run: adoptRun() })))
+      .rejects.toThrow(/port 6443 is one a node uses itself/)
+    await expect(runClusterInstall({ ...BYO, tokenListen: '10.89.0.2:30080' }, makeDeps({ run: adoptRun() })))
+      .rejects.toThrow(/port 30080 is one a node uses itself/)
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Service', metadata: { name: 'web', namespace: 'apps' },
+      spec: { type: 'ClusterIP', externalIPs: ['10.89.0.2'], ports: [{ port: 8443 }] },
+    })
+    await expect(runClusterInstall({ ...BYO, tokenListen: '10.89.0.2:8443' }, makeDeps({ run: adoptRun() })))
+      .rejects.toThrow(/already named by the Service apps\/web/)
+    expect(fakeCluster.get('Service', 'yaac-server-token', 'test-ns')).toBeUndefined()
+
+    const deps = makeDeps({ run: adoptRun() })
+    await runClusterInstall({ ...BYO, tokenListen: '10.89.0.2:9443' }, deps)
+    expect(appliedOf('Service', 'yaac-server-token')[0].spec).toMatchObject({
+      type: 'ClusterIP', externalIPs: ['10.89.0.2'], ports: [{ port: 9443, targetPort: 8789 }],
+    })
+    // No forwarder: kube-proxy holds the address.
+    expect(podmanCalls(deps.run, 'run')).toEqual([])
   })
 })

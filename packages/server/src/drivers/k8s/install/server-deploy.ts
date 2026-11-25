@@ -32,6 +32,8 @@ import {
   VOLUMES_CLAIM_NAME,
   SERVER_POD_PORT,
   SERVER_SA_NAME,
+  SERVER_TOKEN_PORT,
+  SERVER_TOKEN_TLS_SECRET,
   applyObject,
   deleteObject,
   execFileAsync,
@@ -68,6 +70,7 @@ import {
   stringHash,
 } from '#drivers/k8s/cluster'
 import { liveFronting, type RemoteHosting, type ServerFronting } from './server-fronting'
+import { POD_TOKEN_TLS_DIR } from './token-endpoint'
 import { ensureImageByTag, pushImageToRegistry } from './host-images'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { globalRoot, nodeLocalRoot, serverLocalRoot, serverLogPath, volumesRoot } from '@yaac/shared/paths'
@@ -261,6 +264,9 @@ interface ServerEnvOptions {
   volumeStorageClass?: string
   /** `--site-domain`: the zone whose names are tailnet sites'. */
   siteDomain?: string
+  /** `--token-listen`: the server pod runs its token listener, with the
+   *  Secret mounted (docs/server-in-cluster.md "The token endpoint"). */
+  tokenListener?: boolean
   /**
    * `--server-name`: a name of the server's own under the site domain,
    * which the tailnet tunnel serves (docs/remote-hosting.md "A name of your
@@ -316,6 +322,14 @@ function buildServerEnv(opts: ServerEnvOptions = {}): ServerEnvVar[] {
       name: 'YAAC_ACCESS_ADMINS',
       valueFrom: { configMapKeyRef: { name: BOOTSTRAP_CONFIGMAP, key: 'admins', optional: true } },
     },
+    // The pod network's bind, where its ingress policy opens this port
+    // alone; the admin's address is enforced one hop out.
+    ...opts.tokenListener === true
+      ? [
+        { name: 'YAAC_TOKEN_LISTEN', value: `0.0.0.0:${String(SERVER_TOKEN_PORT)}` },
+        { name: 'YAAC_TOKEN_TLS_DIR', value: POD_TOKEN_TLS_DIR },
+      ]
+      : [],
   ]
   const passThrough: Array<[string, string | undefined]> = [
     ['YAAC_K8S_NAMESPACE', testEnv.k8sNamespace],
@@ -417,7 +431,10 @@ export function buildServerDeploymentManifest(
               // pods don't get this: root inside them is a feature (sudo),
               // and gVisor is their boundary.
               securityContext: { allowPrivilegeEscalation: false },
-              ports: [{ containerPort: SERVER_POD_PORT }],
+              ports: [
+                { containerPort: SERVER_POD_PORT },
+                ...envOpts.tokenListener === true ? [{ containerPort: SERVER_TOKEN_PORT }] : [],
+              ],
               env: buildServerEnv(envOpts),
               readinessProbe: {
                 httpGet: {
@@ -441,6 +458,7 @@ export function buildServerDeploymentManifest(
                 { name: 'server-local', mountPath: POD_SERVER_LOCAL_ROOT },
                 { name: 'node-local', mountPath: POD_NODE_LOCAL_ROOT },
                 ...(kindVolumes ? [{ name: 'volumes', mountPath: POD_VOLUMES_ROOT }] : []),
+                ...envOpts.tokenListener === true ? [{ name: 'token-tls', mountPath: POD_TOKEN_TLS_DIR, readOnly: true }] : [],
               ],
             },
           ],
@@ -451,6 +469,12 @@ export function buildServerDeploymentManifest(
             { name: 'server-local', persistentVolumeClaim: { claimName: SERVER_LOCAL_CLAIM_NAME } },
             { name: 'node-local', hostPath: { path: nodeLocalNodePath(), type: 'DirectoryOrCreate' } },
             ...(kindVolumes ? [{ name: 'volumes', persistentVolumeClaim: { claimName: VOLUMES_CLAIM_NAME } }] : []),
+            // Mounted whole (not by subPath), so a reissued pair reaches the
+            // listener's re-read without a restart. The default mode, since
+            // the files are root's and the server runs as the install's uid.
+            ...envOpts.tokenListener === true
+              ? [{ name: 'token-tls', secret: { secretName: SERVER_TOKEN_TLS_SECRET } }]
+              : [],
           ],
         },
       },

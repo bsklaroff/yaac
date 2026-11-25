@@ -219,6 +219,7 @@ export async function siteShow(project: string, name: string): Promise<void> {
  */
 function printRequested(project: string, name: string, requested: NonNullable<SiteEntry['requested']>): void {
   const who = requested.from === 'agent' ? `the agent of workspace ${requested.workspaceId?.slice(0, 8) ?? '?'}`
+    : requested.from === 'token' ? `token ${requested.token ?? '?'}`
     : requested.from === 'following' ? 'following' : 'a deploy of content no person approved'
   console.log(`  requested    ${short(requested.commits)}, asked by ${who}, awaiting your approval`)
   if (requested.changes.length > 0) console.log(`               changes the live release's ${requested.changes.join(', ')}`)

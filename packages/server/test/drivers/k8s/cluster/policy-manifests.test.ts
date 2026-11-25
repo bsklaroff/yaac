@@ -11,6 +11,7 @@ import {
   buildProxyIngressNpManifest,
   buildServerEgressNpManifest,
   buildServerFrontIngressNpManifest,
+  buildServerTokenIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
 } from '#drivers/k8s/cluster'
@@ -24,6 +25,8 @@ import {
   SERVER_APP_NAME,
   SERVER_EGRESS_NP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
+  SERVER_TOKEN_INGRESS_NP_NAME,
+  SERVER_TOKEN_PORT,
   SERVER_FRONT_PORT,
   SERVER_INGRESS_NP_NAME,
   SERVER_MAMA_PORT,
@@ -165,6 +168,15 @@ describe('buildServerFrontIngressNpManifest', () => {
     // re-install that turns fronting off replaces the old peer.
     const none = buildServerFrontIngressNpManifest([]) as unknown as { spec: IngressSpec }
     expect(none.spec.ingress).toEqual([])
+  })
+})
+
+describe('buildServerTokenIngressNpManifest', () => {
+  it('opens the token port alone, to any source', () => {
+    const np = buildServerTokenIngressNpManifest() as unknown as { metadata: { name: string }; spec: IngressSpec }
+    expect(np.metadata.name).toBe(SERVER_TOKEN_INGRESS_NP_NAME)
+    expect(np.spec.podSelector).toEqual({ matchLabels: { app: SERVER_APP_NAME } })
+    expect(np.spec.ingress).toEqual([{ ports: [{ protocol: 'TCP', port: SERVER_TOKEN_PORT }] }])
   })
 })
 

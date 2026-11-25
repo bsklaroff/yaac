@@ -287,7 +287,7 @@ export async function deploySite(
         await admitLaunch(isPerson(principal), projectId, spec, commits)
       } catch (err) {
         if (!(err instanceof ApprovalRequiredError)) throw err
-        await requestDeploy(site, err.request, principal.kind === 'delegate' ? principal.via.id : 'person')
+        await requestDeploy(site, err.request, principal.kind !== 'delegate' ? 'person' : principal.via.kind === 'workspace' ? principal.via.id : principal.via.label)
         return { commits: siteCommits(project, commits), awaitingApproval: true }
       }
     }

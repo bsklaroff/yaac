@@ -493,7 +493,7 @@ async function requestedOf(row: SiteRow, live: WorkspaceRow | undefined): Promis
   const workflow = row.requestedWorkflowId !== undefined ? await getWorkflow(row.requestedWorkflowId) : undefined
   if (row.requestedCommits === undefined || row.requestedAt === undefined || workflow === undefined) return {}
   const by = row.requestedBy
-  const from = by === 'following' ? 'following' : by === 'person' ? 'person' : 'agent'
+  const from = by === 'following' ? 'following' : by === 'person' ? 'person' : by?.startsWith('token ') === true ? 'token' : 'agent'
   const changes = live === undefined ? [] : [
     ...(live.workflowId !== workflow.id ? ['workflow' as const] : []),
     ...((row.livePort ?? row.port) !== row.port ? ['port' as const] : []),
@@ -509,6 +509,7 @@ async function requestedOf(row: SiteRow, live: WorkspaceRow | undefined): Promis
       at: row.requestedAt.toISOString(),
       from,
       ...(from === 'agent' && by !== undefined ? { workspaceId: by } : {}),
+      ...(from === 'token' && by !== undefined ? { token: by.slice('token '.length) } : {}),
       changes,
     },
   }

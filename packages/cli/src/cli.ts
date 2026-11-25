@@ -5,6 +5,7 @@ import { exitOnApiError } from '@yaac/shared/server-api'
 import { AGENT_MODES, DEFAULT_IMAGE_CACHE_DAYS, PERMISSION_MODES } from '@yaac/shared/types'
 import { projectAdd } from '#commands/project-add'
 import { userList, userRole } from '#commands/user'
+import { tokenBind, tokenCreate, tokenDelete, tokenList, type TokenBindOptions, type TokenCreateOptions } from '#commands/token'
 import { projectList } from '#commands/project-list'
 import { projectCreate } from '#commands/project-create'
 import { projectClone } from '#commands/project-clone'
@@ -173,6 +174,8 @@ const program = new Command()
 const TAILNET_HELP = 'Serve tailnet users through `tailscale serve` at this MagicDNS name (e.g. srv.<tailnet>.ts.net) instead of only this machine. The install records the mode, and every later start must name it again'
 const ADMIN_HELP = 'With --tailnet: make exactly these tailnet logins (repeat the flag for several) the install\'s admins, who alone publish sites and set roles. A fresh install needs at least one; switching a local install to tailnet takes exactly one, who gets its projects and settings. Asks before revoking anyone else\'s'
 
+const TOKEN_LISTEN_HELP = 'Also serve the API over HTTPS at this one IP address and port, to programs holding a token (`yaac token create`) and nothing else. Given on every start; the start generates the certificate and prints its key fingerprint'
+
 const server = program
   .command('server')
   .description('Manage the host yaac server, which runs workspaces as processes on this machine (a cluster\'s server is `yaac cluster`\'s)')
@@ -192,6 +195,7 @@ server
   .option('--tailnet <host>', TAILNET_HELP)
   .option('--admin <login>', ADMIN_HELP, collect, [])
   .option('-y, --yes', 'Revoke admin from logins --admin leaves out without asking')
+  .option('--token-listen <addr:port>', TOKEN_LISTEN_HELP)
   .action((options: ServerAccessOptions) => serverStart(options))
 
 server
@@ -205,6 +209,7 @@ server
   .option('--tailnet <host>', TAILNET_HELP)
   .option('--admin <login>', ADMIN_HELP, collect, [])
   .option('-y, --yes', 'Revoke admin from logins --admin leaves out without asking')
+  .option('--token-listen <addr:port>', TOKEN_LISTEN_HELP)
   .action((options: ServerAccessOptions) => serverRestart(options))
 
 server
@@ -250,6 +255,8 @@ cluster
   .option('--site-domain <zone>', 'With --tailnet (or --byo): a DNS zone you own whose names are tailnet sites, served only to your tailnet with each caller\'s tailnet login. TS_SITE_AUTHKEY (a Tailscale auth key for a tag) joins the tunnel that serves them; the zone\'s wildcard certificate goes in the Secret yaac-site-tunnel-tailnet-tls. Both are kept for later installs; the zone is fixed once set (change it by deleting that Secret, after moving its sites)')
   .option('--server-name <host>', 'With --site-domain (given now or by an earlier install): also serve the yaac server to tailnet users at this name, one label under the site domain (e.g. yaac.apps.example.com), through the tailnet site tunnel and its certificate. Kept for later installs; the --tailnet origin keeps working beside it')
   .option('--no-server-name', 'Stop serving the yaac server at the name an earlier --server-name recorded')
+  .option('--token-listen <addr:port>', 'Also serve the API over HTTPS at this one IPv4 address and port, to programs holding a token (`yaac token create`) and nothing else: on kind an address of this machine, on --byo one a node reports (its InternalIP). Prints the generated certificate\'s key fingerprint. Kept for later installs')
+  .option('--no-token-listen', 'Remove the token endpoint an earlier --token-listen set up')
   // `--nodes` stays a string so the install reports what the user typed
   // rather than `NaN`. A failed finishing check exits 1.
   .action(async (options: ClusterInstallArgs) => {
@@ -297,7 +304,14 @@ cluster
   .command('status')
   .description('Show whether the cluster\'s server is running, refused to start, or runs another build')
   .option('--json', 'Print the status as JSON (what the desktop app reads)')
-  .action(clusterStatus)
+  .action(async (options: { json?: boolean }) => {
+    await clusterStatus(options)
+    // Read from the cluster, so the kubernetes client is loaded for it
+    // alone, and never for the JSON the desktop app polls.
+    if (options.json) return
+    const { clusterTokenStatus } = await import('#commands/cluster')
+    await clusterTokenStatus().catch(() => undefined)
+  })
 
 cluster
   .command('logs')
@@ -336,6 +350,43 @@ user
   .argument('<user>', 'The user: a login, name or id (see `yaac user list`)')
   .addArgument(new Argument('<role>', 'The role').choices(['admin', 'member']))
   .action(userRole)
+
+const token = program
+  .command('token')
+  .description('Manage your token bindings, which let a program reach this server\'s token listener as you (see --token-listen)')
+
+const TOKEN_EXPIRES_HELP = 'Stop working after this long (e.g. 30d, 12h); default never'
+const TOKEN_MODE_HELP = 'The most permissive permission mode anything it starts or messages may run in (default: the driver\'s default mode)'
+
+token
+  .command('list')
+  .description('List your tokens with their last use (another user\'s with --user, for an admin), and the listener\'s key fingerprint')
+  .action(tokenList)
+
+token
+  .command('create')
+  .description('Make a personal access token, printed once')
+  .argument('<label>', 'A name for it, shown in logs and listings')
+  .option('--expires <duration>', TOKEN_EXPIRES_HELP)
+  .option('--permission-mode <mode>', TOKEN_MODE_HELP)
+  .action((label: string, opts: TokenCreateOptions) => tokenCreate(label, opts))
+
+token
+  .command('bind')
+  .description('Let tokens an OIDC issuer mints for one subject act as you; prints the audience they must name')
+  .argument('<label>', 'A name for it, shown in logs and listings')
+  .requiredOption('--issuer <url>', 'The issuer, exactly as its tokens\' `iss` names it (e.g. https://accounts.google.com)')
+  .requiredOption('--subject <sub>', 'The exact `sub` its tokens must carry')
+  .option('--claim <name=value>', 'A further claim its tokens must carry exactly (repeat for several); GitHub Actions needs repository_id and repository_owner_id', collect, [])
+  .option('--expires <duration>', TOKEN_EXPIRES_HELP)
+  .option('--permission-mode <mode>', TOKEN_MODE_HELP)
+  .action((label: string, opts: TokenBindOptions) => tokenBind(label, opts))
+
+token
+  .command('delete')
+  .description('Delete a token, which stops it at once (another user\'s with --user, for an admin)')
+  .argument('<label>', 'The token\'s label')
+  .action((label: string) => tokenDelete(label))
 
 const REPO_HELP = 'Which of the project\'s repos, by its folder (see `yaac project repo list`); needed when it has several'
 const REPO_REF_HELP = 'The repo: an id or unique id prefix (see `yaac repo list`), a remote URL, or <project>/<folder>'

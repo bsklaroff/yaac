@@ -11,8 +11,10 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
+    "asn1js": "catalog:",
     "croner": "catalog:",
     "hono": "catalog:",
+    "pkijs": "catalog:",
     "ws": "catalog:",
     "zod": "catalog:"
   },

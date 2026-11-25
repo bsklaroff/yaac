@@ -19,6 +19,7 @@ export {
   buildProxyIngressNpManifest,
   buildServerEgressNpManifest,
   buildServerFrontIngressNpManifest,
+  buildServerTokenIngressNpManifest,
   buildServerIngressNpManifest,
   buildWorkspaceEgressNpManifest,
 } from './policy-manifests'

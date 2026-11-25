@@ -55,6 +55,7 @@ import {
   checkServerName,
   resolveNodeCount,
   serverNameArg,
+  tokenListenArg,
   siteDomainArg,
   tailnetServeHost,
 } from './arg-guards'
@@ -71,7 +72,18 @@ import { clusterRefusal, currentCluster, type CurrentCluster } from './cluster-i
 import { isNfsFamily } from './storage'
 import { NODE_PIDS_LIMIT } from './check'
 import { ensureRootfulPodmanHost, ROOTFUL_PODMAN_SOCKET } from './podman'
-import { SERVER_FRONT_PORT } from '#drivers/k8s/substrate'
+import { SERVER_FRONT_PORT, SERVER_TOKEN_TLS_SECRET } from '#drivers/k8s/substrate'
+import {
+  applyTokenEndpoint,
+  ensureTokenFront,
+  ensureTokenTlsSecret,
+  installedTokenListen,
+  refuseByoTokenListen,
+  removeTokenEndpoint,
+  removeTokenFront,
+  tokenNodePort,
+} from './token-endpoint'
+import { formatTokenListen, type TokenListen } from '@yaac/shared/token-tls'
 import { shellQuote } from '#lib/shell'
 import { BYO_INSTALL_IDENTITY, deployServerWorkload } from './server-deploy'
 import { TAILNET_HOSTNAME, kindFronting, serveFronting, tailnetFronting } from './server-fronting'
@@ -168,6 +180,11 @@ export interface ClusterInstallOptions {
    * "A name of your own"). Kept for later installs; `false` drops it.
    */
   serverName?: string | false
+  /**
+   * `<addr>:<port>` of the token endpoint (docs/server-in-cluster.md "The
+   * token endpoint"). Kept for later installs; `false` removes it.
+   */
+  tokenListen?: string | false
 }
 
 export interface ClusterInstallDeps {
@@ -270,6 +287,7 @@ export async function runClusterInstall(
   const nodeCount = resolveNodeCount(opts)
   const givenSiteDomain = siteDomainArg(opts)
   const givenServerName = serverNameArg(opts)
+  const givenTokenListen = tokenListenArg(opts)
   const recorded = await readInstallRecord()
   refuseByoSwitch(recorded, opts)
   refuseTorHostName()
@@ -348,6 +366,8 @@ export async function runClusterInstall(
   // Before any layer is applied.
   const siteDomain = await resolveSiteDomain(givenSiteDomain)
   const serverName = await resolveServerName(givenServerName, siteDomain)
+  const tokenListen = givenTokenListen === undefined ? await installedTokenListen() : givenTokenListen
+  if (tokenListen !== null && opts.byo) await refuseByoTokenListen(tokenListen)
   if (opts.tailnet === true && !opts.byo) await ensureTailnetOperator(deps)
 
   // A pod naming a missing PriorityClass is rejected and its Job hangs.
@@ -378,7 +398,7 @@ export async function runClusterInstall(
   await deployNpmCache(deps)
   await deploySiteEdge(deps, siteDomain, serverName)
   // Last: the server depends on every layer above.
-  await deployServer(deps, opts, byoStorage, siteDomain, serverName)
+  await deployServer(deps, opts, byoStorage, siteDomain, serverName, tokenListen)
   if (opts.byo && legacy.hash && !legacy.names) await retireLegacyNames(deps, legacy.hash)
 }
 
@@ -1220,11 +1240,15 @@ async function deployServer(
   byoStorage: { rwx: string; rwo: string } | undefined,
   siteDomain: string | undefined,
   serverName: string | undefined,
+  tokenListen: TokenListen | null,
 ): Promise<void> {
+  const fingerprint = await prepareTokenEndpoint(deps, tokenListen, byoStorage !== undefined)
+  const tokenListener = tokenListen !== null
   if (byoStorage) {
     const origin = await deployServerWorkload({
       siteDomain,
       serverName,
+      tokenListener,
       fronting: tailnetFronting({ hostname: TAILNET_HOSTNAME }),
       identity: BYO_INSTALL_IDENTITY,
       admin: opts.admin,
@@ -1233,6 +1257,7 @@ async function deployServer(
       log: deps.log,
     })
     deps.log(`The yaac server is serving at ${origin}`)
+    logTokenEndpoint(deps, tokenListen, fingerprint)
     return
   }
   const torHostAddr = env.useTor ? await hostAddrOnKindNetwork(deps) : undefined
@@ -1252,9 +1277,42 @@ async function deployServer(
   // machine's data dir (docs/server-in-cluster.md).
   const identity = processIdentity()
   const origin = await deployServerWorkload({
-    fronting, identity, storage: { kind: 'static' }, torHostAddr, siteDomain, serverName, admin: opts.admin, yes: opts.yes, log: deps.log,
+    fronting, identity, storage: { kind: 'static' }, torHostAddr, siteDomain, serverName, tokenListener,
+    admin: opts.admin, yes: opts.yes, log: deps.log,
   })
   deps.log(`The yaac server is serving at ${origin}`)
+  if (tokenListen !== null) await ensureTokenFront(tokenListen, await tokenNodePort(), { run: deps.run })
+  logTokenEndpoint(deps, tokenListen, fingerprint)
+}
+
+/**
+ * Converge the token endpoint's objects before the server rolls: its
+ * certificate, then its policy and Service, or their removal (and on kind
+ * the forwarder's). Answers the key fingerprint, or undefined for none.
+ */
+async function prepareTokenEndpoint(
+  deps: ClusterInstallDeps,
+  listen: TokenListen | null,
+  byo: boolean,
+): Promise<string | undefined> {
+  if (listen === null) {
+    await removeTokenEndpoint()
+    if (!byo) await removeTokenFront(deps.run)
+    return undefined
+  }
+  deps.log(`Exposing the token endpoint at ${formatTokenListen(listen)}...`)
+  const fingerprint = await ensureTokenTlsSecret(listen.address)
+  await applyTokenEndpoint(listen, byo)
+  return fingerprint
+}
+
+/** What a caller of the token endpoint needs. */
+function logTokenEndpoint(deps: ClusterInstallDeps, listen: TokenListen | null, fingerprint: string | undefined): void {
+  if (listen === null || fingerprint === undefined) return
+  deps.log(`The token endpoint answers at https://${formatTokenListen(listen)}`)
+  deps.log(`  key fingerprint: ${fingerprint} (curl --pinnedpubkey)`)
+  deps.log(`  certificate: the tls.crt of the Secret ${SERVER_TOKEN_TLS_SECRET} (curl --cacert): `
+    + `kubectl -n ${k8sNamespace()} get secret ${SERVER_TOKEN_TLS_SECRET} -o jsonpath='{.data.tls\\.crt}' | base64 -d`)
 }
 
 /**

@@ -48,7 +48,7 @@ export async function sendMessage(
       : `workspace ${short} is not running`)
   }
 
-  const own = actor.kind === 'delegate' ? actor.via.sessionId : undefined
+  const own = actor.kind === 'delegate' && actor.via.kind === 'workspace' ? actor.via.sessionId : undefined
   const sessions = (await listWorkspaceSessions(workspaceId)).filter((s) => s.id !== own)
   const bySession = request.session?.trim() ?? ''
   const byConversation = request.conversation?.trim() ?? ''
@@ -82,7 +82,8 @@ export async function sendMessage(
     requireWithinCeiling(actor, posture, label)
   }
 
-  const sender = actor.kind === 'delegate' ? actor.via.sessionId ?? actor.via.id : actorLabel(actor)
+  const sender = actor.kind !== 'delegate' ? actorLabel(actor)
+    : actor.via.kind === 'workspace' ? actor.via.sessionId ?? actor.via.id : actor.via.id
   const from = `from:${sender}`
   const to = `to:${session.id}`
   if (sending.has(from)) throw new ServerError('CONFLICT', 'your previous send is still being delivered; send again once it returns')

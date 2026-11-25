@@ -335,6 +335,12 @@ export function serverLogPath(): string {
   return serverLocalPath('server.log')
 }
 
+/** Where the token listener's certificate and key are
+ *  (docs/remote-hosting.md "Token access"). */
+export function tokenTlsDir(): string {
+  return env.tokenTlsDirOverride ?? serverLocalPath('token-tls')
+}
+
 
 /**
  * Create the global project tree and the server-local root. What exists

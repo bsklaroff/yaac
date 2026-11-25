@@ -1,9 +1,10 @@
-
 /**
  * `cluster install` flag checks that need no cluster, binaries or
  * kubeconfig. The CLI runs them before it moves any data dir, so a typo
  * changes nothing; install.ts runs them again itself.
  */
+import { isIPv4 } from 'node:net'
+import { parseTokenListen, type TokenListen } from '@yaac/shared/token-tls'
 
 /** An install step failed in a way the user must resolve; message is the fix. */
 export class ClusterInstallError extends Error {}
@@ -31,6 +32,9 @@ export interface ClusterInstallArgs {
   /** `--server-name`: the server's own name under the site domain;
    *  `--no-server-name` (false) drops a recorded one. */
   serverName?: string | false
+  /** `--token-listen <addr>:<port>`; `--no-token-listen` (false) removes
+   *  the token endpoint (docs/server-in-cluster.md "The token endpoint"). */
+  tokenListen?: string | false
 }
 
 /**
@@ -141,13 +145,33 @@ export function checkServerName(name: string, siteDomain: string): void {
 }
 
 /**
- * Validate `--nodes` (and the `--byo`, `--tailnet`, `--admin`, `--site-domain` and `--server-name` flags)
+ * Check `--token-listen`: one IPv4 literal and a port; null for
+ * `--no-token-listen`, undefined to keep what the cluster has.
+ */
+export function tokenListenArg(opts: ClusterInstallArgs): TokenListen | null | undefined {
+  if (opts.tokenListen === undefined) return undefined
+  if (opts.tokenListen === false) return null
+  let listen: TokenListen
+  try {
+    listen = parseTokenListen(opts.tokenListen)
+  } catch (err) {
+    throw new ClusterInstallError((err as Error).message)
+  }
+  if (!isIPv4(listen.address)) {
+    throw new ClusterInstallError(`--token-listen takes an IPv4 address on a cluster install (got "${opts.tokenListen}")`)
+  }
+  return listen
+}
+
+/**
+ * Validate `--nodes` (and the `--byo`, `--tailnet`, `--admin`, `--site-domain`, `--server-name` and `--token-listen` flags)
  * and return the node count to build. The count applies only to a cluster this
  * run creates; install never recreates one, so an existing cluster ignores
  * it with a note.
  */
 export function resolveNodeCount(opts: ClusterInstallArgs): number {
   checkByoFlags(opts)
+  tokenListenArg(opts)
   tailnetServeHost(opts)
   siteDomainArg(opts)
   serverNameArg(opts)

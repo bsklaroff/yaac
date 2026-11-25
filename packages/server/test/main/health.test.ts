@@ -5,12 +5,12 @@ import { buildApp } from '#main/server'
 describe('GET /health', () => {
   beforeEach(() => { installFakeWorkspaceDriver() })
 
-  it('reports ok, the buildId, the access mode, and the driver', async () => {
+  it('reports ok, the buildId, the access mode, the driver and the token listener', async () => {
     const app = buildApp({ buildId: 'bid-1' })
     const res = await app.request('/api/health')
     expect(res.status).toBe(200)
     expect(await res.json())
-      .toEqual({ ok: true, buildId: 'bid-1', ready: true, access: 'local', driver: 'k8s' })
+      .toEqual({ ok: true, buildId: 'bid-1', ready: true, access: 'local', driver: 'k8s', tokenListen: null })
   })
 
   it('defaults ready to true when no isReady is injected (in-process tests)', async () => {

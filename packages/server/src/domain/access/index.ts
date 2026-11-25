@@ -7,7 +7,9 @@
 // "Authorization", "Roles"), and the few whose answer depends on state a
 // person must judge with `requirePerson`. A delegate's ceiling is held by
 // `requireWithinCeiling`, and a person's own id is read only through
-// `personId`, which refuses a delegate.
+// `personId`, which refuses a delegate. A person's token bindings, and the
+// delegate a bearer token resolves to, are `tokens.ts`'s
+// (docs/remote-hosting.md "Token access").
 //
 // Each function added here needs a unit test in
 // packages/server/test/domain/access/.
@@ -26,3 +28,10 @@ export {
   type Actor,
 } from './authorize'
 export { listInstallAdmins, replaceAdmins, requireAdmin, setUserRole } from './roles'
+export {
+  createTokenBinding,
+  deleteTokenBinding,
+  listTokenBindings,
+  resolveBearer,
+  type NewTokenBindingRequest,
+} from './tokens'

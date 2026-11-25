@@ -137,6 +137,11 @@ resource "hcloud_ssh_key" "admin" {
 # Nodes reach the internet through their own public addresses, and nothing
 # but ssh from ssh_source_cidrs gets in. The Kubernetes API and the yaac
 # server are reached over the tailnet.
+# Applies to the public interfaces only. The private network is unfiltered,
+# which is where a token endpoint at the control node's private address
+# (`yaac cluster install --token-listen 10.0.1.2:<port>`) is reached; the
+# public address never answers it, since kube-proxy delivers only packets
+# addressed to the private one.
 resource "hcloud_firewall" "nodes" {
   name = var.name
 

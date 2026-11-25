@@ -684,6 +684,14 @@ The webapp reads `snapshot.driver` and hides these features.
 - **Prewarmed spare workspaces.** A tmux server in an existing checkout has
   no image pull or pod boot to save.
 - **Per-workspace module caching.** See "Mounts that are not realized".
+- **A floor under the token listener.** With `--token-listen`
+  (docs/remote-hosting.md "Token access") a token is code execution on this
+  host, from the network the address is on: it can start a workspace, which
+  runs as the server's user with real credentials. Nothing here narrows
+  that, and every workspace can read the key, the database and any token
+  file, so bind an address only trusted machines reach. Workspaces here can
+  also reach a cloud metadata server, so never bind this host's service
+  account to a token binding.
 
 ## Host requirements
 

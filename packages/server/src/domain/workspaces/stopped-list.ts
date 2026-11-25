@@ -121,6 +121,7 @@ export async function toStoppedEntries(rows: WorkspaceRow[]): Promise<StoppedWor
       ...(r.nonInteractive ? { nonInteractive: true as const } : {}),
       ...(r.stepsOutcome !== undefined ? { stepsOutcome: r.stepsOutcome } : {}),
       ...(r.rerunOf !== undefined ? { rerunOf: r.rerunOf } : {}),
+      ...(r.createdVia !== undefined ? { createdVia: r.createdVia } : {}),
       ...(r.siteId !== undefined && sitesById.has(r.siteId) ? { site: sitesById.get(r.siteId) } : {}),
     }
   })

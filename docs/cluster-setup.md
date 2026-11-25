@@ -297,6 +297,16 @@ yaac needs kind v0.33.0 or newer, and install refuses an older one:
   [kind#4201](https://github.com/kubernetes-sigs/kind/issues/4201)). yaac's
   own podman calls do not read labels and are unaffected.
 
+## The token endpoint
+
+`--token-listen <addr>:<port>` (on kind an IPv4 address of this machine,
+on byo one a node reports) also exposes the server's token listener, which
+admits programs holding a token and nothing else (docs/remote-hosting.md
+"Token access"); the install prints the generated certificate's key
+fingerprint. It is kept for later installs until `--no-token-listen`
+removes it. How each backend holds the address is
+docs/server-in-cluster.md "The token endpoint".
+
 ## What it wires up
 
 1. **The image registry**: a `registry:2` Deployment behind a ClusterIP
@@ -518,8 +528,10 @@ A byo install also follows four rules:
   node-local tier holds only re-derivable caches and working copies of a
   checkpoint on the shared tier (docs/workspace-storage.md "The shared tier
   on a network filesystem").
-- **The tailnet is the only way in.** No public LoadBalancer or Ingress, no
-  cert-manager, no DNS.
+- **The tailnet is the only way in**, bar one opt-in address and port that
+  only a token opens (`--token-listen <addr>:<port>`, normally a node's
+  InternalIP; docs/server-in-cluster.md "The token endpoint"). No public
+  LoadBalancer or Ingress, no cert-manager, no DNS.
 - **One architecture per install**, the CLI machine's. Mixed pools would
   need per-architecture images published each release.
 - **Backups are the operator's.** Snapshot the `yaac-global` and

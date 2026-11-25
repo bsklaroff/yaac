@@ -387,8 +387,9 @@ export async function tryClaimPrewarmed(
   /** The session it opens; absent for a workspace with none. */
   session: SessionLaunchSettings | undefined,
   emit: (message: string) => void,
-  /** What it starts with, its titles, group and deadline. */
-  request: { start: WorkspaceStart; title?: string; generatedTitle?: string; groupId?: string; deadline?: Date },
+  /** What it starts with, its titles, group and deadline, and the
+   *  delegate creating it. */
+  request: { start: WorkspaceStart; title?: string; generatedTitle?: string; groupId?: string; deadline?: Date; createdVia?: string },
 ): Promise<WorkspaceCreateResult | undefined> {
   const { start } = request
   const runtime = workspaceDriver()
@@ -517,6 +518,7 @@ export async function tryClaimPrewarmed(
       ...(request.generatedTitle !== undefined ? { generatedTitle: request.generatedTitle } : {}),
       ...(request.groupId !== undefined ? { groupId: request.groupId } : {}),
       ...(request.deadline !== undefined ? { deadline: request.deadline } : {}),
+      ...(request.createdVia !== undefined ? { createdVia: request.createdVia } : {}),
       ...(timeZone !== undefined ? { timeZone } : {}),
       ...(warmed?.scratchDirs !== undefined ? { scratchDirs: warmed.scratchDirs } : {}),
       ...(warmed?.treeDir !== undefined ? { treeDir: warmed.treeDir } : {}),

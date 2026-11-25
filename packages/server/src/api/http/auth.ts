@@ -21,14 +21,16 @@ export function denyBrowserCors(): MiddlewareHandler {
 /**
  * Log method, path, status, duration and, for a tailnet or delegated caller,
  * who it is (`actorLabel`), as an audit trail. Never log request or
- * response bodies.
+ * response bodies. `identifiedOnly` leaves out a request no one was
+ * identified for, which the token listener logs by its source alone.
  */
-export function requestLogger(): MiddlewareHandler<IdentityEnv> {
+export function requestLogger(opts: { identifiedOnly?: boolean } = {}): MiddlewareHandler<IdentityEnv> {
   return async (c, next) => {
     const t0 = Date.now()
     await next()
     const dur = Date.now() - t0
     const who = c.get('principal') as IdentityEnv['Variables']['principal'] | undefined
+    if (who === undefined && opts.identifiedOnly === true) return
     const as = who !== undefined && who.kind !== 'local' ? ` ${actorLabel(who)}` : ''
     serverLog(`[server] ${c.req.method} ${c.req.path} ${c.res.status} ${dur}ms${as}`)
   }

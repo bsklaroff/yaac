@@ -35,6 +35,18 @@ pods cannot reach the server. Nor can a user steer the server's own dials,
 such as cloning a project's remote, into the cluster's internal addresses
 (docs/server-in-cluster.md "The server's own egress").
 
+A token on the token listener widens who reaches the server beyond the
+tailnet (docs/remote-hosting.md "Token access"). **Under `containerless` a
+token is code execution on the host, from the network the listener's
+address is on**: it can start a workspace, which runs as the server's OS
+user with real credentials, and the binding's ceiling decides only whether
+that agent asks before running a command. Every workspace there can also
+read the key, the database and any token file. And **an agent able to push
+to a GitHub ref an OIDC binding names can mint that identity**, with its
+owner's git credential, gaining an agent's reach across all of its user's
+projects at the binding's ceiling; bind a GitHub `environment` with
+required reviewers rather than a branch.
+
 ## Users and owners
 
 - **Users.** The `users` table has one row per tailnet login, written by
@@ -72,6 +84,12 @@ such as cloning a project's remote, into the cluster's internal addresses
   and `tool_credentials`. Their stores take the owner's id as an argument
   and do no authorization: routes pass the caller's id, and code acting for
   a project passes `projects.owner`.
+- **Token bindings** (`token_bindings`, docs/remote-hosting.md "Token
+  access") belong to the user they act as, who alone makes them, in person;
+  labels are unique per owner. An admin may list and delete anyone's, so a
+  leaked token can be cut off without its owner, but makes none for
+  another user; to anyone else another user's binding is not found. A
+  binding cascades with its owner's row.
 
 ## Roles
 
@@ -160,7 +178,13 @@ The sealed `#domain/access` folder owns the check. A verb's caller is an
   calling session's posture as its **ceiling** (docs/permission-modes.md).
   A workspace it starts therefore belongs to that owner and uses their
   credentials. Its launches in flight are capped per delegate
-  (`withLaunchSlot`), not per user.
+  (`withLaunchSlot`), not per user. A **token** on the token listener is
+  the other kind (docs/remote-hosting.md "Token access"): `resolveBearer`
+  resolves it to a delegate of the binding's owner with **no project**, so
+  it reads what any user reads and reaches the `delegate` verbs in every
+  project its user owns, with the binding's ceiling. The request log
+  prints `<login> via token <label>`, and a workspace it creates records
+  that label (`workspaces.created_via`), which outlives the binding.
 - **The server**: `systemPrincipal`, for a gated verb the server calls with
   no request behind it (a queued workspace's launch, whose queuer was
   authorized when queuing).

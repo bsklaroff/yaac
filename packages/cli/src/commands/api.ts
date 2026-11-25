@@ -17,6 +17,11 @@ export function scopeToUser(ref: string | undefined): void {
   userRef = ref
 }
 
+/** The user `--user` names, as an id; undefined when it names none. */
+export async function scopedUserId(): Promise<string | undefined> {
+  return userRef === undefined ? undefined : findUser((await api.whoami.$get()).users, userRef)
+}
+
 /** The projects a command means (docs/cli.md "Whose projects"). */
 export interface ProjectScope {
   /** The user in scope: `--user`'s, else the caller's. */

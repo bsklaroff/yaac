@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises'
 import { kindEnv } from './install'
+import { removeTokenFront } from './token-endpoint'
 import { confirmDefault } from '@yaac/shared/confirm'
 import {
   BUILDER_ROLE_GUARD_NAME,
@@ -121,6 +122,8 @@ export async function runClusterDelete(
     console.log(`No kind cluster "${cluster}" to delete.`)
   }
 
+  // The token endpoint's forwarder runs beside the node, not in it.
+  await removeTokenFront()
   console.log(
     '\nDone. Sessions and workspaces on disk are untouched — run '
     + '`yaac cluster install` to recreate the cluster when you need it.',

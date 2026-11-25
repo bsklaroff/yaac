@@ -1,6 +1,6 @@
 import { getProjectRow, getUser } from '#db'
 import { ServerError } from '@yaac/shared/errors'
-import type { Delegate } from '@yaac/shared/types'
+import type { WorkspaceDelegate } from '@yaac/shared/types'
 import { callingSession } from './calling-session'
 import { resolveCreate } from './create'
 
@@ -15,7 +15,7 @@ import { resolveCreate } from './create'
 export async function callingWorkspace(
   workspace: { workspaceId: string; projectId: string; siteId?: string },
   claimedSessionId: string | undefined,
-): Promise<Delegate> {
+): Promise<WorkspaceDelegate> {
   if (workspace.siteId !== undefined) throw new ServerError('FORBIDDEN', 'a public site\'s release may not call yaac')
   const { workspaceId, projectId } = workspace
   const project = await getProjectRow(projectId)

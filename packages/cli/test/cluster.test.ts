@@ -100,6 +100,17 @@ describe('clusterInstall', () => {
 
   it('rejects a flag error before any install step runs', async () => {
     await expect(clusterInstall({ rwxStorageClass: 'nfs' })).rejects.toThrow(/for --byo only/)
+    for (const [tokenListen, why] of [
+      ['8443', /<addr>:<port>/],
+      ['srv.example:8443', /<addr>:<port>/],
+      ['0.0.0.0:8443', /wildcard/],
+      ['[::1]:8443', /IPv4 address on a cluster install/],
+      ['10.0.1.2:0', /1-65535/],
+    ] as const) {
+      await expect(clusterInstall({ tokenListen }), tokenListen).rejects.toThrow(why)
+    }
     expect(mockRun).not.toHaveBeenCalled()
+    await clusterInstall({ tokenListen: '10.0.1.2:8443' })
+    expect(mockRun).toHaveBeenCalledWith(expect.objectContaining({ tokenListen: '10.0.1.2:8443' }))
   })
 })

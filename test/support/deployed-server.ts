@@ -32,6 +32,16 @@ import {
   resolveServerImageTag,
 } from '@yaac/server/drivers/k8s/install/server-deploy'
 import { ensureStorageClaims } from '@yaac/server/drivers/k8s/install/storage'
+import {
+  applyTokenEndpoint,
+  ensureTokenFront,
+  ensureTokenTlsSecret,
+  removeTokenEndpoint,
+  removeTokenFront,
+  tokenNodePort,
+} from '@yaac/server/drivers/k8s/install/token-endpoint'
+import type { TokenListen } from '@yaac/shared/token-tls'
+import { testContainerOwnerLabel } from '@yaac/test-utils/setup'
 import { readLock } from '@yaac/shared/lock'
 import { globalRoot, nodeLocalRoot, serverLocalRoot, volumesRoot } from '@yaac/shared/paths'
 import { recordInstall } from '@yaac/shared/install-record'
@@ -93,6 +103,15 @@ interface DeployedServer {
 interface DeployTestServerOptions {
   /** Env the file wants the server to run with (the `YAAC_*` half is passed on). */
   env: NodeJS.ProcessEnv
+  /** A token endpoint, as `yaac cluster install --token-listen` sets one up
+   *  (docs/server-in-cluster.md "The token endpoint"). */
+  token?: TestTokenEndpoint
+}
+
+/** Where a test server's token endpoint answers, and in which shape. */
+export interface TestTokenEndpoint {
+  listen: TokenListen
+  byo: boolean
 }
 
 /**
@@ -123,7 +142,11 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
   await applyObject(buildServerEgressNpManifest(
     await nodeAddressBlocks(), await clusterDnsCidrs(), await apiserverEndpoints(), null,
   ))
-  await applyObject(testServerDeploymentManifest(imageRef, opts.env))
+  if (opts.token !== undefined) {
+    await ensureTokenTlsSecret(opts.token.listen.address)
+    await applyTokenEndpoint(opts.token.listen, opts.token.byo)
+  }
+  await applyObject(testServerDeploymentManifest(imageRef, opts.env, opts.token !== undefined))
   // The per-node disk pod, as install applies it beside the server.
   await applyObject(buildDiskIngressNpManifest())
   await applyObject(buildDiskDaemonSetManifest(imageRef))
@@ -141,6 +164,11 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
     ensureSiteEdge({}),
   ])
 
+  // On kind, the forwarder install runs beside the node, labelled for the
+  // global setup's leaked-container sweep.
+  if (opts.token?.byo === false) {
+    await ensureTokenFront(opts.token.listen, await tokenNodePort(), { labels: [testContainerOwnerLabel()] })
+  }
   const forward = await startForward(opts.env)
   const logs = opts.env.YAAC_TEST_DEBUG_SERVER === '1' ? streamPodLogs() : null
 
@@ -169,6 +197,10 @@ export async function deployTestServer(opts: DeployTestServerOptions): Promise<D
       await forward.stop()
       logs?.kill()
       await deleteDeployment()
+      if (opts.token !== undefined) {
+        await removeTokenFront()
+        await removeTokenEndpoint()
+      }
     },
   }
 }
@@ -204,6 +236,7 @@ async function requirePrebuiltServerImage(): Promise<string> {
 function testServerDeploymentManifest(
   imageRef: string,
   env: NodeJS.ProcessEnv,
+  tokenListener: boolean,
 ): Record<string, unknown> {
   const remoteHosting = env.YAAC_ACCESS_MODE === 'tailnet'
     ? { accessMode: 'tailnet' as const, allowedHosts: (env.YAAC_ALLOWED_HOSTS ?? '').split(',').filter(Boolean) }
@@ -211,6 +244,7 @@ function testServerDeploymentManifest(
   // This machine's uid, as on a kind install.
   const manifest = buildServerDeploymentManifest(imageRef, processIdentity(), {
     remoteHosting,
+    tokenListener,
   }) as {
     spec: { template: { spec: {
       containers: Array<{

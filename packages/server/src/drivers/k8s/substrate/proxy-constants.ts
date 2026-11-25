@@ -190,6 +190,18 @@ export const SERVER_POD_PORT = 8787
  * proxy here without admitting it to the API (docs/workspace-egress.md).
  */
 export const SERVER_MAMA_PORT = 8788
+/**
+ * The server's token listener inside its pod (docs/remote-hosting.md
+ * "Token access"), which admits a caller by bearer token alone, so its
+ * ingress policy admits any source to this port and nothing else.
+ */
+export const SERVER_TOKEN_PORT = 8789
+/** The Service that exposes SERVER_TOKEN_PORT at the address the admin
+ *  named, and the NetworkPolicy that opens the port to any source. */
+export const SERVER_TOKEN_SERVICE_NAME = 'yaac-server-token'
+export const SERVER_TOKEN_INGRESS_NP_NAME = 'yaac-server-ingress-token'
+/** The Secret holding the token listener's `tls.crt` and `tls.key`. */
+export const SERVER_TOKEN_TLS_SECRET = 'yaac-server-token-tls'
 export const SERVER_MAMA_SERVICE_NAME = 'yaac-server-mama'
 /**
  * Deployment/ConfigMap name and pod selector label of the kind fronting: a

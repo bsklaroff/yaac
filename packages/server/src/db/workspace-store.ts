@@ -78,6 +78,8 @@ export interface WorkspaceCreatedInput extends Partial<LifeLaunch> {
   rerunOf?: string
   /** The public site it is a release of. */
   siteId?: string
+  /** The label of the delegate that created it. */
+  createdVia?: string
 }
 
 /** The current lives of a project's workspaces, or of one of them, for a
@@ -162,6 +164,7 @@ export async function recordWorkspaceCreated(input: WorkspaceCreatedInput): Prom
         ...(input.nonInteractive === true ? { nonInteractive: true } : {}),
         ...(input.rerunOf !== undefined ? { rerunOf: input.rerunOf } : {}),
         ...(input.siteId !== undefined ? { siteId: input.siteId } : {}),
+        ...(input.createdVia !== undefined ? { createdVia: input.createdVia } : {}),
       })
       .onConflictDoNothing({ target: workspaces.workspaceId })
       .returning({ workspaceId: workspaces.workspaceId })

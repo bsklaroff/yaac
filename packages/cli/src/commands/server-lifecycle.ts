@@ -6,6 +6,7 @@
  * polls `status`).
  */
 import { spawn } from 'node:child_process'
+import path from 'node:path'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { readBuildId } from '@yaac/shared/build-id'
@@ -21,7 +22,8 @@ import {
 } from '@yaac/shared/server-lock-file'
 import { ensureDataDir } from '@yaac/shared/project-paths'
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports -- names the data dir in a refusal; builds no path
-import { getDataDir, serverLogPath } from '@yaac/shared/paths'
+import { getDataDir, serverLogPath, tokenTlsDir } from '@yaac/shared/paths'
+import { ensureTokenTlsDir, formatTokenListen, parseTokenListen, readTokenTlsDir, TOKEN_TLS_CERT_FILE, tokenKeyFingerprint } from '@yaac/shared/token-tls'
 import { waitFor } from '@yaac/shared/wait-for'
 import { preflightHostTor, torCoverageWarning } from '@yaac/shared/host-tor'
 import { env } from '@yaac/shared/env'
@@ -36,11 +38,14 @@ import type { AccessMode, LocalServerStatus } from '@yaac/shared/types'
  * "Access modes"): `tailnet` is the MagicDNS name `tailscale serve` fronts
  * the server at, `admin` the logins that are to be the install's admins
  * (docs/multi-user.md "Roles"), and `yes` accepts revoking anyone else's.
+ * `tokenListen` is the token listener's `<addr>:<port>`
+ * (docs/remote-hosting.md "Token access").
  */
 export interface ServerAccessOptions {
   tailnet?: string
   admin?: string[]
   yes?: boolean
+  tokenListen?: string
 }
 
 export interface ServerLogsOptions {
@@ -82,6 +87,7 @@ export async function serverStop(): Promise<void> {
 export async function serverRestart(opts: ServerAccessOptions = {}): Promise<void> {
   await refuseOnClusterInstall('restart')
   tailnetHost(opts)
+  tokenListen(opts)
   await stopServer()
   await startServer(opts, true)
 }
@@ -134,6 +140,7 @@ export async function serverLogs(opts: ServerLogsOptions = {}): Promise<void> {
 async function startServer(opts: ServerAccessOptions, keepSelection: boolean): Promise<void> {
   await moveLegacyHostDataDir()
   const tailnet = tailnetHost(opts)
+  const listen = tokenListen(opts)
   const mode: AccessMode = tailnet === undefined ? 'local' : 'tailnet'
   const origin = (port: number): string => tailnet === undefined ? `http://127.0.0.1:${port}` : `https://${tailnet}`
   await preflightHostTor()
@@ -142,7 +149,14 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
 
   const existing = await readVisibleLock()
   if (existing && await isLockLive(existing)) {
-    const running = (await health(`http://127.0.0.1:${existing.port}`))?.access
+    const runningHealth = await health(`http://127.0.0.1:${existing.port}`)
+    const running = runningHealth?.access
+    if (existing.buildId === cliBuildId && runningHealth !== undefined && (runningHealth.tokenListen ?? undefined) !== listen) {
+      throw new Error(listen === undefined
+        ? `yaac server is running with a token listener on ${runningHealth.tokenListen}. Restart it without one with: yaac server restart`
+        : `yaac server is running ${runningHealth.tokenListen ? `with a token listener on ${runningHealth.tokenListen}` : 'without a token listener'}. `
+          + `Restart it with: yaac server restart --token-listen ${listen}`)
+    }
     if (existing.buildId === cliBuildId && running === 'tailnet' && mode === 'local') {
       const host = await recordedTailnetHost()
       throw new Error(
@@ -163,6 +177,7 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
       // `yaac server run`, which registers nothing.
       await registerLocalServer(origin(existing.port), keepSelection)
       await setAdmins(opts)
+      if (listen !== undefined) printTokenListener(listen, (await hostTokenListener(listen))?.fingerprint ?? undefined)
       return
     }
     throw new Error(
@@ -175,6 +190,10 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
   // A stale lock (dead pid or silent port). Clearing it keeps the
   // wait-for-new-lock poll simple.
   if (existing) await removeLock()
+  // Before the spawn, so the listener binds at once with the pair it finds,
+  // and after the refusals above, so a refused start leaves the pair a
+  // running listener serves alone.
+  const fingerprint = listen === undefined ? undefined : await ensureTokenTlsDir(tokenTlsDir(), parseTokenListen(listen).address)
 
   await spawnServerDetached({
     YAAC_ACCESS_MODE: mode,
@@ -183,6 +202,7 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
     // the outer forward's name, and a local install refuses serve anyway.
     // eslint-disable-next-line no-process-env -- the child's env, not a setting read here
     YAAC_ALLOWED_HOSTS: tailnet ?? process.env.YAAC_ALLOWED_HOSTS,
+    YAAC_TOKEN_LISTEN: listen,
   })
   // Wait for readiness, not just liveness: /health answers before the DB
   // opens and first-boot migrations block the event loop for seconds. 30s
@@ -201,6 +221,32 @@ async function startServer(opts: ServerAccessOptions, keepSelection: boolean): P
   const torGap = torCoverageWarning('containerless')
   if (torGap !== undefined) console.error(`[yaac] WARNING: ${torGap}`)
   await setAdmins(opts)
+  printTokenListener(listen, fingerprint)
+}
+
+/**
+ * Check `--token-listen`; answers it in its canonical form. A server
+ * inside a workspace takes none: its workspace's agent could reach it.
+ */
+function tokenListen(opts: ServerAccessOptions): string | undefined {
+  if (opts.tokenListen === undefined) return undefined
+  if (env.workspaceId !== undefined) {
+    throw new Error('a server inside a workspace takes no --token-listen (docs/remote-hosting.md "Token access")')
+  }
+  return formatTokenListen(parseTokenListen(opts.tokenListen))
+}
+
+/** What a caller of the token listener needs, and what it exposes. */
+function printTokenListener(listen: string | undefined, fingerprint: string | undefined): void {
+  if (listen === undefined || fingerprint === undefined) return
+  console.error(`[yaac] token listener: https://${listen}`)
+  console.error(`[yaac]   key fingerprint: ${fingerprint} (curl --pinnedpubkey)`)
+  console.error(`[yaac]   certificate: ${path.join(tokenTlsDir(), TOKEN_TLS_CERT_FILE)} (curl --cacert)`)
+  console.error(
+    '[yaac] WARNING: on this host a token is code execution on this machine, as you, from the network that address '
+    + 'is on: a token can start a workspace, which runs as your user with your real credentials. Bind an address '
+    + 'only trusted machines reach, and hand tokens only to programs you trust (docs/remote-hosting.md "Token access").',
+  )
 }
 
 /**
@@ -320,7 +366,20 @@ async function localServerStatus(): Promise<LocalServerStatus> {
     serverBuildId: lock.buildId,
     refused: body?.refused ?? null,
     reachable: url === null ? null : body !== undefined,
+    token: local && body?.tokenListen ? await hostTokenListener(body.tokenListen) : null,
   }
+}
+
+/** A host server's token listener, as `status` prints it. */
+async function hostTokenListener(listen: string): Promise<LocalServerStatus['token']> {
+  const pair = await readTokenTlsDir(tokenTlsDir()).catch(() => undefined)
+  let fingerprint: string | null = null
+  try {
+    if (pair !== undefined) fingerprint = tokenKeyFingerprint(pair.cert)
+  } catch {
+    // An unreadable certificate prints as no fingerprint.
+  }
+  return { listen, fingerprint, certificate: path.join(tokenTlsDir(), TOKEN_TLS_CERT_FILE) }
 }
 
 function printServerStatus(status: LocalServerStatus, json: boolean | undefined): void {
@@ -340,6 +399,11 @@ function printServerStatus(status: LocalServerStatus, json: boolean | undefined)
   } else {
     const update = status.driver === 'k8s' ? 'yaac cluster install' : 'yaac server restart'
     console.log(`running a different build than this CLI; update it with: ${update}`)
+  }
+  if (!json && status.token) {
+    console.log(`token listener: https://${status.token.listen}`)
+    console.log(`  key fingerprint: ${status.token.fingerprint ?? 'none (no certificate yet)'}`)
+    console.log(`  certificate: ${status.token.certificate}`)
   }
 }
 
@@ -408,7 +472,7 @@ async function waitForReadyLock(timeoutMs: number): Promise<ServerLock> {
   throw new Error(`server did not become ready within ${Math.round(timeoutMs / 1000)}s`)
 }
 
-interface Health { ready?: boolean; access?: AccessMode | null; refused?: string }
+interface Health { ready?: boolean; access?: AccessMode | null; refused?: string; tokenListen?: string | null }
 
 /** A server's `/health`, or undefined when it does not answer with one. */
 async function health(baseUrl: string): Promise<Health | undefined> {
