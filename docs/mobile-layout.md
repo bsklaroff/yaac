@@ -174,8 +174,9 @@ An `acp` workspace needs none of this: its pane is a chat composer
 `WorkspaceChat` has four rules for narrow screens, on top of the 16px minimum
 below:
 
-- **Showing the pane does not focus the input.** On desktop it does, so typing
-  works without a click. On a phone, focus raises the soft keyboard and iOS's
+- **Moving to the pane does not focus the input.** On desktop it does (a
+  tab click, a pane shortcut, a workspace switch), so typing works without a
+  click. On a phone, focus raises the soft keyboard and iOS's
   form accessory bar, which cover most of the conversation, so the user taps
   the input when they want to write. Terminal panes, the Files and Changes
   panes' filters, and a file opened from a chat link skip focusing on open

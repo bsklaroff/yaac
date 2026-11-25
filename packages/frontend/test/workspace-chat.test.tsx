@@ -66,14 +66,23 @@ beforeEach(() => {
 let client: QueryClient
 
 /** The pane on screen, and the one the user is in unless `focused` is false;
- *  `opening` is the message its session opened with. */
-const pane = (workspaceId = 'w1', conversationId = 'acp-1', focused = true, opening?: Opening): JSX.Element =>
+ *  `opening` is the message its session opened with. The pane the user is
+ *  in is sent focus, as WorkspaceView does, unless `focusKey` says otherwise. */
+const pane = (
+  workspaceId = 'w1',
+  conversationId = 'acp-1',
+  focused = true,
+  opening?: Opening,
+  focusKey = focused ? 1 : undefined,
+): JSX.Element =>
   <WorkspaceChat
+    key={conversationId}
     workspaceId={workspaceId}
     conversationId={conversationId}
     {...(opening !== undefined ? { opening } : {})}
     visible
     focused={focused}
+    {...(focusKey !== undefined ? { focusKey } : {})}
   />
 
 function show(
@@ -81,11 +90,12 @@ function show(
   conversationId?: string,
   focused?: boolean,
   opening?: Opening,
+  focusKey?: number,
 ): ReturnType<typeof render> {
   client = testQueryClient()
   const wrapper = ({ children }: { children: ReactNode }): ReactNode =>
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  return render(pane(workspaceId, conversationId, focused, opening), { wrapper })
+  return render(pane(workspaceId, conversationId, focused, opening, focusKey), { wrapper })
 }
 
 describe('WorkspaceChat drafts', () => {
@@ -1746,9 +1756,9 @@ describe('WorkspaceChat scroll follow', () => {
 })
 
 /**
- * A pane takes focus when shown, but not from an open dialog: an agent that
- * starts while the user types into the new-workspace dialog must leave the
- * keystrokes there.
+ * A pane takes focus when it is the pane to focus (`focusKey`), but not from
+ * an open dialog: an agent that starts while the user types into the
+ * new-workspace dialog must leave the keystrokes there.
  */
 describe('WorkspaceChat focus', () => {
   beforeEach(() => {
@@ -1763,9 +1773,24 @@ describe('WorkspaceChat focus', () => {
     document.body.replaceChildren()
   })
 
-  it('focuses the box when shown', () => {
-    show()
-    expect(document.activeElement).toBe(box())
+  /** Tiles mode: both panes are on screen, and the pane shortcuts move
+   *  which one focus goes to. */
+  it('follows the pane focus is sent to between panes on screen', () => {
+    const both = (focusKey: number, onSecond: boolean): JSX.Element => (
+      <>
+        {pane('w1', 'acp-1', !onSecond, undefined, onSecond ? undefined : focusKey)}
+        {pane('w1', 'acp-2', onSecond, undefined, onSecond ? focusKey : undefined)}
+      </>
+    )
+    const { rerender } = show()
+    rerender(both(1, false))
+    const [first, second] = screen.getAllByRole('textbox')
+    expect(document.activeElement).toBe(first)
+
+    rerender(both(2, true))
+    expect(document.activeElement).toBe(second)
+    rerender(both(3, false))
+    expect(document.activeElement).toBe(first)
   })
 
   it('leaves the box unfocused on a phone, where focus raises the keyboard', () => {
@@ -1855,6 +1880,21 @@ describe('WorkspaceChat subagents and background tasks', () => {
     expect(box()).toBeTruthy()
     fireEvent.click(within(strip).getByRole('button', { name: 'Shell: npm run dev' }))
     expect(screen.queryByText('Started')).toBeNull()
+  })
+
+  /** Tiles mode: a click into a pane makes it the one the user is in
+   *  without sending it focus. */
+  it('hands the keyboard back to the composer on leaving a view, in the pane the user is in', () => {
+    render(
+      <QueryClientProvider client={testQueryClient()}>
+        <WorkspaceChat workspaceId="w1" conversationId="acp-1" visible focused />
+      </QueryClientProvider>,
+    )
+    const strip = screen.getByRole('group', { name: 'Running in the background' })
+    fireEvent.click(within(strip).getByRole('button', { name: 'Agent: Explore' }))
+    document.body.focus()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(document.activeElement).toBe(box())
   })
 
   it('shows a subagent\'s ask in its own view, to answer there, and does not call it working', () => {

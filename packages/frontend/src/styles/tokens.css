@@ -50,6 +50,9 @@
   /* The accent marks focus and selection, nothing else. */
   --accent: light-dark(#4353D9, #97A6FF);
   --accent-soft: light-dark(rgb(67 83 217 / 0.09), rgb(151 166 255 / 0.14));
+  /* The outline round tiles mode's focused column. Fainter in dark by
+     preference: the light theme's weight reads as too bright there. */
+  --accent-outline: light-dark(rgb(67 83 217 / 0.4), rgb(151 166 255 / 0.2));
 
   --info: light-dark(#2563EB, #82B8FF);
   --info-soft: light-dark(rgb(37 99 235 / 0.08), rgb(130 184 255 / 0.12));
@@ -170,6 +173,7 @@
   --color-subtle: var(--text-subtle);
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-outline: var(--accent-outline);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
   --color-success: var(--success);

@@ -267,9 +267,33 @@ export function WorkspaceView({
   // Tiles is turned off on mobile at render only, so a phone doesn't
   // overwrite the desktop preference in the store.
   const tiled = viewMode === 'tiles' && !isMobile
-  // Only this pane gets a focusKey, so bumping focusNonce focuses it and no
-  // hidden pane.
+  // The pane the user is in, which tiles mode outlines.
   const focusTarget = sid ? focusPaneTarget(targets, activeTabs[sid], tiled) : null
+  // The pane focus was last sent to, the only one given a focusKey. It
+  // follows focusTarget when focusNonce is bumped (a shortcut, a tab click,
+  // a workspace switch) or when the pane it names has gone. The user moving
+  // into another pane (a press or focus there, see `enterPane`) withdraws
+  // it until the next bump: sending focus to that pane would drop a
+  // selection the press starts or close a popup opened there, and leaving
+  // it on the old pane would let a child that takes the key late (a
+  // terminal shown once its agent starts) pull focus from where they type.
+  const focusSent = useRef<{ sid: string | null; nonce: number; target: string | null; withdrawn: boolean }>(
+    { sid: null, nonce: -1, target: null, withdrawn: false })
+  const sent = focusSent.current
+  if (sent.nonce !== focusNonce || sent.sid !== sid
+    || (!sent.withdrawn && (sent.target === null || !targets.includes(sent.target)))) {
+    focusSent.current = { sid, nonce: focusNonce, target: focusTarget, withdrawn: false }
+  }
+  const focusKeyOf = (id: string, target: string): number | undefined =>
+    id === sid && target === focusSent.current.target ? focusNonce : undefined
+  /** The user pressed or focused inside a pane: it becomes the pane they
+   *  are in, which the cycle shortcuts start from. */
+  const enterPane = (id: string, target: string): void => {
+    if (id === sid && focusSent.current.target !== target) {
+      focusSent.current = { ...focusSent.current, target: null, withdrawn: true }
+    }
+    useUiStore.getState().setActiveTab(id, target)
+  }
   // Equal-width columns, each showing its active tab; other tabs stay
   // mounted but hidden.
   const cols = computeColumns(layout, { x: 0, y: 0, w: wsSize.w, h: wsSize.h }, GAP)
@@ -277,6 +301,9 @@ export function WorkspaceView({
   colsRef.current = cols
   // Each column's visible pane rect, for positioning and the drop highlight.
   const activePaneRect = new Map(cols.map((c) => [c.group.active, c.rect]))
+  // With several columns, the one holding the focused pane is outlined.
+  const focusedCol = tiled && cols.length > 1 && focusTarget !== null
+    ? cols.find((c) => c.group.tabs.includes(focusTarget))?.rect : undefined
 
   // Eager attach: after a page load, each live workspace's default pane
   // (`defaultPaneTarget`) is kept mounted hidden. Only the default pane,
@@ -891,9 +918,10 @@ export function WorkspaceView({
             <div
               key={key}
               style={style}
-              // Track focus from clicks too, so the cycle shortcut starts
-              // from the pane the user is in.
-              onFocusCapture={() => useUiStore.getState().setActiveTab(id, target)}
+              // A press counts even where it focuses nothing, such as a chat
+              // transcript's text.
+              onPointerDownCapture={() => enterPane(id, target)}
+              onFocusCapture={() => enterPane(id, target)}
               className={clsx('absolute', !onScreen && 'invisible', !style && 'left-0 top-0 h-full w-full')}
             >
               {preview ? (
@@ -914,7 +942,7 @@ export function WorkspaceView({
                   paneTarget={target}
                   visible={onScreen}
                   focused={focused}
-                  {...(id === sid && target === focusTarget ? { focusKey: focusNonce } : {})}
+                  {...(focusKeyOf(id, target) !== undefined ? { focusKey: focusNonce } : {})}
                   nonce={terminalNonces[id] ?? 0}
                 />
               ) : isSessionTarget(target) ? null : isHistoryTarget(target) ? (
@@ -931,7 +959,7 @@ export function WorkspaceView({
                     workspace={owner}
                     name={stepTargetName(target)}
                     visible={onScreen}
-                    {...(id === sid && target === focusTarget ? { focusKey: focusNonce } : {})}
+                    {...(focusKeyOf(id, target) !== undefined ? { focusKey: focusNonce } : {})}
                   />
                 )
               ) : file ? (
@@ -965,7 +993,7 @@ export function WorkspaceView({
                       workspaceId={id}
                       target={target}
                       visible={onScreen}
-                      focusKey={id === sid && target === focusTarget ? focusNonce : undefined}
+                      focusKey={focusKeyOf(id, target)}
                     />
                   </ErrorBoundary>
                 </div>
@@ -973,6 +1001,13 @@ export function WorkspaceView({
             </div>
           )
         })}
+
+        {focusedCol && (
+          <div
+            style={{ left: focusedCol.x, top: focusedCol.y, width: focusedCol.w, height: focusedCol.h }}
+            className="pointer-events-none absolute z-10 border border-accent-outline"
+          />
+        )}
 
         {/* Drop highlight while dragging a pane. */}
         {dropHighlight && (
