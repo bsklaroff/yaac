@@ -73,10 +73,7 @@ export interface WorkspaceRuntimeReport {
  */
 export async function observeWorkspaces(projectFilter?: string): Promise<RuntimeReport> {
   const driver = workspaceDriver()
-  // Hide unclaimed spares (and skip their status reads). The stale reaper
-  // takes its own listing, so a stuck spare is still reaped.
-  const handles = (await driver.list(projectFilter, { preferCache: true }))
-    .filter((w) => !w.prewarmed)
+  const handles = await driver.list(projectFilter, { preferCache: true })
 
   const { running, terminating, stale } = await classifyWorkspaces(
     handles, Date.now(), watcherDisplayLiveness, testEnv.startingGraceMs,

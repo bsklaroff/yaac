@@ -26,7 +26,6 @@ import {
 } from '#db'
 import { captureFirstPrompt } from './prompt-capture'
 import { captureTitle } from './title-capture'
-import { claiming } from './prewarm'
 import { conversationCwds, recordedTranscript } from './conversation-paths'
 import { serverLog } from '#lib/log'
 import type { ConversationLinkRow, CapturedConversation, DiscoveredConversation, SessionRow, WorkspaceRow } from '#db'
@@ -47,12 +46,10 @@ import { EFFORT_RE, type AgentMode } from '@yaac/shared/types'
  * so an old pod's conversation cannot look live.
  *
  * Runs on the reconciler tick so `workspace list` and restart see the record
- * even with no client watching. Stopped and stopping workspaces are skipped,
- * and so are spares mid-claim, whose sessions the claim is still launching.
+ * even with no client watching. Stopped and stopping workspaces are skipped.
  */
 export async function reconcileConversations(view: RuntimeSnapshot): Promise<void> {
-  const running = (await view.workspaces()).filter((p) => p.running && !p.prewarmed
-    && !claiming.has(p.jobName) && !p.terminating && p.projectId && p.workspaceId
+  const running = (await view.workspaces()).filter((p) => p.running && !p.terminating && p.projectId && p.workspaceId
     && !isWorkspaceTerminating(p.workspaceId))
   await Promise.all(running.map(async (pod) => {
     try {

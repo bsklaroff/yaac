@@ -4,15 +4,16 @@
  * progress that survive a reload. Failures stay until dismissed.
  *
  * While an entry exists, `buildSnapshot` hides the same-id workspace (its
- * pod lists before setup finishes), and also a claimed spare, which the entry
- * names as `claimedId` so clients know which workspace replaces the row.
+ * pod lists before setup finishes), and also the spare a create took, which
+ * the entry names as `claimedId` so clients know which workspace replaces
+ * the row.
  *
  * A provision the user stops (`stopProvisioning`) rolls back at the create's
  * next checkpoint (`throwIfProvisionStopped`), and its row is then dropped
  * rather than shown failed.
  */
 import { notifyWorkspaceListChanged } from '#lib/notify'
-import { isWorkspaceTerminating } from '#runtime/status'
+import { forgetLiveness, isWorkspaceTerminating } from '#runtime/status'
 import { getWorkspaceRow } from '#db'
 import { authorizeProject, type Actor } from '#domain/access'
 import { formatUtcTimestamp } from '@yaac/shared/time'
@@ -155,8 +156,8 @@ export function updateProvisioningMessage(workspaceId: string, message: string):
   notifyWorkspaceListChanged()
 }
 
-/** Record (or clear, on fallback to a cold create) the spare a create
- *  claimed. No-op if absent. */
+/** Record the spare a create took, whose id the workspace has. No-op if
+ *  absent. */
 export function claimProvisioning(workspaceId: string, claimedId: string | undefined): void {
   const e = entries.get(workspaceId)
   if (!e) return
@@ -252,23 +253,26 @@ export function stopProvisioning(workspaceId: string): {
   projectId: string
   ranAs: Promise<string | undefined>
 } | undefined {
-  const e = entries.get(workspaceId)
+  // Named by its own id, or by the spare's it took, which a yaac-mama
+  // create prints.
+  const e = entries.get(workspaceId) ?? [...entries.values()].find((x) => x.claimedId === workspaceId)
   if (e === undefined || e.error !== undefined) return undefined
   // A repeat stop: the first already waits on the run.
   if (e.stopping === true) return { projectId: e.projectId, ranAs: Promise.resolve(undefined) }
   e.stopping = true
   e.message = 'Stopping…'
   notifyWorkspaceListChanged()
-  stoppedIds.add(workspaceId)
-  const ranAs = runs.get(workspaceId) ?? Promise.resolve(undefined)
-  // A claimed spare comes up under its own id.
+  stoppedIds.add(e.workspaceId)
+  const ranAs = runs.get(e.workspaceId) ?? Promise.resolve(undefined)
+  // One in a spare comes up under the spare's id.
   void ranAs.then((id) => { if (id !== undefined) stoppedIds.add(id) })
   return { projectId: e.projectId, ranAs }
 }
 
-/** Whether the user stopped this provision. */
+/** Whether the user stopped this provision, named by its own id or by
+ *  the spare's it took. */
 function provisionStopped(workspaceId: string): boolean {
-  return entries.get(workspaceId)?.stopping === true
+  return [...entries.values()].some((e) => e.stopping === true && (e.workspaceId === workspaceId || e.claimedId === workspaceId))
 }
 
 /** What a create's checkpoint throws once the user has stopped it. */
@@ -281,15 +285,26 @@ export class ProvisionStoppedError extends ServerError {
 /**
  * A create's checkpoint, placed before each step that would start something
  * new (the workspace row, the runtime, the agents), so a stopped provision
- * rolls back before its agent ever runs. No-op without an entry (a spare).
+ * rolls back before its agent ever runs. No-op without an entry.
  */
 export function throwIfProvisionStopped(workspaceId: string): void {
   if (provisionStopped(workspaceId)) throw new ProvisionStoppedError()
 }
 
-/** Drop an entry (resolved or dismissed); notifies only if one was removed. */
+/**
+ * Drop an entry (resolved or dismissed); notifies only if one was removed.
+ * A tmux verdict cached while the create ran (a taken spare's pod is probed
+ * once it carries its project, before its session opens) is forgotten:
+ * a spare's pod is older than the reaper's startup grace, so nothing else
+ * would keep that stale `dead` from reaping the new workspace.
+ */
 export function removeProvisioning(workspaceId: string): void {
-  markSettled(workspaceId)
+  const entry = entries.get(workspaceId)
+  // A create that took a spare runs under the spare's id.
+  for (const id of entry?.claimedId !== undefined ? [workspaceId, entry.claimedId] : [workspaceId]) {
+    markSettled(id)
+    if (entry !== undefined) forgetLiveness(entry.projectId, id)
+  }
   if (entries.delete(workspaceId)) notifyWorkspaceListChanged()
 }
 
@@ -414,21 +429,7 @@ export function listProvisioning(): ProvisioningWorkspaceEntry[] {
 }
 
 /**
- * Prewarmed spares being created, workspace id → project id. A spare gets
- * no registry entry, since nothing shows it until a create claims it. The
- * prewarm reconciler counts these against its pool, and never claims or
- * reaps one mid-create.
- */
-export const spawningSpares = new Map<string, string>()
-
-/** A spare's create has returned, so it leaves `spawningSpares`. */
-export function settleSpare(workspaceId: string): void {
-  spawningSpares.delete(workspaceId)
-  markSettled(workspaceId)
-}
-
-/**
- * When each create or warm last left the registry. A sweep's listing can
+ * When each create last left the registry. A sweep's listing can
  * predate that, and then shows neither the entry nor the workspace that
  * replaced it. Kept far longer than any reconcile pass runs.
  */
@@ -467,15 +468,14 @@ export function wentLiveSince(sinceMs: number): Array<{ workspaceId: string; pro
 
 /**
  * Ids a sweep acting on a listing taken at `listedAtMs` must not touch:
- * workspaces still being created or restarted, including a spare a create
- * has claimed, which runs under its own id, and a spare still being warmed;
- * and any of those that settled since the listing, which may not show it.
+ * workspaces still being created or restarted, including one in a spare,
+ * which runs under the spare's id; and any of those that settled since the
+ * listing, which may not show it.
  * Failed entries are excluded; their rollback already ran.
  */
 export function inFlightWorkspaceIds(listedAtMs: number): string[] {
   return [...entries.values()].filter((e) => e.error === undefined)
     .flatMap((e) => (e.claimedId !== undefined ? [e.workspaceId, e.claimedId] : [e.workspaceId]))
-    .concat([...spawningSpares.keys()])
     .concat([...settledAt].filter(([, at]) => at >= listedAtMs).map(([id]) => id))
 }
 
@@ -485,7 +485,6 @@ export function clearAllProvisioningForTests(): void {
   deleting.clear()
   stoppedIds.clear()
   runs.clear()
-  spawningSpares.clear()
   settledAt.clear()
   wentLive.length = 0
 }

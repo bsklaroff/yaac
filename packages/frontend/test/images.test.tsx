@@ -26,7 +26,7 @@ afterEach(() => {
 
 const PROJECT: ProjectSummary = {
   id: 'id-alpha', name: 'alpha', addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0,
-  deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo()], scratchDirs: { dirs: [], ignoredTracked: [] },
+  deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo()], scratchDirs: { dirs: [], sizeGiB: 32, ignoredTracked: [] },
   portForwards: [], cacheVolumes: {}, npmCache: true,
 }
 

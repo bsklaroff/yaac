@@ -23,11 +23,9 @@ export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
  */
 export const LABEL_BUILD_ID = 'yaac.build-id'
 /**
- * Marks a workspace pod and its Job as a prewarmed spare: provisioned with
- * its agent booted, but not yet handed to a user. Spares are hidden from
- * user views, and `workspace create` claims one by removing this label from
- * both. Absent on normal workspaces. The Job's copy is what still identifies
- * a spare whose pod is gone.
+ * Marks a spare workspace pod and its Job (docs/generic-workspace-pods.md):
+ * one that belongs to no project and carries no project label, which a
+ * start takes by removing this label from the pod.
  */
 export const LABEL_PREWARMED = 'yaac.prewarmed'
 
@@ -91,11 +89,6 @@ export interface PodInfo {
   node?: string
   /** Set only when the pod carries terminal-state evidence. */
   terminal?: PodTerminalState
-}
-
-/** True when a pod is a prewarmed spare (carries the `yaac.prewarmed` label). */
-export function isPrewarmed(pod: PodInfo): boolean {
-  return pod.labels[LABEL_PREWARMED] === 'true'
 }
 
 /**
@@ -225,7 +218,6 @@ export function mapJobObject(obj: unknown): JobInfo | null {
     workspaceId: metadata.labels[LABEL_WORKSPACE_ID],
     projectId: metadata.labels[LABEL_PROJECT_ID],
     createdAtMs: toEpochMs(metadata.creationTimestamp),
-    prewarmed: metadata.labels[LABEL_PREWARMED] === 'true',
   }
 }
 
@@ -246,20 +238,17 @@ export function workspacePodSelector(projectFilter?: string): string {
   return [
     `${LABEL_INSTALL_ID}=${installId()}`,
     `${LABEL_WORKSPACE_ID}`,
-    ...(projectFilter ? [`${LABEL_PROJECT_ID}=${projectFilter}`] : []),
+    // A spare has no project, and is no workspace until a launch gives it one.
+    projectFilter ? `${LABEL_PROJECT_ID}=${projectFilter}` : LABEL_PROJECT_ID,
   ].join(',')
 }
 
-/**
- * The pod for a workspace id. Unclaimed spares are skipped unless
- * `spares` is set (teardown needs to reach a failed spare).
- */
+/** The pod for a workspace id. */
 export function findWorkspacePod(
   pods: PodInfo[],
   workspaceId: string,
-  opts: { spares?: boolean } = {},
 ): PodInfo | undefined {
-  return pods.find((p) => p.workspaceId === workspaceId && (opts.spares === true || !isPrewarmed(p)))
+  return pods.find((p) => p.workspaceId === workspaceId)
 }
 
 export interface JobInfo {
@@ -267,8 +256,6 @@ export interface JobInfo {
   workspaceId: string
   projectId: string
   createdAtMs: number
-  /** The Job carries `yaac.prewarmed`, which outlives a dead spare's pod. */
-  prewarmed: boolean
 }
 
 /**
@@ -285,5 +272,5 @@ export async function listWorkspaceJobs(): Promise<JobInfo[]> {
 
 /** The label selector `listWorkspaceJobs` and the Jobs informer share. */
 export function workspaceJobSelector(): string {
-  return `${LABEL_INSTALL_ID}=${installId()},${LABEL_WORKSPACE_ID}`
+  return `${LABEL_INSTALL_ID}=${installId()},${LABEL_WORKSPACE_ID},${LABEL_PROJECT_ID}`
 }

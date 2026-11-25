@@ -6,7 +6,7 @@ vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   ...(await importOriginal<typeof apiModule>()),
 }))
 
-import { nodeLocalDirsOf, resolveMountSource } from '#drivers/k8s/substrate'
+import { resolveMountSource, storageTierOf } from '#drivers/k8s/substrate'
 import type { PodMount } from '#drivers/k8s/substrate'
 import { getDataDir, setDataDir } from '@yaac/shared/paths'
 import {
@@ -126,21 +126,27 @@ describe('resolveMountSource', () => {
   })
 })
 
-describe('nodeLocalDirsOf', () => {
-  it('lists the node-local directory mounts the pod writes, once each; files and read-only mounts excluded', () => {
+describe('storageTierOf', () => {
+  afterEach(() => { vi.unstubAllEnvs() })
+
+  it('names the tier a path is stored in and the path inside it, the root itself as `.`', () => {
     setDataDir('/data/yaac')
-    const resolved = [
-      { source: { kind: 'hostPath', path: cachedPackagesDir('demo') }, mountPath: '/home/yaac/.cached-packages' },
-      { source: { kind: 'hostPath', path: path.join(cachedPackagesDir('demo'), 'modules', 'w1', 'node_modules') }, mountPath: '/workspace/node_modules' },
-      { source: { kind: 'hostPath', path: cachedPackagesDir('demo') }, mountPath: '/twice' },
-      { source: { kind: 'hostPath', path: path.join(claudeDir('demo'), 'settings.json'), type: 'File' }, mountPath: '/f' },
-      // Read-only.
-      { source: { kind: 'hostPath', path: path.join(cachedPackagesDir('demo'), 'store'), type: 'DirectoryOrCreate' }, mountPath: '/store', readOnly: true },
-      { source: { kind: 'emptyDir' }, mountPath: '/tmp/yaac-tmux' },
-    ].map((m) => resolveMountSource(m as PodMount))
-    expect(nodeLocalDirsOf(resolved)).toEqual([
-      `${NODE_ROOT}/projects/demo/.cached-packages`,
-      `${NODE_ROOT}/projects/demo/.cached-packages/modules/w1/node_modules`,
-    ])
+    expect(storageTierOf({ kind: 'hostPath', path: claudeDir('demo') })).toEqual({ tier: 'shared', path: 'projects/demo/claude' })
+    expect(storageTierOf({ kind: 'hostPath', path: '/data/yaac/global' })).toEqual({ tier: 'shared', path: '.' })
+    expect(storageTierOf({ kind: 'hostPath', path: '/data/yaac/node-local/projects/demo/trees/ws1' }))
+      .toEqual({ tier: 'node', path: 'projects/demo/trees/ws1' })
+    // A kind volume is a directory of the volumes claim.
+    expect(storageTierOf({ kind: 'volume', volumeId: 'v1' })).toEqual({ tier: 'volumes', path: 'v1' })
+  })
+
+  it('refuses a byo volume, a source that is no host path, and a host path under no tier a workspace may mount', () => {
+    setDataDir('/data/yaac')
+    expect(() => storageTierOf({ kind: 'hostPath', path: '/data/yaac/server-local/db' }))
+      .toThrow('/data/yaac/server-local/db is in no storage tier a workspace may mount (/data/yaac/global, /data/yaac/node-local)')
+    // A sibling whose name only starts with a root's is outside it.
+    expect(() => storageTierOf({ kind: 'hostPath', path: '/data/yaac/global-other' })).toThrow(/in no storage tier/)
+    expect(() => storageTierOf({ kind: 'emptyDir' })).toThrow('a emptyDir mount is in no storage tier')
+    vi.stubEnv('YAAC_VOLUME_STORAGE_CLASS', 'hcloud-volumes')
+    expect(() => storageTierOf({ kind: 'volume', volumeId: 'v1' })).toThrow('a byo volume is a claim of its own, not a tier')
   })
 })

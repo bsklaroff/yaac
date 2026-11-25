@@ -40,7 +40,7 @@ const DIAL_TIMEOUT_MS = 15_000
 const MIN_EXEC_TIMEOUT_MS = 5_000
 /**
  * Idle time before TCP keepalive probes start on a relay stream. A stream
- * can sit idle for days (a prewarmed spare's ACP conversation), and the
+ * can sit idle for days (an idle workspace's ACP conversation), and the
  * Service's NAT forgets an idle flow (kube-proxy's conntrack keeps an
  * established one 24h). The far end's close then never arrives, and the
  * stream looks open while carrying nothing. Probes keep the flow known and
@@ -345,6 +345,40 @@ export async function podExec(
     }
   }
   throw lastErr
+}
+
+/**
+ * Make a pod one workspace's with streamd's `claim` stream
+ * (dockerfiles/streamd/claim.js), `request` following the handshake as
+ * JSON. Only the dial is retried: once streamd has the request it may have
+ * acted on it. Rejects with WorkspaceExecError when streamd refused or
+ * failed it.
+ */
+export async function podClaim(jobName: string, request: object, opts: { timeoutMs: number }): Promise<void> {
+  const workspaceId = workspaceIdFromJobName(jobName)
+  const body = Buffer.from(JSON.stringify(request), 'utf8')
+  const started = Date.now()
+  let socket: net.Socket | undefined
+  for (let attempt = 1; socket === undefined; attempt++) {
+    try {
+      socket = await relayDial(workspaceId, { kind: 'claim', bytes: body.length }, { timeoutMs: Math.min(DIAL_TIMEOUT_MS, opts.timeoutMs) })
+    } catch (err) {
+      if (attempt >= 3) throw err
+      await new Promise((r) => setTimeout(r, 250 * attempt))
+    }
+  }
+  socket.write(body)
+  const reply = await readAll(socket, Math.max(1, opts.timeoutMs - (Date.now() - started)))
+  let result: { ok?: boolean; error?: string }
+  try {
+    result = JSON.parse(reply.toString('utf8')) as typeof result
+  } catch {
+    throw new RelayDialError(`malformed claim result from ${jobName}`, true)
+  }
+  if (result.ok !== true) {
+    const why = result.error ?? 'no reason given'
+    throw new WorkspaceExecError(`claiming ${jobName} failed: ${why}`, 1, '', why)
+  }
 }
 
 // ── Stream adapters (sync facades over the async dial) ─────────────────────

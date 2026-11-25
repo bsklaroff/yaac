@@ -79,8 +79,7 @@ export function _clearListActiveInflightForTests(): void {
  * is stuck and its real status shows, as a wait clients have not seen yet.
  * Each covers a case the others start too early for: a cold create opens
  * its session before a slow image build and boot, a runtime's watcher takes
- * a moment to attach, and a claimed spare's agent may have been waiting
- * since it was warmed.
+ * a moment to attach.
  *
  * A `tui` session whose agent has not started on its opening message
  * (`SessionEntry.opening`) lists as `running` the same way, for as long as

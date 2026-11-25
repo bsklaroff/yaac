@@ -36,7 +36,29 @@ beforeAll(async () => {
  * Best-effort and non-blocking; `test/global-setup.ts` sweeps whatever an
  * interrupted file leaves, plus the cluster-scoped objects it owns.
  */
+/**
+ * Have this file's mountd release its pods' node-mounts directories
+ * while it still runs: once the namespace goes, mountd goes with it, and
+ * a mount it never undid stays in the node's mount table
+ * (docs/generic-workspace-pods.md "Release"). Its workspace pods are
+ * deleted at once, then mountd's root is waited on until it is empty.
+ */
+async function releaseNodeMounts(): Promise<void> {
+  await execFileAsync('kubectl', [
+    'delete', 'jobs,pods', '-n', TEST_NAMESPACE, '-l', 'yaac.workspace-id',
+    '--grace-period=0', '--force', '--ignore-not-found', '--wait=false',
+  ], { timeout: 60_000 }).catch(() => {})
+  for (const deadline = Date.now() + 60_000; Date.now() < deadline;) {
+    const left = await execFileAsync('kubectl', [
+      'exec', '-n', TEST_NAMESPACE, 'ds/yaac-mountd', '-c', 'mountd', '--', 'ls', '-A', '/node-mounts-root',
+    ], { timeout: 15_000 }).then((r) => r.stdout.trim(), () => '')
+    if (left === '') return
+    await new Promise((r) => setTimeout(r, 1_000))
+  }
+}
+
 afterAll(async () => {
+  await releaseNodeMounts()
   // Cluster-scoped objects don't go with the namespace, so delete the
   // server's ClusterRole/Binding and the storage PVs explicitly.
   await deleteTestServerClusterRbac(TEST_NAMESPACE)

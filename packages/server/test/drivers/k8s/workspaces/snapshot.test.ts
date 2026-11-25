@@ -14,19 +14,25 @@ function labels(workspaceId: string): Record<string, string> {
   }
 }
 
+/** A spare's labels: an id and the install, but no project. */
+function spareLabels(workspaceId: string): Record<string, string> {
+  return { 'yaac.workspace-id': workspaceId, 'yaac.install-id': installId(), 'yaac.prewarmed': 'true' }
+}
+
 /** A workspace's Job, and (unless it is a stray) its running pod. */
-function seedWorkspace(workspaceId: string, opts: { pod?: boolean } = {}): void {
+function seedWorkspace(workspaceId: string, opts: { pod?: boolean; spare?: boolean } = {}): void {
   const jobName = `yaac-demo-${workspaceId}`
+  const own = opts.spare === true ? spareLabels(workspaceId) : labels(workspaceId)
   fakeCluster.seed({
     apiVersion: 'batch/v1', kind: 'Job',
-    metadata: { name: jobName, namespace: 'test-ns', labels: labels(workspaceId), creationTimestamp: CREATED },
+    metadata: { name: jobName, namespace: 'test-ns', labels: own, creationTimestamp: CREATED },
   })
   if (opts.pod === false) return
   fakeCluster.seed({
     apiVersion: 'v1', kind: 'Pod',
     metadata: {
       name: `${jobName}-x1`, namespace: 'test-ns', creationTimestamp: CREATED,
-      labels: { ...labels(workspaceId), 'batch.kubernetes.io/job-name': jobName },
+      labels: { ...own, 'batch.kubernetes.io/job-name': jobName },
     },
     status: { phase: 'Running' },
   })
@@ -48,6 +54,10 @@ beforeEach(() => {
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   seedWorkspace('live')
   seedWorkspace('stray', { pod: false })
+  // A spare belongs to no project, so it is neither a workspace nor, with
+  // its pod gone, a stray unit.
+  seedWorkspace('spare', { spare: true })
+  seedWorkspace('dead-spare', { spare: true, pod: false })
 })
 
 afterEach(() => {
@@ -66,15 +76,16 @@ describe('createRuntimeSnapshot', () => {
     expect((await snap.workspaces()).map((w) => w.workspaceId)).toEqual(['live'])
     // A Job whose pod is gone is a stray unit; one with a live pod is not.
     expect(await snap.strayUnits()).toEqual([{
-      workspaceId: 'stray', unitName: 'yaac-demo-stray', projectId: PROJECT, createdAtMs: Date.parse(CREATED), prewarmed: false,
+      workspaceId: 'stray', unitName: 'yaac-demo-stray', projectId: PROJECT, createdAtMs: Date.parse(CREATED),
     }])
     await snap.workspaces()
     await snap.strayUnits()
     expect(fakeCluster.callsOf('list')).toHaveLength(2)
-    // Each fallback is scoped install-wide by install id.
+    // Each fallback is scoped install-wide by install id, to pods that
+    // carry a project.
     expect(fakeCluster.callsOf('list', 'Pod')[0]).toMatchObject({
       namespace: 'test-ns',
-      labelSelector: expect.stringMatching(/^yaac\.install-id=test-install,yaac\.workspace-id$/) as unknown,
+      labelSelector: 'yaac.install-id=test-install,yaac.workspace-id,yaac.project-id',
     })
 
     // A new snapshot is a new point in time.

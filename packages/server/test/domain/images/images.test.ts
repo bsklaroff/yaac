@@ -513,4 +513,18 @@ describe('spareImageTag', () => {
     await imageForCreate({ projectId: DEMO_PROJECT_ID, imageId: id })
     expect(await spareImageTag(DEMO_PROJECT_ID)).toBe(built)
   })
+
+  it('has no stock tag until the registry holds its whole chain', async () => {
+    // A user image saved but not yet pushed: a spare of the stock image's
+    // new tag could only fail to pull.
+    missing = ['user']
+    await saveUserImage(owner, { dockerfile: `${LAYERED}RUN echo mine\n`, files: {} })
+    expect(await spareImageTag(DEMO_PROJECT_ID)).toBeNull()
+    await settles(() => { expect(requests.length).toBeGreaterThan(0) })
+    for (const r of requests.splice(0)) r.settle({ ok: true, blockedHosts: [] })
+    missing = []
+    const tag = await spareImageTag(DEMO_PROJECT_ID)
+    expect(tag).not.toBeNull()
+    expect(tag).not.toBe('fake-tools:t')
+  })
 })

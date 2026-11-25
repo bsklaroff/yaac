@@ -43,6 +43,7 @@ import {
   queueChain,
   readBuildLog,
   removeBuildLogs,
+  targetChain,
   type ChainOutcome,
   type ChainTarget,
 } from './builds'
@@ -462,10 +463,10 @@ export async function imageForCreate(opts: {
   projectId: string
   imageId?: string
   awaitBuild?: boolean
-  /** Remember the choice; a spare or a restart does not. */
+  /** Remember the choice; a restart does not. */
   remember?: boolean
-  /** Why it builds: `prewarm` for a spare, so it queues behind people. */
-  reason?: Extract<ImageBuildReason, 'create' | 'prewarm'>
+  /** Why it builds. */
+  reason?: Extract<ImageBuildReason, 'create'>
   requestedBy?: string
   onProgress?: (message: string) => void
 }): Promise<CreateImage> {
@@ -503,15 +504,21 @@ export async function imageForCreate(opts: {
 }
 
 /**
- * The tag a create of the project's last chosen image (else its default)
- * would launch now, without building: what its spare is kept on. Null
- * when that image has nothing built under the owner's current user image.
+ * The tag a create of `imageId`, else the project's last chosen image, else
+ * its default, would launch now, without building: what a spare for it is
+ * kept on. Null when that image has nothing built under the owner's current
+ * user image. The stock image has no build record, so the registry is
+ * asked: until its chain is pushed, as after an upgrade changes the base
+ * image, a spare of it could only wait on a pull that fails.
  */
-export async function spareImageTag(projectId: string): Promise<string | null> {
+export async function spareImageTag(projectId: string, imageId?: string): Promise<string | null> {
   const project = await getProjectRow(projectId)
   if (!project) return null
-  const chosen = project.lastImageId ?? project.defaultImageId ?? STOCK_IMAGE_ID
-  if (chosen === STOCK_IMAGE_ID) return chainFinalTag(await chainTarget(projectId))
+  const chosen = imageId ?? project.lastImageId ?? project.defaultImageId ?? STOCK_IMAGE_ID
+  if (chosen === STOCK_IMAGE_ID) {
+    const chain = await targetChain(await chainTarget(projectId))
+    return (await workspaceDriver().missingImageLayers(chain)).length === 0 ? chain.finalTag : null
+  }
   const image = await getImage(chosen)
   if (!image?.lastBuiltTag || !image.lastBuiltRevisionId) return null
   const built = await chainFinalTag(await chainTarget(projectId, image.id, image.lastBuiltRevisionId))

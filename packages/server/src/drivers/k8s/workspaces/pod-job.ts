@@ -1,23 +1,25 @@
 import path from 'node:path'
-import { mergeEnvEntries } from '#lib/env-entries'
-import type { ScratchDirMount } from '#drivers/contract'
+import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import {
   CA_CONFIGMAP_NAME,
+  GLOBAL_CLAIM_NAME,
   LABEL_INSTALL_ID,
   PRIORITY_CLASS_WORKSPACE,
   RUNTIME_CLASS_GVISOR,
   installSecurityContext,
   k8sWorkspacePaths,
+  nodeMountsNodePath,
   sentryTmpfsAnnotations,
-  volumeClaimName,
-  type MountSource,
-  type PodMount,
 } from '#drivers/k8s/substrate'
 
 /**
- * The Job a workspace runs as: its pod's volumes, resources, sandbox and
- * hooks. Pure, so the whole spec is unit-testable; `launchWorkspace`
- * assembles the parameters.
+ * The Job a workspace runs as (docs/generic-workspace-pods.md "The pod").
+ * Every workspace pod has this one shape, whose spec holds nothing a
+ * project owns: what makes a pod one workspace's is mounted into its
+ * node-mounts directory and bound inside its sandbox at the claim. What
+ * stays in the spec, for the few pods made on demand that need it: a byo
+ * volume's claim, a site release's priority class and node, and a run's
+ * secret variables. Pure, so the whole spec is unit-testable.
  */
 
 /** Directory inside workspace pods where the CA ConfigMap is mounted. */
@@ -32,43 +34,42 @@ export const WORKSPACE_POD_ANNOTATIONS: Record<string, string> = {
   'cluster-autoscaler.kubernetes.io/safe-to-evict': 'false',
 }
 
-/**
- * Volume-name prefix of a workspace's scratch dirs (`PodJobParams.scratchDirs`),
- * one volume per dir: `scratch-0` for the first, and so on.
- */
-const SCRATCH_VOLUME_PREFIX = 'scratch'
+/** Where both containers see the pod's node-mounts directory. */
+export const NODE_MOUNTS_DIR = '/node-mounts'
+/** Where both containers see this server build's helper commands and
+ *  bundled skills (`helpersSubPath`). */
+export const HELPERS_DIR = '/opt/yaac/helpers'
+/** The pod's scratch volume, divided among the workspace's scratch dirs at
+ *  the claim (docs/generic-workspace-pods.md "Scratch dirs"). */
+export const SCRATCH_ROOT = '/yaac-scratch'
+/** Pod-local folders the claim binds where a workspace asks for an
+ *  `emptyDir` (codex's `tmp`). */
+export const LOCAL_ROOT = '/yaac-local'
+/** The annotation recording a pod's scratch size, which its pool is for. */
+export const SCRATCH_BYTES_ANNOTATION = 'yaac.scratch-bytes'
 
 /**
- * How far a scratch-dir volume's emptyDir sizeLimit sits above its tmpfs
- * cap, the dir's own `sizeBytes`. The backing file can exceed the cap
- * slightly, and hitting the sizeLimit evicts the whole workspace, whereas
- * the tmpfs cap only fails the write.
+ * How far the scratch volume's emptyDir sizeLimit sits above its tmpfs cap.
+ * The backing file can exceed the cap slightly, and hitting the sizeLimit
+ * evicts the whole workspace, whereas the tmpfs cap only fails the write.
  */
 export const SCRATCH_SIZELIMIT_SLACK_BYTES = 1024 ** 3
 
-/** What scratch dirs add to the ephemeral-storage request: one typical install. */
+/** What the scratch volume adds to the ephemeral-storage request: one
+ *  typical install. */
 export const SCRATCH_REQUEST_BYTES = 2 * 1024 ** 3
 
-/** Volume-name prefix per source kind; the suffix is the mount's index. */
-const VOLUME_NAME_PREFIX: Record<MountSource['kind'], string> = {
-  hostPath: 'hp',
-  pvc: 'pv',
-  emptyDir: 'ed',
+/** The shared tier's folder holding one server build's helpers, mounted
+ *  read-only into every pod that build makes. */
+export function helpersSubPath(build: string): string {
+  return path.posix.join('run', 'helpers', build)
 }
 
-/** The volume body (everything but `name`) for one mount source. */
-function volumeSourceSpec(source: MountSource): Record<string, unknown> {
-  switch (source.kind) {
-    case 'hostPath':
-      return { hostPath: { path: source.path, type: source.type ?? 'Directory' } }
-    case 'pvc':
-      // subPath goes on the volumeMount.
-      return { persistentVolumeClaim: { claimName: source.claimName } }
-    case 'emptyDir':
-      return {
-        emptyDir: source.sizeLimit === undefined ? {} : { sizeLimit: String(source.sizeLimit) },
-      }
-  }
+/** One extra volume a pod made on demand mounts at a path of its own: a
+ *  byo volume's claim, which kubelet has to attach. */
+export interface ClaimMount {
+  claimName: string
+  mountPath: string
 }
 
 export interface PodJobParams {
@@ -77,18 +78,28 @@ export interface PodJobParams {
   /** Applied to the Job and its pod template (project, workspace-id, …). */
   labels: Record<string, string>
   image: string
-  /** `NAME=VALUE` entries. A name repeated with the same value is
-   *  rendered once; with a different value, the build throws. */
+  /** `NAME=VALUE` entries; only what any workspace of this id gets. */
   env: string[]
-  /** Variables read from a Secret's key of the same name, by Secret: a
-   *  project's run secrets. */
+  /** Variables read from a Secret's key of the same name: a project's run
+   *  secrets, on a pod made on demand. */
   secretEnv?: { secretName: string; names: string[] }
-  /** Workspace mounts in render order, each declaring its own source. */
-  mounts: PodMount[]
+  /** The pod's node-mounts directory, under this install's root. */
+  nodeMountsDir: string
+  /** This server build's helpers folder on the shared tier. */
+  helpers: string
+  /** The scratch volume's tmpfs cap. */
+  scratchBytes: number
+  /** Byo volume claims (pods made on demand only). */
+  claimMounts?: ClaimMount[]
+  /** The pinned utility image, which the `volume-root` init container
+   *  runs; required with `claimMounts`. */
+  utilityImage?: string
   /**
    * Scheduler reservation. Kept well below memoryLimitBytes so idle
    * workspaces can overcommit a node. Without it Kubernetes would reserve
-   * the full limit per workspace.
+   * the full limit per workspace. A memory request cannot be raised in
+   * place on a node with swap, so a spare reserves a workspace's from
+   * creation.
    */
   memoryRequestBytes: number
   /**
@@ -97,65 +108,30 @@ export interface PodJobParams {
    * OOM-killed alone.
    */
   memoryLimitBytes: number
-  /**
-   * CPU request in millicores, so the scheduler accounts for the pod. Also
-   * the pod's share of a busy node.
-   */
+  /** CPU request in millicores: the pod's share of a busy node. */
   cpuRequestMillis: number
   /**
    * CPU limit in millicores. runsc sizes the sandbox's virtual CPU count
    * from the cpu quota (`-cpu-num-from-quota`). With no limit it uses the
    * host's core count and spawns one systrap stub per core, so one
-   * syscall-heavy workspace can saturate the node. Keep it well above the
-   * request, so CFS throttling only hits large parallel bursts.
+   * syscall-heavy workspace can saturate the node.
    */
   cpuLimitMillis: number
-  /**
-   * Ephemeral-storage request: the writable layer, logs and emptyDir
-   * volumes (hostPath and PVC mounts do not count). Far below the limit,
-   * like memory.
-   */
+  /** Ephemeral-storage request: the writable layer, logs and emptyDirs. */
   ephemeralStorageRequestBytes: number
-  /**
-   * Ephemeral-storage limit; kubelet evicts the pod past it, which protects
-   * other pods on the node. The scratch dirs' sizeLimits are added on top.
-   */
+  /** Ephemeral-storage limit; kubelet evicts the pod past it. The scratch
+   *  volume's sizeLimit is added on top. */
   ephemeralStorageLimitBytes: number
   /** Pinned proxy Service ClusterIP, used as the pod's DNS resolver. */
   proxyHost: string
-  /**
-   * The workspace's scratch dirs, each its own disk-backed sentry tmpfs
-   * capped at its `sizeBytes`, so pnpm's file traffic stays inside the
-   * sandbox instead of crossing the gofer, and a store inside the root dir
-   * can hardlink. Lost with the pod; init steps reinstall.
-   */
-  scratchDirs?: ScratchDirMount[]
-  /**
-   * postStart hook argv (`yaac-workspace-init`). The pod is not Ready until
-   * it exits, so Ready means in-pod setup is done. A nonzero exit fails the
-   * Job.
-   */
-  postStartExec?: string[]
-  /**
-   * preStop hook argv, bounded by the grace period. Workspace pods
-   * checkpoint opencode's state here.
-   */
-  preStopExec?: string[]
-  /** The pinned utility image, which the `volume-root` init container
-   *  runs; required when a byo volume's claim is mounted. */
-  utilityImage?: string
-  /** Defaults to 5 seconds. */
-  terminationGracePeriodSeconds?: number
-  /**
-   * The tree container (docs/node-local-workspaces.md "The tree
-   * container"): a native sidecar that fills the workspace's tree on its
-   * node before the workspace container starts, and checkpoints it.
-   */
-  treeContainer?: TreeContainerParams
+  /** The tree container's image, for a pod whose workspace keeps its files
+   *  on its node (every pod but a site release's). */
+  treeImage?: string
   /** Defaults to the workspace tier. */
   priorityClassName?: string
-  /** A node the pod must run on, by name. */
-  nodeName?: string
+  /** The nodes the pod may run on: those whose mountd is ready, and for a
+   *  site release beside a volume's holder, that one. */
+  nodeNames: string[]
 }
 
 /**
@@ -164,8 +140,7 @@ export interface PodJobParams {
  * workspace reserves"), so without this the scheduler's image-locality score
  * piles every workspace of a project onto the node that already caches its
  * image, until that node runs out of memory while another sits idle.
- * `ScheduleAnyway` makes it a preference: a workspace never waits Pending,
- * nor makes the autoscaler add a node, just to even out the count.
+ * `ScheduleAnyway` makes it a preference.
  */
 function workspaceSpreadSpec(labels: Record<string, string>): Record<string, unknown> {
   return {
@@ -179,34 +154,13 @@ function workspaceSpreadSpec(labels: Record<string, string>): Record<string, unk
 }
 
 /** Where both containers see the tree container's trigger file. */
-const TREE_TRIGGER_FILE = k8sWorkspacePaths().treeTrigger as string
-const TREE_TRIGGER_DIR = path.posix.dirname(TREE_TRIGGER_FILE)
-/** How long the tree container may take to fill the tree: a restore of a
- *  large repository the agent cloned takes minutes. The server's wait for
- *  the pod is as long (`readyTimeoutMs`). */
-export const TREE_STARTUP_SECONDS = 4 * 60 * 60
-/**
- * The startup probe's timing. Kubernetes takes the period in whole seconds,
- * 1 at least, so each probe waits most of one for the tree inside its own
- * process and passes the moment the tree is filled: checking more often by
- * starting more processes would cost over 100 ms a start in the sandbox.
- * The timeout is far above the wait, for a process slow to start on a
- * loaded node.
- */
-const TREE_PROBE_PERIOD_SECONDS = 1
-const TREE_PROBE_WAIT_SECONDS = 0.9
-const TREE_PROBE_TIMEOUT_SECONDS = 10
+export const TREE_TRIGGER_FILE = k8sWorkspacePaths().treeTrigger as string
+export const TREE_TRIGGER_DIR = path.posix.dirname(TREE_TRIGGER_FILE)
 
-export interface TreeContainerParams {
-  image: string
-  /** The life's name, which names its start instruction and manifest. */
-  life: string
-  /** Its mounts: the tree, scratch repository, checkpoint log, each git
-   *  dir, the main clones, the program, and the folders in `own`. */
-  mounts: PodMount[]
-  /** Mount paths, besides the tree and scratch repository, of folders it
-   *  hands to the install uid before the workspace container starts. */
-  own: string[]
+/** The tree container's marker that a life's files are ready, on the
+ *  trigger volume both containers mount. */
+export function treeStartedMarker(life: string): string {
+  return path.posix.join(TREE_TRIGGER_DIR, `started.${life}`)
 }
 
 /** What the tree container, and a salvage or import pod doing its work,
@@ -217,38 +171,26 @@ export const TREE_RESOURCES = {
 }
 
 /**
- * The tree container. It runs as root inside the sandbox with only the
- * file-permission and identity capabilities, so it reads what an agent's
- * `sudo` hid and writes checked-out files as the install uid. It is also
- * what hands the pod's node-local folders to that uid: hostPath ignores
- * `fsGroup`, and kubelet makes a missing one as root. It reaches only the
- * folders mounted into it, none inside another (`launchWorkspace` refuses
- * that), so the base image it runs is root over this workspace's
- * node-local data and no other's. Its startup probe, which
- * passes once the tree is filled, is what holds the workspace container
- * back.
+ * The tree container (docs/generic-workspace-pods.md "A claim"). It runs
+ * yaac's base image as root, never a project's. At the claim it binds its
+ * entries from the list in the node-mounts directory, which needs
+ * CAP_SYS_ADMIN, and gives that up for good before it reads anything an
+ * agent wrote; after that it has no more privilege than an agent's `sudo`.
+ * It then fills the life's tree from the arborist's index, or
+ * restores a checkpoint onto it, and checkpoints it.
  */
-function treeContainer(t: TreeContainerParams, volumeMounts: Array<Record<string, unknown>>): Record<string, unknown> {
+function treeContainer(image: string, volumeMounts: Array<Record<string, unknown>>): Record<string, unknown> {
   return {
     name: 'tree',
-    image: t.image,
+    image,
     imagePullPolicy: 'IfNotPresent',
     restartPolicy: 'Always',
-    command: [
-      'yaac-tree', 'run', '--tree', '/tree', '--scratch', '/scratch', '--ckpt', '/ckpt',
-      '--life', t.life, '--trigger', TREE_TRIGGER_FILE,
-      ...(t.own.length > 0 ? ['--own', t.own.join(':')] : []),
-    ],
-    startupProbe: {
-      exec: { command: ['yaac-tree', 'probe', '--scratch', '/scratch', '--life', t.life, '--wait', String(TREE_PROBE_WAIT_SECONDS)] },
-      periodSeconds: TREE_PROBE_PERIOD_SECONDS,
-      timeoutSeconds: TREE_PROBE_TIMEOUT_SECONDS,
-      failureThreshold: TREE_STARTUP_SECONDS / TREE_PROBE_PERIOD_SECONDS,
-    },
+    command: ['node', `${HELPERS_DIR}/bin/yaac-tree`, 'start', '--trigger', TREE_TRIGGER_FILE],
     securityContext: {
       runAsUser: 0,
       runAsGroup: 0,
-      capabilities: { drop: ['ALL'], add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID'] },
+      // SYS_ADMIN binds, and SETPCAP drops both for good once it has.
+      capabilities: { drop: ['ALL'], add: ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'SETUID', 'SETGID', 'SYS_ADMIN', 'SETPCAP'] },
     },
     resources: TREE_RESOURCES,
     volumeMounts,
@@ -256,74 +198,57 @@ function treeContainer(t: TreeContainerParams, volumeMounts: Array<Record<string
 }
 
 /**
- * Build the Job manifest for one workspace: a single-pod Job
- * (`backoffLimit: 0`, `restartPolicy: Never`) with the caller's mounts and
- * the proxy CA. Pure, so the whole spec is unit-testable.
+ * Build the Job manifest for one workspace pod: a single-pod Job
+ * (`backoffLimit: 0`, `restartPolicy: Never`).
  */
 export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
-  const volumes: Array<Record<string, unknown>> = []
-  const volumeMounts: Array<Record<string, unknown>> = []
-
-  p.mounts.forEach((m, i) => {
-    const name = `${VOLUME_NAME_PREFIX[m.source.kind]}-${i}`
-    volumes.push({ name, ...volumeSourceSpec(m.source) })
-    volumeMounts.push({
-      name,
-      mountPath: m.mountPath,
-      ...(m.source.kind === 'pvc' && m.source.subPath ? { subPath: m.source.subPath } : {}),
-      ...(m.readOnly ? { readOnly: true } : {}),
-    })
-  })
-
-  volumes.push({
-    name: 'proxy-ca',
-    configMap: { name: CA_CONFIGMAP_NAME },
-  })
-  volumeMounts.push({ name: 'proxy-ca', mountPath: CA_MOUNT_DIR, readOnly: true })
+  const nodeMounts = { name: 'node-mounts', mountPath: NODE_MOUNTS_DIR, readOnly: true, mountPropagation: 'HostToContainer' }
+  const helpers = { name: 'helpers', mountPath: HELPERS_DIR, readOnly: true }
+  const trigger = { name: 'tree-trigger', mountPath: TREE_TRIGGER_DIR }
+  const volumes: Array<Record<string, unknown>> = [
+    { name: 'node-mounts', hostPath: { path: path.posix.join(nodeMountsNodePath(), p.nodeMountsDir), type: 'DirectoryOrCreate' } },
+    { name: 'helpers', persistentVolumeClaim: { claimName: GLOBAL_CLAIM_NAME } },
+    { name: 'proxy-ca', configMap: { name: CA_CONFIGMAP_NAME } },
+    { name: 'tmux', emptyDir: {} },
+    { name: 'local', emptyDir: {} },
+    { name: 'tree-trigger', emptyDir: { sizeLimit: '1Mi' } },
+    // A tmpfs in the sentry (sentryTmpfsAnnotations), so pnpm's file
+    // traffic stays inside the sandbox and a store inside one scratch dir
+    // can hardlink into the others, which share it.
+    { name: 'scratch', emptyDir: { sizeLimit: String(p.scratchBytes + SCRATCH_SIZELIMIT_SLACK_BYTES) } },
+    ...(p.claimMounts ?? []).map((m, i) => ({ name: `pv-${String(i)}`, persistentVolumeClaim: { claimName: m.claimName } })),
+  ]
+  const volumeMounts: Array<Record<string, unknown>> = [
+    nodeMounts,
+    { ...helpers, subPath: p.helpers },
+    { name: 'proxy-ca', mountPath: CA_MOUNT_DIR, readOnly: true },
+    { name: 'tmux', mountPath: CONTAINER_TMUX_DIR },
+    { name: 'local', mountPath: LOCAL_ROOT },
+    trigger,
+    { name: 'scratch', mountPath: SCRATCH_ROOT },
+    ...(p.claimMounts ?? []).map((m, i) => ({ name: `pv-${String(i)}`, mountPath: m.mountPath })),
+  ]
+  const annotations = {
+    ...WORKSPACE_POD_ANNOTATIONS,
+    ...sentryTmpfsAnnotations('scratch', p.scratchBytes),
+    [SCRATCH_BYTES_ANNOTATION]: String(p.scratchBytes),
+  }
 
   const initContainers: Array<Record<string, unknown>> = []
-  const treeMounts: Array<Record<string, unknown>> = []
-  if (p.treeContainer) {
-    p.treeContainer.mounts.forEach((m, i) => {
-      const name = `tree-${String(i)}`
-      volumes.push({ name, ...volumeSourceSpec(m.source) })
-      treeMounts.push({
-        name,
-        mountPath: m.mountPath,
-        ...(m.source.kind === 'pvc' && m.source.subPath ? { subPath: m.source.subPath } : {}),
-        ...(m.readOnly ? { readOnly: true } : {}),
-      })
-    })
-    volumes.push({ name: 'tree-trigger', emptyDir: { sizeLimit: '1Mi' } })
-    treeMounts.push({ name: 'tree-trigger', mountPath: TREE_TRIGGER_DIR })
-    volumeMounts.push({ name: 'tree-trigger', mountPath: TREE_TRIGGER_DIR })
-  }
   // A byo volume's claim is a fresh filesystem whose root belongs to root.
-  const volumeRoots = p.mounts.flatMap((m, i) =>
-    m.source.kind === 'pvc' && m.source.claimName.startsWith(volumeClaimName('')) ? [`pv-${String(i)}`] : [])
+  const volumeRoots = (p.claimMounts ?? []).map((_, i) => `pv-${String(i)}`)
   if (volumeRoots.length > 0) {
     if (!p.utilityImage) throw new Error('a volume claim mounted without utilityImage')
     initContainers.push(volumeRootInitContainer(p.utilityImage, volumeRoots))
   }
-  if (p.treeContainer) initContainers.push(treeContainer(p.treeContainer, treeMounts))
+  if (p.treeImage !== undefined) {
+    initContainers.push(treeContainer(p.treeImage, [nodeMounts, { ...helpers, subPath: p.helpers }, trigger]))
+  }
 
-  // One volume per dir (see sentryTmpfsAnnotations). A tmpfs root is
-  // world-writable, so the workspace user can install into it.
-  const scratchDirs = p.scratchDirs ?? []
-  let annotations: Record<string, string> = { ...WORKSPACE_POD_ANNOTATIONS }
-  scratchDirs.forEach((dir, i) => {
-    const name = `${SCRATCH_VOLUME_PREFIX}-${i}`
-    volumes.push({ name, emptyDir: { sizeLimit: String(dir.sizeBytes + SCRATCH_SIZELIMIT_SLACK_BYTES) } })
-    volumeMounts.push({ name, mountPath: dir.path })
-    annotations = { ...annotations, ...sentryTmpfsAnnotations(name, dir.sizeBytes) }
+  const env: Array<Record<string, unknown>> = p.env.map((e) => {
+    const eq = e.indexOf('=')
+    return { name: e.slice(0, eq), value: e.slice(eq + 1) }
   })
-  // The limit adds every dir's sizeLimit, so no dir can evict the pod before
-  // its own tmpfs cap fails the write. The request adds one typical install
-  // however many dirs there are, since the scheduler packs pods by request.
-  const scratchLimit = scratchDirs.reduce((sum, d) => sum + d.sizeBytes + SCRATCH_SIZELIMIT_SLACK_BYTES, 0)
-  const scratchRequest = scratchDirs.length > 0 ? SCRATCH_REQUEST_BYTES : 0
-
-  const env: Array<Record<string, unknown>> = mergeEnvEntries(p.env)
   for (const name of p.secretEnv?.names ?? []) {
     if (env.some((e) => e.name === name)) throw new Error(`run secret ${name} shares its name with another variable`)
     env.push({ name, valueFrom: { secretKeyRef: { name: p.secretEnv?.secretName, key: name } } })
@@ -343,22 +268,23 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
         metadata: { labels: p.labels, annotations },
         spec: {
           restartPolicy: 'Never',
-          terminationGracePeriodSeconds: p.terminationGracePeriodSeconds ?? 5,
+          // preStop runs within the grace period, so it is sized for the
+          // hook, and the tree container's final pass, which spends the
+          // same budget.
+          terminationGracePeriodSeconds: PRE_STOP_GRACE_SECONDS + (p.treeImage !== undefined ? TREE_FINAL_PASS_SECONDS : 0),
           priorityClassName: p.priorityClassName ?? PRIORITY_CLASS_WORKSPACE,
           ...workspaceSpreadSpec(p.labels),
-          ...(p.nodeName !== undefined
-            ? {
-              affinity: {
-                nodeAffinity: {
-                  requiredDuringSchedulingIgnoredDuringExecution: {
-                    nodeSelectorTerms: [{
-                      matchFields: [{ key: 'metadata.name', operator: 'In', values: [p.nodeName] }],
-                    }],
-                  },
-                },
+          affinity: {
+            nodeAffinity: {
+              requiredDuringSchedulingIgnoredDuringExecution: {
+                // The apiserver takes one value per node-name field
+                // selector, so each node is a term of its own (terms are ORed).
+                nodeSelectorTerms: p.nodeNames.map((n) => ({
+                  matchFields: [{ key: 'metadata.name', operator: 'In', values: [n] }],
+                })),
               },
-            }
-            : {}),
+            },
+          },
           // Untrusted workloads: no API credentials or service env vars.
           automountServiceAccountToken: false,
           enableServiceLinks: false,
@@ -385,28 +311,30 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
               image: p.image,
               // Tags are content hashes, so a cached tag is always correct.
               imagePullPolicy: 'IfNotPresent',
-              workingDir: '/workspace',
+              workingDir: '/',
               env,
               volumeMounts,
-              ...(p.postStartExec || p.preStopExec ? {
-                lifecycle: {
-                  ...(p.postStartExec ? { postStart: { exec: { command: p.postStartExec } } } : {}),
-                  ...(p.preStopExec ? { preStop: { exec: { command: p.preStopExec } } } : {}),
-                },
-              } : {}),
+              lifecycle: {
+                // The generic half of in-pod setup; kubelet holds Ready
+                // until it exits.
+                postStart: { exec: { command: [`${HELPERS_DIR}/bin/yaac-workspace-init`] } },
+                // Checkpoints opencode's working copy, if the workspace
+                // runs opencode.
+                preStop: { exec: { command: [`${HELPERS_DIR}/bin/yaac-opencode-checkpoint`, 'stop'] } },
+              },
               resources: {
                 requests: {
-                  cpu: `${p.cpuRequestMillis}m`,
+                  cpu: `${String(p.cpuRequestMillis)}m`,
                   memory: String(p.memoryRequestBytes),
-                  'ephemeral-storage': String(p.ephemeralStorageRequestBytes + scratchRequest),
+                  'ephemeral-storage': String(p.ephemeralStorageRequestBytes + SCRATCH_REQUEST_BYTES),
                 },
                 limits: {
-                  // Also sets runsc's virtual CPU count (see cpuLimitMillis).
-                  cpu: `${p.cpuLimitMillis}m`,
+                  cpu: `${String(p.cpuLimitMillis)}m`,
                   memory: String(p.memoryLimitBytes),
                   // kubelet counts emptyDir volumes against this limit, so
-                  // add their sizeLimits or a big build evicts the workspace.
-                  'ephemeral-storage': String(p.ephemeralStorageLimitBytes + scratchLimit),
+                  // add the scratch volume's or a big build evicts the
+                  // workspace.
+                  'ephemeral-storage': String(p.ephemeralStorageLimitBytes + p.scratchBytes + SCRATCH_SIZELIMIT_SLACK_BYTES),
                 },
               },
             },
@@ -419,9 +347,9 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
 }
 
 /**
- * Grace period (seconds) for a pod with a preStop hook, long enough for an
- * opencode checkpoint. Teardown waits longer than this before removing the
- * pod's file-mount sources (workspaces/teardown.ts).
+ * Grace period (seconds) for the preStop hook, long enough for an opencode
+ * checkpoint. Teardown waits longer than this before removing the pod's
+ * mount sources (workspaces/teardown.ts).
  */
 export const PRE_STOP_GRACE_SECONDS = 60
 
@@ -438,7 +366,7 @@ export const TREE_FINAL_PASS_SECONDS = 30
  * The `volume-root` init container, run as root: hands each byo volume's
  * root to the pod's identity, once (docs/workspace-volumes.md). Not
  * recursive, and not `fsGroup`, which kubelet would apply to every volume
- * in the pod, the shared tier included. It runs the digest-pinned builder
+ * in the pod, the shared tier included. It runs the digest-pinned utility
  * image, never the workspace's own, which comes from an agent-editable
  * Dockerfile whose `sh` would run here as root. It declares limits like
  * every container in the pod: kubelet sets the pod cgroup's memory cap only

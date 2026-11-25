@@ -461,7 +461,7 @@ describe('yaac config project and user settings (real CLI + real server)', () =>
     const env = /\n {2}env +(.*)\n/.exec(stdout)?.[1].split(', ')
     expect(env?.sort()).toEqual(['CLIENT_SECRET (secret)', 'EMPTY', 'FOO', 'KEY_HEADER (secret)'])
     expect(stdout).toMatch(/\n {2}port-forwards +3000\n/)
-    expect(stdout).toMatch(/\n {2}scratch-dirs +node_modules \(16 GiB\), target \(16 GiB\)\n/)
+    expect(stdout).toMatch(/\n {2}scratch-dirs +node_modules, target \(32 GiB together\)\n/)
     expect(stdout).toMatch(/\n {2}workspace-auto-delete +off\n/)
     expect(stdout).toContain('Change one with `yaac config <setting>`.')
     // The settings only a cluster install has are left out.

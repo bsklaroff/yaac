@@ -25,7 +25,7 @@ afterEach(() => {
 /** A project keyed by `id-<name>`, so a test can tell the key from the
  *  displayed name, linking one repo `repo-<name>` in a folder of its name. */
 const project = (name: string, remoteUrl: string): ProjectSummary =>
-  ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl })], scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true })
+  ({ id: `id-${name}`, name, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [projectRepo({ id: `repo-${name}`, dir: name, remoteUrl })], scratchDirs: { dirs: [], sizeGiB: 32, ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true })
 
 /** Show `page` of the settings for `alpha` (and `beta`) on a containerless
  *  server, whose env routes keep `vars` in memory. */
@@ -115,50 +115,50 @@ describe('ProjectSettings', () => {
       .toEqual([{ paths: ['.env', 'data/dev.db'] }, { paths: [] }]))
   })
 
-  it('adds, resizes and removes scratch directories, and warns again about an ignored one', async () => {
+  it('adds and removes scratch directories, resizes them together, and warns again about an ignored one', async () => {
     useUiStore.setState({ activeProjectId: 'id-delta' })
     const snapshot = serverSnapshot({
       driver: 'containerless',
       projects: [{
         ...project('delta', 'https://github.com/o/delta.git'),
-        scratchDirs: { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'target', sizeGiB: 32 }], ignoredTracked: ['target'] },
+        scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], sizeGiB: 32, ignoredTracked: ['target'] },
       }],
     })
     const server = mockFetch({
       'GET /api/project/id-delta/env': { vars: [] },
-      'PUT /api/project/id-delta/scratch-dirs': { dirs: [], ignoredTracked: [] },
+      'PUT /api/project/id-delta/scratch-dirs': { dirs: [], sizeGiB: 32, ignoredTracked: [] },
     })
     renderWithClient(<ProjectSettings page="storage" />, testQueryClient(undefined, snapshot))
     const puts = (): unknown[] => server.called('PUT /api/project/id-delta/scratch-dirs').map((c) => c.body)
     const settled = (name: string): Promise<void> =>
       waitFor(() => expect(screen.getByRole<HTMLButtonElement>('button', { name }).disabled).toBe(false))
-    const node = { path: 'node_modules', sizeGiB: 8 }
+    const node = { path: 'node_modules' }
 
     fireEvent.change(screen.getByPlaceholderText('packages/web/node_modules'), { target: { value: 'web/node_modules' } })
-    fireEvent.change(screen.getByLabelText('Cap of the new directory in GiB'), { target: { value: '2' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add scratch directory' }))
-    await waitFor(() => expect(puts()).toEqual([{
-      dirs: [node, { path: 'target', sizeGiB: 32 }, { path: 'web/node_modules', sizeGiB: 2 }],
-    }]))
+    await waitFor(() => expect(puts()).toEqual([{ dirs: [node, { path: 'target' }, { path: 'web/node_modules' }] }]))
 
-    // A cap is saved once it leaves the field.
+    // The size is saved once it leaves the field, and only as a whole
+    // number in range that differs from the stored one; anything else
+    // puts the stored size back.
     await settled('Remove target')
-    const cap = screen.getByLabelText('Cap of target in GiB')
-    fireEvent.change(cap, { target: { value: '48' } })
-    fireEvent.blur(cap)
-    await waitFor(() => expect(puts().slice(1)).toEqual([{ dirs: [node, { path: 'target', sizeGiB: 48 }] }]))
-    // An emptied cap is the default again.
-    await settled('Remove target')
-    fireEvent.change(cap, { target: { value: '' } })
-    fireEvent.blur(cap)
-    await waitFor(() => expect(puts().slice(2)).toEqual([{ dirs: [node, { path: 'target' }] }]))
+    const size = screen.getByLabelText<HTMLInputElement>('What the scratch directories may hold together, in GiB')
+    expect(size.value).toBe('32')
+    for (const unsaved of ['32', '0', '1025', '1.5', '']) {
+      fireEvent.change(size, { target: { value: unsaved } })
+      fireEvent.blur(size)
+      expect(size.value).toBe('32')
+    }
+    fireEvent.change(size, { target: { value: '48' } })
+    fireEvent.blur(size)
+    await waitFor(() => expect(puts().slice(1)).toEqual([{ sizeGiB: 48 }]))
 
     await settled('Remove target')
     fireEvent.click(screen.getByRole('button', { name: 'Remove target' }))
-    await waitFor(() => expect(puts().slice(3)).toEqual([{ dirs: [node] }]))
+    await waitFor(() => expect(puts().slice(2)).toEqual([{ dirs: [node] }]))
     await settled('Warn again')
     fireEvent.click(screen.getByRole('button', { name: 'Warn again' }))
-    await waitFor(() => expect(puts().slice(4)).toEqual([{ ignoredTracked: [] }]))
+    await waitFor(() => expect(puts().slice(3)).toEqual([{ ignoredTracked: [] }]))
   })
 
   it('edits forwarded ports, cache volumes and the container options, the last two only under k8s', async () => {
@@ -498,6 +498,8 @@ describe('ProjectSettings', () => {
     await waitFor(() => expect(screen.getAllByLabelText('editor')).toHaveLength(2))
     expect(screen.queryByRole('button', { name: 'Add forwarded port' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Add cache volume' })).toBeNull()
+    expect(screen.getByText('32 GiB together')).toBeTruthy()
+    expect(screen.queryByLabelText('What the scratch directories may hold together, in GiB')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Upload files' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Rename init.lua' })).toBeNull()

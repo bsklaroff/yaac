@@ -35,7 +35,7 @@ export async function stopWorkspace(principal: Actor, idOrPrefix: string): Promi
   // Checked against what the server recorded before the substrate is
   // asked, so a non-owner is refused whatever state the workspace is in.
   const row = await findWorkspaceRow(workspaceId)
-  const recorded = listProvisioning().find((p) => p.workspaceId === workspaceId) ?? row
+  const recorded = listProvisioning().find((p) => p.workspaceId === workspaceId || p.claimedId === workspaceId) ?? row
   if (recorded) await authorizeProject(principal, recorded.projectId, 'delegate')
   if (recorded && principal.kind !== 'system' && (row === undefined || row.siteId !== undefined)) {
     await checkSiteRelease(principal, recorded.projectId, row?.siteId, workspaceId)

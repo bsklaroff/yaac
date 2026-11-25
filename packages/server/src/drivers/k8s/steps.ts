@@ -1,4 +1,4 @@
-import { unmarkClaimedJobs } from '#drivers/k8s/workspaces'
+import { reconcileHelpersGc } from '#drivers/k8s/workspaces'
 import { reconcileRegistrationGc } from '#drivers/k8s/egress'
 import { reconcileNodeSet, sweepProjectRegistries } from '#drivers/k8s/cluster'
 import { reconcileMainRegistryGc } from '#drivers/k8s/images'
@@ -25,9 +25,8 @@ export function k8sReconcileSteps(): DriverReconcileSteps {
     maintenance: [
       // Project registries an older server left (docs/legacy-compat-shims.md).
       { name: 'project-registry-sweep', triggers: [], every: 60 * 60_000, run: () => sweepProjectRegistries() },
-      // Spare labels an older server's claims left on Jobs
-      // (docs/legacy-compat-shims.md).
-      { name: 'unmark-claimed-jobs', triggers: [], run: () => unmarkClaimedJobs() },
+      // Helper folders of builds no pod mounts any more.
+      { name: 'helpers-gc', triggers: [], every: 10 * 60_000, run: () => reconcileHelpersGc() },
       // Egress registrations left behind by a teardown that never ran.
       { name: 'registration-gc', triggers: [], run: (ctx) => reconcileRegistrationGc(ctx) },
       // Main registry GC: retire superseded build caches and image

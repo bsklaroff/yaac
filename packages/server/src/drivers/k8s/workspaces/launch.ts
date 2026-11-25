@@ -1,28 +1,45 @@
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import {
-  LABEL_INSTALL_ID,
   LABEL_NPM_CACHE,
   LABEL_PREWARMED,
+  LABEL_INSTALL_ID,
   LABEL_PROJECT_ID,
   LABEL_SITE_ID,
   LABEL_WORKSPACE_ID,
   PRIORITY_CLASS_RELEASE,
+  applyObject,
+  findWorkspacePod,
   installId,
   k8sNamespace,
   k8sWorkspacePaths,
-  applyObject,
   listObjects,
-  nodeLocalDirsOf,
+  deleteObject,
+  patchObject,
+  podClaim,
   podStreamToken,
-  resolveMountSource,
+  readWorkspacePods,
+  resizePodCpu,
+  storageTierOf,
   volumeClaimName,
+  waitForJobPodReady,
   workspaceIdLabels,
   workspaceJobName,
-  type PodMount,
 } from '#drivers/k8s/substrate'
-import { PRE_STOP_GRACE_SECONDS, TREE_FINAL_PASS_SECONDS, TREE_STARTUP_SECONDS, buildPodJobManifest } from './pod-job'
-import { treeMounts, treeImage } from './tree-mounts'
+import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
+import { LIVES_DIR, START_FILE, type StartInstruction } from '@yaac/shared/tree-records'
+import { env as yaacEnv } from '@yaac/shared/env'
+import {
+  LOCAL_ROOT,
+  SCRATCH_ROOT,
+  buildPodJobManifest,
+  treeStartedMarker,
+  type ClaimMount,
+} from './pod-job'
+import { genericPodParams, newNodeMountsDir, startNodes, taken } from './spares'
 import {
   ensureUtilityImage,
+  mountdBind,
   proxyServiceClusterIp,
   runSecretsName,
   servingNpmCacheUrl,
@@ -31,29 +48,30 @@ import {
   applyProxyRegistration,
   buildProxyRegistration,
   proxyClient,
-  workspaceSshEnv,
   type ProxyRegistration,
 } from '#drivers/k8s/egress'
 import { hostMatchesPattern } from '@yaac/shared/allowed-hosts'
+import { serverLog } from '#lib/log'
 import type { SecretProxyRule, ProjectConfig } from '@yaac/shared/types'
 import type {
   RuntimeHandle,
   SubstrateIntent,
+  WorkspaceMount,
   WorkspaceSpec,
   WorkspaceSubstrate,
 } from '#drivers/contract'
 
 /**
- * How the k8s driver starts a workspace (docs/layered-server.md).
+ * How the k8s driver starts a workspace (docs/generic-workspace-pods.md).
  *
- * Two halves with different lifetimes, which makes retries safe.
- * `prepareWorkspaceSubstrate` runs once per create and sets up things the
- * workspace owns (its proxy registration). `launchWorkspace`
- * runs per attempt and applies only a Job, so a failed attempt leaves just
- * a Job to delete (`destroyWorkspace` with `unitOnly`).
- *
- * Callers pass a driver-neutral `WorkspaceSpec`; all labels, namespace,
- * manifest and priority-class details live here.
+ * `prepareWorkspaceSubstrate` runs once per create and sets up what the
+ * workspace owns (its proxy registration). `launchWorkspace` runs per
+ * attempt: it adopts the spare its start took, or applies a generic pod made
+ * on demand, so a failed attempt leaves just a Job to delete
+ * (`destroyWorkspace` with `unitOnly`). `awaitWorkspaceReady` then makes the
+ * pod its workspace's: mountd mounts and binds everything the
+ * workspace owns, and streamd's claim call sets its environment and opens
+ * its session.
  */
 
 /**
@@ -74,14 +92,6 @@ interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
    *  Job, so a prepare overlapping a long image build never leaves a
    *  registration with no pod behind it. */
   registration: ProxyRegistration
-}
-
-/** The node a workspace's pod was scheduled on, if it has one. */
-async function workspaceNode(workspaceId: string): Promise<string | undefined> {
-  const pods = await listObjects<{ spec?: { nodeName?: string } }>('v1', 'Pod', {
-    namespace: k8sNamespace(), labelSelector: `${LABEL_WORKSPACE_ID}=${workspaceId}`,
-  })
-  return pods.find((p) => p.spec?.nodeName !== undefined)?.spec?.nodeName
 }
 
 function narrow(substrate: WorkspaceSubstrate): K8sWorkspaceSubstrate {
@@ -173,161 +183,183 @@ export function npmCacheApplies(
   return allowed && !authenticated
 }
 
-/**
- * Apply the workspace's Job and return a handle for it.
- *
- * Adds what the caller cannot name: stream token, CA trust, and SSH
- * transport. The spec's env and
- * mounts are copied, not appended to, because the same spec is relaunched
- * after a failed attempt.
- *
- * The handle is built from the values just written; the pod does not exist
- * yet (`awaitReady` waits for it).
- */
-/** Jobs whose pod fills a tree before it is ready, which a restore of a
- *  large repository can take minutes to do. */
-const treeJobs = new Set<string>()
-const READY_TIMEOUT_MS = 180_000
-const TREE_READY_TIMEOUT_MS = TREE_STARTUP_SECONDS * 1000
-
-/** How long `awaitReady` waits for a job's pod. */
-export function readyTimeoutMs(jobName: string): number {
-  return treeJobs.has(jobName) ? TREE_READY_TIMEOUT_MS : READY_TIMEOUT_MS
+/** The node a workspace's pod was scheduled on, if it has one. */
+async function workspaceNode(workspaceId: string): Promise<string | undefined> {
+  const pods = await listObjects<{ spec?: { nodeName?: string } }>('v1', 'Pod', {
+    namespace: k8sNamespace(), labelSelector: `${LABEL_WORKSPACE_ID}=${workspaceId}`,
+  })
+  return pods.find((p) => p.spec?.nodeName !== undefined)?.spec?.nodeName
 }
 
-export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandle> {
-  const substrate = narrow(spec.substrate)
-  const jobName = workspaceJobName(spec.workspaceId)
-  // The contract makes `image` optional for runtimes that run none; here a
-  // missing one means the create chose no image, a wiring bug.
-  if (!spec.image) {
-    throw new Error(`launch ${jobName}: no image on the spec`)
-  }
-  const image = spec.image
+/**
+ * What a pod is told when it becomes its workspace's: streamd's `claim`
+ * request (dockerfiles/streamd/claim.js). The caller's variables go into
+ * the tmux server's environment, so every window inherits them and no
+ * object in the cluster holds them; the identity, trusted checkouts, cwd
+ * and status line are read from them, as the containerless driver does.
+ */
+interface ClaimRequest {
+  env: Record<string, string>
+  git: { name: string; email: string; safeDirectories: string[] }
+  npmRegistry?: string
+  cwd: string
+  statusRight: string
+}
 
-  const env = [...spec.env]
-  // Only CA trust: interception is transparent, so no HTTP(S)_PROXY vars.
-  env.push(...proxyClient.getCaTrustEnv())
-  env.push(`YAAC_STREAM_TOKEN=${substrate.streamToken}`)
+function claimRequest(spec: WorkspaceSpec, substrate: K8sWorkspaceSubstrate): ClaimRequest {
+  const { workspaceDir } = k8sWorkspacePaths()
+  const vars: Record<string, string> = {}
+  for (const entry of spec.env) {
+    const eq = entry.indexOf('=')
+    if (eq > 0) vars[entry.slice(0, eq)] = entry.slice(eq + 1)
+  }
   // One pnpm store per workspace: pnpm indexes the store in a SQLite WAL
   // database, which cannot be shared across pods. Put it inside the root
   // node_modules when that is a scratch dir, so pnpm hardlinks rather than
   // copies; otherwise on the pod's own disk. Set under both names: pnpm 11+
   // reads only `pnpm_config_` for this key, pnpm 10 only `npm_config_`.
-  const rootModules = `${k8sWorkspacePaths().workspaceDir}/node_modules`
-  const store = spec.scratchDirs.some((d) => d.path === rootModules)
+  const rootModules = `${workspaceDir}/node_modules`
+  const store = spec.scratchDirs.includes(rootModules)
     ? `${rootModules}/.pnpm-store`
     : '/home/yaac/.local/share/pnpm/store'
-  env.push(`pnpm_config_store_dir=${store}`, `npm_config_store_dir=${store}`)
-  // The init script writes this into the user-level `~/.npmrc`, not env,
-  // because env would override a registry named in the project's `.npmrc`.
-  if (substrate.npmRegistry) env.push(`YAAC_NPM_REGISTRY=${substrate.npmRegistry}`)
+  vars.pnpm_config_store_dir = store
+  vars.npm_config_store_dir = store
+  return {
+    env: vars,
+    git: {
+      name: vars.YAAC_GIT_NAME ?? '',
+      email: vars.YAAC_GIT_EMAIL ?? '',
+      safeDirectories: (vars.YAAC_CHECKOUTS ?? '').split(':').filter((c) => c !== '')
+        .map((c) => (c === '.' ? workspaceDir : `${workspaceDir}/${c}`)),
+    },
+    ...(substrate.npmRegistry ? { npmRegistry: substrate.npmRegistry } : {}),
+    cwd: spec.cwd === '' ? workspaceDir : `${workspaceDir}/${spec.cwd}`,
+    statusRight: vars.YAAC_STATUS_RIGHT ?? '',
+  }
+}
 
-  // The proxy ends ssh sessions to the project's git hosts and checks their
-  // host keys itself, so the workspace needs neither `spec.ssh`'s file nor
-  // a key: only an ssh that reaches the proxy and trusts it.
-  if (spec.ssh) env.push(...workspaceSshEnv())
-  // Where the init script starts the keeper tmux session, relative to the
-  // workspace dir.
-  env.push(`YAAC_CWD=${spec.cwd}`)
-  // A tree on the node is the workspace root, with each checkout's git dir
-  // from the shared tier mounted into it.
-  const tree = spec.tree ? treeMounts(spec.tree) : undefined
-  // Map each declared host path to its cluster source (a subPath of the
-  // global claim, or the node's tree); see mount-sources.ts.
-  const mounts = [...(tree?.workspace ?? []), ...spec.mounts].map(resolveMountSource)
-  const sidecarMounts = tree?.container.map(resolveMountSource) ?? []
-  // The tree container chowns each node-local folder as root, and kubelet
-  // follows a link in a mount source. One inside a folder a workspace
-  // writes could be a link its agent planted, naming any folder on the node.
-  const nodeDirs = nodeLocalDirsOf([...mounts, ...sidecarMounts])
-  const nested = nodeDirs.find((dir) => nodeDirs.some((other) => dir.startsWith(`${other}/`)))
-  if (nested !== undefined) {
-    throw new Error(`launch ${jobName}: node-local mount ${nested} is inside another the pod mounts`)
-  }
-  // kubelet makes a missing node-local folder as root, so the tree
-  // container also mounts those only the workspace container uses
-  // (opencode's working copy), to hand them to the install uid.
-  const ownMounts = nodeLocalDirsOf(mounts)
-    .filter((dir) => !sidecarMounts.some((m) => m.source.kind === 'hostPath' && m.source.path === dir))
-    .map((dir, i): PodMount => ({ source: { kind: 'hostPath', path: dir, type: 'DirectoryOrCreate' }, mountPath: `/own/${String(i)}` }))
-  if (ownMounts.length > 0 && !tree) {
-    throw new Error(`launch ${jobName}: node-local mounts with no tree container to hand them to the install uid`)
-  }
+/** A launched Job, until its pod is its workspace's. */
+interface Launch {
+  spec: WorkspaceSpec
+  claim: ClaimRequest
+  nodeMountsDir: string
+}
+
+const launches = new Map<string, Launch>()
+/** How long a launched pod may take to be ready. */
+const READY_TIMEOUT_MS = 180_000
+/** How long a claim waits for its tree container: a restore of a large
+ *  repository the agent cloned can take hours. */
+const RESTORE_WAIT_MS = 4 * 60 * 60_000
+const FILL_WAIT_MS = 10 * 60_000
+/** Between looks for a life's start instruction, written on the shared
+ *  tier once every checkout's `.git` exists. */
+const START_POLL_MS = 50
+
+/** A byo volume's own claim among the spec's mounts: kubelet must attach
+ *  it, so it stays in the pod's spec, and the pod is made on demand. */
+function claimMountsOf(spec: WorkspaceSpec): ClaimMount[] {
+  if (yaacEnv.volumeStorageClass === undefined) return []
+  return spec.mounts.flatMap((m) => (m.source.kind === 'volume'
+    ? [{ claimName: volumeClaimName(m.source.volumeId), mountPath: m.mountPath }]
+    : []))
+}
+
+/**
+ * Launch the workspace's pod and return a handle for it: the spare its
+ * start took, given its project label now that its row exists, or a pod
+ * made on demand. The egress registration is written by then, so the pod
+ * never runs as the workspace without it.
+ */
+export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandle> {
+  const substrate = narrow(spec.substrate)
+  const jobName = workspaceJobName(spec.workspaceId)
+  // The contract makes `image` optional for runtimes that run none; here a
+  // missing one means the create chose no image, a wiring bug.
+  if (!spec.image) throw new Error(`launch ${jobName}: no image on the spec`)
+  const claim = claimRequest(spec, substrate)
+  // A run secret is the pod's own variable, which tmux's would hide.
+  const shadowed = spec.runSecrets?.find((name) => name in claim.env)
+  if (shadowed !== undefined) throw new Error(`run secret ${shadowed} shares its name with another variable`)
 
   const labels: Record<string, string> = {
     [LABEL_PROJECT_ID]: spec.projectId,
     ...workspaceIdLabels(spec.workspaceId),
     [LABEL_INSTALL_ID]: installId(),
-    // Removed on claim, turning the spare into a normal workspace.
-    ...(spec.prewarm ? { [LABEL_PREWARMED]: 'true' } : {}),
     // Both of the npm cache's workspace policies select on this.
     ...(substrate.npmCacheAllowed ? { [LABEL_NPM_CACHE]: 'true' } : {}),
     // A site's release: its ingress policy admits the router, the router
     // may dial it, and the proxy refuses its calls to the server.
     ...(spec.siteId !== undefined ? { [LABEL_SITE_ID]: spec.siteId } : {}),
   }
-  // A claim (byo) may attach on one node only, and during a deploy's
-  // handoff both releases mount it (docs/public-sites.md).
-  // A holder not scheduled yet could still land elsewhere, so the launch is
-  // refused rather than left to hang on the attach.
-  const volumeClaim = mounts.some((m) => m.source.kind === 'pvc' && m.source.claimName.startsWith(volumeClaimName('')))
-  let nodeName: string | undefined
-  if (spec.colocateWith !== undefined && volumeClaim) {
-    nodeName = await workspaceNode(spec.colocateWith)
-    if (nodeName === undefined) {
-      throw new Error(`workspace ${spec.colocateWith.slice(0, 8)}, which holds the volume, is not on a node yet; deploy again once it is`)
-    }
+  const claimMounts = claimMountsOf(spec)
+  let spare = taken.get(jobName)
+  // Run secrets, a byo volume's claim and a release's priority live in the
+  // pod's spec, which a spare cannot take on, and an image built since the
+  // take is not the spare's: the spare goes, and the pod is made on demand
+  // under the same name. Its pod is waited out too, or the pool would see
+  // it as an orphan of this id and reap the new Job.
+  if (spare !== undefined && (spare.image !== spec.image
+    || (spec.runSecrets?.length ?? 0) > 0 || claimMounts.length > 0 || spec.siteId !== undefined)) {
+    const { podName } = spare
+    spare = undefined
+    await Promise.all([
+      deleteObject({ apiVersion: 'batch/v1', kind: 'Job', name: jobName, namespace: k8sNamespace() }, { wait: true, gracePeriodSeconds: 0 }),
+      deleteObject({ apiVersion: 'v1', kind: 'Pod', name: podName, namespace: k8sNamespace() }, { wait: true, gracePeriodSeconds: 0 }),
+    ])
+    taken.delete(jobName)
   }
-
-  const manifest = buildPodJobManifest({
-    jobName,
-    namespace: k8sNamespace(),
-    labels,
-    image,
-    env,
-    ...(spec.runSecrets !== undefined ? { secretEnv: { secretName: runSecretsName(spec.projectId), names: spec.runSecrets } } : {}),
-    mounts,
-    memoryRequestBytes: spec.resources.memoryRequestBytes,
-    memoryLimitBytes: spec.resources.memoryLimitBytes,
-    cpuRequestMillis: spec.resources.cpuRequestMillis,
-    cpuLimitMillis: spec.resources.cpuLimitMillis,
-    ephemeralStorageRequestBytes: spec.resources.ephemeralStorageRequestBytes,
-    ephemeralStorageLimitBytes: spec.resources.ephemeralStorageLimitBytes,
-    proxyHost: substrate.proxyHost,
-    scratchDirs: spec.scratchDirs,
-    // In-pod setup (git identity, tmux, streamd) runs as postStart, so
-    // kubelet holds Ready until it finishes.
-    postStartExec: spec.postStartExec,
-    // preStop runs within the grace period, so size it for the hook, and
-    // the tree container's final pass, which spends the same budget.
-    ...(spec.preStopExec ? { preStopExec: spec.preStopExec } : {}),
-    ...(spec.preStopExec || tree
-      ? { terminationGracePeriodSeconds: (spec.preStopExec ? PRE_STOP_GRACE_SECONDS : 0) + (tree ? TREE_FINAL_PASS_SECONDS : 0) }
-      : {}),
-    ...(spec.tree
-      ? {
-        treeContainer: {
-          image: await treeImage(),
-          life: spec.tree.life,
-          mounts: [...sidecarMounts, ...ownMounts],
-          own: ownMounts.map((m) => m.mountPath),
-        },
+  let nodeMountsDir: string
+  if (spare !== undefined) {
+    nodeMountsDir = spare.nodeMountsDir
+    const pod = { apiVersion: 'v1', kind: 'Pod', name: spare.podName, namespace: k8sNamespace() }
+    // Nothing in a spare reaches out until its claim call, so the
+    // registration is written beside its labels.
+    await Promise.all([
+      applyProxyRegistration(spec.workspaceId, substrate.registration),
+      patchObject(pod, { metadata: { labels } }),
+      // The take removed the pod's spare label; the Job's goes here.
+      patchObject({ apiVersion: 'batch/v1', kind: 'Job', name: jobName, namespace: k8sNamespace() }, { metadata: { labels: { ...labels, [LABEL_PREWARMED]: null } } }),
+      // A workspace's share of a busy node; the spare idled on less. A
+      // failure leaves it working on the spare's.
+      resizePodCpu(pod, 'workspace', spec.resources.cpuRequestMillis).catch((err: unknown) => {
+        serverLog(`[workspace] ${spec.workspaceId}: raising its CPU request failed: ${String(err)}`)
+      }),
+    ])
+    taken.delete(jobName)
+  } else {
+    await applyProxyRegistration(spec.workspaceId, substrate.registration)
+    nodeMountsDir = newNodeMountsDir(spec.workspaceId)
+    // A claim (byo) may attach on one node only, and during a deploy's
+    // handoff both releases mount it (docs/public-sites.md). A holder not
+    // scheduled yet could still land elsewhere, so the launch is refused
+    // rather than left to hang on the attach.
+    let only: string | undefined
+    if (spec.colocateWith !== undefined && claimMounts.length > 0) {
+      only = await workspaceNode(spec.colocateWith)
+      if (only === undefined) {
+        throw new Error(`workspace ${spec.colocateWith.slice(0, 8)}, which holds the volume, is not on a node yet; deploy again once it is`)
       }
-      : {}),
-    ...(volumeClaim ? { utilityImage: await ensureUtilityImage() } : {}),
-    ...(spec.siteId !== undefined ? { priorityClassName: PRIORITY_CLASS_RELEASE } : {}),
-    ...(nodeName !== undefined ? { nodeName } : {}),
-  })
-
-  if (spec.tree) treeJobs.add(jobName)
-  else treeJobs.delete(jobName)
-  spec.onProgress?.(`Creating workspace job ${jobName}...`)
-
-  // Idempotent, so a relaunch rewrites the same object.
-  await applyProxyRegistration(spec.workspaceId, substrate.registration)
-  await applyObject(manifest)
-
+    }
+    const params = await genericPodParams({
+      workspaceId: spec.workspaceId,
+      image: spec.image,
+      scratchBytes: spec.scratchBytes,
+      resources: spec.resources,
+      nodeMountsDir,
+      labels,
+      nodes: await startNodes(only),
+      tree: spec.tree !== undefined,
+    })
+    spec.onProgress?.(`Creating workspace job ${jobName}...`)
+    await applyObject(buildPodJobManifest({
+      ...params,
+      ...(spec.runSecrets !== undefined ? { secretEnv: { secretName: runSecretsName(spec.projectId), names: spec.runSecrets } } : {}),
+      ...(claimMounts.length > 0 ? { claimMounts, utilityImage: await ensureUtilityImage() } : {}),
+      ...(spec.siteId !== undefined ? { priorityClassName: PRIORITY_CLASS_RELEASE } : {}),
+    }))
+  }
+  launches.set(jobName, { spec, claim, nodeMountsDir })
   return {
     workspaceId: spec.workspaceId,
     projectId: spec.projectId,
@@ -337,8 +369,143 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     state: 'pending',
     labels,
     createdAtMs: Date.now(),
-    prewarmed: spec.prewarm,
     terminating: false,
     deathCause: { reason: 'pod-stopped' },
+  }
+}
+
+/** A life's start instruction, once the domain has written it. */
+async function awaitStartInstruction(spec: WorkspaceSpec, deadline: number): Promise<StartInstruction> {
+  const tree = spec.tree
+  if (tree === undefined) throw new Error('a life with no tree has no start instruction')
+  const file = path.join(tree.checkpointsDir, LIVES_DIR, tree.life, START_FILE)
+  for (;;) {
+    const text = await fs.readFile(file, 'utf8').catch(() => null)
+    if (text !== null) {
+      try {
+        const start = JSON.parse(text) as StartInstruction
+        if (start.life === tree.life && Array.isArray(start.checkouts)) return start
+      } catch { /* written partway: read again */ }
+    }
+    if (Date.now() > deadline) throw new Error(`no start instruction for life ${tree.life} after ${String(FILL_WAIT_MS / 60_000)} minutes`)
+    await new Promise((r) => setTimeout(r, START_POLL_MS))
+  }
+}
+
+/** One mount of a bind request (k8s/mountd/cmd/mountd/mountd.go `bindMount`). */
+interface BindMount {
+  tier: string
+  path: string
+  workspace?: string
+  tree?: string
+  readOnly?: boolean
+}
+
+/**
+ * mountd's request for one pod (k8s/mountd/cmd/mountd/mountd.go
+ * `bindRequest`): the trees to take or build, the node-local folders to
+ * make, and every mount, in order, each with where the workspace container
+ * and the tree container see it.
+ */
+export function bindRequest(args: {
+  spec: WorkspaceSpec
+  start: StartInstruction | undefined
+  podName: string
+  nodeMountsDir: string
+}): Record<string, unknown> {
+  const { spec, start } = args
+  const root = k8sWorkspacePaths().workspaceDir
+  const mounts: BindMount[] = []
+  const dirs: string[] = []
+  const folders: Array<{ from: 'scratch' | 'local'; target: string }> = []
+  const rel = (p: string): string => storageTierOf({ kind: 'hostPath', path: p }).path
+  const add = (source: WorkspaceMount['source'], targets: { workspace?: string; tree?: string }, readOnly = false): void => {
+    const { tier, path: at } = storageTierOf(source)
+    if (tier === 'node') dirs.push(at)
+    const same = mounts.find((m) => m.tier === tier && m.path === at && (m.readOnly ?? false) === readOnly
+      && (targets.workspace === undefined || m.workspace === undefined) && (targets.tree === undefined || m.tree === undefined))
+    if (same !== undefined) {
+      if (targets.workspace !== undefined) same.workspace = targets.workspace
+      if (targets.tree !== undefined) same.tree = targets.tree
+      return
+    }
+    mounts.push({ tier, path: at, ...targets, ...(readOnly ? { readOnly } : {}) })
+  }
+  const trees: Array<Record<string, string>> = []
+  const tree = spec.tree
+  if (tree !== undefined && start !== undefined) {
+    const treeDir = path.posix.join(tree.lifeDir, 'tree')
+    const scratch = path.posix.join(tree.lifeDir, 'scratch')
+    // Outermost first: a checkout in a folder is moved into the tree a
+    // checkout at the root already made.
+    for (const c of [...start.checkouts].sort((a, b) => a.path.split('/').length - b.path.split('/').length || a.path.length - b.path.length)) {
+      trees.push({
+        repo: c.id,
+        commit: c.commit,
+        dest: rel(path.posix.join(treeDir, c.path)),
+        index: rel(path.posix.join(scratch, 'arborist', `${c.id}.index`)),
+      })
+    }
+    add({ kind: 'hostPath', path: treeDir }, { workspace: root, tree: '/tree' })
+    add({ kind: 'hostPath', path: scratch }, { tree: '/scratch' })
+    add({ kind: 'hostPath', path: tree.checkpointsDir }, { tree: '/ckpt' })
+    for (const c of tree.checkouts) {
+      add({ kind: 'hostPath', path: c.gitDir }, { workspace: path.posix.join(root, c.path, '.git'), tree: `/git/${c.id}` })
+      dirs.push(rel(path.posix.join(treeDir, c.path, '.git')))
+    }
+    for (const m of tree.mainClones) add({ kind: 'hostPath', path: m }, { workspace: m, tree: m }, true)
+    // The folders the workspace container mounts over inside the tree.
+    for (const p of start.excluded) dirs.push(rel(path.posix.join(treeDir, p)))
+  }
+  for (const m of spec.mounts) {
+    if (m.source.kind === 'emptyDir') {
+      if (m.mountPath !== CONTAINER_TMUX_DIR) folders.push({ from: 'local', target: m.mountPath })
+      continue
+    }
+    if (m.source.kind === 'volume' && yaacEnv.volumeStorageClass !== undefined) continue
+    add(m.source, { workspace: m.mountPath }, m.readOnly === true)
+  }
+  for (const d of spec.scratchDirs) folders.push({ from: 'scratch', target: d })
+  return {
+    pod: args.podName,
+    workspaceId: spec.workspaceId,
+    dir: args.nodeMountsDir,
+    life: tree?.life ?? 'none',
+    trees,
+    dirs: [...new Set(dirs)],
+    mounts,
+    folders,
+    roots: { scratch: SCRATCH_ROOT, local: LOCAL_ROOT },
+  }
+}
+
+/**
+ * Wait for a launched workspace's pod to be ready, then make it its
+ * workspace's: once the life's start instruction names each checkout's
+ * commit, mountd takes or builds its trees and mounts and binds
+ * what the workspace owns, and streamd's claim call, which first waits for
+ * the tree container to report the files ready, sets the environment and
+ * opens the session.
+ */
+export async function awaitWorkspaceReady(handle: RuntimeHandle): Promise<void> {
+  const launch = launches.get(handle.jobName)
+  try {
+    await waitForJobPodReady(handle.jobName, READY_TIMEOUT_MS)
+    if (launch === undefined) return
+    const { spec } = launch
+    const pod = findWorkspacePod(await readWorkspacePods(), spec.workspaceId)
+    if (pod?.node === undefined) throw new Error(`workspace ${spec.workspaceId}'s pod is not on a node`)
+    const wait = spec.tree?.restoring === true ? RESTORE_WAIT_MS : FILL_WAIT_MS
+    const start = spec.tree !== undefined ? await awaitStartInstruction(spec, Date.now() + FILL_WAIT_MS) : undefined
+    await mountdBind(pod.node, {
+      token: `${handle.jobName}:${launch.nodeMountsDir}`,
+      ...bindRequest({ spec, start, podName: pod.podName, nodeMountsDir: launch.nodeMountsDir }),
+    })
+    await podClaim(handle.jobName, {
+      ...launch.claim,
+      ...(spec.tree !== undefined ? { startedMarker: treeStartedMarker(spec.tree.life), waitMs: wait } : {}),
+    }, { timeoutMs: wait + 60_000 })
+  } finally {
+    launches.delete(handle.jobName)
   }
 }

@@ -62,11 +62,9 @@ describe('refreshRepoOrigins', () => {
     // No running workspace has the other repo.
     expect(await tip(repoDir(IDLE_REPO), 'origin/main')).not.toBe(await tip(source, 'main'))
 
-    // Fetched moments ago, so the next pass skips it. A spare's checkouts
-    // are not rows, so a spare alone fetches nothing either.
+    // Fetched moments ago, so the next pass skips it.
     await commit('too soon')
     await refreshRepoOrigins(snapshotFixture([running]))
-    await refreshRepoOrigins(snapshotFixture([handleFixture({ workspaceId: 'spare', projectId: PROJECT_ID, prewarmed: true })]))
     await new Promise((r) => setTimeout(r, 300))
     expect(await tip(repoDir(REPO_ID), 'origin/main')).not.toBe(await tip(source, 'main'))
   })

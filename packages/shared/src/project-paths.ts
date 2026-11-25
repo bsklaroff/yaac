@@ -54,6 +54,8 @@ export const DOCKERFILES_DIR = path.join(PACKAGE_ROOT, 'dockerfiles')
 export const PROXY_DIR = path.join(PACKAGE_ROOT, 'k8s', 'proxy')
 /** Build context of the per-node network daemon (see k8s/netd/netd.ts). */
 export const NETD_DIR = path.join(PACKAGE_ROOT, 'k8s', 'netd')
+/** Build context of mountd, the arborist and sandbox-bind (see k8s/mountd/Dockerfile). */
+export const MOUNTD_DIR = path.join(PACKAGE_ROOT, 'k8s', 'mountd')
 /** Build context of the sandboxed builder pods' BuildKit image (see k8s/buildkit/Dockerfile). */
 export const BUILDKIT_DIR = path.join(PACKAGE_ROOT, 'k8s', 'buildkit')
 /** Build context of the tailnet site tunnel's gateway (see k8s/tailgate/main.ts). */

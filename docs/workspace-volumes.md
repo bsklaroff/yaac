@@ -20,7 +20,7 @@ A volume is stored the way the install's own claims are
 
 | | kind | byo |
 |---|---|---|
-| Backing | the subPath `<volume id>` of the `yaac-volumes` claim | its own claim `yaac-volume-<volume id>`, from the install's RWO class |
+| Backing | the folder `<volume id>` of the `yaac-volumes` claim | its own claim `yaac-volume-<volume id>`, from the install's RWO class |
 | Bytes | `<dataDir>/volumes/<volume id>` on the host | a disk the class provisions |
 | Size | not enforced | the claim's request |
 | Namespace delete | survives, and the next install re-binds it | survives (the PV is `Retain`) and is re-bound at the next attach |
@@ -32,7 +32,8 @@ rather than inside `global/`, so nothing that sweeps or backs up the global
 tier takes app data. Install makes a fourth static claim for the directory,
 `yaac-volumes`, backed by a `Retain` hostPath PV. The server mounts it at
 `/yaac/volumes` (`YAAC_VOLUMES_ROOT`), so it creates and removes volume
-directories itself, and a pod mounts its volume's directory as a subPath.
+directories itself, and mountd binds a volume's directory into its
+pod at the claim (docs/generic-workspace-pods.md).
 The disk is local, so SQLite is safe there.
 
 **byo.** The global tier is NFS, which cannot host a database, so each volume
@@ -94,8 +95,8 @@ mounted, and `workspaces.volumeId` is the volume a workspace was last
 launched with, kept while it is stopped. A volume can have no holder while
 several stopped workspaces name it; whichever restarts first gets it.
 
-The lease, not Kubernetes, keeps a volume to one pod. A subPath has no access
-mode, ReadWriteOnce lets two pods on one node share a claim, and
+The lease, not Kubernetes, keeps a volume to one pod. A bound folder has no
+access mode, ReadWriteOnce lets two pods on one node share a claim, and
 ReadWriteOncePod works only with CSI drivers. The lease also answers before
 anything launches, where a second pod would otherwise sit Pending unexplained.
 
@@ -112,7 +113,8 @@ itself is taken just before launch (`attachVolume`) by a conditional update,
 so two launches never both win. A holder found gone (no unit, not even one
 shutting down or a Job whose pod is not created yet, and nothing creating or
 tearing it down) is taken over. A create that names a volume never takes a
-prewarmed spare, whose mounts were fixed when it launched.
+prewarmed spare: its pod is made on demand, since a byo volume's claim has
+to be in the pod's spec for kubelet to attach it.
 
 **Release** happens only once the holder's pod is gone, so the next holder
 never shares a directory or disk with a pod still shutting down. The

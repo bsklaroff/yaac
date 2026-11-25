@@ -44,7 +44,7 @@ export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
 
 /**
  * Point this process's k8s helpers at the test namespace and at the netd
- * image the global setup built, as a server spawned with
+ * and mountd images the global setup built, as a server spawned with
  * `createYaacTestEnv().env` is. Without the image, a proxy started in
  * process would look for the install's own `yaac-netd`, which a rig has
  * only when its install matches this checkout. Returns a restore function.
@@ -52,9 +52,14 @@ export const TEST_NAMESPACE = `yaac-test-${TEST_RUN_ID}`
  * the variables that differ from this process's.
  */
 export function useTestNamespace(): () => void {
-  const prev = { YAAC_K8S_NAMESPACE: process.env.YAAC_K8S_NAMESPACE, YAAC_NETD_IMAGE: process.env.YAAC_NETD_IMAGE }
+  const prev = {
+    YAAC_K8S_NAMESPACE: process.env.YAAC_K8S_NAMESPACE,
+    YAAC_NETD_IMAGE: process.env.YAAC_NETD_IMAGE,
+    YAAC_MOUNTD_IMAGE: process.env.YAAC_MOUNTD_IMAGE,
+  }
   process.env.YAAC_K8S_NAMESPACE = TEST_NAMESPACE
   process.env.YAAC_NETD_IMAGE = `${TEST_IMAGE_PREFIX}-netd`
+  process.env.YAAC_MOUNTD_IMAGE = `${TEST_IMAGE_PREFIX}-mountd`
   return () => {
     for (const [name, value] of Object.entries(prev)) {
       if (value === undefined) delete process.env[name]

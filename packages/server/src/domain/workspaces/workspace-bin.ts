@@ -2,25 +2,21 @@
  * In-workspace helper commands: the `workspace-bin/*` scripts shipped with
  * yaac (setup hook, yaac-mama, PR-watch and agent reporter hooks).
  *
- * Like the builtin skills (#domain/skills), they are copied per workspace
- * into a staging dir (`stageWorkspaceBin`) and each is mounted read-only at
- * `/usr/local/bin/<name>`, so they match the installed yaac version and the
- * workspace cannot modify them. Containerless symlinks them into the
- * workspace's bin dir instead, so callers refer to them by bare name.
+ * A pod gets them from its server build's folder (`stageHelpers`), each
+ * mounted read-only at `/usr/local/bin/<name>`, so they match the yaac
+ * version that started it and the workspace cannot modify them.
+ * Containerless copies them per workspace (`stageWorkspaceBin`) and
+ * symlinks them into the workspace's bin dir, so callers refer to them by
+ * bare name.
  */
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
+import { globalPath } from '@yaac/shared/paths'
+import { readBuildId } from '@yaac/shared/build-id'
+import { builtinSkillsDir, stageBuiltinSkills } from '#domain/skills'
 import type { WorkspaceMount } from '#drivers/contract'
-
-/** The in-workspace setup script (git identity, tmux, streamd), which a
- *  workspace runs once it starts. */
-export const WORKSPACE_INIT_SCRIPT = 'yaac-workspace-init'
-
-/** The opencode checkpoint script: the pod's `preStop` hook (with `stop`)
- *  and the timer the init script starts. */
-export const OPENCODE_CHECKPOINT_SCRIPT = 'yaac-opencode-checkpoint'
 
 let sourceDirOverride: string | null = null
 
@@ -65,4 +61,51 @@ export function workspaceBinMounts(stagingDir: string, names: string[]): Workspa
     mountPath: `/usr/local/bin/${name}`,
     readOnly: true,
   }))
+}
+
+/** What `stageHelpers` staged: its folder and what is in it. */
+export interface StagedHelpers {
+  binDir: string
+  binNames: string[]
+  skillsDir: string
+  skillNames: string[]
+}
+
+let staged: Promise<StagedHelpers> | undefined
+
+/** Test helper: stage again on the next call, for a new data dir. */
+export function clearStagedHelpersForTests(): void {
+  staged = undefined
+}
+
+/**
+ * Stage this server build's helper commands and bundled skills once, in a
+ * folder of the shared tier named for the build (`run/helpers/<build>`),
+ * which every pod the build makes mounts read-only from its creation, a
+ * spare included (docs/generic-workspace-pods.md "The pod"). Running
+ * workspaces keep mounting the folder of the build that made them, so it
+ * is written once and never changed.
+ */
+export function stageHelpers(): Promise<StagedHelpers> {
+  staged ??= (async () => {
+    const build = await readBuildId().catch(() => 'unbuilt')
+    const dir = globalPath('run', 'helpers', build)
+    const done = path.join(dir, '.staged')
+    const binDir = path.join(dir, 'bin')
+    const skillsDir = path.join(dir, 'skills')
+    if (!await fs.access(done).then(() => true, () => false)) {
+      const tmp = `${dir}.tmp-${String(process.pid)}`
+      await fs.rm(tmp, { recursive: true, force: true })
+      await stageWorkspaceBin(workspaceBinDir(), path.join(tmp, 'bin'))
+      await stageBuiltinSkills(builtinSkillsDir(), path.join(tmp, 'skills'))
+      await fs.writeFile(path.join(tmp, '.staged'), '')
+      await fs.rm(dir, { recursive: true, force: true })
+      await fs.rename(tmp, dir)
+    }
+    const names = async (d: string, files: boolean): Promise<string[]> => (await fs.readdir(d, { withFileTypes: true }))
+      .filter((e) => !e.name.startsWith('.') && (files ? e.isFile() : e.isDirectory())).map((e) => e.name).sort()
+    return { binDir, binNames: await names(binDir, true), skillsDir, skillNames: await names(skillsDir, false) }
+  })()
+  staged.catch(() => { staged = undefined })
+  return staged
 }

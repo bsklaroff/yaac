@@ -258,11 +258,9 @@ leaves out `registry.npmjs.org`, or its project authenticates to npmjs through
 a proxied secret. Without the label, the pod can neither reach the cache nor is
 configured to use it; its pnpm uses npmjs through the proxy like any other host.
 
-A prewarmed spare is re-checked when it is claimed. If its project's current
-config no longer allows the cache, the claim removes the cache from its
-`~/.npmrc` and removes the label, so a narrowed allowlist takes effect for new
-connections. The reverse is not re-checked: a spare warmed without the label
-stays on npmjs, which is only slower.
+A prewarmed spare has neither the label nor a registration until a launch
+takes it, so it is decided at the launch like any pod
+(docs/generic-workspace-pods.md).
 
 ## What the proxy is told, and how
 
@@ -288,8 +286,8 @@ write-back, and the git tokens and ssh keys with their grants. A
 workspace never spends another owner's credential, even one assigned to a
 project of the same id, and a registration naming an owner the Secret lacks
 gets nothing swapped. The server decides the owner and hands it to the
-driver on the launch intent and the claim's registration: a workspace
-spends its project owner's credentials. A user's key is their user id,
+driver on the launch intent: a workspace spends its project owner's
+credentials. A user's key is their user id,
 except the built-in user's, which is `install`
 (`credentialOwnerKey` in `#domain/auth`). The server pushes one bundle per
 user who has a tool sign-in or a git credential some project uses.
@@ -306,12 +304,11 @@ Inputs carry the label `yaac.proxy-input=<kind>` and outputs
   and once per server start, so the objects always converge on the store.
 - A project's secret values are rewritten when one of its secrets is edited,
   and deleted with the project.
-- A registration is written before the workspace's Job, after `ensureRunning`
-  (so a create never registers against a proxy that cannot see it). It is
-  rewritten to widen it (the webapp's allow-host click, applied to all of the
-  project's registrations by label) and rewritten whole when a prewarmed spare
-  is claimed, from the project's current config, so edits since warm-up apply
-  as they would to a cold create. It is deleted at teardown, and swept once its
+- A registration is written at launch, before the workspace's Job is
+  applied or a taken spare is labelled, after `ensureRunning` (so a create
+  never registers against a proxy that cannot see it). It is rewritten to
+  widen it (the webapp's allow-host click, applied to all of the project's
+  registrations by label). It is deleted at teardown, and swept once its
   workspace is gone and it is an hour old.
 
 **When a registration changes**, the proxy re-checks the workspace's open
@@ -319,10 +316,7 @@ tunnels and in-flight plain-HTTP requests (it checks the allowlist and picks
 injection rules only once per tunnel or request). A connection whose host is no
 longer allowed, or whose rules, redirect or exact entry (which alone admits
 a non-public address) changed, is dropped and reconnects under the new
-registration. Others stay up, so widening drops little, while a
-warm-time process holding a tunnel across a narrowing claim loses it. The npm
-cache is the exception: its policy keeps an established flow after the label is
-removed, and that flow only brings npm content in.
+registration. Others stay up, so widening drops little.
 
 **Proxy start and outputs.** The proxy restores itself from its informers'
 initial lists, and its readiness probe keeps it out of its Service until they

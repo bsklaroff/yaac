@@ -32,7 +32,6 @@ export {
   addPortForward,
   cacheVolumesSchema,
   portForwardsSchema,
-  resolveProjectConfig,
   updateProjectConfig,
 } from './config'
 export { importProjectConfigFiles } from './config-import'

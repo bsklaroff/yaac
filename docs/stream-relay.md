@@ -14,9 +14,9 @@ path especially slow.
 Workspace setup uses the relay too. The pod's postStart hook
 (`workspace-bin/yaac-workspace-init`) starts streamd before the container
 reports Ready, so every setup command the server runs after that is a
-relay exec. Claiming a prewarmed spare probes it with one relay exec before
-its first change, then moves its checkouts where needed and opens its
-session over the relay.
+relay exec. Making a pod its workspace's is one `claim` stream to streamd
+(docs/generic-workspace-pods.md "A claim"), and the session's windows open
+over the relay after it.
 
 `kubectl exec` is used only where there is no stream to wait on: restarting
 streamd itself (`bootStreamd`), and infrastructure pods that are not
@@ -37,8 +37,8 @@ server = a pod of the install namespace, dialing the proxy's Service
 A small plain-JS Node daemon, baked into the base image at
 `/opt/yaac/streamd` with a prebuilt `@lydell/node-pty`. The postStart setup
 script starts it last, so a successful relay exec also proves the earlier
-setup (git config, tmux server) is done. Its source is part of the base
-image's content hash, so editing it changes the image tag.
+setup (the passwd entry, the tmux server) is done. Its source is part of the
+base image's content hash, so editing it changes the image tag.
 
 It listens on `0.0.0.0:10300`, reachable at the pod IP. Each connection
 starts with one JSON handshake line (`{token, kind, …params}`) and gets one
@@ -72,6 +72,12 @@ starts with one JSON handshake line (`{token, kind, …params}`) and gets one
   periodically as a keepalive. This feeds the server's port detector
   (docs/auto-forward-ports.md). The scan runs only while a ports stream is
   open.
+- `claim {bytes}`: make the pod one workspace's from the JSON request in
+  the bytes that follow, inside streamd's own process (`claim.js`), since
+  each process started in the sandbox costs tens of milliseconds: wait for
+  the tree container's started marker, write `~/.gitconfig` and `~/.npmrc`,
+  restore opencode's history, and open the tmux session with the
+  workspace's variables. It replies with one JSON line and closes.
 
 PTY output is micro-batched. The first write goes out at once; later writes
 within the next ~8ms are merged into one frame, with a size cap. A tmux
@@ -167,7 +173,7 @@ stale reaper treats `unknown` as "do not reap". A proxy outage therefore
 degrades terminals but never ends workspaces.
 
 A stream can also die without either end seeing a close. An ACP
-conversation's stream to a prewarmed spare can sit idle for days, and the
+conversation's stream can sit idle for days, and the
 cluster's connection tracking forgets an idle flow (kube-proxy keeps an
 established one 24h), after which one end's close never reaches the other.
 So every relay socket (the server's dial and both sides of the proxy

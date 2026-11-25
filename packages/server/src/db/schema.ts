@@ -176,13 +176,15 @@ export const projects = snakeCase.table('projects', {
   keptIgnoredPaths: jsonb().$type<string[]>().notNull().default([]),
   /**
    * Checkout-relative dirs of installed packages and build output that live
-   * with a workspace's runtime rather than its checkout, and go at stop, each
-   * with the cap it names, if any; and those git tracks that the user chose
-   * not to be warned about again (docs/workspace-storage.md "Package
-   * installs").
+   * with a workspace's runtime rather than its checkout, and go at stop;
+   * what a pod's may hold together; and those git tracks that the user
+   * chose not to be warned about again (docs/workspace-storage.md "Package
+   * installs"). The default size is room for a large monorepo's root
+   * `node_modules`, pnpm store included, beside a mid-sized cargo `target`.
    */
   scratchDirs: jsonb().$type<ScratchDirSettings>().notNull().default({
     dirs: [{ path: 'node_modules' }, { path: 'target' }],
+    sizeGiB: 32,
     ignoredTracked: [],
   }),
   /** What workspaces launch with besides their checkout (`ProjectConfig`,
@@ -194,7 +196,7 @@ export const projects = snakeCase.table('projects', {
    *  is the stock yaac image. No foreign key; deleting an image clears it. */
   defaultImageId: uuid(),
   /** The image the last create named: the create pane's default, and the
-   *  image the project's spare and the image sweep keep built.
+   *  image the image sweep keeps built.
    *  `STOCK_IMAGE_ID` is the stock image; null means no create has named
    *  one, so the project default applies. */
   lastImageId: uuid(),
@@ -322,8 +324,8 @@ export const projectIcons = snakeCase.table('project_icons', {
 /**
  * Every workspace yaac has created (see workspace-store.ts). The runtime is
  * authoritative for whether it is running; this table for whether it exists.
- * A prewarmed spare has no row until a claim inserts one. A stop never
- * deletes the row. A row matches a checkout that stays on disk while stopped.
+ * A stop never deletes the row. A row matches a checkout that stays on disk
+ * while stopped.
  *
  * The row holds what belongs to the workspace as a whole. Each run of it,
  * with what it launched with and how it ended, is a row of `workspaceLives`;
@@ -339,8 +341,7 @@ export const workspaces = snakeCase.table('workspaces', {
    *  the relay are keyed on the id alone, so a duplicate would mix two
    *  workspaces' egress rules and traffic. */
   workspaceId: text().primaryKey(),
-  /** When the workspace was handed to someone: the insert, which for a
-   *  prewarmed spare is its claim. */
+  /** When the workspace was created: the insert. */
   createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   /** The user's title. Without one the workspace shows its agent's own
    *  (`conversations.title`), then `generatedTitle` (docs/workspace-titles.md). */

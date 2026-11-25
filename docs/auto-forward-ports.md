@@ -32,7 +32,7 @@ on every change, and periodically as a keepalive. It reports only listeners
 a relay `tcp` dial can reach (bound to loopback or wildcard) and omits its
 own port.
 
-The server keeps one ports stream per running, non-prewarmed workspace
+The server keeps one ports stream per running workspace
 (`PortDetectorManager`, synced from pod informer events like the status
 watchers). If a stream dies, the last set is kept and it reconnects with
 backoff; a missed keepalive reveals a stuck stream. A changed set pushes a

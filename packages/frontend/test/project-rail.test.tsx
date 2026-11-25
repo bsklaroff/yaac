@@ -17,7 +17,7 @@ afterEach(() => {
 const ORDER = 'PUT /api/project/order'
 
 const project = (id: string): ProjectSummary =>
-  ({ id, name: id, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [], scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true })
+  ({ id, name: id, addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [], scratchDirs: { dirs: [], sizeGiB: 32, ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true })
 
 const NAMES = ['alpha', 'beta', 'gamma']
 /** The project tiles, each a button named for its project. */

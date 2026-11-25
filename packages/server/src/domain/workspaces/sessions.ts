@@ -28,7 +28,6 @@ import { ServerError } from '@yaac/shared/errors'
 import { refuseUnsignedTool, resolveCreate } from './create'
 import { launchSessions, launching, respawnSession } from './session-launch'
 import { inFlightWorkspaceIds } from './provisioning'
-import { claiming } from './prewarm'
 import { resolveWorkspaceContainer } from './resolve'
 import { assertInteractive } from './steps'
 import {
@@ -261,8 +260,8 @@ const seen = new Map<string, { life: number; windows: Set<string> }>()
  */
 export async function reconcileSessions(view: RuntimeSnapshot): Promise<void> {
   const busy = new Set(inFlightWorkspaceIds(Date.now()))
-  const running = (await view.workspaces()).filter((p) => p.running && !p.prewarmed && !p.terminating
-    && !claiming.has(p.jobName) && !busy.has(p.workspaceId) && !isWorkspaceTerminating(p.workspaceId))
+  const running = (await view.workspaces()).filter((p) => p.running && !p.terminating
+    && !busy.has(p.workspaceId) && !isWorkspaceTerminating(p.workspaceId))
   const live = new Set(running.map((p) => p.workspaceId))
   for (const id of seen.keys()) if (!live.has(id)) seen.delete(id)
   await Promise.all(running.map(async (p) => {

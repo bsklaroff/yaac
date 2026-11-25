@@ -77,7 +77,7 @@ describe('reconcileTreeSalvage', () => {
 
     await reconcileTreeSalvage(snapshotFixture(
       [handleFixture({ workspaceId: 'running', projectId: PROJ, node: 'node-b' })],
-      [{ workspaceId: 'busy', unitName: 'u', projectId: PROJ, createdAtMs: 1, prewarmed: false }],
+      [{ workspaceId: 'busy', unitName: 'u', projectId: PROJ, createdAtMs: 1 }],
     ))
     await vi.waitFor(async () => {
       for (const id of ['clean', 'killed', 'lost', 'unscheduled', 'unrecorded']) expect((await listTreeLives(id))[0].checkpointedAt).toBeDefined()
@@ -147,8 +147,7 @@ describe('collectCheckpointBundles', () => {
     await writeManifest('v', 'L1', { final: true, bundles: ['bundles/a.bundle', 'bundles/b.bundle'] })
     await bundles('v', ['a', 'b'])
 
-    // A prewarmed spare has saved, but its life is recorded only at its
-    // claim, so it keeps everything.
+    // One that has saved before its life was recorded keeps everything.
     await writeManifest('s', 'L0', { final: false, bundles: ['bundles/a.bundle'] })
     await bundles('s', ['a', 'b'])
 

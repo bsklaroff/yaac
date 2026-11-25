@@ -291,27 +291,6 @@ covers every install created since.
   see a hash, with the consequences they list.
 - **When it is safe to remove.** Together with 2.
 
-## Spare labels on claimed workspaces' Jobs
-
-A workspace Job and its pod carry one label set, so a prewarmed spare's Job
-has always had `yaac.prewarmed=true`. A claim now removes it from both, but a
-server from before that removed it from the pod only, so every workspace it
-claimed still has a labelled Job.
-
-- **What it reads.** `unmarkClaimedJobs` in
-  `packages/server/src/drivers/k8s/workspaces/claim.ts`, the k8s
-  `unmark-claimed-jobs` maintenance step, removes the label from every Job
-  whose pod is listed without it. A Job whose pod is already gone cannot be
-  told from a dead spare's and keeps the label.
-- **What breaks silently if it is deleted too early.** Once such a
-  workspace's pod goes (evicted, or deleted out of band), its Job is a stray
-  labelled as a spare, and the stale reaper hands it to `reapSpare`. Only the
-  row then keeps its checkout, so a database restored from before the row
-  existed (docs/workspace-storage.md) deletes the user's files.
-- **When it is safe to remove.** When no Job created by an older server can
-  remain: every workspace running at the upgrade has since been stopped or
-  restarted, since both replace the Job.
-
 ## A compaction recorded as a `Compact conversation` tool call
 
 yaac declares `session.compaction`, so an adapter reports a compaction as
@@ -368,8 +347,8 @@ stdin, so each command checks that something arrived and exits 2 if not.
 
 Only `send` and a session opened with a message in a running workspace
 need it. A create's opening message never reaches an older pod: it gets a
-fresh pod, or a spare, and a spare warmed before the server restarted is
-stale and never claimed.
+fresh pod, or a spare, and every spare made before the server started is
+reaped.
 
 - **What it reads.** The script, or the message, the command read from
   stdin.
@@ -428,7 +407,7 @@ sets the same values.
 ## A workspace life with no `scratchDirs`
 
 A stop removes the scratch dirs a workspace was started with, recorded on its
-life (`workspace_lives.scratchDirs`) by the create, restart or spare claim.
+life (`workspace_lives.scratchDirs`) by the create or restart.
 A workspace whose runtime started before that was recorded has it null on
 its current life. Two pieces cover it, and both go together:
 
@@ -956,6 +935,52 @@ version.
 - **When it is safe to remove.** Once every install's server has run a main
   registry GC since its last nested workspace stopped; on a given install,
   once the registry has no `yaac-nestable` repository.
+
+## Per-project spares of an older server
+
+An older server warmed spares per project: a pod and Job labelled
+`yaac.prewarmed=true` together with `yaac.project-id`, holding a checkout
+under `projects/<p>/workspaces/<w>/` and no row. A generic spare never
+carries a project label, and a take removes `yaac.prewarmed` before a launch
+adds one, so no pod of this server has both labels. `listSpares`
+(`drivers/k8s/workspaces/spares.ts`) therefore lists such a pod with its
+`projectId`, and `reapOlderSpare` (`domain/workspaces/prewarm.ts`) deletes
+its Job, then its files, unless a row with its id exists. The files are
+retried for a while after the Job goes, because the running pod holds some
+open and an NFS shared tier will not remove an open file; a server that
+restarts in that window leaves them behind. Only pods are read: an older
+server's claim took the label off its workspace's pod but left it on the
+Job.
+
+- **What it reads.** Pods with both labels, and the files under their
+  workspace dir.
+- **What breaks silently if it goes too early.** A spare that was running at
+  the upgrade lists as an untitled running workspace of its project, counts
+  against its groups, and holds a workspace's memory until someone stops it
+  by hand. Its checkout's files stay on the shared tier.
+- **When it is safe to remove.** Once no pod carries both labels:
+  `kubectl get pods -A -l yaac.prewarmed=true,yaac.project-id`. Delete the
+  `older` listing in `listSpares`, `SpareUnit.projectId` and
+  `reapOlderSpare` together.
+
+## The tree program older pods mount
+
+An older server's workspace pods mount `global/workspace-bin/yaac-tree` as a
+hostPath file at `/usr/local/bin/yaac-tree`, and their tree sidecar's startup
+probe runs its `probe` subcommand. This server runs the tree program from its
+helpers folder (`run/helpers/<build>/bin/yaac-tree`), salvage and import pods
+included, and never writes or removes the older path. So a sidecar of an
+older pod that restarts runs the program its server staged, `probe` and all.
+
+- **What it reads.** Nothing: the shim is that this server leaves the file
+  alone.
+- **What breaks silently if it goes too early.** A server that stages its own
+  program there again, or deletes it, breaks an older pod whose sidecar
+  restarts (an OOM, a crash): a program without `probe` fails the startup
+  probe until kubelet kills the sidecar four hours later, and the sidecar's
+  exit then removes the tree under the running workspace.
+- **When it is safe to remove.** Once no pod mounts the file: no workspace
+  pod has a `/usr/local/bin/yaac-tree` volume mount. Then delete the file.
 
 ## A k8s life whose files are on the shared tier
 

@@ -27,6 +27,11 @@ vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
 }))
 vi.mock('#drivers/k8s/cluster', () => ({
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
+  ensureMountd: vi.fn(() => { order.push('agent.ensure'); return Promise.resolve() }),
+  watchMountd: vi.fn(() => {
+    order.push('agent.watch')
+    return () => { order.push('agent.unwatch') }
+  }),
 }))
 vi.mock('#drivers/k8s/images', () => ({
   deleteLeakedBuilderPods: vi.fn(() => { order.push('bootstrap'); return Promise.resolve() }),
@@ -45,7 +50,7 @@ vi.mock('#drivers/k8s/workspaces', () => ({
 
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
-import { ensureMainRegistry } from '#drivers/k8s/cluster'
+import { ensureMainRegistry, ensureMountd } from '#drivers/k8s/cluster'
 import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#lib/notify'
 import { installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
@@ -82,8 +87,20 @@ describe('startK8sDriver', () => {
     expect(order.indexOf('bootstrap')).toBeLessThan(order.indexOf('recover'))
     expect(order.indexOf('recover')).toBeLessThan(order.indexOf('cache.start'))
     expect(order.indexOf('cache.start')).toBeLessThan(order.indexOf('attached'))
-    // An upgrade rolls the proxy at once rather than at the next launch.
+    // An upgrade rolls the proxy and mountd at once rather than at
+    // the next launch, and the server starts reading the agents' reports,
+    // which decide the nodes a start may use.
     expect(order).toContain('proxy.roll')
+    expect(order).toContain('agent.ensure')
+    expect(order.indexOf('agent.watch')).toBeLessThan(order.indexOf('attached'))
+  })
+
+  it('attaches without waiting on mountd\'s rollout, and survives its failure', async () => {
+    vi.mocked(ensureMountd).mockImplementationOnce(() => Promise.reject(new Error('rollout timed out')))
+
+    await startK8sDriver(sinks())
+
+    expect(order).toContain('attached')
   })
 
   it('reports the workspace set as handles, never as pods', async () => {
@@ -168,6 +185,7 @@ describe('stopK8sDriver', () => {
     stopK8sDriver()
 
     expect(order.indexOf('cache.cleared')).toBeLessThan(order.indexOf('cache.stop'))
+    expect(order).toContain('agent.unwatch')
   })
 
   it('is safe to call without a start, and twice', () => {

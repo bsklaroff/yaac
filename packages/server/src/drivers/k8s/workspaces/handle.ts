@@ -1,4 +1,4 @@
-import { isPrewarmed, type PodInfo } from '#drivers/k8s/substrate'
+import type { PodInfo } from '#drivers/k8s/substrate'
 import type { RuntimeHandle } from '#drivers/contract'
 import type { WorkspaceDeathCause } from '@yaac/shared/types'
 
@@ -16,7 +16,6 @@ export function runtimeHandleFromPod(pod: PodInfo): RuntimeHandle {
     state: pod.running ? 'running' : pod.phase.toLowerCase(),
     labels: pod.labels,
     createdAtMs: pod.createdAtMs,
-    prewarmed: isPrewarmed(pod),
     terminating: pod.terminating,
     deathCause: deriveDeathCause(pod),
     ...(pod.node !== undefined ? { node: pod.node } : {}),

@@ -1,0 +1,5 @@
+cmd/arborist/arborist_test.go
+cmd/arborist/gitindex_test.go
+cmd/mountd/mountd_test.go
+cmd/mountd/confined_test.go
+internal/wire/binds_test.go

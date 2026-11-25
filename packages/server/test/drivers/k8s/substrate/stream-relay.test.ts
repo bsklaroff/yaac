@@ -49,6 +49,7 @@ import {
   dialCtrlStream,
   dialPtyStream,
   relayDial,
+  podClaim,
   podExec,
   podStreamToken,
   readProxyAuthSecret,
@@ -380,6 +381,82 @@ describe('podExec', () => {
     expect(await run).toMatchObject({ name: 'AbortError' })
     await closed
     expect(dials).toBe(1)
+  })
+})
+
+/** A streamd that answers a claim's handshake, reads its request whole and
+ *  replies `reply` once it has it, recording the request. */
+function claimServer(reply: string, requests: unknown[]): (r: Received) => void {
+  return (r) => {
+    r.socket.write('{"ok":true}\n')
+    const want = r.handshake.bytes as number
+    let got = r.leftover
+    const take = (): void => {
+      if (got.length < want) return
+      requests.push(JSON.parse(got.subarray(0, want).toString('utf8')))
+      r.socket.end(reply)
+    }
+    r.socket.on('data', (c: Buffer) => { got = Buffer.concat([got, c]); take() })
+    take()
+  }
+}
+
+describe('podClaim', () => {
+  it('sends the request after a claim handshake naming its byte length, and resolves on streamd\'s ok', async () => {
+    const requests: unknown[] = []
+    let handshake: Record<string, unknown> = {}
+    const serve = claimServer('{"ok":true}\n', requests)
+    await withRelay((r) => { handshake = r.handshake; serve(r) })
+    const request = { cwd: '/workspace', env: { NAME: 'Zoë ✓' } }
+    await podClaim(JOB, request, { timeoutMs: 10_000 })
+    expect(handshake).toMatchObject({ kind: 'claim', bytes: Buffer.byteLength(JSON.stringify(request)) })
+    expect(requests).toEqual([request])
+  })
+
+  it('retries only the dial, three times at most, backing off between them', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    try {
+      let dials = 0
+      const requests: unknown[] = []
+      const serve = claimServer('{"ok":true}\n', requests)
+      await withRelay((r) => {
+        dials++
+        if (dials < 3) r.socket.destroy()
+        else serve(r)
+      })
+      const claim = podClaim(JOB, {}, { timeoutMs: 10_000 })
+      await vi.waitFor(() => { expect(dials).toBe(1) })
+      await vi.advanceTimersByTimeAsync(250)
+      await vi.waitFor(() => { expect(dials).toBe(2) })
+      await vi.advanceTimersByTimeAsync(500)
+      await claim
+      expect(dials).toBe(3)
+      expect(requests).toEqual([{}])
+
+      // Past the third failed dial it gives up with the dial's error.
+      dials = -10
+      const failing = podClaim(JOB, {}, { timeoutMs: 10_000 }).catch((e: unknown) => e)
+      await vi.waitFor(() => { expect(dials).toBe(-9) })
+      await vi.advanceTimersByTimeAsync(250)
+      await vi.waitFor(() => { expect(dials).toBe(-8) })
+      await vi.advanceTimersByTimeAsync(500)
+      expect(await failing).toBeInstanceOf(RelayDialError)
+      expect(dials).toBe(-7)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rejects with WorkspaceExecError carrying streamd\'s reason when the claim fails, and with RelayDialError on a reply it cannot read', async () => {
+    await withRelay(claimServer('{"ok":false,"error":"tmux exited 1: no server"}\n', []))
+    const err = await podClaim(JOB, {}, { timeoutMs: 10_000 }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(WorkspaceExecError)
+    expect((err as WorkspaceExecError).message).toBe(`claiming ${JOB} failed: tmux exited 1: no server`)
+    expect((err as WorkspaceExecError).stderr).toBe('tmux exited 1: no server')
+    relay?.close()
+
+    await withRelay(claimServer('not json', []))
+    await expect(podClaim(JOB, {}, { timeoutMs: 10_000 })).rejects.toThrow(new RelayDialError(`malformed claim result from ${JOB}`, true))
   })
 })
 

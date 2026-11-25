@@ -12,7 +12,7 @@ All yaac variables are read, with their defaults and validation, in
 | `YAAC_USE_TOR` | `false` | Route the server's git and ssh through Tor, and under k8s every workspace's egress too. Off when unset, empty, `0` or `false`. |
 | `YAAC_HOST_TOR_SOCKS_URL` | `socks5h://127.0.0.1:9050` | Tor SOCKS endpoint. |
 | `YAAC_KIND_CLUSTER` | `yaac` | Name of the kind cluster `yaac cluster install` manages. |
-| `YAAC_PREWARM_POOL_SIZE` | `1` | Workspaces kept started ahead of time per active project (`0` disables). |
+| `YAAC_PREWARM_POOL_SIZE` | `1` | Under k8s, spare workspace pods kept per pool, one pool per image and scratch size a recent workspace uses (docs/generic-workspace-pods.md "Pool policy"; `0` disables). |
 | `YAAC_IMAGE_PREWARM` | on | Rebuild each project's default and last used image in the background after a yaac upgrade changes the base/tools chain (docs/image-builds.md). Each build needs about 10GB of node disk while it runs. Off when empty, `0` or `false`; a create then builds what it needs. |
 | `YAAC_AUTO_TITLES` | on | Generate titles with a local model for drafts, queued entries and workspaces whose agent titles nothing (docs/workspace-titles.md). Off when empty, `0` or `false`. |
 | `YAAC_DISK_WARN_FLOOR_GIB` / `YAAC_DISK_STOP_FLOOR_GIB` | `10` / `5` | Under k8s, free space on a node's node-local disk below which the health report warns, and below which the workspace with the largest tree there is stopped (docs/node-local-workspaces.md "A full node"). `yaac cluster install` copies them to the server pod. |

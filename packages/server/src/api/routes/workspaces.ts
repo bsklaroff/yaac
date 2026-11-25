@@ -22,11 +22,11 @@ import {
   setWorkspaceGroupPinned,
   setWorkspaceTitle,
 } from '#db'
-import { streamProvisioned } from '#routes/provisioned-stream'
+import { WORKSPACE_ID_HEADER, streamProvisioned } from '#routes/provisioned-stream'
 import { withPreviews } from '#api/prompt-previews'
 import { requireDriverFeature } from '#api/http/driver-features'
 import { personOnly, type IdentityEnv } from '#api/http/web-auth'
-import { authorizeProject, isPerson, personId } from '#domain/access'
+import { authorizeProject, personId } from '#domain/access'
 import { ServerError } from '@yaac/shared/errors'
 import { MAX_TEXT_FILE_BYTES } from '#lib/text-file'
 import { MAX_ATTACHMENT_BYTES } from '@yaac/shared/attachments'
@@ -228,8 +228,8 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.awaitBuild === true ? { awaitBuild: true } : {}),
         // A user request, so its settings become the project's defaults.
         rememberDefaults: true,
-        // A delegate keeps the id it named; a spare has its own.
-        claimSpare: isPerson(c.get('principal')),
+        // The workspace takes a spare's id, which the result names.
+        claimSpare: true,
         draft: {
           ...(body.draftId !== undefined ? { id: body.draftId } : {}),
           ...(body.draftOnFailure === true ? { onFailure: true } : {}),
@@ -238,6 +238,9 @@ export const workspaceApp = new Hono<IdentityEnv>()
         draft.release()
         throw err
       })
+      // The workspace's id, a spare's if the start took one, before the
+      // stream ends: `yaac-mama create` answers with it at once.
+      c.header(WORKSPACE_ID_HEADER, run.workspaceId)
       return streamProvisioned(c, (onProgress) => draft.run(() => run(onProgress)))
     },
   )

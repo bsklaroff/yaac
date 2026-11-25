@@ -98,14 +98,6 @@ describe('listActiveWorkspaces', () => {
     expect(result.stale).toEqual([])
   })
 
-  it('hides prewarmed spares from the active session list', async () => {
-    running([live('spare1', { prewarmed: true })])
-    const result = await listActiveWorkspaces()
-    // Filtered out before classify, so it never reaches the status probes.
-    expect(result.workspaces).toEqual([])
-    expect(result.stale).toEqual([])
-  })
-
   it("titles a workspace the user has not named with its agent's own title, else its generated one", async () => {
     await recordTestProject(DEMO_PROJECT_ID)
     await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'generated', generatedTitle: 'From the draft' })

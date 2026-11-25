@@ -4,13 +4,12 @@ import { listRepoHolders } from '#db'
 import { serverLog } from '#lib/log'
 import { repoDir } from '@yaac/shared/project-paths'
 import { buildOriginRefreshExec } from '@yaac/shared/git'
-import { claiming, spareSettings } from './prewarm'
 
 /*
  * Keeps every running workspace's `origin/*` current (docs/server-git.md).
  * Each checkout is a clone with its own refs, so after every fetch of a
- * repo's main clone its refs are copied into each running workspace and
- * spare that has a checkout of the repo, in any project.
+ * repo's main clone its refs are copied into each running workspace that
+ * has a checkout of the repo, in any project.
  */
 
 /** How many checkouts one fan-out refreshes at once. */
@@ -50,23 +49,15 @@ export function propagateOrigin(repoId: string): void {
 async function fanOut(repoId: string): Promise<void> {
   const driver = workspaceDriver()
   const held = new Map((await listRepoHolders(repoId)).map((h) => [h.workspaceId, h.path]))
-  // A spare has no row yet; what it was warmed with says where its
-  // checkouts are.
-  const pathIn = (workspaceId: string): string | undefined =>
-    held.get(workspaceId) ?? spareSettings.get(workspaceId)?.repos.find((r) => r.repoId === repoId)?.path
   const queue = (await driver.list().catch(() => []))
     .filter((h) => h.running && !h.terminating)
     .flatMap((h) => {
-      const at = pathIn(h.workspaceId)
+      const at = held.get(h.workspaceId)
       return at !== undefined ? [{ jobName: h.jobName, at }] : []
     })
   const repoGitDir = `${repoDir(repoId)}/.git`
   const worker = async (): Promise<void> => {
     for (let h = queue.shift(); h !== undefined; h = queue.shift()) {
-      // A spare being claimed is refreshed once its claim is over. The claim
-      // starts the fetch that starts this fan-out, so the command that opens
-      // its session could otherwise queue behind the refresh in the pod.
-      while (claiming.has(h.jobName)) await new Promise((r) => setTimeout(r, 50))
       const cmd = buildOriginRefreshExec(repoGitDir, path.posix.join(driver.workspacePaths(h.jobName).workspaceDir, h.at))
       // A failure is retried by the next fetch's fan-out.
       await driver.exec(h.jobName, cmd, { maxAttempts: 1 }).catch(() => {})

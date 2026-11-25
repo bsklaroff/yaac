@@ -245,8 +245,9 @@ export const env = {
   },
 
   /**
-   * `YAAC_PREWARM_POOL_SIZE` — prewarmed workspaces per active project (`0`
-   * disables). Default 1; a non-integer or negative value falls back to 1.
+   * `YAAC_PREWARM_POOL_SIZE` — spares kept per pool, one pool for each image
+   * and scratch size an active project starts with (`0` disables). Default
+   * 1; a non-integer or negative value falls back to 1.
    */
   get prewarmPoolSize(): number {
     const raw = process.env.YAAC_PREWARM_POOL_SIZE
@@ -520,6 +521,11 @@ export const testEnv = {
   /** `YAAC_NETD_IMAGE` — netd image tag override. Production uses `yaac-netd`. */
   get netdImage(): string {
     return process.env.YAAC_NETD_IMAGE ?? 'yaac-netd'
+  },
+
+  /** `YAAC_MOUNTD_IMAGE` — mountd image tag override. Production uses `yaac-mountd`. */
+  get mountdImage(): string {
+    return process.env.YAAC_MOUNTD_IMAGE ?? 'yaac-mountd'
   },
 
   /** `YAAC_TAILGATE_IMAGE` — tailgate image tag override. Production uses `yaac-tailgate`. */

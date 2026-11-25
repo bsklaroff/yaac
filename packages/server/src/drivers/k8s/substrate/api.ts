@@ -122,6 +122,20 @@ export async function patchObject(ref: ObjectRef, patch: { metadata?: object; [k
 }
 
 /**
+ * Raise or lower one container's CPU request in place, through the pod's
+ * `resize` subresource: a running gVisor sandbox applies a CPU change
+ * without a restart (a memory change it refuses on a node with swap).
+ */
+export async function resizePodCpu(ref: ObjectRef, container: string, millis: number): Promise<void> {
+  await getObjectApi().send(HttpMethod.PATCH, header(ref), 'read', {
+    subresource: 'resize',
+    query: { fieldManager: FIELD_MANAGER },
+    body: { spec: { containers: [{ name: container, resources: { requests: { cpu: `${String(millis)}m` } } }] } },
+    contentType: PatchStrategy.StrategicMergePatch,
+  })
+}
+
+/**
  * Remove `label` from the object only while it still holds `value`, in one
  * request. It is a JSON patch (RFC 6902) whose `test` the API server checks
  * against the object it writes, so of concurrent callers one succeeds and

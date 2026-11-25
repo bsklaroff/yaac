@@ -118,7 +118,8 @@ way.
 
 Writes are server-side apply under the field manager `yaac` with `force`. A
 field yaac stops sending is removed only if yaac's apply owns it: a field set
-by a merge patch (an Update, such as the spare claim's labels) stays, and an
+by a merge patch (an Update, such as the labels a launch gives a taken
+spare) stays, and an
 atomic list (a NetworkPolicy's `spec.ingress`) is replaced whole. A read returns `null` for an absent
 object or resource type, and `isAbsent`/`apiStatus` classify failures by the
 API server's HTTP status rather than by message text.

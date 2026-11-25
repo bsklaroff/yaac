@@ -6,7 +6,6 @@ import {
   probeTmuxLiveness,
 } from '#runtime/status'
 import { cleanupWorkspaceDetached } from './cleanup'
-import { reapSpare } from './prewarm'
 import { inFlightWorkspaceIds } from './provisioning'
 import { startWaitingWorkspaces } from './queued-workspaces'
 import { applyWorkspaceEvent, desiredWorkspaces } from '#db'
@@ -36,10 +35,6 @@ export function _clearMissingPodTimersForTests(): void {
  * terminations. Also records long-podless rows as dead. A failed workspace
  * or desired-set read fails the step before anything is reaped; a failed
  * teardown is logged and the next pass retries it.
- *
- * A stale unit still marked prewarmed, a stray one included, goes to
- * `reapSpare` instead, which deletes its files before its unit: a spare has
- * no row, so once the unit is gone nothing says the files were a spare's.
  *
  * A unit skipped for being in its startup grace asks for a pass the moment
  * it leaves it (`wakeAt`), since no event may come by then: a pod that dies
@@ -216,13 +211,7 @@ export async function reconcileStaleWorkspaces(view: RuntimeSnapshot, wakeAt: (a
       why: 'terminating past grace: out-of-band delete, or a teardown whose mark was lost',
     })),
   ]
-  const spares = new Set([...pods, ...strays].filter((u) => u.prewarmed).map((u) => u.workspaceId))
-  for (const { why, ...t } of targets.filter((t) => spares.has(t.workspaceId))) {
-    serverLog(`[server] stale-reaper: reaping spare=${t.workspaceId} job=${t.jobName} (${why})`)
-    reapSpare(t)
-  }
-  const reaped = targets.filter((t) => !spares.has(t.workspaceId))
-  await Promise.all(reaped.map(({ why, ...t }) => {
+  await Promise.all(targets.map(({ why, ...t }) => {
     serverLog(`[server] stale-reaper: reaping session=${t.workspaceId} job=${t.jobName} (${why})`)
     return cleanupWorkspaceDetached(t).catch((err: unknown) => {
       serverLog(`[server] stale-reaper: teardown of session=${t.workspaceId} failed: ${String(err)}`)

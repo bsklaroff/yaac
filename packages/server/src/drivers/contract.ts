@@ -59,8 +59,6 @@ export interface RuntimeHandle {
   state: string
   labels: Record<string, string>
   createdAtMs: number
-  /** A warmed spare, not a user's workspace. */
-  prewarmed: boolean
   /** Being torn down. Shown as "terminating…" and skipped by the liveness
    *  probe and the reaper. */
   terminating: boolean
@@ -150,8 +148,6 @@ export interface StrayUnit {
   /** Lets a sweep tell an orphan from a launch whose workspace has not
    *  appeared yet. */
   createdAtMs: number
-  /** The unit was a prewarmed spare's, never claimed. */
-  prewarmed: boolean
 }
 
 /**
@@ -165,32 +161,10 @@ export interface RuntimeSnapshot {
   /** When the view was taken. Every listing it answers is read at or after
    *  this, so a workspace whose create settled since may be missing. */
   takenAtMs: number
-  /** Every workspace the runtime is holding, spares included. */
+  /** Every workspace the runtime is holding. */
   workspaces(): Promise<RuntimeHandle[]>
   /** Units whose workspace is gone — see `StrayUnit`. */
   strayUnits(): Promise<StrayUnit[]>
-}
-
-/**
- * What the egress path must know about a workspace before it may reach
- * anything. The caller resolves these inputs; the driver turns them into
- * allowlists and injection rules.
- */
-export interface WorkspaceRegistration {
-  workspaceId: string
-  projectId: string
-  /** The credential owner whose bundle the workspace spends (see
-   *  `syncCredentials`). */
-  owner: string
-  config: ProjectConfig
-  allowlist: EgressAllowlist
-  /**
-   * The project's proxied secrets as injection rules (hosts, paths,
-   * headers), never values. Only secrets that have a value are included.
-   * Values travel separately (`syncProjectSecrets`), so a registration is
-   * safe to store in a plain ConfigMap.
-   */
-  proxySecretRules: Record<string, SecretProxyRule>
 }
 
 /**
@@ -337,10 +311,30 @@ export type WorkspaceGitCredential =
   | { kind: 'ssh'; host: string; path: string; privateKey: string; publicKey: string }
   | { kind: 'hosted'; origin: string; token: string }
 
-/** A scratch dir as the workspace sees it, and its cap. */
-export interface ScratchDirMount {
-  path: string
-  sizeBytes: number
+/**
+ * A spare: a workspace unit that belongs to no project, warmed for one
+ * image and scratch size, which a start takes before it names its
+ * workspace, so the spare's id becomes the workspace's
+ * (docs/generic-workspace-pods.md "Pool policy").
+ */
+export interface SpareUnit {
+  workspaceId: string
+  jobName: string
+  image: string
+  scratchBytes: number
+  node?: string
+  createdAtMs: number
+  /** Up, and so can be taken. */
+  ready: boolean
+  /** Ended or being deleted: it will never be ready. */
+  failed: boolean
+  /** Taken by a start that never launched it: a server died between. */
+  orphaned: boolean
+  /** A Job whose pod is not made yet, so its pool is not known yet. */
+  pending?: true
+  /** A per-project spare an older server made, and its project, whose
+   *  files hold its checkout (docs/legacy-compat-shims.md). */
+  projectId?: string
 }
 
 /**
@@ -351,8 +345,6 @@ export interface ScratchDirMount {
 export interface WorkspaceSpec {
   projectId: string
   workspaceId: string
-  /** A warmed spare: hidden from user-facing views until it is claimed. */
-  prewarm: boolean
   /** The image ref to launch (`imageRef` of the tag `#domain/images`
    *  chose). Absent for a driver that runs no images. */
   image?: string
@@ -374,12 +366,19 @@ export interface WorkspaceSpec {
   mounts: WorkspaceMount[]
   /**
    * Package and build-output dirs inside the checkout (e.g. `node_modules`),
-   * as the workspace sees them, each with the most it may hold. Disposable
-   * and rebuilt by init steps; the caller has created them. The driver
-   * decides how to back them, whether it enforces the caps, and where the
-   * package store goes, since it must share their filesystem to hardlink.
+   * as the workspace sees them. Disposable and rebuilt by init steps; the
+   * caller has created them. The driver decides how to back them and where
+   * the package store goes, since it must share their filesystem to
+   * hardlink.
    */
-  scratchDirs: ScratchDirMount[]
+  scratchDirs: string[]
+  /**
+   * The most the scratch dirs may hold together, one size for the project
+   * (docs/generic-workspace-pods.md "Scratch dirs"). Part of what a spare is
+   * warmed for. A runtime whose scratch dirs are plain folders on the host
+   * enforces no size and ignores it.
+   */
+  scratchBytes: number
   /**
    * Where the workspace's files live when they are on its node rather than
    * among `mounts` (docs/node-local-workspaces.md). A runtime whose
@@ -387,14 +386,6 @@ export interface WorkspaceSpec {
    */
   tree?: WorkspaceTree
   resources: WorkspaceResources
-  /** Setup command run inside the workspace before it is reported ready. */
-  postStartExec: string[]
-  /**
-   * Command run inside the workspace on stop, before its processes are
-   * signalled, within the grace period (checkpoints the opencode working
-   * copy). Containerless never receives one.
-   */
-  preStopExec?: string[]
   /**
    * Where its shells and steps start, relative to the workspace dir: `''`
    * or one checkout's path, which the caller has created.
@@ -726,23 +717,21 @@ export interface WorkspaceDriver {
    *  proxy client's state), after the drain. */
   release(): void
 
-  /** Find a workspace by exact id (prefix matching is domain's). Unclaimed
-   *  spares never match. `preferCache` allows answering from a watched
-   *  cache. */
+  /** Find a workspace by exact id (prefix matching is domain's).
+   *  `preferCache` allows answering from a watched cache. */
   find(workspaceId: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle | undefined>
   /**
    * Find what a stop should address, by exact id, including a unit that
-   * outlived its pod (which `find` reports as absent). Unclaimed spares
-   * match only with `spares`, used when a failed warm cleans up.
+   * outlived its pod (which `find` reports as absent).
    */
-  findForTeardown(workspaceId: string, opts?: { spares?: boolean }): Promise<TeardownTarget | undefined>
+  findForTeardown(workspaceId: string): Promise<TeardownTarget | undefined>
   /**
-   * Every workspace held, optionally one project's, spares included.
+   * Every workspace held, optionally one project's.
    * Display paths pass `preferCache`; reapers and resolvers that need the
    * substrate's own answer do not.
    */
   list(projectId?: string, opts?: { preferCache?: boolean }): Promise<RuntimeHandle[]>
-  /** Live counts per project, spares excluded. Empty when unreachable. */
+  /** Live counts per project. Empty when unreachable. */
   count(): Promise<Record<string, number>>
   /** A fresh view for one reconcile pass (or a direct caller outside one). */
   snapshot(resync?: boolean): RuntimeSnapshot
@@ -849,15 +838,31 @@ export interface WorkspaceDriver {
    */
   reviveStatusStream(jobName: string): Promise<void>
 
+  /** Every spare, and every take no launch adopted. Empty for a driver
+   *  that keeps none. */
+  listSpares(): Promise<SpareUnit[]>
+  /** Warm a spare for one image and scratch size; resolves with its id
+   *  once it is asked for, not once it is up. */
+  warmSpare(args: { image: string; scratchBytes: number; resources: WorkspaceResources }): Promise<string>
   /**
-   * Claim a spare as the caller's workspace. Compare-and-swap: of concurrent
-   * claims exactly one resolves; the others (and a claim on a vanished
-   * spare) reject, and the caller creates a fresh workspace instead. It
-   * resolves as soon as the claim is won, so the caller can go on working in
-   * the workspace; `unmarked` settles once nothing in the runtime marks it
-   * a spare any more, and a claim whose `unmarked` rejects has failed.
+   * Take a ready spare made at `madeSince` or later for a start, and
+   * resolve with its id, which the start names its workspace with, or
+   * undefined when there is none. Of concurrent takes of one spare exactly
+   * one wins. The next `launch` of
+   * that id adopts it; a start that fails first reaps it.
    */
-  claimSpare(workspaceId: string): Promise<{ unmarked: Promise<void> }>
+  takeSpare(args: { image: string; scratchBytes: number; madeSince: number }): Promise<string | undefined>
+  /**
+   * Delete a spare, or a taken one no launch adopted. With `ifSpare`, only
+   * while it is still a spare: one a start takes meanwhile is left to it.
+   */
+  reapSpare(workspaceId: string, opts?: { ifSpare?: boolean }): Promise<void>
+  /**
+   * Keep these trees built ahead of time where spares wait, each a repo at
+   * a commit its main clone has, and no others (docs/generic-workspace-pods.md
+   * "Trees"). A no-op for a driver whose workspaces check out where they run.
+   */
+  keepReadyTrees(trees: Array<{ repoId: string; commit: string }>): Promise<void>
 
   /**
    * Check this driver can run the tool in this mode, installing what it
@@ -954,9 +959,6 @@ export interface WorkspaceDriver {
    */
   dialPort(workspaceId: string, containerPort: number): Promise<Duplex>
 
-  /** Tell the egress path what a running workspace may reach. Idempotent;
-   *  a claimed spare re-registers with the project's current settings. */
-  registerWorkspace(reg: WorkspaceRegistration): Promise<void>
   /**
    * Drop a workspace's port forwards and egress registration. Best-effort.
    * Separate from `destroy` so a detached teardown can do this part
@@ -971,16 +973,8 @@ export interface WorkspaceDriver {
    * `unitOnly` tears down only the running unit and
    * keeps what `prepareSubstrate` set up, for a create retrying its launch
    * or giving up while its row survives. Ordinary stops never pass it.
-   *
-   * `keepRecord` stops the workspace but leaves the unit's record (a k8s
-   * Job, which says it is a spare), so a spare reap can delete the files
-   * while something still identifies them, then destroy again to remove
-   * it. A driver whose units keep no such record ignores it.
    */
-  destroy(
-    target: TeardownTarget,
-    opts?: { unitOnly?: boolean; keepRecord?: boolean },
-  ): Promise<boolean>
+  destroy(target: TeardownTarget, opts?: { unitOnly?: boolean }): Promise<boolean>
   /**
    * The same teardown as an idempotent shell command, for a detached script
    * that outlives the caller (and may be re-run to resume). The caller may

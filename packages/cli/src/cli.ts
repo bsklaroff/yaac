@@ -1221,8 +1221,9 @@ config
   .command('scratch-dirs')
   .description('Show a project\'s scratch directories, which each workspace keeps off its checkout and empties when it stops (installed packages, build output), or replace them')
   .argument('<project>', 'Project name, id, or id prefix')
-  .argument('[dirs...]', 'Directories relative to the checkout, each optionally with its cap in GiB, e.g. node_modules target:32; one without a cap gets the default, 16')
+  .argument('[dirs...]', 'Directories relative to the checkout, e.g. node_modules target')
   .option('--none', 'Keep every directory in the checkout')
+  .option('--size <GiB>', 'What a workspace\'s scratch directories may hold together, in GiB (default 32)')
   .action(configScratchDirs)
 
 config

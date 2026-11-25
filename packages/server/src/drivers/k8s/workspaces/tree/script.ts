@@ -3,41 +3,46 @@
  * "The tree container"), built into a self-contained script that ships with
  * the other `workspace-bin` helpers.
  *
- *   yaac-tree run      --tree T --scratch S --ckpt K --life L [--own D:D…] [--trigger F] [--interval SECONDS]
+ *   yaac-tree start    --trigger F
+ *   yaac-tree run      --tree T --scratch S --ckpt K --life L [--trigger F] [--interval SECONDS]
  *   yaac-tree salvage  --tree T --scratch S --ckpt K --life L
  *   yaac-tree pass     --tree T --scratch S --ckpt K --life L
  *   yaac-tree import   --tree T --scratch S --ckpt K --life L
- *   yaac-tree probe    --scratch S --life L [--wait SECONDS]
  *
- * `run` waits for the life's start instruction, hands the tree, the scratch
- * repository and each `--own` folder to the install uid, and checks the
- * tree out or restores it (all once per life: a restarted container finds
- * its marker and goes straight to its passes). It then takes a pass every
- * 30 seconds and whenever the trigger file's mtime moves. On TERM, which
- * Kubernetes sends once the workspace container has exited, it takes the
- * final pass and removes the tree and scratch repository. `salvage` does
- * that last part for a tree a killed pod left. A final pass that cannot
- * save everything fails instead, leaving the tree for a salvage to try
- * again. `run` and `salvage` first clear the locks a git killed mid-write
- * left. `import` takes a checkpoint of a workspace whose files are still on
- * the shared tier, leaving them as they are, for its next life to restore.
- * `probe` is the startup probe: it passes once the life has started, and
- * with `--wait` keeps looking that long before it fails.
+ * `start` is the container's command: it waits for mountd to write
+ * the list of its pod's node-mounts directory, then becomes the agent's
+ * `tree-start`, which makes the binds the list names, gives up
+ * CAP_SYS_ADMIN for good and becomes `run` (docs/generic-workspace-pods.md
+ * "A claim"). A restarted container does all of it again.
+ *
+ * `run` waits for the life's start instruction and fills the tree, which
+ * the arborist built, or restores a checkpoint onto it (once per life:
+ * a restarted container finds its marker and goes straight to its passes).
+ * It then reports the files ready beside the trigger file, and takes a pass
+ * every 30 seconds and whenever the trigger file's mtime moves. On TERM,
+ * which Kubernetes sends once the workspace container has exited, it takes
+ * the final pass and removes the tree and scratch repository. `salvage`
+ * does that last part for a tree a killed pod left. A final pass that
+ * cannot save everything fails instead, leaving the tree for a salvage to
+ * try again. `run` and `salvage` first clear the locks a git killed
+ * mid-write left. `import` takes a checkpoint of a workspace whose files
+ * are still on the shared tier, leaving them as they are, for its next life
+ * to restore.
  */
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { ChainError, checkOut, clearStaleLocks, finish, makeMountPoints, removeLife, restore, takePass, type TreeContext } from './checkpoint'
+import { ChainError, clearStaleLocks, fill, finish, makeMountPoints, removeLife, restore, takePass, type TreeContext } from './checkpoint'
 import { LIVES_DIR, START_FILE, TIMING_FILE, type StartInstruction, type TreeTiming } from '@yaac/shared/tree-records'
 
 /** Seconds between passes, unless `--interval` says otherwise. */
 const INTERVAL_S = 30
 /** Written beside the start instruction when a restore cannot proceed. */
 const RESTORE_FAILED_FILE = 'restore-failed.json'
-/** Between a waiting probe's looks for the life's marker. A probe is
- *  running for the whole of a restore, and inside the sandbox a look costs
- *  about a millisecond of the tree container's CPU, so looking more often
- *  would slow the restore to save a delay too short to notice. */
-const PROBE_POLL_MS = 50
+/** Where mountd's list and program appear (k8s/mountd). */
+const NODE_MOUNTS = '/node-mounts'
+/** Between looks for mountd's list, in this one process: a look
+ *  costs about a millisecond of CPU in the sandbox, a process start tens. */
+const LIST_POLL_MS = 50
 /** Between reads of a start instruction that is not there yet, which is
  *  while the server is still fetching a checkout. The file is on the shared
  *  tier, so a read may be a round trip to its file server. */
@@ -82,8 +87,8 @@ async function context(f: Record<string, string>): Promise<TreeContext> {
 }
 
 /** Say when this process started, read its instruction and filled the
- *  tree, for the server's start timing. After the marker, so the startup
- *  probe never waits on it, and best-effort. */
+ *  tree, for the server's start timing. After the markers, so the claim
+ *  never waits on it, and best-effort. */
 async function writeTiming(c: TreeContext, filled: number): Promise<void> {
   const timing: TreeTiming = { process: Math.round(performance.timeOrigin), instruction: instructionAt, filled }
   const file = path.join(c.ckpt, LIVES_DIR, c.start.life, TIMING_FILE)
@@ -92,34 +97,44 @@ async function writeTiming(c: TreeContext, filled: number): Promise<void> {
 }
 
 /**
- * Hand each folder to the install uid. They are the pod's node-local mount
- * sources, which kubelet makes as root when missing. Only the folder
- * itself changes owner. Each is a mount root here, the directory its
- * source resolved to when the pod started, so `lchown` is no guard against
- * a source that was a link. The guard is that no workspace can write a
- * source's parent: `launchWorkspace` refuses a node-local source inside
- * another.
+ * Wait for mountd's list, then become its `tree-start`, which binds
+ * this container's entries, drops CAP_SYS_ADMIN and runs `run` for the
+ * list's life. Nothing here reads what an agent wrote.
  */
-async function ownRoots(c: TreeContext, dirs: string[]): Promise<void> {
-  for (const dir of dirs) {
-    const st = await fs.lstat(dir)
-    if (st.uid !== c.start.uid || st.gid !== c.start.gid) await fs.lchown(dir, c.start.uid, c.start.gid)
+async function start(trigger: string): Promise<void> {
+  const list = path.join(NODE_MOUNTS, 'list.json')
+  let life: string | undefined
+  for (;;) {
+    const text = await fs.readFile(list, 'utf8').catch(() => null)
+    if (text !== null) {
+      life = (JSON.parse(text) as { life?: string }).life
+      break
+    }
+    await sleep(LIST_POLL_MS)
   }
+  if (life === undefined || !/^[A-Za-z0-9._-]+$/.test(life)) throw new Error('mountd\'s list names no life')
+  if (process.execve === undefined) throw new Error('this node cannot replace its process (process.execve)')
+  process.execve(path.join(NODE_MOUNTS, 'sandbox-bind'), [
+    'sandbox-bind', 'tree-start', '--', process.execPath, process.argv[1],
+    'run', '--tree', '/tree', '--scratch', '/scratch', '--ckpt', '/ckpt', '--life', life, '--trigger', trigger,
+    // eslint-disable-next-line no-process-env -- the container's own environment, handed on unread to the process this one becomes
+  ], process.env)
 }
 
-/** Take ownership of the life's folders and check out or restore the tree,
- *  once per life. A restore that cannot read its chain says so beside the
- *  instruction and never reports ready, so the server can offer a restore
- *  from what does verify. */
-async function startLife(c: TreeContext, own: string[]): Promise<boolean> {
+/** Fill or restore the tree, once per life, then report the files ready
+ *  beside the trigger file, which the claim call waits for
+ *  (dockerfiles/streamd/claim.js; keep the name in sync with
+ *  `treeStartedMarker` in pod-job.ts). A restore that cannot read its chain
+ *  says so beside the instruction and never reports ready, so the server can
+ *  offer a restore from what does verify. */
+async function startLife(c: TreeContext, trigger: string | undefined): Promise<boolean> {
   const marker = startedMarker(c.scratch, c.start.life)
   if (await exists(marker)) return true
-  await ownRoots(c, [c.tree, c.scratch, ...own])
   try {
     const restored = c.start.restore !== undefined
       ? await restore(c, c.start.restore, { newestReadable: c.start.restoreNewestReadable === true })
       : null
-    if (!restored) await checkOut(c)
+    if (!restored) await fill(c)
   } catch (err) {
     if (!(err instanceof ChainError)) throw err
     const file = path.join(c.ckpt, LIVES_DIR, c.start.life, RESTORE_FAILED_FILE)
@@ -131,25 +146,12 @@ async function startLife(c: TreeContext, own: string[]): Promise<boolean> {
   await fs.mkdir(c.scratch, { recursive: true })
   const filled = Date.now()
   await fs.writeFile(marker, '')
+  if (trigger !== undefined) await fs.writeFile(path.join(path.dirname(trigger), `started.${c.start.life}`), '')
   await writeTiming(c, filled).catch(() => { /* only the timing line misses it */ })
   return true
 }
 
-/** Whether the life has started, looking until it has or `waitS` seconds
- *  have passed. The wait is in this one process because starting another
- *  costs about a hundred looks inside the sandbox. */
-async function probe(scratch: string, life: string, waitS: number): Promise<boolean> {
-  const marker = startedMarker(scratch, life)
-  const until = Date.now() + waitS * 1000
-  while (!(await exists(marker))) {
-    // Written so that a wait that is no number looks once, not for ever.
-    if (!(Date.now() < until)) return false
-    await sleep(PROBE_POLL_MS)
-  }
-  return true
-}
-
-async function run(c: TreeContext, own: string[], trigger: string | undefined, intervalS: number): Promise<void> {
+async function run(c: TreeContext, trigger: string | undefined, intervalS: number): Promise<void> {
   let stopping = false
   let wake: () => void = () => {}
   process.on('SIGTERM', () => {
@@ -157,7 +159,7 @@ async function run(c: TreeContext, own: string[], trigger: string | undefined, i
     wake()
   })
   await clearStaleLocks(c)
-  if (!(await startLife(c, own))) {
+  if (!(await startLife(c, trigger))) {
     while (!stopping) await new Promise<void>((r) => { wake = r; setTimeout(r, 60_000) })
     return
   }
@@ -185,11 +187,12 @@ async function main(): Promise<void> {
   const [cmd, ...rest] = process.argv.slice(2)
   const f = flags(rest)
   switch (cmd) {
-    case 'probe':
-      process.exit(await probe(f.scratch, f.life, Number(f.wait ?? 0)) ? 0 : 1)
+    case 'start':
+      if (!f.trigger) throw new Error('--trigger is required')
+      await start(f.trigger)
       break
     case 'run':
-      await run(await context(f), f.own?.split(':') ?? [], f.trigger, f.interval !== undefined ? Number(f.interval) : INTERVAL_S)
+      await run(await context(f), f.trigger, f.interval !== undefined ? Number(f.interval) : INTERVAL_S)
       break
     case 'pass':
       await takePass(await context(f))
@@ -208,7 +211,7 @@ async function main(): Promise<void> {
       await finish(await context(f))
       break
     default:
-      throw new Error('usage: yaac-tree run|salvage|import|pass|probe --tree T --scratch S --ckpt K --life L')
+      throw new Error('usage: yaac-tree start --trigger F | run|salvage|import|pass --tree T --scratch S --ckpt K --life L')
   }
 }
 

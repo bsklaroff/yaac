@@ -10,7 +10,6 @@ import {
   LABEL_PROJECT_ID,
   LABEL_WORKSPACE_ID,
   findWorkspacePod,
-  isPrewarmed,
   listWorkspaceJobs,
   listWorkspacePods,
   workspaceIdFromJobName,
@@ -209,11 +208,23 @@ describe('listWorkspacePods', () => {
 })
 
 describe('workspacePodSelector', () => {
-  it('pairs the install id with the workspace id, since every kind of object carries the install id', () => {
+  it('pairs the install id with the workspace id and a project, so neither infrastructure nor a spare is a workspace', async () => {
     // The proxy, registries, builders and sweeps all carry the install
-    // id too, so the install key alone would select them.
-    expect(workspacePodSelector()).toBe(`${LABEL_INSTALL_ID}=${installId()},${LABEL_WORKSPACE_ID}`)
+    // id too, so the install key alone would select them; a spare carries
+    // an id but no project until a launch adopts it.
+    expect(workspacePodSelector()).toBe(`${LABEL_INSTALL_ID}=${installId()},${LABEL_WORKSPACE_ID},${LABEL_PROJECT_ID}`)
     expect(workspacePodSelector('p1')).toBe(`${LABEL_INSTALL_ID}=${installId()},${LABEL_WORKSPACE_ID},${LABEL_PROJECT_ID}=p1`)
+
+    const seeded = (name: string, labels: Record<string, string>) => {
+      const raw = rawPod({ name, labels }) as { metadata: Record<string, unknown> }
+      return { apiVersion: 'v1', kind: 'Pod', ...raw, metadata: { ...raw.metadata, name, namespace: k8sNamespace() } }
+    }
+    fakeCluster.seed(
+      seeded('yaac-s1-a', { [JOB_NAME_LABEL]: 'yaac-s1', ...workspaceIdLabels('s1'), [LABEL_PROJECT_ID]: 'p1', [LABEL_INSTALL_ID]: installId() }),
+      seeded('yaac-s2-a', { [JOB_NAME_LABEL]: 'yaac-s2', ...workspaceIdLabels('s2'), [LABEL_INSTALL_ID]: installId(), [LABEL_PREWARMED]: 'true' }),
+      seeded('yaac-proxy-a', { app: 'yaac-proxy', [LABEL_INSTALL_ID]: installId() }),
+    )
+    expect((await listWorkspacePods()).map((p) => p.workspaceId)).toEqual(['s1'])
   })
 })
 
@@ -244,42 +255,37 @@ describe('findWorkspacePod', () => {
     }
   })
 
-  // Unclaimed spares are returned only for teardown.
-  it('skips a spare unless asked for spares', () => {
-    const spare = pod({ labels: { [LABEL_PREWARMED]: 'true' } })
-    expect(findWorkspacePod([spare], 'abcd1234')).toBeUndefined()
-    expect(findWorkspacePod([spare], 'abcd1234', { spares: true })).toBeDefined()
-  })
-
   it('returns undefined when nothing matches', () => {
     expect(findWorkspacePod([pod()], 'zzz')).toBeUndefined()
   })
 })
 
 describe('listWorkspaceJobs', () => {
-  // A spare's Job carries its prewarmed mark, which outlives the pod.
-  it('queries jobs scoped by install-id + workspace-id labels and maps rows', async () => {
-    serve(['s1', 's2'].map((id) => ({
+  // A spare's Job carries no project, so it is never a workspace's.
+  it('queries jobs scoped by install-id, workspace-id and project labels and maps rows', async () => {
+    fakeCluster.seed(...['s1', 's2', 'spare'].map((id) => ({
+      apiVersion: 'batch/v1',
+      kind: 'Job',
       metadata: {
         name: `yaac-demo-${id}`,
+        namespace: k8sNamespace(),
         labels: {
           ...workspaceIdLabels(id),
-          [LABEL_PROJECT_ID]: 'demo',
-          ...(id === 's2' ? { [LABEL_PREWARMED]: 'true' } : {}),
+          [LABEL_INSTALL_ID]: installId(),
+          ...(id === 'spare' ? { [LABEL_PREWARMED]: 'true' } : { [LABEL_PROJECT_ID]: 'demo' }),
         },
         creationTimestamp: '2026-06-01T00:00:00Z',
       },
     })))
     const jobs = await listWorkspaceJobs()
     expect(fakeCluster.callsOf('list', 'Job')).toEqual([expect.objectContaining({
-      namespace: k8sNamespace(), labelSelector: `yaac.install-id=${installId()},yaac.workspace-id`,
+      namespace: k8sNamespace(), labelSelector: `yaac.install-id=${installId()},yaac.workspace-id,yaac.project-id`,
     })])
     expect(jobs).toEqual(['s1', 's2'].map((id) => ({
       jobName: `yaac-demo-${id}`,
       workspaceId: id,
       projectId: 'demo',
       createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
-      prewarmed: id === 's2',
     })))
   })
 
@@ -295,26 +301,3 @@ describe('listWorkspaceJobs', () => {
   })
 
 })
-
-describe('isPrewarmed', () => {
-  function pod(labels: Record<string, string>): PodInfo {
-    return {
-      jobName: 'yaac-p-s1',
-      podName: 'yaac-p-s1-x',
-      workspaceId: 's1',
-      projectId: '3f2a9c1e-7b4d-4e8a-9c2f-5d6e7f8a9b0c',
-      phase: 'Running',
-      running: true,
-      terminating: false,
-      createdAtMs: 1_000,
-      labels,
-    }
-  }
-
-  it('is true only when the label is exactly "true"', () => {
-    expect(isPrewarmed(pod({ [LABEL_PREWARMED]: 'true' }))).toBe(true)
-    expect(isPrewarmed(pod({}))).toBe(false)
-    expect(isPrewarmed(pod({ [LABEL_PREWARMED]: 'false' }))).toBe(false)
-  })
-})
-

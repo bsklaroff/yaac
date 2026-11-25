@@ -1,4 +1,4 @@
-import { execFileAsync, JOB_NAME_LABEL, k8sNamespace } from '#drivers/k8s/substrate'
+import { execFileAsync, k8sNamespace } from '#drivers/k8s/substrate'
 import { PRE_STOP_GRACE_SECONDS, TREE_FINAL_PASS_SECONDS } from './pod-job'
 import { deregisterWorkspaceEgress } from '#drivers/k8s/egress'
 import { stopWorkspaceForwarders } from './port-forwarders'
@@ -50,25 +50,17 @@ const UNIT_DELETE_TIMEOUT = `${String(PRE_STOP_GRACE_SECONDS + TREE_FINAL_PASS_S
  * `unitOnly` skips step 1 for a create retrying after a failed attempt: the
  * create reuses one substrate receipt across attempts, so its registration
  * must survive.
- *
- * `keepRecord` deletes only the Job's pod in step 2, leaving the Job (and
- * its `yaac.prewarmed` label) for a spare reap to delete after the files.
- * With `backoffLimit: 0` the Job counts the deleted pod as its one failure
- * and starts no other.
  */
 export async function destroyWorkspace(
   target: TeardownTarget,
-  opts: { unitOnly?: boolean; keepRecord?: boolean } = {},
+  opts: { unitOnly?: boolean } = {},
 ): Promise<boolean> {
   if (!opts.unitOnly) await deregisterWorkspace(target.workspaceId)
 
   let unitGone = true
   try {
     await execFileAsync('kubectl', [
-      'delete',
-      ...(opts.keepRecord === true
-        ? ['pod', '-l', `${JOB_NAME_LABEL}=${target.unitName}`]
-        : ['job', target.unitName, '--cascade=foreground']),
+      'delete', 'job', target.unitName, '--cascade=foreground',
       '-n', k8sNamespace(), '--ignore-not-found', '--wait=true',
       `--timeout=${UNIT_DELETE_TIMEOUT}`,
     ])

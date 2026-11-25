@@ -740,7 +740,7 @@ describe('prepareRestart', () => {
     // its node instead (docs/node-local-workspaces.md).
     driverKind = 'containerless'
     installDriver()
-    await setProjectScratchDirs(DEMO_PROJECT_ID, { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'web/node_modules', sizeGiB: 8 }, { path: 'vendor', sizeGiB: 8 }] })
+    await setProjectScratchDirs(DEMO_PROJECT_ID, { dirs: [{ path: 'node_modules' }, { path: 'web/node_modules' }, { path: 'vendor' }] })
     await stoppedWorkspace('wt-dirs')
     const checkout = workspaceDir(DEMO_PROJECT_ID, 'wt-dirs')
     const outside = path.join(tmpDir, 'outside')
@@ -785,7 +785,7 @@ describe('prepareRestart', () => {
     await fs.mkdir(path.join(checkout, 'node_modules', 'left-pad'), { recursive: true })
     await fs.mkdir(path.join(checkout, 'vendor'), { recursive: true })
     await fs.writeFile(path.join(checkout, 'vendor', 'kept.txt'), 'mine\n')
-    await setProjectScratchDirs(DEMO_PROJECT_ID, { dirs: [{ path: 'node_modules', sizeGiB: 8 }, { path: 'vendor', sizeGiB: 8 }] })
+    await setProjectScratchDirs(DEMO_PROJECT_ID, { dirs: [{ path: 'node_modules' }, { path: 'vendor' }] })
     live = handleFixture({ projectId: DEMO_PROJECT_ID, workspaceId: 'wt-listed', jobName: 'yaac-wt-listed' })
     installDriver({ destroy: () => { live = undefined; return Promise.resolve(true) } })
 
@@ -1070,6 +1070,26 @@ describe('prepareRestart', () => {
     expect((await restoredFrom('wt-full')).restore).toBe(`lives/${full}/manifest.json`)
     const given = (await listTreeLives('wt-full'))[1]
     expect(given.checkpointOutcome).toBe('lost')
+  })
+
+  // The arborist builds a tree from the main clone alone; the tree
+  // container then writes the checkout's own HEAD onto it.
+  it('builds a restart\'s tree from a commit the main clone has, when its start commit is only in the checkout', async () => {
+    await stoppedWorkspace('wt-local')
+    const gitDir = path.join(workspaceDir(DEMO_PROJECT_ID, 'wt-local'), '.git')
+    const local = (await git(gitDir, ['--git-dir', gitDir, 'commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'agent work'])).trim()
+    await git(gitDir, ['--git-dir', gitDir, 'update-ref', 'HEAD', local])
+    await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId: DEMO_PROJECT_ID, workspaceId: 'wt-local', repoId: DEMO_PROJECT_ID, startCommit: local })
+    const tip = (await git(repoDir(DEMO_PROJECT_ID), ['rev-parse', 'refs/remotes/origin/main'])).trim()
+
+    await restart('wt-local')
+
+    const life = (await listTreeLives('wt-local'))[0].treeDir
+    const start = JSON.parse(await fs.readFile(path.join(workspaceCheckpointsDir(DEMO_PROJECT_ID, 'wt-local'), 'lives', life, 'start.json'), 'utf8')) as {
+      checkouts: Array<{ commit: string }>
+    }
+    expect(start.checkouts.map((c) => c.commit)).toEqual([tip])
+    expect(tip).not.toBe(local)
   })
 
   // A site replaces its release in a fresh checkout rather than restarting

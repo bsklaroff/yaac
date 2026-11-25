@@ -52,9 +52,7 @@ export interface LifeStart extends LifeLaunch {
 
 /**
  * Provisioning of a new workspace has begun, emitted before anything is
- * built so every user workspace's runtime has a row; or a prewarmed spare
- * was claimed, which is the claim's commit point (a spare has no row until
- * then). Its first life starts with it, now unless `at` says when, so none
+ * built so every user workspace's runtime has a row. Its first life starts with it, now unless `at` says when, so none
  * of its sessions has a window yet.
  */
 export interface WorkspaceCreated extends Partial<LifeStart> {

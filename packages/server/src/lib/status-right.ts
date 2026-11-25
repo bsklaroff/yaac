@@ -3,8 +3,9 @@ import type { PortMapping } from '@yaac/shared/types'
 
 /**
  * The workspace tmux status bar text. It is set in three places (the
- * launch's `YAAC_STATUS_RIGHT` for postStart, the restore after a server
- * restart, and the port-forward refresh inside the driver), so the format
+ * launch's `YAAC_STATUS_RIGHT`, which the session opens with, the restore
+ * after a server restart, and the port-forward refresh inside the driver),
+ * so the format
  * is defined once here and each caller runs the command over its own
  * transport.
  */

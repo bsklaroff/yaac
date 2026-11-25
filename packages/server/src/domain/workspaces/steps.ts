@@ -43,7 +43,6 @@ import {
 } from '@yaac/shared/steps'
 import { inFlightWorkspaceIds } from './provisioning'
 import { openTerminalLogs } from './life'
-import { claiming } from './prewarm'
 import { resolveWorkspaceContainer } from './resolve'
 import { stopWorkspace } from './stop'
 import { VOLUME_MOUNT_PATH } from './volumes'
@@ -375,8 +374,8 @@ export async function reconcileSteps(view: RuntimeSnapshot): Promise<void> {
   for (const key of serviceRestarts.keys()) {
     if (!present.has(key.slice(0, key.indexOf('/')))) serviceRestarts.delete(key)
   }
-  const running = listed.filter((p) => p.running && !p.prewarmed && !p.terminating
-    && !claiming.has(p.jobName) && !busy.has(p.workspaceId) && !isWorkspaceTerminating(p.workspaceId))
+  const running = listed.filter((p) => p.running && !p.terminating
+    && !busy.has(p.workspaceId) && !isWorkspaceTerminating(p.workspaceId))
   await Promise.all(running.map(async (p) => {
     try {
       await reconcileOne(p)

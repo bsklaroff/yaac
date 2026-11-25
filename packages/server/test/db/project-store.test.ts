@@ -55,7 +55,7 @@ describe('recordProject', () => {
       repos: [],
       egressAllowlist: { hosts: [], defaults: true },
       keptIgnoredPaths: [],
-      scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
+      scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], sizeGiB: 32, ignoredTracked: [] },
       portForwards: [],
       cacheVolumes: {},
       npmCache: true,
@@ -124,7 +124,7 @@ describe('listProjectRows', () => {
         repos: [],
         egressAllowlist: { hosts: [], defaults: true },
         keptIgnoredPaths: [],
-        scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], ignoredTracked: [] },
+        scratchDirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], sizeGiB: 32, ignoredTracked: [] },
         portForwards: [],
         cacheVolumes: {},
         npmCache: true,
@@ -198,11 +198,11 @@ describe('setProjectScratchDirs', () => {
     await recordProject({ id: APP, name: 'app', addedAt: '2026-01-01' }, BUILT_IN_USER_ID)
     const dirs = [{ path: 'node_modules' }, { path: 'target' }]
     expect(await setProjectScratchDirs(APP, { ignoredTracked: ['target'] }))
-      .toEqual({ dirs, ignoredTracked: ['target'] })
-    expect(await setProjectScratchDirs(APP, { dirs: [{ path: 'node_modules', sizeGiB: 4 }] }))
-      .toEqual({ dirs: [{ path: 'node_modules', sizeGiB: 4 }], ignoredTracked: ['target'] })
+      .toEqual({ dirs, sizeGiB: 32, ignoredTracked: ['target'] })
+    expect(await setProjectScratchDirs(APP, { dirs: [{ path: 'node_modules' }], sizeGiB: 4 }))
+      .toEqual({ dirs: [{ path: 'node_modules' }], sizeGiB: 4, ignoredTracked: ['target'] })
     expect((await getProjectRow(APP))?.scratchDirs)
-      .toEqual({ dirs: [{ path: 'node_modules', sizeGiB: 4 }], ignoredTracked: ['target'] })
+      .toEqual({ dirs: [{ path: 'node_modules' }], sizeGiB: 4, ignoredTracked: ['target'] })
     expect(await setProjectScratchDirs(randomUUID(), { dirs: [] })).toBeUndefined()
   })
 })

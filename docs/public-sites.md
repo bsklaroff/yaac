@@ -450,7 +450,8 @@ these ways:
   replacement launches that image again, so a release never changes under
   a later image config edit. The registry GC keeps a site's images though
   nothing runs them (docs/image-gc.md).
-- **Long-running.** No timeout, never a prewarmed spare. Its graph needs a
+- **Long-running.** No timeout, and a pod made on demand, never a
+  prewarmed spare. Its graph needs a
   service, and it is ready once every other step has succeeded and every
   service is ready.
 - **Outranks dev workspaces.** The `yaac-release` PriorityClass sits

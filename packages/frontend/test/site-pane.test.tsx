@@ -20,7 +20,7 @@ const ago = (minutes: number): string => new Date(Date.now() - minutes * 60_000)
 const PROJECT: ProjectSummary = {
   id: 'proj', name: 'proj', addedAt: '', owner: TEST_USER_ID, workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {},
   createDefaults: {}, repos: [projectRepo({ id: 'r-web', dir: 'web' }), projectRepo({ id: 'r-api', dir: 'api' })],
-  scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true,
+  scratchDirs: { dirs: [], sizeGiB: 32, ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true,
 }
 const WEB: SiteSummary = {
   id: 's-web', projectId: 'proj', name: 'web', published: true, hostname: 'app.example.com', edge: 'public', workflow: 'release', follow: false,

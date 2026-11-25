@@ -19,6 +19,10 @@ import { toErrorBody } from '#api/http/errors'
  */
 const KEEPALIVE_MS = 30_000
 
+/** The response header naming the workspace a create's stream provisions:
+ *  a spare's id when the start took one. */
+export const WORKSPACE_ID_HEADER = 'x-yaac-workspace-id'
+
 export function streamProvisioned(
   c: Context,
   run: (onProgress: (message: string) => void) => Promise<unknown>,

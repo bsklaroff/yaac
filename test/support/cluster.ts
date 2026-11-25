@@ -4,6 +4,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { projectDir, repoDir, claudeDir } from '@yaac/shared/project-paths'
+import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { ensureRootfulPodmanHost } from '@yaac/server/drivers/k8s/install/podman'
 import { applyObject, deleteObjects, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
@@ -76,13 +77,17 @@ async function testProxyControlOrigin(): Promise<string> {
 /**
  * Run a command inside a workspace Job's pod
  * (`kubectl exec -n <ns> job/<jobName> -- <args>`). No shell quoting needed.
+ * It runs with the workspace's variables, which a claim gives tmux's server
+ * rather than the container (docs/generic-workspace-pods.md), so it sees
+ * what a shell in one of the workspace's windows sees.
  */
 export async function execInJob(
   jobName: string,
   args: string[],
   opts: { timeout?: number } = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  return kubectl(['exec', '-n', k8sNamespace(), `job/${jobName}`, '--', ...args], opts)
+  const withEnv = `eval "$(tmux -S ${CONTAINER_TMUX_SOCK} show-environment -g -s 2>/dev/null)"; exec "$@"`
+  return kubectl(['exec', '-n', k8sNamespace(), `job/${jobName}`, '--', 'sh', '-c', withEnv, 'sh', ...args], opts)
 }
 
 /**

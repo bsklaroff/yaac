@@ -214,10 +214,7 @@ export async function prepareLaunches(
 
 /**
  * Open prepared launches' windows in a running workspace that has finished
- * its setup, in one exec, and resolve with what it printed. `before` is
- * what a caller needs run ahead of any window: shell commands, then tmux
- * commands, which the invocation that opens the windows runs first, and
- * the exec's timeout where those need longer than the default. One
+ * its setup, in one exec, and resolve with what it printed. One
  * opening message rides the exec's stdin, written before anything else can
  * read it; a second session's goes by its own exec (`leaveOpenings`).
  * Checks the agents came up without waiting on it: one that dies leaves its
@@ -226,7 +223,6 @@ export async function prepareLaunches(
 export async function openWindows(
   workspace: { projectId: string; workspaceId: string; jobName: string },
   launches: SessionLaunch[],
-  before: { shell?: string[]; tmux?: string[]; timeout?: number } = {},
 ): Promise<string> {
   const { projectId, workspaceId, jobName } = workspace
   const runtime = workspaceDriver()
@@ -237,14 +233,10 @@ export async function openWindows(
   if (riding !== undefined) markOpening(projectId, workspaceId, riding.window)
   const cmds = [
     ...(write !== undefined ? [`{ ${write.cmd}; }`] : []),
-    ...(before.shell ?? []),
-    buildWindowsExec(launches, paths, before.tmux),
+    buildWindowsExec(launches, paths),
   ].filter((cmd) => cmd !== '')
   if (cmds.length === 0) return ''
-  const { stdout } = await runtime.exec(jobName, cmds.join(' && '), {
-    ...(write !== undefined ? { stdin: write.stdin } : {}),
-    ...(before.timeout !== undefined ? { timeout: before.timeout } : {}),
-  })
+  const { stdout } = await runtime.exec(jobName, cmds.join(' && '), write !== undefined ? { stdin: write.stdin } : {})
   if (launches.length === 0) return stdout
   await markSessionsLaunched(launches.map((l) => l.session.id))
   void verifyAgentWindowAlive(jobName, launches.map((l) => l.window)).catch((err: unknown) => {

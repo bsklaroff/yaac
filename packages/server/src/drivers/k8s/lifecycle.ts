@@ -5,7 +5,7 @@ import {
   setActiveClusterCache,
   type WorkspaceDeltaSource,
 } from '#drivers/k8s/substrate'
-import { ensureMainRegistry } from '#drivers/k8s/cluster'
+import { ensureMainRegistry, ensureMountd, watchMountd } from '#drivers/k8s/cluster'
 import { proxyClient } from '#drivers/k8s/egress'
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
 import {
@@ -57,6 +57,8 @@ export function triggerFor(source: WorkspaceDeltaSource): K8sTrigger {
 let clusterCache: ClusterCache | null = null
 let portDetector: PortDetectorManager | null = null
 let stopDiskWatch: (() => void) | null = null
+/** Stops asking each node's mountd for its report. */
+let stopAgentWatch: (() => void) | null = null
 
 /** See `WorkspaceDriver.start`. */
 export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
@@ -123,9 +125,15 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
   cache.start()
   setActiveClusterCache(cache)
   stopDiskWatch = watchNodeDisks(sinks.trigger)
-  // In the background: it waits on a rollout, and nothing here needs it.
+  stopAgentWatch = watchMountd()
+  // In the background: each waits on a rollout, and nothing here needs it.
   void proxyClient.rollIfStale()
     .catch((err: unknown) => serverLog(`[server] proxy redeploy failed: ${String(err)}`))
+  // On this server's build, which mountd must report for its node to
+  // take starts (docs/generic-workspace-pods.md "Server restarts and
+  // upgrades").
+  void ensureMountd()
+    .catch((err: unknown) => serverLog(`[server] mountd rollout failed: ${String(err)}`))
 
   sinks.attached()
 }
@@ -141,6 +149,8 @@ export function stopK8sDriver(): void {
   portDetector = null
   stopDiskWatch?.()
   stopDiskWatch = null
+  stopAgentWatch?.()
+  stopAgentWatch = null
 }
 
 /** See `WorkspaceDriver.release`. */

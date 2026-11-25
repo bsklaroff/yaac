@@ -18,6 +18,8 @@ import {
 import {
   EGRESS_WORLD_DENY_NAME,
   LABEL_ROLE,
+  MOUNTD_APP_NAME,
+  MOUNTD_PORT,
   PROXY_APP_NAME,
   PROXY_INGRESS_NP_NAME,
   PROXY_PORT,
@@ -266,7 +268,7 @@ describe('buildServerEgressNpManifest', () => {
   const build = (tor: string | null) => buildServerEgressNpManifest(nodes, ['10.96.0.10/32'], apiserver, tor) as
     unknown as { metadata: { name: string }; spec: Spec }
 
-  it('selects the server by role, on its floor, adding the proxy and the apiserver', () => {
+  it('selects the server by role, on its floor, adding the proxy, the node pods it asks and the apiserver', () => {
     const manifest = build(null)
     expect(manifest.metadata.name).toBe(SERVER_EGRESS_NP_NAME)
     // Not `app`: a `cluster check` probe carrying the role must not join the
@@ -280,6 +282,8 @@ describe('buildServerEgressNpManifest', () => {
       },
       // Each node's disk pod, which only the server may ask.
       { to: [{ podSelector: { matchLabels: { app: 'yaac-disk' } } }], ports: [{ protocol: 'TCP', port: 8790 }] },
+      // Each node's agent, which binds a workspace into its pod.
+      { to: [{ podSelector: { matchLabels: { app: MOUNTD_APP_NAME } } }], ports: [{ protocol: 'TCP', port: MOUNTD_PORT }] },
       { to: [{ ipBlock: { cidr: '172.18.0.2/32' } }], ports: [{ protocol: 'TCP', port: 6443 }] },
     ])
   })

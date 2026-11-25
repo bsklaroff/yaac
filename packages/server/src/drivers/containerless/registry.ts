@@ -121,8 +121,6 @@ function toHandle(entry: Entry): RuntimeHandle {
     // Host processes have no labels.
     labels: {},
     createdAtMs: marker.createdAtMs,
-    // No spare pool here (creates are already fast).
-    prewarmed: false,
     // The domain's terminating mark covers a teardown in progress.
     terminating: false,
     deathCause: entry.deathCause,

@@ -1,7 +1,6 @@
 import { posix } from 'node:path'
 import { POD_WORKSPACE_DIR } from '@yaac/shared/project-paths'
-import { AGENT_CLIS, DEFAULT_SCRATCH_DIR_GIB, type ScratchDir } from '@yaac/shared/types'
-import type { ScratchDirMount } from '#drivers/contract'
+import { AGENT_CLIS, type ScratchDir } from '@yaac/shared/types'
 import { openRoot, type ConfinedRoot } from '#lib/confined-fs'
 
 // `lastOnboardingVersion` must be >= the running CLI's version, or a newer
@@ -106,7 +105,7 @@ export async function prepareScratchDirs(
   checkoutDirPath: string,
   checkoutPath: string,
   dirs: ScratchDir[],
-): Promise<ScratchDirMount[]> {
+): Promise<string[]> {
   // Confined to the checkout: a committed symlink must not turn this into a
   // mkdir elsewhere on the host. Links inside the checkout are followed.
   const checkout = await openRoot(checkoutDirPath, 'inside')
@@ -115,8 +114,5 @@ export async function prepareScratchDirs(
       throw new Error(`scratch dir "${path}": ${err instanceof Error ? err.message : String(err)}`)
     })
   }
-  return dirs.map(({ path, sizeGiB = DEFAULT_SCRATCH_DIR_GIB }) => ({
-    path: posix.join(POD_WORKSPACE_DIR, checkoutPath, path),
-    sizeBytes: sizeGiB * 1024 ** 3,
-  }))
+  return dirs.map(({ path }) => posix.join(POD_WORKSPACE_DIR, checkoutPath, path))
 }

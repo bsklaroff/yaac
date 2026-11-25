@@ -28,7 +28,7 @@ export async function reconcileWorkspaceTimeouts(snapshot: RuntimeSnapshot): Pro
   if (overdue.length === 0) return
   const provisioning = new Set(listProvisioning().map((p) => p.workspaceId))
   const running = new Set((await snapshot.workspaces())
-    .filter((h) => !h.terminating && !h.prewarmed)
+    .filter((h) => !h.terminating)
     .map((h) => h.workspaceId))
   for (const row of overdue) {
     if (provisioning.has(row.workspaceId) || !running.has(row.workspaceId)) continue

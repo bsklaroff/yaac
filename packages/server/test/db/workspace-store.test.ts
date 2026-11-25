@@ -13,6 +13,7 @@ import {
   getWorkspaceRow,
   countStoppedWorkspaces,
   listStoppedWorkspaceRows,
+  listRecentWorkspaces,
   listUncleanedStoppedWorkspaces,
   recordIgnoredFilesCleaned,
   listWorkspaceRows,
@@ -414,6 +415,33 @@ describe('session store', () => {
       expect(await findWorkspaceRow('abcdef')).toBeUndefined()
       expect(await findWorkspaceRow('nope')).toBeUndefined()
       expect(await findWorkspaceRow('')).toBeUndefined()
+    })
+  })
+
+  // Its current life decides: one restarted since an old stop runs now.
+  describe('listRecentWorkspaces', () => {
+    it('lists every project\'s workspaces running now or stopped at or after the time given', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      const t0 = Date.now()
+      try {
+        for (const id of ['old', 'recent', 'running', 'restarted']) await create(id)
+        await recordWorkspaceCreated({ projectId: OTHER, workspaceId: 'elsewhere' })
+        await recordWorkspaceStopped(PROJ, 'old')
+        await recordWorkspaceStopped(PROJ, 'restarted')
+        vi.setSystemTime(t0 + 10_000)
+        await recordWorkspaceStopped(PROJ, 'recent')
+        await restart('restarted')
+
+        const recent = await listRecentWorkspaces(new Date(t0 + 5_000))
+        expect(recent.sort((a, b) => a.workspaceId.localeCompare(b.workspaceId))).toEqual([
+          { projectId: OTHER, workspaceId: 'elsewhere' },
+          { projectId: PROJ, workspaceId: 'recent' },
+          { projectId: PROJ, workspaceId: 'restarted' },
+          { projectId: PROJ, workspaceId: 'running' },
+        ])
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 })

@@ -98,6 +98,12 @@ export async function resolveRemoteRef(repoPath: string, branch: string, remote:
   return resolveCommit(repoPath, `refs/remotes/${remote}/${branch}`)
 }
 
+/** Whether the main clone has `commit`, a full sha, as a commit. */
+export async function hasCommit(repoPath: string, commit: string): Promise<boolean> {
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(commit)) return false
+  return resolveCommit(repoPath, commit).then(() => true, () => false)
+}
+
 async function resolveCommit(repoPath: string, ref: string): Promise<string> {
   return (await runGit(repo(repoPath), ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`])).trim()
 }
@@ -137,8 +143,8 @@ export async function readBlobAt(repoPath: string, ref: string, blobPath: string
 
 /**
  * Per-repo fetch lock. Concurrent fetches on one repo fail on git's ref locks
- * ("cannot lock ref 'refs/remotes/origin/<b>'"), which happens when a create,
- * a claim of a spare and a branch listing fetch together. Different repos
+ * ("cannot lock ref 'refs/remotes/origin/<b>'"), which happens when two
+ * creates and a branch listing fetch together. Different repos
  * still fetch in parallel.
  */
 const fetchOriginMutex = createKeyedMutex()
@@ -431,8 +437,9 @@ async function writeCheckoutRefs(gitDir: string, main: MainRefs): Promise<void> 
   }
 }
 
-/** How many processes write a checkout's files; workspace-bin/yaac-workspace-init
- *  sets the same for the workspace's own git. More than 8 measured no faster. */
+/** How many processes write a checkout's files; a pod's claim
+ *  (dockerfiles/streamd/claim.js) sets the same for the workspace's own git.
+ *  More than 8 measured no faster. */
 const CHECKOUT_WORKERS = 8
 
 /**

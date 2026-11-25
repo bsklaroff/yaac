@@ -62,7 +62,7 @@ import {
   PLACEHOLDER_PI_API_KEY,
 } from '@yaac/shared/tool-auth'
 import { NO_CREDENTIALS_OWNER_KEY, authEntryEndpoint, authEntryProvider, credentialOwnerKey, defaultModelFor, isCatalogModel, loadToolAuthEntry, modelEfforts, seedProjectToolHome, toolKeyProviders } from '#domain/auth'
-import { getDefaultBranch, isGitAuthError, writeKnownHostsFile, type ResolvedGitCredential } from '#domain/git'
+import { getDefaultBranch, hasCommit, isGitAuthError, resolveRemoteRef, writeKnownHostsFile, type ResolvedGitCredential } from '#domain/git'
 import { serverLog } from '#lib/log'
 import { ofCheckout, startTiming, type StartTiming } from '#lib/start-timing'
 import type { AcpConversation } from '#runtime/agents'
@@ -93,13 +93,11 @@ import {
   checkoutDir,
   provisionCheckout,
   refuseCheckingOutOver,
-  storedSelection,
   workspaceCheckouts,
   workspaceCwds,
   type PlannedCheckout,
   type WorkspaceStart,
 } from './checkouts'
-import { spareSettings } from './prewarm'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from './codex-home'
 import {
   prepareScratchDirs,
@@ -107,19 +105,18 @@ import {
   seedClaudeSettings,
 } from './seed'
 import {
-  builtinSkillsDir, stageBuiltinSkills, builtinSkillMounts, reconcileSharedSkillRoots,
+  builtinSkillsDir, builtinSkillMounts, reconcileSharedSkillRoots,
 } from '#domain/skills'
 import { convergeAgentHistory } from './history'
 import { deleteWorkspaceState } from './cleanup'
 import { attachVolume, stageVolume } from './volumes'
-import { lifeHooksCommand, openTerminalLogs, startStepsOf } from './life'
+import { lifeHooksCommand, startStepsOf } from './life'
 import { offeredForwards } from './forward-port'
 import { lifeDirName, type StepGraph } from '@yaac/shared/steps'
 import { gitHead, importSharedFiles, prepareCheckpoints, readTreeTiming, relinkAlternates, restoreFailure, restorePointer, treeOf, treesApply, writeStartInstruction } from './trees'
 import { ACP_CONVERSATION_WAIT_MS } from './conversation-registry'
 import {
-  OPENCODE_CHECKPOINT_SCRIPT,
-  WORKSPACE_INIT_SCRIPT,
+  stageHelpers,
   workspaceBinDir,
   workspaceBinMounts,
   stageWorkspaceBin,
@@ -131,7 +128,6 @@ import {
   AGENT_CLIS,
   agentPermissionMode,
   DEFAULT_AGENT_MODE,
-  DEFAULT_SCRATCH_DIR_GIB,
   defaultPermissionMode,
   effortFor,
   launchablePermissionMode,
@@ -248,11 +244,6 @@ export interface WorkspaceCreateOptions {
    */
   resume?: boolean
   /**
-   * Provision a prewarmed spare, hidden from user-facing views until a later
-   * `workspace create` claims it. Set only by the prewarm reconciler.
-   */
-  prewarm?: boolean
-  /**
    * Sidebar group id (already resolved, not a name). Applied as soon as the
    * row exists, so the workspace never shows outside its group.
    */
@@ -284,8 +275,8 @@ export interface WorkspaceCreateOptions {
   stageVolumeId?: string
   /**
    * The image to launch (docs/image-builds.md): an image id, or
-   * `STOCK_IMAGE_ID`; absent, the project's default (a spare: the
-   * project's last choice; a restart: what it last launched). With
+   * `STOCK_IMAGE_ID`; absent, the project's default (a restart: what it
+   * last launched). With
    * `awaitBuild`, the image's current revision, waiting for its build.
    */
   imageId?: string
@@ -312,7 +303,7 @@ export interface WorkspaceCreateResult {
  * Resource requests and limits for one workspace. This is policy, sized for
  * ordinary developer hardware, so it lives here rather than in a driver.
  */
-const WORKSPACE_RESOURCES: WorkspaceResources = {
+export const WORKSPACE_RESOURCES: WorkspaceResources = {
   // An idle workspace already holds about 1 GiB, so the request covers that
   // plus room to spike. Less, and a node fills with workspaces whose idle
   // use alone nearly exhausts it, and one burst OOM-kills its neighbours.
@@ -339,9 +330,8 @@ interface WorkspaceSetupParams {
   workspaceId: string
   /** The sessions to bring up, in order. */
   sessions: SessionRow[]
-  /** The life this launch starts, absent for a prewarmed spare, which
-   *  starts one when it is claimed. */
-  life: Date | undefined
+  /** The life this launch starts. */
+  life: Date
   /**
    * Called as soon as the runtime has launched, before setup that can fail,
    * so the caller holds the handle needed to tear down a half-started
@@ -423,7 +413,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
     restoreWatch = false
   }
   // Where its tree is, for a salvage after a stop with no final pass.
-  if (spec.tree && life !== undefined) {
+  if (spec.tree) {
     const node = (await runtime.find(workspaceId).catch(() => undefined))?.node
     if (node !== undefined) await applyWorkspaceEvent({ type: 'life-node-found', projectId, workspaceId, node })
   }
@@ -450,7 +440,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
     if (tools.length > 0) emit(`Starting ${tools.join(', ')}...`, options)
   }
   const windows = buildWindowsExec(
-    launches, paths, life !== undefined ? [await lifeHooksCommand(projectId, workspaceId, life, paths)] : [],
+    launches, paths, [await lifeHooksCommand(projectId, workspaceId, life, paths)],
   )
   const opensEarly = early && launches.length > 0
   if (opensEarly) {
@@ -498,8 +488,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   if (!opensEarly) timeAgentBoots(workspaceId, launches)
   await markSessionsLaunched(launches.map((l) => l.session.id))
   await caught.settle(stdout)
-  // An idle spare is kept current by the pool (`refreshSpares`).
-  if (options.prewarm !== true) followOrigin(unit, caught.waiting)
+  followOrigin(unit, caught.waiting)
 
   // Check the agents actually started: opening a window succeeds even when
   // its command dies instantly. Not awaited, since the probe must wait for a
@@ -574,12 +563,10 @@ export async function whenAcpAgentUp(
 }
 
 /**
- * Time the phases of a pod's own start that its programs record: the tree
- * container's wait for its start instruction and its fill, and the init
- * hook's run, which leaves the mtimes of two files in the terminal log dir
- * (keep their names in sync with workspace-bin/yaac-workspace-init). Files
- * older than the launch are an earlier life's. A runtime that runs neither
- * leaves none of them.
+ * Time the phases of a pod's own start that its tree container records: its
+ * wait for its start instruction and its fill. A record older than the
+ * launch is an earlier life's, or a spare's from before its take. A runtime
+ * that runs no tree container leaves none.
  */
 async function timeInPod(
   timing: StartTiming,
@@ -588,19 +575,11 @@ async function timeInPod(
   life: string | undefined,
   launchedAt: number,
 ): Promise<void> {
-  const logs = await openTerminalLogs(projectId, workspaceId).catch(() => null)
-  const mark = (name: string): Promise<number | undefined> => (logs?.stat(name) ?? Promise.resolve(null))
-    .then((st) => (st !== null && st.mtimeMs >= launchedAt ? st.mtimeMs : undefined), () => undefined)
-  const [tree, initStart, initEnd] = await Promise.all([
-    life !== undefined ? readTreeTiming(projectId, workspaceId, life) : null,
-    mark('.init-start'),
-    mark('.init-end'),
-  ])
+  const tree = life !== undefined ? await readTreeTiming(projectId, workspaceId, life) : null
   if (tree !== null && tree.process >= launchedAt) {
     timing.phase('tree.wait', tree.process, tree.instruction)
     timing.phase('tree.fill', tree.instruction, tree.filled)
   }
-  if (initStart !== undefined && initEnd !== undefined) timing.phase('init', initStart, initEnd)
 }
 
 /**
@@ -659,8 +638,7 @@ export function launchPermissionMode(args: {
   return requested
 }
 
-/** A create with every choice resolved: what the route launches and what a
- *  prewarmed spare is warmed as. */
+/** A create with every choice resolved: what the route launches. */
 export interface CreateSetup {
   tool: AgentTool
   /** Absent when the catalog has no model for the tool's provider; the
@@ -796,15 +774,34 @@ function namedEffort(tool: AgentTool, model: string, effort: string, endpoint: C
 }
 
 /**
- * Start a workspace from scratch: a fresh create, a restart, or the
- * warming of a spare. Its phases are timed into the server log
+ * The commit a checkout's tree is built from on its node: one the main
+ * clone has, since the arborist builds from it alone. That is the
+ * start commit, else the main clone's tip of the checkout's branch, else of
+ * its default branch. The tree container writes the checkout's own HEAD
+ * onto the built tree from its `.git`, so a HEAD only the workspace has (an
+ * old row's, with no start commit recorded, and commits of its own) still
+ * restarts.
+ */
+async function treeCommit(mainClone: string, commit: string | undefined, branch: string | undefined): Promise<string | undefined> {
+  if (commit !== undefined && await hasCommit(mainClone, commit)) return commit
+  for (const b of [branch, await getDefaultBranch(mainClone).catch(() => undefined)]) {
+    if (b === undefined) continue
+    const tip = await resolveRemoteRef(mainClone, b).catch(() => undefined)
+    if (tip !== undefined) return tip
+  }
+  return commit
+}
+
+/**
+ * Start a workspace: a fresh create, which may be in a spare its start took
+ * (`takeSpareFor`), or a restart. Its phases are timed into the server log
  * (#lib/start-timing).
  */
 export function createWorkspace(
   projectId: string,
   options: WorkspaceCreateOptions,
 ): Promise<WorkspaceCreateResult> {
-  const timing = startTiming(options.prewarm === true ? 'warm' : options.resume === true ? 'restart' : 'create', options.workspaceId)
+  const timing = startTiming(options.resume === true ? 'restart' : 'create', options.workspaceId)
   const created = provisionWorkspace(projectId, options, timing)
   created.then(() => { timing.end('ok') }, () => { timing.end('failed') })
   return created
@@ -995,13 +992,10 @@ async function provisionWorkspace(
   // group go in with it, so the workspace shows in its group while it
   // provisions.
   //
-  // A prewarmed spare gets no row until it is claimed; its settings are
-  // kept in memory for the claim to match on, once its image is known. The
-  // base branches are recorded now because a workspace queued after this
-  // one defaults to them. The user's zone, as clients report it; a pod
+  // The base branches are recorded now because a workspace queued after
+  // this one defaults to them. The user's zone, as clients report it; a pod
   // otherwise runs in UTC, and a containerless server's host need not be
-  // where the user is. Recorded so a spare warmed in another zone is never
-  // claimed. Scratch dirs are the project's, in every checkout.
+  // where the user is. Scratch dirs are the project's, in every checkout.
   const { timeZone } = await getTimeZone(owner)
   const scratchDirPaths = projectRow.scratchDirs.dirs.map((d) => d.path)
   const launch = {
@@ -1015,8 +1009,7 @@ async function provisionWorkspace(
   }))
   throwIfProvisionStopped(workspaceId)
   // Never at or before the life it restarts from, whatever the clock has
-  // done since: the newest life is the current one. A spare's tree is
-  // named for when it was warmed, and its life starts at its claim.
+  // done since: the newest life is the current one.
   const lifeAt = new Date(Math.max(Date.now(), (resumedRow?.lifeStartedAt.getTime() ?? 0) + 1))
   const treeName = treeLife ? lifeDirName(lifeAt) : undefined
   let restore: string | undefined
@@ -1038,16 +1031,15 @@ async function provisionWorkspace(
     restore = await restorePointer(projectId, workspaceId, { newestReadable: options.restoreNewest === true })
   }
   // A life starts with the workspace's row, or as a restart's next one,
-  // before any session is launched in it. A spare has neither.
-  let life: Date | undefined
-  if (options.prewarm !== true) {
+  // before any session is launched in it.
+  const life = lifeAt
+  {
     const lifeStart = options.workflow !== undefined && options.resume !== true
       ? { flows: [{ id: options.workflow.id, name: options.workflow.name, steps: options.workflow.steps }], skipped: [] }
       : await startStepsOf(projectId, resumedRow, checkouts.map((c) => c.repo.id))
     for (const s of lifeStart.skipped) {
       emit(`Init workflow "${s.name}" skipped: this workspace has no ${s.missing.join(', ')}`, options)
     }
-    life = lifeAt
     const started = {
       projectId,
       workspaceId,
@@ -1088,16 +1080,14 @@ async function provisionWorkspace(
     await prepareCheckpoints(projectId, workspaceId, treeName)
   }
   const scratchDirs = treeName !== undefined
-    ? checkouts.flatMap((c) => projectRow.scratchDirs.dirs.map(({ path: d, sizeGiB = DEFAULT_SCRATCH_DIR_GIB }) => ({
-      path: path.posix.join(POD_WORKSPACE_DIR, c.path, d), sizeBytes: sizeGiB * 1024 ** 3,
-    })))
+    ? checkouts.flatMap((c) => projectRow.scratchDirs.dirs.map(({ path: d }) => path.posix.join(POD_WORKSPACE_DIR, c.path, d)))
     : (await Promise.all(checkouts.map((c) => prepareScratchDirs(c.dir, c.path, projectRow.scratchDirs.dirs)))).flat()
 
   // A fresh create's session is recorded with its prompt; an `acp` one's
   // waits on the row for its conversation, which the registry's sweep sends
   // it (`reconcileWorkspaceConversations`).
-  const sessions: SessionRow[] = options.prewarm === true ? []
-    : options.session !== undefined ? [await insertSession(projectId, workspaceId, options.session)] : resumed
+  const sessions: SessionRow[] = options.session !== undefined
+    ? [await insertSession(projectId, workspaceId, options.session)] : resumed
 
   // ── Concurrent provisioning ─────────────────────────────────────────
   // Image, checkouts, substrate and host fs prep run concurrently. The
@@ -1113,8 +1103,8 @@ async function provisionWorkspace(
         projectId,
         ...(imageId !== undefined ? { imageId } : {}),
         awaitBuild: options.awaitBuild === true,
-        remember: options.prewarm !== true && options.resume !== true,
-        reason: options.prewarm === true ? 'prewarm' : 'create',
+        remember: options.resume !== true,
+        reason: 'create',
         requestedBy: owner,
         onProgress: (m) => emit(m, options),
       })))
@@ -1140,12 +1130,11 @@ async function provisionWorkspace(
       ...(treeName !== undefined ? { gitOnly: true } : {}),
       ...(follows ? {} : { settled: true }),
     })
-    // A spare's are read when it is claimed, against the branch it is
-    // claimed for.
-    if (options.prewarm !== true && startCommit !== undefined) {
+    if (startCommit !== undefined) {
       await applyWorkspaceEvent({ type: 'start-commit-resolved', projectId, workspaceId, repoId: c.repo.id, startCommit })
     }
-    return { c, startCommit: startCommit ?? c.startCommit ?? c.commit ?? await gitHead(path.join(c.dir, '.git')) }
+    const commit = startCommit ?? c.startCommit ?? c.commit ?? await gitHead(path.join(c.dir, '.git'))
+    return { c, startCommit: treeName === undefined ? commit : await treeCommit(repoDir(c.repo.id), commit, c.refBranch ?? c.branch) }
   })).then(async (made) => {
     // Every `.git` is in place: the tree container may fill the tree.
     if (treeName !== undefined) {
@@ -1163,13 +1152,11 @@ async function provisionWorkspace(
         ...(options.restoreNewest === true ? { restoreNewestReadable: true } : {}),
       })
     }
-    if (options.prewarm !== true) {
-      await recordTrackedScratchDirs(projectId, workspaceId, checkouts.map((c) => ({
-        repoId: c.repo.id,
-        path: c.path,
-        base: c.refBranch ?? c.branch ?? c.commit,
-      })), scratchDirPaths)
-    }
+    await recordTrackedScratchDirs(projectId, workspaceId, checkouts.map((c) => ({
+      repoId: c.repo.id,
+      path: c.path,
+      base: c.refBranch ?? c.branch ?? c.commit,
+    })), scratchDirPaths)
     // `refBranch` is a fresh create's from a branch.
     return made.flatMap(({ c, startCommit }): Following[] => (follows && c.refBranch !== undefined && startCommit !== undefined
       ? [{ repoId: c.repo.id, path: c.path, branch: c.refBranch, at: startCommit, fetched: fetches.get(c.repo.id) ?? Promise.resolve() }]
@@ -1241,8 +1228,8 @@ async function provisionWorkspace(
       }
     }
 
-    // Every tool's credential, not just the active one's: a prewarmed spare
-    // can be switched to any tool when claimed. Alongside, the shared dirs
+    // Every tool's credential, not just the active one's: a workspace can
+    // start an agent of any tool. Alongside, the shared dirs
     // the pod mounts, made before launch since the kubelet creates missing
     // subPaths root-owned. The checkpoint holds this workspace's opencode
     // history: a pod restores from and saves back to it, containerless uses
@@ -1271,7 +1258,6 @@ async function provisionWorkspace(
     // The rest at once, since each writes files of its own (claude's
     // settings.json, which two of them update, is locked) and the agent
     // waits on all of it.
-    const builtinSkillsStaging = path.join(workspaceStateDir(projectId, workspaceId), 'builtin-skills')
     const workspaceBinStaging = path.join(workspaceStateDir(projectId, workspaceId), 'bin')
     // SSH remotes need a known_hosts file, written from the host key each
     // credential was assigned with. How it reaches the workspace is the
@@ -1279,9 +1265,9 @@ async function provisionWorkspace(
     const sshKnownHostsFile = sshHostKeys.length > 0
       ? path.join(workspaceStateDir(projectId, workspaceId), 'known_hosts')
       : undefined
-    const [opencodeConfigFile, builtinSkillNames, workspaceBinNames] = await Promise.all([
+    const [opencodeConfigFile, helpers] = await Promise.all([
       (async () => {
-        // Seed every tool's config (a retooled spare needs it too). Claude
+        // Seed every tool's config (any tool's agent may start). Claude
         // gets onboarding state so it skips the first-run wizard and login,
         // and its trusted roots as the agent will see them. The homes are
         // writable by the workspace, so writes go through a sandboxed dir
@@ -1308,15 +1294,16 @@ async function provisionWorkspace(
         ])
         return keys.opencodeConfigFile
       })(),
-      // yaac's bundled skills: a pod gets a per-workspace copy mounted
-      // read-only into each tool's skills root; containerless links them
-      // into the project's shared skills roots instead.
+      // yaac's bundled skills and helper commands: a pod gets its build's,
+      // mounted read-only (skills into each tool's skills root);
+      // containerless links the skills into the project's shared skills
+      // roots and copies the commands for this workspace.
       sandboxed
-        ? stageBuiltinSkills(builtinSkillsDir(), builtinSkillsStaging)
-        : reconcileSharedSkillRoots(builtinSkillsDir(), projectId, 'link'),
-      // In-workspace helper commands (yaac-mama, yaac-workspace-init),
-      // staged like the skills.
-      stageWorkspaceBin(workspaceBinDir(), workspaceBinStaging),
+        ? stageHelpers()
+        : Promise.all([
+          reconcileSharedSkillRoots(builtinSkillsDir(), projectId, 'link'),
+          stageWorkspaceBin(workspaceBinDir(), workspaceBinStaging),
+        ]).then(([, binNames]) => ({ binDir: workspaceBinStaging, binNames, skillsDir: '', skillNames: [] as string[] })),
       // Every tool's history for this workspace in the layout this driver
       // uses (mounted over the tool homes, or linked into them).
       convergeAgentHistory(projectId, workspaceId, cwds, { layers: sandboxed }),
@@ -1329,7 +1316,7 @@ async function provisionWorkspace(
         ? [writeKnownHostsFile(sshHostKeys, sshKnownHostsFile)]
         : []),
     ])
-    if (sandboxed && builtinSkillNames.length > 0) {
+    if (sandboxed && helpers.skillNames.length > 0) {
       // Pre-create the skills roots and per-skill mountpoints server-owned;
       // the kubelet would create them root-owned, blocking the agent's own
       // skills and a later containerless run. Best-effort: the skills mount
@@ -1342,7 +1329,7 @@ async function provisionWorkspace(
 
     return {
       toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
-      builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,
+      helpers,
       claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi, omp,
       cachedPackages, acpLogs, terminalLogs, attachments, claudeSessions,
     }
@@ -1353,21 +1340,9 @@ async function provisionWorkspace(
   const imageRef = launchImage?.ref
   if (launchImage) await setWorkspaceImage(workspaceId, launchImage)
   const joinedAt = Date.now()
-  // The image too, so a spare that outlives an image change is never
-  // claimed, and what it started with, which a claim must ask for exactly.
-  if (options.prewarm === true && options.start !== undefined) {
-    spareSettings.set(workspaceId, {
-      ...launch,
-      ...(treeName !== undefined ? { treeDir: treeName } : {}),
-      selection: storedSelection(options.start),
-      repos: recordedRepos,
-      gitIdentity: gitUser,
-      ...(imageRef !== undefined ? { image: imageRef } : {}),
-    })
-  }
   const {
     toolAuthByTool, keyProviders, opencodeConfigFile, sshKnownHostsFile, cacheVolumeEntries,
-    builtinSkillsStaging, builtinSkillNames, workspaceBinStaging, workspaceBinNames,
+    helpers,
     claude, codex, opencodeData, opencodeCheckpoint, opencodeConfig, pi, omp,
     cachedPackages, acpLogs, terminalLogs, attachments, claudeSessions,
   } = prep
@@ -1393,7 +1368,7 @@ async function provisionWorkspace(
   // (docs/containerless-driver.md). The same token is the workspace's
   // credential for a hosted remote.
   let mama: { token: string; origin: string | undefined } | undefined
-  if (!sandboxed && !options.prewarm) {
+  if (!sandboxed) {
     const mamaToken = crypto.randomBytes(32).toString('hex')
     await setWorkspaceMamaTokenHash(
       projectId,
@@ -1439,7 +1414,7 @@ async function provisionWorkspace(
   // (workspace-bin/yaac-log-mask).
   if (runSecrets.length > 0) env.push(`YAAC_MASK_NAMES=${runSecrets.map(([name]) => name).join(' ')}`)
 
-  // API-key env vars for every tool (a spare may be retooled at claim), so
+  // API-key env vars for every tool (any tool's agent may start), so
   // no tool prompts for login. With mediated egress these are placeholders
   // the proxy swaps by destination host and placeholder, regardless of the
   // workspace's tool (see k8s/proxy/injection.ts); without it they are the
@@ -1508,8 +1483,8 @@ async function provisionWorkspace(
   }
 
   // Keep opencode and claude on their pinned versions, since launch commands
-  // are written against those versions' flags. Set for every tool so a
-  // retooled spare has them.
+  // are written against those versions' flags. Set for every tool, since
+  // any tool's agent may start.
   env.push('OPENCODE_DISABLE_AUTOUPDATE=1')
   env.push('DISABLE_AUTOUPDATER=1')
 
@@ -1560,7 +1535,7 @@ async function provisionWorkspace(
 
   // The workspace dir as the workspace sees it (containerless translates
   // the mount path), and its checkouts relative to it (`.` for one at the
-  // root), colon-separated: read by yaac-workspace-init and yaac-mama.
+  // root), colon-separated: read by yaac-mama.
   env.push(`YAAC_WORKSPACE_DIR=${POD_WORKSPACE_DIR}`)
   env.push(`YAAC_CHECKOUTS=${checkouts.map((c) => c.path || '.').join(':')}`)
   env.push(`YAAC_GIT_NAME=${gitUser.name}`)
@@ -1583,7 +1558,7 @@ async function provisionWorkspace(
       { source: { kind: 'hostPath', path: opencodeCheckpoint }, mountPath: CONTAINER_OPENCODE_CHECKPOINT },
     ]
   const history = (part: AgentHistoryPart): string => agentHistoryDir(projectId, workspaceId, part)
-  const binMounts = workspaceBinMounts(workspaceBinStaging, workspaceBinNames)
+  const binMounts = workspaceBinMounts(helpers.binDir, helpers.binNames)
   const allMounts: WorkspaceMount[] = [
     // A tree on the node is mounted by the runtime, from `spec.tree`.
     ...(treeName === undefined ? [{ source: { kind: 'hostPath', path: wtDir }, mountPath: POD_WORKSPACE_DIR } as WorkspaceMount] : []),
@@ -1638,7 +1613,7 @@ async function provisionWorkspace(
     })),
     // Server-staged skills and helper commands. Without layering the skills
     // are already linked in.
-    ...(sandboxed ? builtinSkillMounts(builtinSkillsStaging, builtinSkillNames) : []),
+    ...(sandboxed ? builtinSkillMounts(helpers.skillsDir, helpers.skillNames) : []),
     ...binMounts,
   ]
   // A public site's release runs no agent and faces the internet, so it
@@ -1687,13 +1662,13 @@ async function provisionWorkspace(
   const spec: WorkspaceSpec = {
     projectId,
     workspaceId: workspaceId,
-    prewarm: options.prewarm === true,
     ...(imageRef !== undefined ? { image: imageRef } : {}),
     env,
     secretEnvKeys,
     ...(sandboxed && runSecrets.length > 0 ? { runSecrets: runSecrets.map(([name]) => name) } : {}),
     mounts,
     scratchDirs,
+    scratchBytes: projectRow.scratchDirs.sizeGiB * 1024 ** 3,
     ...(treeName !== undefined
       ? {
         tree: await treeOf(projectId, workspaceId, treeName, {
@@ -1703,14 +1678,6 @@ async function provisionWorkspace(
       }
       : {}),
     resources: WORKSPACE_RESOURCES,
-    // In-workspace setup (git identity, tmux, agent transport); the runtime
-    // reports ready only after it finishes.
-    postStartExec: [`/usr/local/bin/${WORKSPACE_INIT_SCRIPT}`],
-    // A pod checkpoints and clears its opencode working copy on stop, so it
-    // leaves nothing on its node. Containerless keeps no working copy.
-    ...(runtime.kind === 'containerless'
-      ? {}
-      : { preStopExec: [`/usr/local/bin/${OPENCODE_CHECKPOINT_SCRIPT}`, 'stop'] }),
     cwd,
     ...(sshKnownHostsFile !== undefined
       ? { ssh: { knownHostsFile: sshKnownHostsFile } }
@@ -1755,8 +1722,8 @@ async function provisionWorkspace(
   } catch (err) {
     // Tear down the half-started unit, or it would list as a bogus
     // workspace and collide with a relaunch. Keep the prepared substrate
-    // (`unitOnly`) when the row survives (a resume). A fresh create or warm
-    // tears down everything, since nothing of it is kept.
+    // (`unitOnly`) when the row survives (a resume). A fresh create tears
+    // down everything, since nothing of it is kept.
     const unitOnly = !failedCreateCollectsCheckout(options)
 
     // If `launch` failed after the unit was created, `onLaunched` never
@@ -1765,7 +1732,7 @@ async function provisionWorkspace(
     // unit of this project is torn down.
     let podGone: boolean
     try {
-      target ??= await workspaceDriver().findForTeardown(workspaceId, { spares: options.prewarm === true })
+      target ??= await workspaceDriver().findForTeardown(workspaceId)
       if (target !== undefined && target.projectId !== projectId) target = undefined
       podGone = target === undefined
         ? true
@@ -1785,21 +1752,18 @@ async function provisionWorkspace(
     if (staged !== undefined && podGone) {
       await unstageVolume(staged, workspaceId).catch(() => { /* the site's deploy clears it */ })
     }
-    // A fresh create or warm deletes its own checkout (see
-    // failedCreateCollectsCheckout); no sweep would find it once the row,
-    // or the spare's unit, is gone. Chained after the checkout leg, which
-    // may still be running after a pod-side failure and would otherwise
-    // recreate the dir after the delete. Each step runs only if the previous
-    // one succeeded; if the row stays, the stale reaper turns it into a
-    // stopped workspace the user can delete. A warm has no row to delete:
-    // no claim takes a spare still warming.
+    // A fresh create deletes its own checkout (see
+    // failedCreateCollectsCheckout); no sweep would find it once the row is
+    // gone. Chained after the checkout leg, which may still be running after
+    // a pod-side failure and would otherwise recreate the dir after the
+    // delete. Each step runs only if the previous one succeeded; if the row
+    // stays, the stale reaper turns it into a stopped workspace the user can
+    // delete.
     if (failedCreateCollectsCheckout(options)) {
       void workspaceTask
         .catch(() => { /* the failure is already the caller's */ })
         .then(() => podGone && deleteWorkspaceState(projectId, workspaceId))
-        .then((removed) => (removed && options.prewarm !== true
-          ? reportCreateFailed(projectId, workspaceId)
-          : undefined))
+        .then((removed) => (removed ? reportCreateFailed(projectId, workspaceId) : undefined))
         .catch(() => { /* best-effort; nothing else can retry it */ })
     }
     throw err
@@ -1808,10 +1772,8 @@ async function provisionWorkspace(
   // The life is up. A lost write only matters if its runtime vanishes
   // while no server watches, which then reads as a restart that never came
   // up.
-  if (options.prewarm !== true) {
-    await applyWorkspaceEvent({ type: 'workspace-launched', projectId, workspaceId })
-      .catch((err: unknown) => serverLog(`[server] create ${workspaceId}: recording its launch: ${String(err)}`))
-  }
+  await applyWorkspaceEvent({ type: 'workspace-launched', projectId, workspaceId })
+    .catch((err: unknown) => serverLog(`[server] create ${workspaceId}: recording its launch: ${String(err)}`))
 
   return {
     workspaceId,
@@ -1823,13 +1785,12 @@ async function provisionWorkspace(
 }
 
 /**
- * The image a launch asks for: the create's own choice, a spare's
- * project's last choice, or what a restarted workspace last launched
- * (`storedImageId`). Absent takes the project default.
+ * The image a launch asks for: the create's own choice, or what a
+ * restarted workspace last launched (`storedImageId`). Absent takes the
+ * project default.
  */
 async function launchImageId(options: WorkspaceCreateOptions, projectId: string): Promise<string | undefined> {
   if (options.imageId !== undefined) return options.imageId
-  if (options.prewarm === true) return (await getProjectRow(projectId))?.lastImageId ?? undefined
   if (options.resume === true && options.workspaceId !== undefined) {
     const row = await getWorkspaceRow(projectId, options.workspaceId)
     if (row) return storedImageId(row)

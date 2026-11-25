@@ -6,9 +6,10 @@ import {
   addPortForward,
   cacheVolumesSchema,
   portForwardsSchema,
-  resolveProjectConfig,
   updateProjectConfig,
 } from '#domain/projects'
+// Internal, to read the stored settings back.
+import { resolveProjectConfig } from '#domain/projects/config'
 
 const FOO = 'acbd18db-4cc2-485c-8def-654fccc4a4d8'
 const MISSING = 'ea21841d-a70e-4405-8f19-fabc4ff8bdd9'
@@ -75,13 +76,6 @@ describe('cacheVolumesSchema', () => {
     for (const key of ['../../../.credentials', 'a/b', '..', '.', '.hidden', '', 'x'.repeat(65), 'a b']) {
       expect(issue(cacheVolumesSchema, { [key]: '/cache' })).toMatch(`name "${key}"`)
     }
-  })
-})
-
-describe('resolveProjectConfig', () => {
-  it('answers a project\'s settings, the defaults until set, and undefined for no project', async () => {
-    expect(await resolveProjectConfig(FOO)).toEqual(PROJECT_CONFIG_DEFAULTS)
-    expect(await resolveProjectConfig(MISSING)).toBeUndefined()
   })
 })
 

@@ -617,6 +617,30 @@ describe('openDb', () => {
     }
   })
 
+  // A pod's scratch dirs share one volume, so each project's per-dir caps
+  // (16 GiB for a dir that named none) become one size, their sum, or the
+  // default for a project with no dirs.
+  it('folds each project\'s scratch dir caps into one size', async () => {
+    const [DEFAULTS, SIZED, NONE] = [1, 2, 3].map((n) => `0e0e0e0e-0000-4000-8000-00000000000${n}`)
+    const db = await seedBefore('scratch_size', `
+      INSERT INTO projects (id, owner, name, added_at, scratch_dirs) VALUES
+        ('${DEFAULTS}', (SELECT id FROM users LIMIT 1), 'defaults', '2026-01-01', DEFAULT),
+        ('${SIZED}', (SELECT id FROM users LIMIT 1), 'sized', '2026-01-01',
+          '{"dirs":[{"path":"node_modules","sizeGiB":40},{"path":"dist"}],"ignoredTracked":["dist"]}'),
+        ('${NONE}', (SELECT id FROM users LIMIT 1), 'none', '2026-01-01', '{"dirs":[],"ignoredTracked":[]}');
+    `)
+    try {
+      const rows = await db.$client.query<{ name: string; scratch_dirs: unknown }>('SELECT name, scratch_dirs FROM projects ORDER BY name')
+      expect(rows.rows).toEqual([
+        { name: 'defaults', scratch_dirs: { dirs: [{ path: 'node_modules' }, { path: 'target' }], sizeGiB: 32, ignoredTracked: [] } },
+        { name: 'none', scratch_dirs: { dirs: [], sizeGiB: 32, ignoredTracked: [] } },
+        { name: 'sized', scratch_dirs: { dirs: [{ path: 'node_modules' }, { path: 'dist' }], sizeGiB: 56, ignoredTracked: ['dist'] } },
+      ])
+    } finally {
+      await db.$client.close()
+    }
+  })
+
   // The same refusal covers a newer server's database and an install that
   // lost its own migration files, so the message names both.
   it('refuses a database recording a migration this build does not ship', async () => {

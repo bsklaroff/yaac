@@ -190,8 +190,8 @@ had before a move off yaac is refused until that copy is removed, since
 the new one takes its place on disk.
 
 It holds the repo and its projects (`withRepoHeld`, `withProjectsHeld`),
-stops every workspace holding a checkout and reaps the spares warmed with
-it (`GET /api/repo/<id>/host-preview` names them first), fetches origin
+stops every workspace holding a checkout
+(`GET /api/repo/<id>/host-preview` names them first), fetches origin
 (a failed fetch refuses the move, so the hosted repository misses nothing),
 fills the bare repository at `hostedRepoDir(id)` with every `origin/*`
 branch and tag (`fillHostedRepo`), copies `origin/*` to `upstream/*`, and

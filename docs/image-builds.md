@@ -50,9 +50,11 @@ request's callbacks.
   registry lacks its chain: a new trusted chain after an upgrade gives every
   project image a new tag. A recent failure of that tag holds it off for
   ten minutes. It is skipped in e2e.
-- **The spare** is warmed on the image the project's last create used, at
-  its last built revision. A create naming another image, or waiting for a
-  build, starts cold.
+- **Spares** are kept on the image the project's last create used, at its
+  last built revision, while the project has a recent workspace
+  (docs/generic-workspace-pods.md "Pool policy"). A spare belongs to no
+  project, so projects on one image share its pool. A create on another
+  image, or waiting for a build, gets a pod made on demand.
 - **Sites** name an image in their settings; a release still pins the image
   it launched, which a replacement or restart launches again.
 - **Retention.** Image GC keeps each image's two newest builds per project

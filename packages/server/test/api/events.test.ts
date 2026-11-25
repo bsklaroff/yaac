@@ -53,7 +53,7 @@ function emptySnapshot(): ServerSnapshot {
 function snapshotWithProject(projectId: string): ServerSnapshot {
   return {
     ...emptySnapshot(),
-    projects: [{ id: projectId, name: 'demo', addedAt: '2026-01-01', owner: 'u1', workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [], scratchDirs: { dirs: [], ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true }],
+    projects: [{ id: projectId, name: 'demo', addedAt: '2026-01-01', owner: 'u1', workspaceCount: 0, stoppedCount: 0, deaths: 0, deathsSeenBy: {}, createDefaults: {}, repos: [], scratchDirs: { dirs: [], sizeGiB: 32, ignoredTracked: [] }, portForwards: [], cacheVolumes: {}, npmCache: true }],
   }
 }
 

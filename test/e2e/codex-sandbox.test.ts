@@ -70,9 +70,11 @@ async function inSandbox(pod: string, profile: string): Promise<string> {
 }
 
 /**
- * The pod a workspace Job would run, minus the proxy-CA volume: its
- * ConfigMap lives in the install namespace and would leave the pod stuck in
- * ContainerCreating.
+ * The pod a workspace Job would run, less what lives in the install
+ * namespace (the proxy CA's ConfigMap, the helpers on the shared tier, whose
+ * postStart hook would fail without them) and the node-mounts directory a
+ * claim binds from. The checkout and codex home are mounted as volumes of
+ * the pod's own, as a claim would bind them.
  */
 async function workspacePod(pod: string): Promise<Record<string, unknown>> {
   const { tag } = (await resolveTrustedLayers('yaac-test')).tools
@@ -82,8 +84,13 @@ async function workspacePod(pod: string): Promise<Record<string, unknown>> {
   interface Template {
     metadata: Record<string, unknown>
     spec: {
-      volumes: Array<{ name: string }>
-      containers: Array<{ volumeMounts: Array<{ name: string }> }>
+      affinity?: unknown
+      volumes: Array<Record<string, unknown> & { name: string }>
+      containers: Array<{
+        command?: string[]
+        lifecycle?: unknown
+        volumeMounts: Array<Record<string, unknown> & { name: string }>
+      }>
     }
   }
   const job = buildPodJobManifest({
@@ -92,11 +99,9 @@ async function workspacePod(pod: string): Promise<Record<string, unknown>> {
     labels: { 'yaac.test': 'true' },
     image: registryRef(tag),
     env: [`CODEX_HOME=${CODEX_CONTAINER_HOME}`],
-    mounts: [
-      { source: { kind: 'emptyDir' }, mountPath: WORKSPACE },
-      // All hostPath, which a pod mount takes as is.
-      ...codexHomeMounts('k8s', codexDir) as PodMount[],
-    ],
+    nodeMountsDir: pod,
+    helpers: 'unused',
+    scratchBytes: 1024 ** 3,
     memoryRequestBytes: 256 * 1024 ** 2,
     memoryLimitBytes: 2 * 1024 ** 3,
     cpuRequestMillis: 100,
@@ -104,11 +109,30 @@ async function workspacePod(pod: string): Promise<Record<string, unknown>> {
     ephemeralStorageRequestBytes: 1024 ** 3,
     ephemeralStorageLimitBytes: 4 * 1024 ** 3,
     proxyHost: '10.96.0.10',
+    nodeNames: [],
   }) as unknown as { spec: { template: Template } }
   const { metadata, spec } = job.spec.template
-  spec.volumes = spec.volumes.filter((v) => v.name !== 'proxy-ca')
+  const dropped = new Set(['proxy-ca', 'helpers', 'node-mounts'])
+  const own: PodMount[] = [
+    { source: { kind: 'emptyDir' }, mountPath: WORKSPACE },
+    // All hostPath, which a pod mount takes as is.
+    ...codexHomeMounts('k8s', codexDir) as PodMount[],
+  ]
+  delete spec.affinity
+  spec.volumes = [
+    ...spec.volumes.filter((v) => !dropped.has(v.name)),
+    ...own.map((m, i) => ({
+      name: `own-${String(i)}`,
+      ...(m.source.kind === 'hostPath' ? { hostPath: { path: m.source.path } } : { emptyDir: {} }),
+    })),
+  ]
   for (const c of spec.containers) {
-    c.volumeMounts = c.volumeMounts.filter((m) => m.name !== 'proxy-ca')
+    c.command = ['sleep', 'infinity']
+    delete c.lifecycle
+    c.volumeMounts = [
+      ...c.volumeMounts.filter((m) => !dropped.has(m.name)),
+      ...own.map((m, i) => ({ name: `own-${String(i)}`, mountPath: m.mountPath, readOnly: m.readOnly ?? false })),
+    ]
   }
   return {
     apiVersion: 'v1',

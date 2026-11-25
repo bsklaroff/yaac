@@ -111,12 +111,13 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
   })
 
   /**
-   * Run yaac-mama in workspace A and return its exit code and output
-   * (execInJob would throw and retry on a non-zero exit).
+   * Run yaac-mama in workspace A's checkout, as from one of its windows, and
+   * return its exit code and output (execInJob would throw and retry on a
+   * non-zero exit).
    */
   async function runMama(args: string): Promise<{ exitCode: number; output: string }> {
     const { stdout } = await execInJob(jobA, [
-      'sh', '-c', `yaac-mama ${args} 2>&1; echo "EXIT:$?"`,
+      'sh', '-c', `cd /workspace && yaac-mama ${args} 2>&1; echo "EXIT:$?"`,
     ], { timeout: 120_000 })
     const m = /\nEXIT:(\d+)\s*$/.exec(stdout) ?? /^EXIT:(\d+)\s*$/.exec(stdout)
     if (!m) throw new Error(`no exit marker in output:\n${stdout}`)

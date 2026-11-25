@@ -186,7 +186,7 @@ export function buildServerClusterRoleManifest(opts: { byoVolumes?: boolean } = 
       {
         apiGroups: [''],
         resources: [
-          'pods', 'pods/exec', 'pods/log', 'pods/attach', 'pods/portforward',
+          'pods', 'pods/exec', 'pods/log', 'pods/attach', 'pods/portforward', 'pods/resize',
           'services', 'endpoints', 'configmaps', 'secrets', 'serviceaccounts',
           'namespaces', 'persistentvolumeclaims',
         ],

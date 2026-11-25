@@ -48,7 +48,6 @@ import {
   holdersOf,
   movePreviewOf,
   projectsLinking,
-  reapSparesWith,
   stopProvisioningWith,
   stopWorkspaces,
 } from './repo-teardown'
@@ -64,8 +63,7 @@ import {
 
 /**
  * Run `fn` holding the repo and every project that links it, after
- * stopping every workspace holding a checkout of it and reaping the spares
- * warmed with it. Queued workspaces that waited out the hold start once it
+ * stopping every workspace holding a checkout of it. Queued workspaces that waited out the hold start once it
  * lifts.
  */
 async function withRepoStopped<T>(repoId: string, reason: string, fn: () => Promise<T>): Promise<T> {
@@ -74,7 +72,7 @@ async function withRepoStopped<T>(repoId: string, reason: string, fn: () => Prom
   try {
     return await withRepoHeld(repoId, reason, () => withProjectsHeld([...projectIds], reason, async () => {
       const holders = await stopProvisioningWith(repoId, projectIds)
-      const handles = await reapSparesWith(repoId)
+      const handles = (await workspaceDriver().list()).filter((h) => !h.terminating)
       const failed = await stopWorkspaces(handles.filter((h) => holders.has(h.workspaceId)), await listProjectRows())
       if (failed.length > 0) {
         throw new ServerError('RUNTIME_UNAVAILABLE', 'the repo did not move: some of its workspaces could not be '
@@ -118,7 +116,7 @@ async function hostableRepo(principal: Actor, repoId: string): Promise<RepoRow> 
 export async function previewRepoHost(principal: Actor, repoId: string): Promise<RepoHostPreview> {
   await hostableRepo(principal, repoId)
   const holders = await holdersOf(repoId)
-  const running = (await workspaceDriver().list()).filter((h) => holders.has(h.workspaceId) && !h.prewarmed && !h.terminating)
+  const running = (await workspaceDriver().list()).filter((h) => holders.has(h.workspaceId) && !h.terminating)
   return {
     projects: (await listProjectRows()).flatMap((p) => {
       const workspaces = running.filter((h) => h.projectId === p.id).map((h) => h.workspaceId)
@@ -209,7 +207,7 @@ async function upstreamBranches(repoId: string): Promise<UpstreamMoveBranch[]> {
   const [compared, holders, queued, routines] = await Promise.all([
     compareRemoteBranches(repoDir(repoId)), holdersOf(repoId), listQueuedWorkspaceRows(), listRoutineRows(),
   ])
-  const running = new Set((await workspaceDriver().list()).filter((h) => !h.prewarmed && !h.terminating).map((h) => h.workspaceId))
+  const running = new Set((await workspaceDriver().list()).filter((h) => !h.terminating).map((h) => h.workspaceId))
   const bases = [...(await listWorkspaceReposFor([...holders])).entries()]
     .flatMap(([workspaceId, rows]) => rows.filter((r) => r.repoId === repoId).map((r) => ({ workspaceId, branch: r.baseBranch })))
   const naming = (rows: Array<{ repos: Array<{ repo: string; branch?: string }> }>, branch: string): number =>

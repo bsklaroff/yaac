@@ -17,11 +17,11 @@ would start.
 
 ## Goal
 
-A prewarmed spare (`domain/workspaces/prewarm.ts`) is a
-fully booted workspace pod with its agent running, so every spare costs the
-RAM and CPU of a live workspace. A pool of memory snapshots would cost disk
-instead. A claim restores the snapshot into a new pod with the agent already
-loaded, and skips the cold path's image pull, init, and agent launch.
+A prewarmed spare (docs/generic-workspace-pods.md) is a fully booted generic
+workspace pod, so every spare reserves a live workspace's memory. A pool of
+memory snapshots would cost disk instead. A claim restores the snapshot into
+a new pod with the agent already loaded, and skips the cold path's image
+pull, init, and agent launch.
 
 The win is cost, not latency. A claimed live spare is faster than any
 restore, which adds seconds of kernel-state load plus reconnects. Snapshots
@@ -61,11 +61,10 @@ make sense once spare RAM, not claim time, is what limits pool size.
 ## What restore breaks in a workspace
 
 - **Pod identity in the spec.** A restore reuses one checkpoint for many
-  pods, so the spec cannot carry any one workspace's identity. Today it
-  carries the workspace id, the `agent/<id>` branch, the stream token, the
-  time zone, git identity, the npm registry, and per-workspace subPath
-  mounts of `yaac-global`. All of these must be handed to the pod at claim
-  time instead.
+  pods, so the spec cannot carry any one workspace's identity. A generic
+  pod's spec carries only the workspace id and the stream token, which a
+  spare has from creation; a restored pod needs both handed over at claim
+  time too.
 - **The checkout is outside the snapshot.** Volumes are not captured, so a
   restored agent wakes up expecting a checkout that the claim has to put
   in place before the process resumes.
@@ -74,8 +73,9 @@ make sense once spare RAM, not claim time, is what limits pool size.
   server, the tmux control stream, acpd's clients, and each agent's open
   HTTPS connections through the proxy. Host unix sockets
   (`host-uds=all`) probably do not survive at all. Egress identity is
-  already safe: a claim re-registers the workspace with the proxy
-  (`registerWorkspace`), and netd applies its rules to each new pod.
+  already safe: the launch writes the workspace's egress registration
+  before the pod becomes its workspace's, and netd applies its rules to
+  each new pod.
 - **Matching.** A restore needs the same gVisor version, runsc flags, CPU
   features, and kernel as the checkpoint, so snapshots are invalidated by
   every gVisor bump and every image change, much like image content hashes
@@ -83,13 +83,11 @@ make sense once spare RAM, not claim time, is what limits pool size.
 
 ## Before the KEP
 
-These are worth doing on their own and shrink the later change:
+Worth doing on its own, and it shrinks the later change. A restored pod
+gets its workspace's identity and mounts at the claim, as a live spare
+already does (docs/generic-workspace-pods.md), so the remaining unknown is
+the restore itself:
 
-- **Move per-workspace identity out of the pod spec**, into something
-  delivered at claim time (a file `yaac-workspace-init` reads, or a streamd
-  call). This also simplifies `moveSpare`.
-  docs/plans/generic-prewarm-pool.md plans this as its first phase, and goes
-  on to move the mounts out as well, which a restore would need too.
 - **Spike, measuring only, on a host kind cluster.** Run `runsc checkpoint`
   against a live spare and restore it by hand. Record the snapshot size,
   the restore time with and without `--background`, and whether claude,
@@ -99,8 +97,8 @@ These are worth doing on their own and shrink the later change:
 
 ## After the KEP
 
-- Replace each project's spares with one checkpoint per (project image,
-  mode) taken from a primed spare. Keep at most one live spare, or none.
+- Replace each pool's live spares with one checkpoint per pool, taken
+  from a primed spare. Keep at most one live spare, or none.
 - A claim creates the workspace pod with `spec.restoreFrom`, puts the
   checkout in place, then delivers the identity and the prompt.
 - If a restore fails or no checkpoint matches, fall back to the cold path,

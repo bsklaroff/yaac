@@ -5,8 +5,7 @@ import { requireCluster, useTestNamespace } from '@yaac/test-utils/setup'
 import { requirePodman } from '#support/cluster'
 import { e2eMkdtemp } from '@yaac/test-utils/tmp'
 import { waitForPod } from '#support/test-pods'
-import { stageWorkspaceBin, workspaceBinDir, WORKSPACE_INIT_SCRIPT }
-  from '@yaac/server/domain/workspaces/workspace-bin'
+import { stageWorkspaceBin, workspaceBinDir } from '@yaac/server/domain/workspaces/workspace-bin'
 import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/cluster/image-tags'
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { registryRef, registryTagState } from '@yaac/server/drivers/k8s/cluster/registry'
@@ -34,6 +33,8 @@ const ARBITRARY_UID = 4321
 const ARBITRARY_GID = 4322
 
 const POD = `yaac-arbitrary-uid-${crypto.randomBytes(4).toString('hex')}`
+/** The staged setup script the pod runs as its postStart hook. */
+const WORKSPACE_INIT_SCRIPT = 'yaac-workspace-init'
 
 let restoreNamespace: (() => void) | null = null
 

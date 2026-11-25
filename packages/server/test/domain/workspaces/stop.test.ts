@@ -115,23 +115,6 @@ function userNamespaces(): boolean {
 }
 
 describe('stopWorkspace', () => {
-  // A stop never asks the driver for spares, so even a spare's exact id is
-  // not found.
-  it('does not stop an unclaimed spare, even by its exact id', async () => {
-    const asked: Array<{ spares?: boolean } | undefined> = []
-    installFakeWorkspaceDriver({
-      findForTeardown: (id, opts) => {
-        asked.push(opts)
-        return Promise.resolve(id === 'spare1' && opts?.spares === true
-          ? { workspaceId: 'spare1', projectId: PROJ, unitName: 'yaac-proj-spare1' }
-          : undefined)
-      },
-    })
-    await expect(stopWorkspace(local, 'spare1')).rejects.toMatchObject({ code: 'NOT_FOUND' })
-    expect(asked).toEqual([undefined])
-    expect(deregistered).toEqual([])
-  })
-
   it('tears the workspace down, then starts what was queued after it — only the top of a chain', async () => {
     const child = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'child', tool: 'claude' })
     const sibling = await queueWorkspace(local, PROJ, { parent: 'parent', prompt: 'sibling', tool: 'claude' })

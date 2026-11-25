@@ -23,12 +23,13 @@ import {
   resolveBuilderImageTag,
   resolveTrustedLayers,
   resolveNetdImageTag,
+  resolveMountdImageTag,
   resolveProxyImageTag,
   VERDACCIO_MIRROR_TAG,
   VERDACCIO_UPSTREAM_IMAGE,
   type ImageLayer,
 } from '#drivers/k8s/cluster'
-import { NETD_DIR, PROXY_DIR, TAILGATE_DIR } from '@yaac/shared/project-paths'
+import { NETD_DIR, MOUNTD_DIR, PROXY_DIR, TAILGATE_DIR } from '@yaac/shared/project-paths'
 import { testEnv } from '@yaac/shared/env'
 import {
   GVISOR_INSTALLER_MIRROR_TAG,
@@ -43,7 +44,7 @@ import { hostNodeArchitecture } from './byo-gates'
  * yaac-built images are tagged by content hash, so an unchanged source costs
  * one registry HEAD. The base/tools workspace chain is built with a host
  * buildkitd (host-buildkit.ts); the rest (the builder image, the egress
- * proxy, netd, tailgate) are `podman build`s. Digest-pinned upstream images are
+ * proxy, netd, mountd, tailgate) are `podman build`s. Digest-pinned upstream images are
  * mirrored into the registry so nodes need no upstream egress. Image names
  * and tags are defined in `#drivers/k8s/cluster`, which the server also
  * reads (docs/image-builds.md).
@@ -169,6 +170,8 @@ export async function buildBuiltinImages(deps: BuiltinImageDeps): Promise<void> 
   await buildShippedImage(await resolveProxyImageTag(testEnv.proxyImage), PROXY_DIR)
   deps.log('Ensuring the netd image...')
   await buildShippedImage(await resolveNetdImageTag(testEnv.netdImage), NETD_DIR)
+  deps.log('Ensuring mountd image...')
+  await buildShippedImage(await resolveMountdImageTag(), MOUNTD_DIR)
   deps.log('Ensuring the tailgate image...')
   await buildShippedImage(await resolveTailgateImageTag(), TAILGATE_DIR)
 

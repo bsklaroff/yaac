@@ -16,19 +16,17 @@ import { assertProjectExists } from './detail'
 const scratchDirPathsSchema = z.array(checkoutPathSchema, { error: 'must be a string array' })
   .transform((paths) => [...new Set(paths)])
 
-/** A change to a project's scratch-dir settings: either part, or both. A
- *  path listed twice keeps its first entry. */
+/** A change to a project's scratch-dir settings: any part. A path listed
+ *  twice keeps its first entry. */
 export const scratchDirSettingsPatchSchema = z.object({
-  dirs: z.array(z.object({
-    path: checkoutPathSchema,
-    sizeGiB: z.number({ error: 'must be a whole number of GiB' }).int().min(1).max(1024).optional(),
-  }), { error: 'must be an array of {path, sizeGiB?} objects' })
+  dirs: z.array(z.object({ path: checkoutPathSchema }).strict(), { error: 'must be an array of {path} objects' })
     .transform((dirs) => dirs.filter((d, i) => dirs.findIndex((e) => e.path === d.path) === i))
     .optional(),
+  sizeGiB: z.number({ error: 'must be a whole number of GiB' }).int().min(1).max(1024).optional(),
   ignoredTracked: scratchDirPathsSchema.optional(),
 })
 
-/** Replace either part, one left out keeping its value, and answer the
+/** Replace any part, one left out keeping its value, and answer the
  *  settings as stored. */
 export async function setScratchDirs(
   principal: Actor,
