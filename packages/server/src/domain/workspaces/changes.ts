@@ -211,6 +211,14 @@ const ADD_SKIPPING = 'a=$1; shift; git --literal-pathspecs reset -q "$a" -- "$@"
 export const SCRATCH_OBJECTS_CAP_KB = 256 * 1024
 
 /**
+ * Shell that keeps git's messages untranslated, since the scan and the fill
+ * tell a gone blob by its English stderr. A containerless workspace runs in
+ * the user's own locale. `LANGUAGE` changes only which language messages
+ * are in, so a textconv program still runs in that locale.
+ */
+const ENGLISH_MESSAGES = 'export LANGUAGE=C; '
+
+/**
  * Shell that points git's object writes at `<index>.objects` in scratch,
  * reading the checkout's own store (and so, through its alternates, the
  * main clone's) as an alternate. Staging a file then writes its blob to
@@ -325,7 +333,7 @@ const PRINT_OUTPUT = 'tail -c 4096 $o.err >&2; rm -f $o.err; '
  * `PRINT_OUTPUT` says.
  */
 function scanScript(workspaceDir: string, i: string): string {
-  return `cd ${workspaceDir} 2>/dev/null || exit 3; `
+  return `cd ${workspaceDir} 2>/dev/null || exit 3; ${ENGLISH_MESSAGES}`
   // The run waits and retries only until 10 seconds after it starts, half
   // the server's shorter exec timeout, so the work after either still fits.
   + 'd=$(($(date +%s)+10)); '
@@ -434,9 +442,13 @@ function scanScript(workspaceDir: string, i: string): string {
   + `printf "${M_SKIPPED}\\n"; cat ${i}.skip ${i}.big || exit 6; printf '${nulEnd}'; `
   + `printf "\\n${M_OK}\\n" ); run "$@" > $o 2> $o.err; r=$?; `
   // The private index can name a blob that is gone: the agent added a
-  // file, reset it and pruned. No stat check notices, so the run starts
-  // over from a fresh seed, whose staging hashes the file again.
-  + `[ $r -eq 0 ] || ! grep -qE '^fatal: unable to read [0-9a-f]{40}' $o.err || { rm -rf ${i} ${i}.objects; run "$@" > $o 2> $o.err; r=$?; }; `
+  // file, reset it and pruned. No stat check notices. A diff that reads
+  // the blob fails, and so does `write-tree` when staging another change
+  // has it build that folder's tree again; until then it answers from the
+  // tree the index caches. Either way the run starts over from a fresh
+  // seed, whose staging hashes the file again.
+  + `[ $r -eq 0 ] || ! grep -qE '^fatal: unable to read [0-9a-f]{40}|^error: invalid object [0-7]{6} [0-9a-f]{40}' $o.err `
+  + `|| { rm -rf ${i} ${i}.objects; run "$@" > $o 2> $o.err; r=$?; }; `
   + PRINT_OUTPUT
 }
 
@@ -455,7 +467,7 @@ function scanScript(workspaceDir: string, i: string): string {
 function fillScript(workspaceDir: string, i: string): string {
   const e = `${i}.fill.$$`
   const gone = `{ ! grep -qE '^fatal: unable to read [0-9a-f]{40}' ${e} || { : > ${i}.reseed; exit ${CHANGES_READING_GONE}; }; }`
-  return `cd ${workspaceDir} 2>/dev/null || exit 3; ${scratchObjects(i)}`
+  return `cd ${workspaceDir} 2>/dev/null || exit 3; ${ENGLISH_MESSAGES}${scratchObjects(i)}`
     + `git cat-file -e "$1^{tree}" && git cat-file -e "$2^{tree}" || exit ${CHANGES_READING_GONE}; `
     + 'a=$1; b=$2; r=${3:+--no-renames}; w=$4; s=$5; p=$6; t=$7; export GIT_ATTR_SOURCE=$8; z=; shift 8; '
     + `trap 'rm -f ${e} ${e}.err' EXIT; printf "${M_PAIR}\\n"; case $w in *n*) z=${M_TOTAL}; `
