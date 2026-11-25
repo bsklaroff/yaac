@@ -5,6 +5,7 @@ import { ApprovalDetails } from '#components/ApprovalDetails'
 import { SidebarRow } from '#components/sidebar/SidebarRow'
 import { agentLabel } from '#lib/agentLabel'
 import { api } from '#lib/api'
+import { openSession, showSession } from '#lib/createWorkspace'
 import { fetchFullPrompt, queuedTitle, clip } from '#lib/queued'
 import { useUiStore } from '#lib/store'
 import { useCreateWorkspace } from '#lib/useCreateDefaults'
@@ -263,24 +264,46 @@ export function ScheduledSection({ entries }: { entries: QueuedWorkspaceEntry[] 
 }
 
 /** A saved draft: clicking it reopens the new-workspace pane on it; its menu can also
- *  create from it right away, ignoring its Start, or discard it. Not
- *  selectable. */
+ *  create from it right away, ignoring its Start, or discard it. A failed
+ *  open in the workspace it is aimed at shows its error until run again.
+ *  Not selectable. */
 function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Element {
   const openNewWorkspace = useUiStore((s) => s.openNewWorkspace)
   const createWorkspace = useCreateWorkspace()
   const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const name = queuedTitle(draft)
   const readOnly = useReadOnly()
   const open = (): void => openNewWorkspace({ projectId: draft.projectId, draftId: draft.id })
   // The snapshot holds only a preview of the prompt. A failed fetch opens
-  // the draft instead, whose pane reports it.
+  // the draft instead, whose pane reports it. A draft whose workspace no
+  // longer runs creates one.
   const run = (): void => {
-    fetchFullPrompt(draft.id).then((prompt) => createWorkspace({
-      ...draft,
-      prompt,
-      ...(draft.generatedTitle !== undefined ? { shownTitle: draft.generatedTitle } : {}),
-      draftId: draft.id,
-    }), open)
+    setError(null)
+    const target = draft.inWorkspace
+    const running = target !== undefined
+      && useUiStore.getState().snapshot?.workspaces.some((w) => w.workspaceId === target && !w.stopping) === true
+    fetchFullPrompt(draft.id).then((prompt) => running
+      ? openSession(target, {
+        tool: draft.tool,
+        mode: draft.mode,
+        permissionMode: draft.permissionMode,
+        ...(draft.model !== undefined ? { model: draft.model } : {}),
+        ...(draft.effort !== undefined ? { effort: draft.effort } : {}),
+        ...(draft.agentOptions !== undefined ? { agentOptions: draft.agentOptions } : {}),
+        prompt,
+        ...(draft.sessionCwd !== undefined ? { cwd: draft.sessionCwd === '' ? '.' : draft.sessionCwd } : {}),
+        draftId: draft.id,
+      }).then(
+        (sessionId) => showSession(target, sessionId),
+        (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
+      )
+      : createWorkspace({
+        ...draft,
+        prompt,
+        ...(draft.generatedTitle !== undefined ? { shownTitle: draft.generatedTitle } : {}),
+        draftId: draft.id,
+      }), open)
   }
 
   return (
@@ -292,10 +315,12 @@ function DraftWorkspaceRow({ draft }: { draft: DraftWorkspaceEntry }): JSX.Eleme
         mark={<DraftIcon size={11} className="text-subtle" />}
         title={name}
         meta={(
-          <>
-            <span className="shrink-0">{relativeAge(draft.updatedAt)}</span>
-            <span className="ml-auto truncate">{agentLabel(draft.tool, draft)}</span>
-          </>
+          error !== null ? <span className="truncate text-danger" title={error}>{error}</span> : (
+            <>
+              <span className="shrink-0">{relativeAge(draft.updatedAt)}</span>
+              <span className="ml-auto truncate">{agentLabel(draft.tool, draft)}</span>
+            </>
+          )
         )}
         menu={{
           label: 'Draft actions',

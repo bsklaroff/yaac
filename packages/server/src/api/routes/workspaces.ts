@@ -657,7 +657,8 @@ export const workspaceApp = new Hono<IdentityEnv>()
   )
   // Open a session in a running workspace (docs/sessions.md). Unnamed
   // settings resolve as a create's, and named ones become the project's
-  // next defaults. Answers once its window is launched.
+  // next defaults. A draft it is made from is deleted once it opens.
+  // Answers once its window is launched.
   .post(
     '/:id/sessions',
     interactiveOnly,
@@ -676,10 +677,11 @@ export const workspaceApp = new Hono<IdentityEnv>()
       cwd: queuedSettings.cwd,
       // One of the workspace's earlier conversations to resume.
       resume: z.string().min(1).max(256).optional(),
+      draftId,
     })),
     async (c) => {
       const body = c.req.valid('json')
-      const session = await openSession(c.get('principal'), c.req.param('id'), {
+      const open = () => openSession(c.get('principal'), c.req.param('id'), {
         ...(body.tool !== undefined ? { tool: body.tool } : {}),
         ...(body.model !== undefined ? { model: body.model } : {}),
         ...(body.mode !== undefined ? { mode: body.mode } : {}),
@@ -692,6 +694,14 @@ export const workspaceApp = new Hono<IdentityEnv>()
         ...(body.resume !== undefined ? { resume: body.resume } : {}),
         rememberDefaults: true,
       })
+      // A draft is claimed first, so a second run of it is refused outright.
+      let session
+      if (body.draftId === undefined) session = await open()
+      else {
+        const row = await findWorkspaceRow(await resolveWorkspaceId(c.req.param('id')))
+        if (!row) throw new ServerError('NOT_FOUND', `workspace ${c.req.param('id')} not found`)
+        session = await (await claimDraft(c.get('principal'), row.projectId, body.draftId)).run(open)
+      }
       return c.json({ sessionId: session.id, workspaceId: session.workspaceId }, 201)
     },
   )

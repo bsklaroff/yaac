@@ -12,8 +12,7 @@ import { SiteForm } from '#components/SitePane'
 import { StepList } from '#components/WorkflowPane'
 import { api } from '#lib/api'
 import { IMAGE_KEY, imageStateLabel, useFollowBuilds } from '#lib/images'
-import { openSession } from '#lib/createWorkspace'
-import { sessionTarget } from '#lib/panes'
+import { openSession, showSession } from '#lib/createWorkspace'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { shownGroups } from '#lib/groups'
 import { entryStart, SCHEDULE, START_AT, START_IN, START_WHEN_ROOM, type NewWorkspaceForm, type PendingDraft } from '#lib/newWorkspace'
@@ -148,7 +147,7 @@ const workspaceName = (w: { title?: string; prompt?: string }): string =>
 const DRAFT_FIELDS = [
   'prompt', 'tool', 'mode', 'permissionMode', 'model', 'effort', 'agentOptions', 'repos', 'nested', 'cwd', 'startAfter',
   'title', 'groupId', 'imageId',
-  'startAt', 'timeout', 'cron', 'timeZone',
+  'startAt', 'timeout', 'cron', 'timeZone', 'inWorkspace', 'sessionCwd',
 ] as const satisfies
   readonly (keyof DraftWorkspaceSettings)[]
 
@@ -470,12 +469,18 @@ export function NewWorkspacePane({ projectId, bar }: {
     ...(titleText !== '' ? { title: titleText } : {}),
     ...(groupId !== null ? { groupId } : {}),
     ...(form.imageId !== undefined ? { imageId: form.imageId } : {}),
+    ...(inTarget !== undefined ? { inWorkspace: inTarget.workspaceId, sessionCwd } : {}),
   }
   // Leaving loses a typed prompt on a create (not an edit of a queued
-  // entry or routine), unless it matches the reopened draft exactly.
+  // entry or routine), unless it matches the reopened draft exactly. A
+  // draft's target that is no longer running is not shown, so it is not
+  // compared either. Nothing is lost while a request is in flight: it is
+  // already starting or saving what the form holds.
+  const draftTarget = draft?.inWorkspace !== undefined && live.some((w) => w.workspaceId === draft.inWorkspace)
   const saved = draft !== undefined
     ? {
       ...draft,
+      ...(draftTarget ? {} : { inWorkspace: undefined, sessionCwd: undefined }),
       agentOptions: resolveAgentOptions(draft.tool, draft.agentOptions),
       prompt: form.savedPrompt ?? draft.prompt,
       // In the key order `current` builds its own, to compare as text.
@@ -486,8 +491,8 @@ export function NewWorkspacePane({ projectId, bar }: {
       } : {}),
     }
     : undefined
-  const pending: PendingDraft | null = form.editId === undefined && form.editRoutineId === undefined && text !== ''
-    && !inWorkspace && !agentless
+  const pending: PendingDraft | null = !busy && form.editId === undefined && form.editRoutineId === undefined && text !== ''
+    && !agentless
     && (saved === undefined || DRAFT_FIELDS.some((k) => JSON.stringify(current[k]) !== JSON.stringify(saved[k])))
     ? { projectId, settings: current, ...(draft !== undefined ? { id: draft.id } : {}) }
     : null
@@ -537,8 +542,8 @@ export function NewWorkspacePane({ projectId, bar }: {
   /** Why the workspace can't start now from a button, or null. */
   const startBlocked = blocked ?? (storesEntry ? 'Set Start to Now to start it here' : null)
 
-  /** Open the session in the running workspace Where names, then show it
-   *  there, focused once the snapshot lists it. */
+  /** Open the session in the running workspace Where names, then show it.
+   *  The form goes first, so showing it is not leaving with a prompt. */
   const openHere = (): void => {
     if (busy || blocked !== null || inTarget === undefined) return
     const { workspaceId } = inTarget
@@ -551,10 +556,10 @@ export function NewWorkspacePane({ projectId, bar }: {
       ...sentOptions,
       ...(text !== '' ? { prompt: text } : {}),
       ...(sessionCwds.length > 0 ? { cwd: sessionCwd === '' ? '.' : sessionCwd } : {}),
+      ...(draft !== undefined && text !== '' ? { draftId: draft.id } : {}),
     }).then((sessionId) => {
-      const st = useUiStore.getState()
-      st.selectWorkspace(workspaceId)
-      st.focusTerminal(workspaceId, sessionTarget(sessionId))
+      setForm(null)
+      showSession(workspaceId, sessionId)
     }))
   }
 
@@ -841,7 +846,7 @@ export function NewWorkspacePane({ projectId, bar }: {
 
           <YSection title="Start">
             <YSettingGroup>
-              {fresh && live.length > 0 && !unattended && (
+              {editing === undefined && editingRoutine === undefined && live.length > 0 && !unattended && (
                 <YSettingRow dense label="Where">
                   <YSelect
                     aria-label="Where"
@@ -1152,15 +1157,13 @@ export function NewWorkspacePane({ projectId, bar }: {
                   Start without a prompt
                 </YButton>
               )}
-              {!inWorkspace && (
-                <YButton
-                  onClick={() => { if (pending !== null) run(keepDraft(pending)) }}
-                  disabled={busy || pending === null}
-                  title={pending !== null ? undefined : text === '' ? 'Type a prompt to save a draft' : 'No changes to save'}
-                >
-                  Save draft
-                </YButton>
-              )}
+              <YButton
+                onClick={() => { if (pending !== null) run(keepDraft(pending)) }}
+                disabled={busy || pending === null}
+                title={pending !== null ? undefined : text === '' ? 'Type a prompt to save a draft' : 'No changes to save'}
+              >
+                Save draft
+              </YButton>
             </div>
           )}
         </>}

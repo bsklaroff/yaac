@@ -32,6 +32,7 @@ import type * as projectAddModule from '@yaac/server/domain/projects/add'
 import type * as sessionDeleteModule from '@yaac/server/domain/workspaces/stop'
 import type * as projectRemoveModule from '@yaac/server/domain/workspaces/project-teardown'
 import type * as gitModule from '@yaac/server/domain/git'
+import type * as sessionsModule from '@yaac/server/domain/workspaces/sessions'
 import { STOCK_IMAGE_ID, type ClaudeOAuthBundle, type Delegate, type ImageBuild, type ImageBuildStatus, type ImageSummary } from '@yaac/shared/types'
 import type { ImageBuildOutcome, ImageBuildRequest } from '@yaac/server/drivers/contract'
 import { _imageBuildsSettledForTests, _resetImageBuildsForTests } from '@yaac/server/domain/images/builds'
@@ -66,12 +67,20 @@ vi.mock('@yaac/server/domain/git', async (importOriginal) => ({
   probePushAccess: vi.fn(() => Promise.resolve(null)),
 }))
 
+// Opening a session needs a running workspace; a case that wants one to
+// open says so, and the rest open for real (and fail on an empty server).
+vi.mock('@yaac/server/domain/workspaces/sessions', async (importOriginal) => {
+  const actual = await importOriginal<typeof sessionsModule>()
+  return { ...actual, openSession: vi.fn(actual.openSession) }
+})
+
 vi.mock('@yaac/server/domain/workspaces/project-teardown', async (importOriginal) => ({
   ...await importOriginal<typeof projectRemoveModule>(),
   removeProject: vi.fn(),
 }))
 
 import { createWorkspace } from '@yaac/server/domain/workspaces/create'
+import { openSession } from '@yaac/server/domain/workspaces/sessions'
 import { probePushAccess } from '@yaac/server/domain/git'
 import { stopWorkspace } from '@yaac/server/domain/workspaces/stop'
 import { addProject } from '@yaac/server/domain/projects/add'
@@ -1776,6 +1785,28 @@ describe('write routes', () => {
         json: { project: DEMO, parent: 'parent', prompt: 'another day', draftId: edited },
       })
       expect((await listQueuedWorkspaceRows(DEMO))[1]).not.toHaveProperty('generatedTitle')
+    })
+
+    it('keeps a draft aimed at a workspace, and drops it once a session opened from it has', async () => {
+      const client = makeTestApiClient(buildApp({ buildId: 'test' }))
+      const { id } = await (await client.workspace.draft.save.$post({
+        json: { project: DEMO, prompt: 'someday', tool: 'claude', mode: 'tui', permissionMode: 'plan', inWorkspace: 'parent', sessionCwd: '' },
+      })).json()
+      expect((await listDraftWorkspaces())[0]).toMatchObject({ id, inWorkspace: 'parent', sessionCwd: '' })
+      const open = (draftId: string): Promise<Response> => client.workspace[':id'].sessions.$post({
+        param: { id: 'parent' }, json: { prompt: 'someday', draftId },
+      })
+
+      expect((await open(id)).status).toBe(404)
+      await recordWorkspaceCreated({ projectId: DEMO, workspaceId: 'parent', repos: [{ repoId: DEMO, path: '', baseBranch: 'main' }] })
+      expect((await open('gone')).status).toBe(404)
+      // Recorded but not running, so the open fails and the draft stays.
+      expect((await open(id)).ok).toBe(false)
+      expect((await listDraftWorkspaces()).map((d) => d.id)).toEqual([id])
+
+      vi.mocked(openSession).mockResolvedValueOnce({ id: 'sn', workspaceId: 'parent' } as Awaited<ReturnType<typeof openSession>>)
+      expect((await open(id)).status).toBe(201)
+      expect(await listDraftWorkspaces()).toEqual([])
     })
   })
 

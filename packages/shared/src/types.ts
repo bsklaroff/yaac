@@ -2526,6 +2526,12 @@ export const draftWorkspaceSettingsSchema = queuedWorkspaceSettingsSchema.omit({
    *  when a routine is created from the draft. */
   cron: z.string().min(1).max(100).optional(),
   timeZone: z.string().min(1).max(64).optional(),
+  /** A running workspace to open the agent in rather than create one
+   *  (docs/sessions.md), and the checkout path it starts in, '' for the
+   *  workspace root. Not a live reference: a target no longer running
+   *  reopens as a new workspace. */
+  inWorkspace: z.string().min(1).optional(),
+  sessionCwd: z.string().max(255).optional(),
 })
 
 export type DraftWorkspaceSettings = z.infer<typeof draftWorkspaceSettingsSchema>

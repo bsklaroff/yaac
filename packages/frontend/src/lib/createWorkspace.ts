@@ -2,7 +2,8 @@ import { api } from './api'
 import { consumeNdjsonStream } from '@yaac/shared/ndjson'
 import { rememberOpening } from '#lib/opening'
 import { throwingFetch } from '@yaac/shared/api-core'
-import type { LaunchPane } from '#lib/store'
+import { sessionTarget } from '#lib/panes'
+import { useUiStore, type LaunchPane } from '#lib/store'
 import { randomUUID } from '#lib/uuid'
 import type { AgentMode, AgentOptions, AgentTool, PermissionMode, RepoStart } from '@yaac/shared/types'
 
@@ -176,6 +177,8 @@ export interface SessionOpen {
   /** Where its agent runs: `.` for the workspace root or a checkout's
    *  path. Unset is the workspace's own cwd. */
   cwd?: string
+  /** The draft it is made from, deleted once it has opened. */
+  draftId?: string
 }
 
 /** Open a session in a running workspace; resolves with its id once its
@@ -183,6 +186,13 @@ export interface SessionOpen {
 export async function openSession(workspaceId: string, s: SessionOpen): Promise<string> {
   const { sessionId } = await api.workspace[':id'].sessions.$post({ param: { id: workspaceId }, json: s })
   return sessionId
+}
+
+/** Show a session just opened, focused once the snapshot lists it. */
+export function showSession(workspaceId: string, sessionId: string): void {
+  const st = useUiStore.getState()
+  st.selectWorkspace(workspaceId)
+  st.focusTerminal(workspaceId, sessionTarget(sessionId))
 }
 
 /** Change some of a running session's agent options. */

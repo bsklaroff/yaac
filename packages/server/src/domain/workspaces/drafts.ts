@@ -1,7 +1,7 @@
 /**
  * Draft workspaces (docs/draft-workspaces.md): new-workspace pane contents
- * the user chose to keep. Nothing runs from a draft; creating or queueing from
- * it discards it.
+ * the user chose to keep. Nothing runs from a draft; creating, queueing or
+ * opening a session from it discards it.
  */
 import { notifyWorkspaceListChanged } from '#lib/notify'
 import { serverLog } from '#lib/log'
@@ -38,16 +38,17 @@ export async function saveDraftWorkspace(
   return toEntry(row)
 }
 
-/** Drafts a create or queue is being made from, left out of the snapshot
- *  until it succeeds (deleting the draft) or fails (showing it again). */
+/** Drafts a create, queue or session open is being made from, left out of
+ *  the snapshot until it succeeds (deleting the draft) or fails (showing it
+ *  again). */
 const launching = new Set<string>()
 
-/** A create or queue's hold on the draft it is made from. */
+/** A create, queue or session open's hold on the draft it is made from. */
 export interface DraftClaim {
   /** The draft's generated title, if its prompt is still `prompt`. Reused
    *  by what is made from it instead of titling again. */
   generatedTitle: (prompt: string | undefined) => string | undefined
-  /** Run the create or queue, then delete the draft. A failure keeps it.
+  /** Run the request, then delete the draft. A failure keeps it.
    *  Either way the claim is released. */
   run: <T>(fn: () => Promise<T>) => Promise<T>
   /** Release without running, for a request refused before it starts. */
@@ -57,10 +58,10 @@ export interface DraftClaim {
 const NO_DRAFT: DraftClaim = { generatedTitle: () => undefined, run: (fn) => fn(), release: () => {} }
 
 /**
- * Claim draft `id` (none if undefined) for one create or queue. A draft
- * already claimed is a `CONFLICT` and one that is gone is `NOT_FOUND`, so
- * a second tab, a retry or a double click cannot make two workspaces from
- * one draft. A caller who may not create in the project is refused even
+ * Claim draft `id` (none if undefined) for one create, queue or session
+ * open. A draft already claimed is a `CONFLICT` and one that is gone is
+ * `NOT_FOUND`, so a second tab, a retry or a double click cannot start two
+ * things from one draft. A caller who may not create in the project is refused even
  * with no draft, since the create and queue routes claim before anything
  * else; a draft is its owner's in person.
  */

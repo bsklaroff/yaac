@@ -19,7 +19,8 @@ import type {
   WorkspaceListEntry,
 } from '@yaac/shared/types'
 
-vi.mock('#lib/createWorkspace', () => ({
+vi.mock('#lib/createWorkspace', async (importOriginal) => ({
+  ...await importOriginal<typeof createWorkspaceModule>(),
   createWorkspace: vi.fn(() => Promise.resolve({ workspaceId: 'w-new' })),
   dismissProvisioning: vi.fn(),
   restartWorkspace: vi.fn(),
@@ -33,6 +34,7 @@ import { ListTitle, useSidebarFollow, WorkspaceList, type ProjectScope } from '#
 import { SidebarTabs } from '#components/sidebar/SidebarTabs'
 import { createWorkspace, renameWorkspace } from '#lib/createWorkspace'
 import { useUiStore } from '#lib/store'
+import type * as createWorkspaceModule from '#lib/createWorkspace'
 import { mockFetch, renderWithClient, serverError, serverSnapshot, sessionEntry, TEST_USER_ID, testQueryClient, type FetchCall, type FetchMock } from './harness'
 import { intersect, intersection } from './setup'
 
@@ -954,6 +956,35 @@ describe('WorkspaceList', () => {
         projectId: 'proj', tool: 'codex', repos: [{ repo: 'repo-1', branch: 'dev' }], permissionMode: 'manual', mode: 'tui',
         prompt: full, groupId: 'g1', draftId: 'd1',
       }), expect.any(Function))
+    })
+
+    // A draft aimed at a workspace opens its agent there while it runs, and
+    // creates a workspace once it does not.
+    it('runs a draft aimed at a running workspace as a session there', async () => {
+      const aimed = draft('d1', { inWorkspace: 's1', sessionCwd: 'api', model: 'gpt-5.5' })
+      useUiStore.setState({ snapshot: serverSnapshot({ workspaces: [entry()], draftWorkspaces: [aimed] }) })
+      server.route('POST /api/workspace/s1/sessions', { sessionId: 'sn', workspaceId: 's1' })
+      server.route('GET /api/workspace/prompt', { prompt: 'Idea d1\nmore detail' })
+      renderList([entry()], { drafts: [aimed] })
+      await pickAction('Run now', 'Draft actions')
+      await waitFor(() => expect(useUiStore.getState().selectedWorkspaceId).toBe('s1'))
+      expect(posted('POST /api/workspace/s1/sessions')).toEqual([{
+        tool: 'codex', mode: 'tui', permissionMode: 'manual', model: 'gpt-5.5', prompt: 'Idea d1\nmore detail', cwd: 'api', draftId: 'd1',
+      }])
+      expect(provision).not.toHaveBeenCalled()
+
+      // A refused open stays on the row, with the draft, rather than
+      // dropping the reason.
+      server.route('POST /api/workspace/s1/sessions', serverError('VALIDATION', 'the cwd "api" is not "." or one of this workspace\'s checkouts', 400))
+      await pickAction('Run now', 'Draft actions')
+      expect(await screen.findByText(/the cwd "api" is not/)).toBeTruthy()
+      expect(useUiStore.getState().newWorkspace).toBeNull()
+
+      useUiStore.setState({ snapshot: serverSnapshot({ draftWorkspaces: [aimed] }) })
+      await pickAction('Run now', 'Draft actions')
+      expect(screen.queryByText(/the cwd "api" is not/)).toBeNull()
+      await waitFor(() => expect(provision).toHaveBeenCalled())
+      expect(posted('POST /api/workspace/s1/sessions')).toHaveLength(2)
     })
   })
 
