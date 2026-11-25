@@ -371,6 +371,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     createdAtMs: Date.now(),
     terminating: false,
     deathCause: { reason: 'pod-stopped' },
+    ...(spec.siteId !== undefined ? { siteId: spec.siteId } : {}),
   }
 }
 

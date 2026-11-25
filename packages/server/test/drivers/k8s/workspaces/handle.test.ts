@@ -34,6 +34,11 @@ describe('runtimeHandleFromPod', () => {
     })
   })
 
+  it('names the site a release pod was launched for, from its own label', () => {
+    expect(runtimeHandleFromPod(pod({ labels: { 'yaac.site-id': 'site-1' } })).siteId).toBe('site-1')
+    expect(runtimeHandleFromPod(pod()).siteId).toBeUndefined()
+  })
+
   it('reports a stopped pod by its lowercased phase', () => {
     const h = runtimeHandleFromPod(pod({ running: false, phase: 'Failed' }))
     expect(h.state).toBe('failed')

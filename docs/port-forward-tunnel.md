@@ -89,7 +89,9 @@ from the server's `/events` snapshots (`startEventsMonitor` and
   ones, or at a different local port; the workspace must still forward
   each), and
   `--bind <address>` listens somewhere other than loopback, for a
-  forwarder that is not on the user's machine.
+  forwarder that is not on the user's machine. A public site release's
+  ports are forwarded only at a loopback address: at any other, each is
+  reported and skipped (docs/public-sites.md "Admin port").
 - **The desktop app**, resident in the tray. The stream that drives its
   badge drives the forwards too, so any browser or tool on the same machine
   reaches `127.0.0.1:<port>` whenever the app runs. It binds loopback only,

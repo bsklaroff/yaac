@@ -9,7 +9,7 @@ const startForward = vi.hoisted(() => vi.fn())
 const startHostRouter = vi.hoisted(() => vi.fn())
 vi.mock('#port-tunnel', () => ({ startForward, startHostRouter }))
 
-import { createForwardSet, serverNeedsForwarder, snapshotForwards } from '#port-tunnel-set'
+import { createForwardSet, LOOPBACK_ONLY_REFUSAL, serverNeedsForwarder, snapshotForwards } from '#port-tunnel-set'
 import type { ForwardSpec } from '#port-tunnel'
 import type { ServerSnapshot } from '#types'
 
@@ -42,6 +42,42 @@ beforeEach(() => {
 })
 
 describe('createForwardSet', () => {
+  it('binds a site release\'s port on loopback alone, and routes no hostname to it elsewhere', async () => {
+    const release: ForwardSpec = { ...spec('r', 3001), loopbackOnly: true }
+    const failures: Array<[number, string]> = []
+    startHostRouter.mockReset()
+    startHostRouter.mockImplementation((_t: unknown, port: number) => Promise.resolve({ hostPort: port, close: vi.fn() }))
+    const set = createForwardSet(TARGET, {
+      bindHost: '0.0.0.0',
+      hostsPort: 8790,
+      onBindError: (s, message) => failures.push([s.containerPort, message]),
+    })
+    await set.reconcile([release, spec('a', 3000)])
+    await set.reconcile([release, spec('a', 3000)])
+
+    expect(set.live()).toEqual([up(spec('a', 3000))])
+    // Told once, not on every snapshot.
+    expect(failures).toEqual([[3001, LOOPBACK_ONLY_REFUSAL]])
+    const route = startHostRouter.mock.calls[0][2] as (to: { port: number; idPrefix: string }) => ForwardSpec | undefined
+    expect(route({ port: 3001, idPrefix: 'r' })).toBeUndefined()
+    expect(route({ port: 3000, idPrefix: 'a' })).toEqual(spec('a', 3000))
+    set.close()
+
+    for (const bindHost of [undefined, '127.0.0.2', '::1', '::ffff:127.0.0.1']) {
+      const local = createForwardSet(TARGET, { bindHost })
+      await local.reconcile([release])
+      expect(local.live(), String(bindHost)).toEqual([up(release)])
+      local.close()
+    }
+    // A name binds whatever it resolves to, and a string that is no address is looked up as one.
+    for (const bindHost of ['localhost', '127.999.0.1', '::']) {
+      const elsewhere = createForwardSet(TARGET, { bindHost })
+      await elsewhere.reconcile([release])
+      expect(elsewhere.live(), bindHost).toEqual([])
+      elsewhere.close()
+    }
+  })
+
   it('starts what is new and leaves an unchanged forward alone', async () => {
     // A workspace gaining a port must not close the others' connections.
     const set = createForwardSet(TARGET)
@@ -282,5 +318,13 @@ describe('snapshotForwards', () => {
     expect(snapshotForwards(snapshot, 'b')).toEqual([
       { session: 'b', containerPort: 3000, hostPort: 3001 },
     ])
+  })
+
+  it('marks a public site release\'s ports for loopback alone', () => {
+    const withRelease = {
+      ...snapshot,
+      workspaces: [{ workspaceId: 'r', release: true, forwardedPorts: [{ containerPort: 3001, hostPort: 3001 }] }],
+    } as unknown as ServerSnapshot
+    expect(snapshotForwards(withRelease)).toEqual([{ session: 'r', containerPort: 3001, hostPort: 3001, loopbackOnly: true }])
   })
 })

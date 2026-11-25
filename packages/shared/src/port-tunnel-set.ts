@@ -1,3 +1,4 @@
+import net from 'node:net'
 import {
   startForward,
   startHostRouter,
@@ -35,8 +36,24 @@ export function snapshotForwards(snapshot: ServerSnapshot, only?: string): Forwa
   return snapshot.workspaces
     .filter((w) => only === undefined || w.workspaceId === only)
     .flatMap((w) => w.forwardedPorts.map(({ containerPort, hostPort }) =>
-      ({ session: w.workspaceId, containerPort, hostPort })))
+      ({ session: w.workspaceId, containerPort, hostPort, ...(w.release && { loopbackOnly: true as const }) })))
 }
+
+/**
+ * An address only this machine reaches: an IP literal in 127.0.0.0/8 or
+ * `::1` (an IPv4-mapped form included). A name, `localhost` too, is not
+ * one, since what it binds is whatever it resolves to.
+ */
+function isLoopbackAddress(host: string): boolean {
+  const loopback = new net.BlockList()
+  loopback.addSubnet('127.0.0.0', 8, 'ipv4')
+  loopback.addAddress('::1', 'ipv6')
+  const family = net.isIP(host)
+  return family !== 0 && loopback.check(host, family === 6 ? 'ipv6' : 'ipv4')
+}
+
+/** Why a `loopbackOnly` forward is not bound at another address. */
+export const LOOPBACK_ONLY_REFUSAL = 'a public site release\'s ports are forwarded on loopback alone'
 
 /** A forward's identity: workspace, container port and host port. */
 function specKey(spec: ForwardSpec): string {
@@ -57,7 +74,8 @@ export interface ForwardSetEvents extends ForwardEvents {
   /**
    * A forward could not bind its host port (nor, with `fallback`, any port
    * after it). The rest of the set still comes up, and the next reconcile
-   * retries this one.
+   * retries this one. A `loopbackOnly` forward refused at another address
+   * is reported here once and never retried.
    */
   onBindError?: (spec: ForwardSpec, message: string) => void
   /** The hostname router (`hostsPort`) is up, at this local port. */
@@ -117,12 +135,17 @@ async function bindFrom(
  * With `hostsPort`, the set also binds one hostname router there (moving
  * up like a forward with `fallback`), which routes the workspace hostnames
  * of the forwards last asked for (docs/workspace-hostnames.md).
+ *
+ * Bound at an address other than loopback, the set neither binds nor routes
+ * a `loopbackOnly` forward, and reports each once through `onBindError`.
  */
 export function createForwardSet(
   target: TunnelTarget,
   opts: { bindHost?: string; fallback?: boolean; hostsPort?: number } & ForwardSetEvents = {},
 ): ForwardSet {
   const { onChange, onBindError, onHostsBound, onHostsError, fallback = false, hostsPort, ...forwardOpts } = opts
+  const loopbackBind = isLoopbackAddress(opts.bindHost ?? '127.0.0.1')
+  const refused = new Set<string>()
   const live = new Map<string, { forward: LiveForward; handle: ForwardHandle }>()
   let offered: ForwardSpec[] = []
   let router: ForwardHandle | null = null
@@ -130,8 +153,14 @@ export function createForwardSet(
   // One reconcile at a time, or two would both bind a newly offered port.
   let running: Promise<void> = Promise.resolve()
 
-  const apply = async (specs: ForwardSpec[]): Promise<void> => {
+  const apply = async (asked: ForwardSpec[]): Promise<void> => {
     if (closed) return
+    for (const spec of asked) {
+      if (loopbackBind || !spec.loopbackOnly || refused.has(specKey(spec))) continue
+      refused.add(specKey(spec))
+      onBindError?.(spec, LOOPBACK_ONLY_REFUSAL)
+    }
+    const specs = asked.filter((s) => loopbackBind || !s.loopbackOnly)
     const wanted = new Map(specs.map((s) => [specKey(s), s]))
     for (const [key, entry] of [...live]) {
       if (wanted.has(key)) continue

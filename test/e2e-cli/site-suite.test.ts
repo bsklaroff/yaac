@@ -319,6 +319,11 @@ describe('yaac site (real CLI + real server)', () => {
         forward.stop()
       }
     }
+    // Only at a loopback address: elsewhere the admin port is reported and
+    // skipped. TEST-NET-1 is never this machine's, so a regression fails to
+    // bind at once rather than opening a listener.
+    expect(await refused('forward', release!, '--port', '3002', '--bind', '192.0.2.1'))
+      .toContain('cannot bind port 3002: a public site release\'s ports are forwarded on loopback alone')
     // Nothing else of the release is: not streamd, though it listens.
     const stray = await forwardRelease(release!, 10300)
     try {

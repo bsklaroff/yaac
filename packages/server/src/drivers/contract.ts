@@ -69,6 +69,11 @@ export interface RuntimeHandle {
   deathCause: WorkspaceDeathCause
   /** The node it runs on, once scheduled, where a runtime has nodes. */
   node?: string
+  /**
+   * The public site it is a release of, set when it launched and kept for
+   * as long as it runs, whatever becomes of the site's rows or its own.
+   */
+  siteId?: string
 }
 
 /**

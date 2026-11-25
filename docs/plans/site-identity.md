@@ -10,6 +10,14 @@ The issuer is not part of yaac, and the yaac server never sees a sign-in.
 yaac changes in one small way: a public site may also answer a tailnet
 hostname (see "The yaac change").
 
+**Built so far:** the issuer's public and admin listeners, with sign-in by
+email code. The `yaac-idp` repo's README is the reference for those.
+**Still to build:** the tailnet door, which is the issuer's tailnet
+listener, its door plugin and the "Continue with Tailscale" button in
+`yaac-idp`, and the tailnet hostname and port of a public site in yaac.
+Until then an install signs people in by email code alone, as one with no
+site domain always will.
+
 ## What an install needs
 
 Sites exist only under the k8s driver, so the issuer does too.
@@ -148,10 +156,18 @@ backstop.
 ## Apps
 
 A person registers an app on the admin port: its name and redirect URIs.
-The admin routes call `adminCreateOAuthClient`, which checks no caller, so
-they are served on that port alone, and the yaac server's owner check on
-the forward is their whole access control (docs/public-sites.md "Admin
-port"). An agent cannot reach an admin port, so an agent registers nothing.
+The admin routes check no caller, so they are served on that port alone,
+and the yaac server's owner check on the forward, which forwards a
+release's ports only at a loopback address, is their whole access control
+(docs/public-sites.md "Admin port"). The issuer refuses what a browser
+sends from other pages. No agent in a cluster workspace can reach an admin
+port; one in a containerless workspace on the owner's machine can, as any
+program there can.
+
+The plugin's `adminCreateOAuthClient` registers a client only for a session
+its `clientPrivileges` option admits. The issuer gives its own call from the
+admin routes a session that names no user, and `clientPrivileges` admits
+that one alone, so a signed-in person registers nothing on the public port.
 
 - Apps are registered with `skip_consent`: they are the install's own, and
   a consent page would ask a person to approve their own team's app.
@@ -193,9 +209,10 @@ The tables are managed with drizzle, as the yaac server's are:
 
 - better-auth reads and writes through its drizzle adapter (`provider:
   "pg"`) over `drizzle-orm/pglite`.
-- better-auth's CLI (`auth generate`) writes the drizzle schema for the
-  plugins the issuer configures. The schema is checked in, and generated
-  again when a better-auth upgrade or a new plugin changes the tables.
+- The drizzle schema is written by hand, in the yaac server's style, for
+  the models better-auth and the issuer's plugins define. A test compares it
+  with the tables and fields better-auth reports, and so names what a
+  better-auth upgrade or a new plugin adds or drops.
 - drizzle-kit turns each schema change into a named migration, checked in
   beside it. better-auth's own `migrate` command works only with its
   built-in adapter and is not used.
@@ -312,7 +329,12 @@ docs/plans/site-agent-access.md.
 
 ## Verify before building
 
-Each of these is a short test on a scratch install:
+The email-code issuer answered the checks that needed no tailnet: it is
+closed unless set open, its discovery document names the public hostname
+whatever `Host` a request carries, a request to the public port carrying
+`Tailscale-User-Login` signs no one in, and better-auth's drizzle adapter
+runs over `drizzle-orm/pglite` with a dump that loads into a fresh
+database. These remain, each a short test on a scratch install:
 
 1. A sign-in endpoint of the issuer's own plugin that carries the signed
    query and creates a session continues the authorization request. If only
@@ -325,23 +347,16 @@ Each of these is a short test on a scratch install:
 3. A sign-in through the door attaches to the existing user with that
    email, rather than failing or creating a duplicate, and a login that is
    not an email address is refused.
-4. An issuer with no setting is closed: it mails no code to an unknown
-   address and refuses an unknown login at the door. An open one creates
-   the user in both cases.
-5. A request to the public hostname that carries `Tailscale-User-Login`
-   signs no one in.
-6. The door cannot be reached from the internet or from a release: the
+4. A closed issuer refuses an unknown login at the door, and an open one
+   creates the user.
+5. The door cannot be reached from the internet or from a release: the
    public listener answers 404 for `idp.<site domain>` and routes nothing
    to the tailnet port, and a release's request for that name reaches
    nothing.
-7. better-auth's drizzle adapter runs over `drizzle-orm/pglite` at the
-   drizzle version the issuer pins, with the schema `auth generate` writes
-   for the three plugins, and a dump taken by the `migrate` step loads into
-   a fresh database.
-8. The discovery document is served at the issuer's root and names the
-   public hostname for every endpoint, whatever `Host` a request carries.
-9. An app's release completes a token exchange with a placeholder client
-   secret, which the egress proxy replaces in the form body.
+6. An app's release completes a token exchange with a placeholder client
+   secret, which the egress proxy replaces in the form body. The issuer
+   registers every app for `client_secret_post`, and accepts a secret sent
+   that way in its own tests; what is unchecked is the proxy's swap.
 
 ## Alternatives considered
 

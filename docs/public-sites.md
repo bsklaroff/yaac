@@ -549,6 +549,20 @@ webapp or with `yaac forward`, and the yaac server's own owner check
 forwards into a release through on that ground: the driver's `dialPort`
 dials no port a workspace does not offer.
 
+The forward then admits whatever reaches the listener it opens, so a
+client forwards a release's ports only when it binds a loopback address
+(`ForwardSpec.loopbackOnly` in `createForwardSet`). With `--bind` at any
+other address, or a name such as `localhost`, it reports each of them and
+skips it, and its hostname router does not reach them either; forward them
+with a loopback bind. A workspace is marked a release (`release` on its
+list entry) by its own record and its pod's label, so it stays marked
+while its project is deleted around it. This lives in the client: an older
+`yaac` binds wherever it is told. Any program on the owner's machine
+reaches the admin port as the owner, as it reaches the yaac server itself,
+an agent in a containerless workspace there included; an admin server
+should refuse what a browser sends from other pages (its `Host`, `Origin`
+and `Sec-Fetch-Site`).
+
 The router never serves it, and the per-site policy admits the router only
 on the site's port, so the internet cannot reach it. An admin port equal to
 the site's port is refused. The admin server runs

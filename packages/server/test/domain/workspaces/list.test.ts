@@ -18,7 +18,7 @@ import { onWorkspaceListChanged, _resetWorkspaceListChangedForTests } from '#lib
 import { recordWorkspaceCreated, setWorkspaceTitle } from '#db/workspace-store'
 import { insertSession } from '#db/session-store'
 import { recordConversations } from '#db/conversation-store'
-import { insertSite } from '#db/site-store'
+import { deleteSiteRow, insertSite } from '#db/site-store'
 import {
   listActiveWorkspaces,
   _clearListActiveInflightForTests,
@@ -298,6 +298,21 @@ describe('listActiveWorkspaces', () => {
     const bySession = new Map((await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((s) => [s.workspaceId, s]))
     expect(bySession.get('rel-1')?.site).toBe('shop')
     expect(bySession.get('dev')?.site).toBeUndefined()
+  })
+
+  it('marks a release as one by its own record and its runtime\'s, so deleting its project around it leaves it marked', async () => {
+    await recordTestProject(DEMO_PROJECT_ID)
+    const site = await insertSite({ projectId: DEMO_PROJECT_ID, repos: [{ repo: DEMO_PROJECT_ID, branch: 'main' }], follow: false, name: 'shop', port: 3000, namedWorkflowId: await namedWorkflowFor(DEMO_PROJECT_ID) })
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'rel-1', siteId: site.id })
+    await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'dev' })
+    // A project's deletion removes its site rows first, and its workspace rows before a failed stop is retried.
+    await deleteSiteRow(site.id)
+    running([live('rel-1'), live('rel-2', { siteId: site.id }), live('dev')])
+    const bySession = new Map((await listActiveWorkspaces(DEMO_PROJECT_ID)).workspaces.map((s) => [s.workspaceId, s]))
+    expect(bySession.get('rel-1')).toMatchObject({ release: true })
+    expect(bySession.get('rel-1')?.site).toBeUndefined()
+    expect(bySession.get('rel-2')).toMatchObject({ release: true })
+    expect(bySession.get('dev')?.release).toBeUndefined()
   })
 
   it('carries each workspace\'s forwarded ports', async () => {

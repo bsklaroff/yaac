@@ -56,6 +56,8 @@ export interface WorkspaceRuntimeReport {
   blockedHosts: string[]
   forwardedPorts: PortMapping[]
   unforwardedPorts: number[]
+  /** The public site it is a release of, as its runtime says (`RuntimeHandle.siteId`). */
+  siteId?: string
 }
 
 /**
@@ -133,6 +135,7 @@ function emptyReport(w: RuntimeHandle, phase: 'running' | 'terminating'): Worksp
     blockedHosts: [],
     forwardedPorts: [],
     unforwardedPorts: [],
+    ...(w.siteId !== undefined ? { siteId: w.siteId } : {}),
   }
 }
 

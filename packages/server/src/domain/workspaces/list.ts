@@ -150,6 +150,8 @@ async function listActiveWorkspacesImpl(projectFilter?: string): Promise<ActiveW
       ...(row?.nonInteractive === true ? { nonInteractive: true as const } : {}),
       ...(row?.createdVia !== undefined ? { createdVia: row.createdVia } : {}),
       ...(row?.siteId !== undefined && sitesById.has(row.siteId) ? { site: sitesById.get(row.siteId) } : {}),
+      // From the release itself, which outlives the site's rows and its own.
+      ...(row?.siteId !== undefined || w.siteId !== undefined ? { release: true as const } : {}),
       repos: (reposByWorkspace.get(w.workspaceId) ?? []).map(({ workspaceId: _, ...repo }) => repo),
       cwd: row?.cwd ?? '',
     }

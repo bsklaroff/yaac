@@ -98,8 +98,12 @@ export async function forward(
   const workspaceId = workspace === undefined
     ? undefined
     : (await api.workspace[':id'].$get({ param: { id: workspace } })).workspaceId
+  // A release's ports stay on loopback however they are named
+  // (`ForwardSpec.loopbackOnly`), so a named port of one is marked too.
+  const release = options.port?.length && options.bind !== undefined
+    && (await api.workspace.list.$get({ query: {} })).workspaces.some((w) => w.workspaceId === workspaceId && w.release)
   const explicit = options.port?.length
-    ? options.port.map((raw) => parsePortOption(raw, workspaceId ?? ''))
+    ? options.port.map((raw) => ({ ...parsePortOption(raw, workspaceId ?? ''), ...(release && { loopbackOnly: true as const }) }))
     : undefined
 
   const bindHost = options.bind ?? '127.0.0.1'
