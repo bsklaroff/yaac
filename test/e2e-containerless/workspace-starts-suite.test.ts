@@ -76,9 +76,10 @@ afterAll(stopRig)
 /**
  * `--mode acp` on a host: acpd supervises the adapter as a host process,
  * reached over a UNIX socket. What can go wrong is host-specific (the
- * adapter's cwd, `socat`, the handshake), and shows up as a workspace that
- * dies right after create or a pane that stays empty. Missing adapters or
- * socat are unit-tested, since the server's PATH is fixed at spawn.
+ * adapter's cwd, the bundle's acpd binary, the handshake), and shows up as
+ * a workspace that dies right after create or a pane that stays empty.
+ * Missing adapters are unit-tested, since the server's PATH is fixed at
+ * spawn.
  */
 describe.skipIf(!CAN_RUN_ACP)('containerless workspaces in acp mode', () => {
   /**

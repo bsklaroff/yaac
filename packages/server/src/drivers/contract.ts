@@ -682,8 +682,9 @@ export interface WorkspacePaths {
   terminalLogDir: string
   /** Where pasted images are, as the agent sees them. */
   attachmentsDir: string
-  /** acpd's entry module, used in the acp launch command. */
-  acpdEntry: string
+  /** The acpd binary: the acp launch command runs it, and the server dials
+   *  each conversation's socket through it (`acpd dial`). */
+  acpd: string
   /** The file whose touch asks the tree container for a checkpoint pass,
    *  where workspaces have one. */
   treeTrigger?: string

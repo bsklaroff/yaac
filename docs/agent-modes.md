@@ -62,7 +62,7 @@ and detach from freely.
 tmux window                                   server
 ┌─────────────────────────────┐               ┌──────────────────┐
 │ acpd ── stdio ── ACP agent  │               │ AcpConversation  │
-│   └── /tmp/yaac-acp/<w>.sock│◄──ctrl+socat──┤ (JSON-RPC peer)  │
+│   └── /tmp/yaac-acp/<w>.sock│◄──ctrl+dial───┤ (JSON-RPC peer)  │
 └─────────────────────────────┘               └──────────────────┘
 ```
 
@@ -78,10 +78,11 @@ missing binary, so the path must be right.
 
 A containerless create whose sessions are all `acp` starts them before its
 checkout is written, since the adapter reads nothing from it until a conversation opens,
-and its boot then overlaps the checkout. `--wait-for <checkout>/.git` makes
-acpd accept a client at once but hold it, sending no `_acpd/hello`, until the
-checkout's `.git` is renamed in; the client's handshake starts at the hello,
-so the conversation opens on the finished checkout. A pod's acpd comes from
+and its boot then overlaps the checkout. `--wait-for <checkout>/.git`, once
+per checkout, makes acpd accept a client at once but hold it, sending no
+`_acpd/hello`, until every checkout's `.git` is renamed in; the client's
+handshake starts at the hello, so the conversation opens on the finished
+checkouts. A pod's acpd comes from
 its image, which may predate the flag, so a pod's agents start after the
 checkout as a `tui` agent always does.
 
@@ -1078,7 +1079,7 @@ image given by URL into text.
 | Pane bridge (`/acp/attach`, and `/acp/observe` for `acp`) | `packages/server/src/runtime/agents/acp-bridge.ts` |
 | A reader's follow of a `tui` conversation (`/acp/observe`) | `packages/server/src/domain/workspaces/history-tail.ts` |
 | TUI transcript replay (one per tool) | `packages/server/src/runtime/agents/*-acp-replay.ts` |
-| Agent supervisor | `dockerfiles/acpd/` (baked into the base image; run from the install under containerless) |
+| Agent supervisor | `dockerfiles/acpd/`, a Go binary (built into the base image; cross-compiled into the install for containerless) |
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |
 | Chat pane | `packages/frontend/src/components/WorkspaceChat.tsx`, `src/lib/acp.ts` |

@@ -1,6 +1,6 @@
 /**
  * Reader for the conversation record acpd writes as it relays
- * (`dockerfiles/acpd/acpd.js`).
+ * (`dockerfiles/acpd/daemon.go`).
  *
  * The record is the verbatim JSON-RPC stream in both directions, so replay
  * uses the same `acp-protocol` projection as live traffic. acpd writes it

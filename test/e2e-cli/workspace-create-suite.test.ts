@@ -2054,7 +2054,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         'sh', '-c',
         `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:claude "#{pane_start_command}"`,
       ])
-      expect(startCmd).toContain('/opt/yaac/acpd/main.js')
+      expect(startCmd).toContain('/opt/yaac/acpd/acpd ')
       expect(startCmd).toContain('claude-agent-acp')
 
       // A UNIX socket rather than a port, so the conversation's endpoint never
@@ -2229,7 +2229,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
           'sh', '-c',
           `tmux -S ${CONTAINER_TMUX_SOCK} display -p -t yaac:${window} "#{pane_start_command}"`,
         ])
-        expect(startCmd).toContain('/opt/yaac/acpd/main.js')
+        expect(startCmd).toContain('/opt/yaac/acpd/acpd ')
         for (const fragment of launch) expect(startCmd).toContain(fragment)
 
         // A `session/new` reply with an id means the adapter started and

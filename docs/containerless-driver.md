@@ -715,13 +715,15 @@ startup.
   Ubuntu 24.04's (3.4) pass. Only a snapshot's cursor shape needs a newer
   tmux still, 3.6, and goes without on an older one
   (docs/terminal-mirror.md "Limits").
-- **node** 22+ **with npm**: required. npm installs every agent but omp;
-  codex and pi are node scripts; and `--mode acp` runs yaac's acpd under
-  `node`. The pinned agents need 22;
+- **node** 22+ **with npm**: required. npm installs every agent but omp,
+  and codex and pi are node scripts. The pinned agents need 22;
   Debian and Ubuntu `apt install nodejs` is older and lacks npm. A server started by a node not on `PATH` (like the desktop
   app's bundled one) is the usual way to be missing it.
-- **socat**: required for `--mode acp`, whose chat transport uses it to dial
-  acpd; `yaac host check` only warns, and an acp-mode create refuses.
+- **acpd**: shipped with yaac, not installed on the host. The build
+  cross-compiles one static binary each for Linux and macOS on x64 and
+  arm64 (`dockerfiles/acpd/bin`, copied into `dist/`); `--mode acp` runs
+  the agent under it and dials its socket with `acpd dial`. On another
+  platform `yaac host check` warns and an acp-mode create refuses.
 - **lsof**: port detection. Without it workspaces report no ports.
 - **A systemd user session** (Linux): optional, and not checked. With one,
   a stop also ends what a workspace's processes detached from it; without
@@ -772,11 +774,10 @@ A launch command that runs nothing exits 127, tmux closes the window, and the
 workspace vanishes seconds after the create reported success. Two checks
 prevent that:
 
-- Before provisioning, the create calls `assertCanLaunch`: `tmux` and `git`
-  always, plus `node` and `socat` for `--mode acp`, checked in dependency
-  order. A miss refuses with `MISSING_TOOL` and install instructions. socat
-  is included because without it the chat pane never attaches and looks like
-  a hung agent. The create then installs any pinned binary it still needs
+- Before provisioning, the create calls `assertCanLaunch`: `tmux`, `git`
+  and `node`, plus this install's acpd for `--mode acp`, checked in
+  dependency order. A miss refuses with `MISSING_TOOL` and install
+  instructions. The create then installs any pinned binary it still needs
   (the tool for `--mode tui`; for `--mode acp` its adapter, plus the CLI if
   the adapter drives one), reporting progress.
 - After launch, an unawaited probe checks that the agent windows survived,

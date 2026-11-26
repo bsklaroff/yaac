@@ -154,10 +154,10 @@ function frontendSyntax(files, { ignores = [], autoSelect = true, raw = true } =
 }
 
 export default tseslint.config(
-  // dockerfiles/streamd, acpd and agent-patches are plain JS outside the
-  // tsconfig projects; their vitest projects (unit:streamd, unit:acpd,
-  // unit:agent-patches) check them instead.
-  { ignores: ['dist', '.yaac-dev*', 'dist-test', 'packages/*/dist', 'packages/desktop/dist-app', 'packages/desktop/staging', 'dockerfiles/streamd', 'dockerfiles/acpd', 'dockerfiles/agent-patches'] },
+  // dockerfiles/streamd and agent-patches are plain JS outside the tsconfig
+  // projects; their vitest projects (unit:streamd, unit:agent-patches)
+  // check them instead.
+  { ignores: ['dist', '.yaac-dev*', 'dist-test', 'packages/*/dist', 'packages/desktop/dist-app', 'packages/desktop/staging', 'dockerfiles/streamd', 'dockerfiles/agent-patches'] },
   {
     extends: [
       ...tseslint.configs.recommendedTypeChecked,

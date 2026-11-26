@@ -15,6 +15,14 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   onPath: mockOnPath,
   runHost: mockRunHost,
 }))
+/** Where the install's acpd is: an executable file in each case's data dir,
+ *  since the real one exists only after `pnpm build:acpd`. */
+const acpd = vi.hoisted(() => ({ path: '' }))
+import type * as pathsModule from '#drivers/containerless/paths'
+vi.mock('#drivers/containerless/paths', async (importOriginal) => ({
+  ...(await importOriginal<typeof pathsModule>()),
+  acpdBinary: () => acpd.path,
+}))
 import { assertHostCanLaunch, runHostCheck } from '#drivers/containerless/check'
 import { WorkspaceExecError } from '#drivers/contract'
 import type { ServerError } from '@yaac/shared/errors'
@@ -33,6 +41,8 @@ let dataDir: string
 beforeEach(() => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yaac-cl-check-'))
   setDataDir(dataDir)
+  acpd.path = path.join(dataDir, 'acpd')
+  fs.writeFileSync(acpd.path, '', { mode: 0o755 })
   mockOnPath.mockReset()
   mockRunHost.mockReset()
   mockOnPath.mockResolvedValue(true)
@@ -99,12 +109,14 @@ describe('runHostCheck', () => {
   })
 
   it('only warns about what degrades a feature rather than the mode', async () => {
-    mockOnPath.mockImplementation((bin: string) =>
-      Promise.resolve(bin !== 'lsof' && bin !== 'socat'))
+    mockOnPath.mockImplementation((bin: string) => Promise.resolve(bin !== 'lsof'))
+    fs.rmSync(acpd.path)
     const results = await runHostCheck()
     // Workspaces run without either, minus port detection and ACP mode.
     expect(byName(results, 'lsof')?.status).toBe('warn')
-    expect(byName(results, 'socat')?.status).toBe('warn')
+    expect(byName(results, 'acpd')?.status).toBe('warn')
+    expect(byName(results, 'acpd')?.fix).toContain('--mode tui')
+    expect(byName(results, 'acpd')?.detail).toContain(acpd.path)
     expect(results.some((r) => r.status === 'fail')).toBe(false)
   })
 
@@ -263,7 +275,8 @@ describe('assertHostCanLaunch', () => {
 
   it('reports the most fundamental gap first, so a host is fixed bottom-up', async () => {
     // On a bare machine, tmux is reported first.
-    missing('tmux', 'git', 'socat')
+    missing('tmux', 'git')
+    fs.rmSync(acpd.path)
     await expect(assertHostCanLaunch({ tool: 'claude', mode: 'acp' }))
       .rejects.toThrow(/"tmux" is not on this host's PATH/)
   })
@@ -417,24 +430,22 @@ describe('assertHostCanLaunch', () => {
     await expect(assertHostCanLaunch({ tool: 'omp', mode: 'tui' })).rejects.toThrow(/with curl, and "curl" is not on this host's PATH/)
   })
 
-  it('asks for socat under acp, whose absence hangs a pane instead of failing', async () => {
-    // The chat transport reaches acpd's socket by spawning socat. Without
-    // it the workspace launches but never attaches, which looks like a
-    // wedged agent.
-    missing('socat')
+  it('refuses acp on a host this install has no acpd for', async () => {
+    // Without it the agent's window exits at once, after a create that
+    // reported success.
+    fs.rmSync(acpd.path)
     const err = await assertHostCanLaunch({ tool: 'claude', mode: 'acp' })
       .catch((e: unknown) => e) as ServerError
     expect(err.code).toBe('MISSING_TOOL')
-    expect(err.message).toMatch(/"socat" is not on this host's PATH/)
-    expect(err.message).toContain('apt install socat')
+    expect(err.message).toContain(`no acpd for ${process.platform}-${process.arch}`)
     expect(err.message).toContain('--mode tui')
     // Refused before downloading the adapter.
     expect(ran()).not.toContain('npm')
   })
 
   it('asks for node whatever the mode, because the agents install and run under it', async () => {
-    // npm, the codex and pi scripts, and acpd all need node on PATH. A
-    // server using a bundled node (as the desktop app does) may lack it.
+    // npm and the codex and pi scripts need node on PATH. A server using a
+    // bundled node (as the desktop app does) may lack it.
     missing('node')
     for (const mode of ['tui', 'acp'] as const) {
       const err = await assertHostCanLaunch({ tool: 'codex', mode })
@@ -446,9 +457,9 @@ describe('assertHostCanLaunch', () => {
     expect(ran()).not.toContain('npm')
   })
 
-  it('asks nothing about socat for tui, which dials no socket', async () => {
+  it('asks nothing about acpd for tui, which runs the tool itself', async () => {
     preinstalled('codex')
-    missing('socat')
+    fs.rmSync(acpd.path)
     await expect(assertHostCanLaunch({ tool: 'codex', mode: 'tui' })).resolves.toBeUndefined()
     expect(ran()).not.toContain('npm')
   })

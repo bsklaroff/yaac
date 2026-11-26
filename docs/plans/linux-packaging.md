@@ -103,8 +103,8 @@ same directory because Debian names fd `fdfind` and the agents look for `fd`.
 
 **Dependencies.**
 
-- `Depends: tmux (>= 3.3), socat, git, curl, lsof, ca-certificates, libgomp1`.
-  A create refuses to run without tmux and socat. git, curl and lsof are the
+- `Depends: tmux (>= 3.3), git, curl, lsof, ca-certificates, libgomp1`.
+  A create refuses to run without tmux. git, curl and lsof are the
   formula's `uses_from_macos` set. libgomp1 is for the bundled llama.cpp
   title model (docs/workspace-title-model-eval.md), which would otherwise
   fetch it from a distro mirror at runtime.
@@ -446,7 +446,7 @@ pnpm publish:apt    # regenerate and sign the repo from the release's .debs
 
 For distros without a `.deb`, the no-root route would be the one rustup, uv
 and Claude Code take: a self-contained runtime under `~/.local/share/yaac`
-(the CLI, Node, and static tmux, socat, fd and ripgrep) with a link in
+(the CLI, Node, and static tmux, fd and ripgrep) with a link in
 `~/.local/bin`, installed by `curl … | sh`. It is left out for three reasons:
 
 - **It conflicts with a package install.** Debian's `~/.profile` puts

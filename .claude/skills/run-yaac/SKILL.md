@@ -16,7 +16,7 @@ yaac workspace pod** — skip to [Inside a yaac workspace](#inside-a-yaac-worksp
 
 ## Set up and run
 
-Prerequisites (node via nvm, pnpm, podman, kind, kubectl; tmux, socat, fd,
+Prerequisites (node via nvm, pnpm, go, podman, kind, kubectl; tmux, fd,
 ripgrep for containerless) are in `README.md` → "From source". Then:
 
 ```bash

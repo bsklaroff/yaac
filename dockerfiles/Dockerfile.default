@@ -1,6 +1,14 @@
 # Every download is pinned to a digest or SHA-256, so a release asset
 # replaced upstream fails the build instead of entering the image. apt
 # packages need no pin: apt checks them against the signed archive index.
+
+# acpd, the in-pod supervisor for an ACP agent (acpd/daemon.go): a static
+# binary, so it loads nothing at run time. The same Go image as mountd's.
+FROM docker.io/library/golang:1.26.10-alpine3.23@sha256:78e7f1e419545bc4b8b5ee8a40a99ddb5df1216d38681dbab2eeb1fdb2427f43 AS acpd
+WORKDIR /src
+COPY acpd/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/acpd .
+
 FROM docker.io/ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 # Every RUN here, and in every image built on this one, runs with umask 002,
@@ -83,9 +91,8 @@ RUN case "$(dpkg --print-architecture)" in \
 # baseImageHash); dockerfiles/.containerignore excludes its dev-only files.
 COPY streamd/ /opt/yaac/streamd/
 RUN cd /opt/yaac/streamd && npm install --omit=dev --no-audit --no-fund
-# acpd: the in-pod supervisor for an ACP agent (see acpd/acpd.js). It has no
-# dependencies, so needs no install step. Also part of baseImageHash.
-COPY acpd/ /opt/yaac/acpd/
+# acpd, built above. Its source is also part of baseImageHash.
+COPY --from=acpd /out/acpd /opt/yaac/acpd/acpd
 # Install full Chromium (symlinked to /opt/google/chrome for tools that
 # auto-detect it, e.g. chrome-devtools-mcp) and Playwright's headless shell.
 # The tree is made group-0 writable so a project pinning another Playwright

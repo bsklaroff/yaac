@@ -11,8 +11,8 @@ expected while the source install owns the link. To switch back later:
 ## macOS (arm64)
 
 ```sh
-brew install node pnpm kubernetes-cli podman kind krunkit
-brew install tmux socat fd ripgrep   # for the containerless driver
+brew install node pnpm go kubernetes-cli podman kind krunkit
+brew install tmux fd ripgrep   # for the containerless driver
 
 # Download and install yaac
 git clone https://github.com/bsklaroff/yaac.git && cd yaac
@@ -28,7 +28,9 @@ For k8s, add swap before the first install; see
 
 ```sh
 sudo apt install podman aardvark-dns nftables acl libgomp1
-sudo apt install tmux socat fd-find ripgrep   # for the containerless driver
+# Go 1.21 or newer builds acpd (Debian 12's is too old; use go.dev/dl).
+sudo apt install golang-go
+sudo apt install tmux fd-find ripgrep   # for the containerless driver
 # tmux must be 3.3 or newer. Ubuntu 22.04's is 3.2a: build tmux from its
 # release tarball or use Homebrew there.
 

@@ -5,6 +5,6 @@
 # toolsContentHash() reads — keep them in sync (literal paths only).
 streamd/test
 streamd/node_modules
-acpd/test
-acpd/node_modules
+acpd/acpd_test.go
+acpd/bin
 agent-patches/test

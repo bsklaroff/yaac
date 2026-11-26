@@ -14,6 +14,7 @@ import {
 import { WorkspaceExecError } from '#drivers/contract'
 import { serverLog } from '#lib/log'
 import { onPath, runHost } from './host'
+import { acpdBinary } from './paths'
 import { userEnvironment } from './launch'
 import { overriddenToolHomeVars } from './tool-homes'
 
@@ -42,7 +43,7 @@ const REQUIRED: Array<{ binary: string; why: string; fix: string }> = [
   },
   {
     binary: 'node',
-    why: 'runs acpd, the npm that installs every agent but omp, and the agents that are node scripts',
+    why: 'runs the npm that installs every agent but omp, and the agents that are node scripts',
     fix: `Install ${NODE_INSTALL}. A yaac started by a bundled interpreter (the `
       + 'desktop app stages one) is the usual reason this is missing.',
   },
@@ -66,12 +67,6 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
     fix: 'Install lsof to have listening ports suggested for forwarding; workspaces run fine without it.',
   },
   {
-    binary: 'socat',
-    why: 'carries the ACP chat transport to an agent',
-    fix: 'Install socat (apt install socat / brew install socat) to use --mode acp, '
-      + 'which is refused without it; tui-mode workspaces do not need it.',
-  },
-  {
     binary: 'curl',
     why: 'yaac-mama, the in-session helper, reaches this server with it, and yaac downloads omp with it',
     fix: 'Install curl (apt install curl) so a session can run yaac-mama and yaac can install omp; '
@@ -83,10 +78,11 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
  * This driver's `WorkspaceDriver.assertCanLaunch`. Without it, a missing tool
  * makes the agent window exit instantly after a create reported success.
  *
- * Every launch needs tmux, git and node on PATH (node runs npm, acpd, codex
- * and pi), and a tmux no older than `MIN_TMUX`: on an older one the create
- * would succeed and its webapp terminal stay blank. `acp` also needs socat, which the chat transport uses to reach
- * acpd's socket; without it the pane just hangs. The agent CLI (or ACP
+ * Every launch needs tmux, git and node on PATH (node runs npm, codex and
+ * pi), and a tmux no older than `MIN_TMUX`: on an older one the create
+ * would succeed and its webapp terminal stay blank. `acp` also needs this
+ * install's acpd for the host, which yaac ships rather than finds on PATH
+ * (`acpdBinary`); without it the window exits at once. The agent CLI (or ACP
  * adapter, plus the CLI it drives) is installed on first use
  * (`ensureAgentBinary`). `onPath` uses the same environment the workspace's
  * tmux gets.
@@ -106,12 +102,12 @@ export async function assertHostCanLaunch(opts: {
   }
   await requireBinary('git', "it makes and reads the workspace's checkout",
     'apt install git / brew install git', null)
-  await requireBinary('node', 'npm installs every agent but omp under it, and acpd, codex and pi run under it',
+  await requireBinary('node', 'npm installs every agent but omp under it, and codex and pi run under it',
     NODE_INSTALL, null)
-  if (mode === 'acp') {
-    // Before installing anything, so the refusal is immediate.
-    await requireBinary('socat', "the chat transport dials acpd's socket with it",
-      'apt install socat / brew install socat', 'create the workspace with --mode tui')
+  // Before installing anything, so the refusal is immediate.
+  if (mode === 'acp' && !(await acpdShipped())) {
+    throw new ServerError('MISSING_TOOL', `--mode acp runs each agent under acpd, and ${acpdMissing()}. `
+      + 'Create the workspace with --mode tui instead.')
   }
   if (mode === 'acp') {
     const adapter = ACP_ADAPTERS[tool]
@@ -140,6 +136,16 @@ async function requireBinary(
     + `agents as host processes with no image to supply one. Install it (${install}) `
     + `and retry${alternative === null ? '' : `, or ${alternative}`}.`,
   )
+}
+
+/** Whether this install has an acpd for this host. */
+async function acpdShipped(): Promise<boolean> {
+  return fs.access(acpdBinary(), fs.constants.X_OK).then(() => true, () => false)
+}
+
+function acpdMissing(): string {
+  return `this install has no acpd for ${process.platform}-${process.arch} (${acpdBinary()}). `
+    + 'yaac ships it for Linux and macOS on x64 and arm64, and a source checkout builds it with `pnpm build:acpd`'
 }
 
 /** Whether `binary` is in its pinned package's install. */
@@ -374,6 +380,14 @@ export async function runHostCheck(): Promise<CheckResult[]> {
       ...(present ? {} : { fix }),
     })
   }
+
+  const acpd = await acpdShipped()
+  results.push({
+    name: 'acpd',
+    status: acpd ? 'pass' : 'warn',
+    detail: acpd ? 'shipped with yaac — supervises --mode acp agents' : `missing — ${acpdMissing()}`,
+    ...(acpd ? {} : { fix: 'Use --mode tui on this host; --mode acp is refused without acpd.' }),
+  })
 
   // yaac installs the agents with npm (omp with curl); list those already installed.
   const installed: string[] = []

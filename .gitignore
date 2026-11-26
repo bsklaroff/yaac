@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-test/
+# acpd, cross-compiled by `pnpm build:acpd`.
+/dockerfiles/acpd/bin/
 .env
 .eslintcache
 packages/desktop/dist-app/
