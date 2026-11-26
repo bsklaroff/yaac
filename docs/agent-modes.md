@@ -24,7 +24,7 @@ docs/permission-modes.md) all read that one table:
 | codex | `codex-acp` | drives `codex app-server` (the CLI on PATH, via `CODEX_PATH`), so the CLI must be installed too |
 | opencode | `opencode acp` | a subcommand of the CLI |
 | pi | `pi-acp` | drives `pi --mode rpc`, so the CLI must be installed too; yaac's patch adds `--approve`, so pi trusts the project and loads its `.pi/` and `.agents/skills` as the TUI does |
-| omp | `omp acp` | a subcommand of the CLI (a bun script), taking the TUI's flags: the posture's approval mode and the model |
+| omp | `omp acp` | a subcommand of the CLI (its release binary, behind a wrapper: `dockerfiles/agent-patches/omp-homes.js`), taking the TUI's flags: the posture's approval mode and the model |
 
 Each file a Node program opens is slow under gVisor, so the workspace image
 starts the Node adapters from one file: `dockerfiles/Dockerfile.tools`

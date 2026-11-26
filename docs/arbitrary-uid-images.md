@@ -79,6 +79,12 @@ writes config creates a file it owns. Prefer an environment variable, or
 let the tool create the file on first use. Everything else in the image is
 rewritten by replacing or truncating the file, which group write allows.
 
+Setting a file's times to chosen values needs ownership too. omp sets them
+on the dir it unpacks its native add-on into before unpacking, so a pod
+cannot add a file to the image's copy of that dir: it must already hold
+every add-on a pod may load, which is why `dockerfiles/agent-patches/omp-homes.js`
+unpacks both x64 CPU variants at build.
+
 ## The runtime half
 
 `installSecurityContext` (`#drivers/k8s/substrate`) gives every yaac pod

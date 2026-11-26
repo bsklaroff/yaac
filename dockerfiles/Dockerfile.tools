@@ -109,12 +109,20 @@ RUN npm install -g @opencode/cli@2.2.7 && chmod -R g=u "$(npm root -g)/@opencode
 # pi. pi-acp (below) depends on pi's unstable `--mode rpc` event shapes, so
 # bump the two together and re-run the acp e2e tier.
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
-# omp, a fork of pi whose `omp` is a bun script, and that bun (pinned as
-# `BUN_RUNTIME`). bun's install script puts its platform binary in place;
-# omp runs none. Its ACP server is `omp acp`, so it has no adapter below.
-# Its `bin/omp` is replaced with a wrapper further down (omp-homes.js).
-RUN npm install -g bun@1.4.5 && \
-    npm install -g --ignore-scripts @oh-my-pi/pi-coding-agent@19.0.1
+# omp, a fork of pi: its release binary (`bun build --compile`, so the
+# image needs no bun), checked against its SHA-256 in
+# `AGENT_CLIS.omp.binarySha256` (a test checks they match). Its npm package
+# is the same program as a bun script, which takes over a second longer to
+# start under gVisor. Its ACP server is `omp acp`, so it has no adapter
+# below. Further down, omp-homes.js puts a wrapper at `bin/omp` and unpacks
+# the binary's native add-on beside it.
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) PLATFORM=linux-x64 SHA256=6ceef04430851bb1050c6fda3af467412eb44a11df0a6ff8121fe601013c5415 ;; \
+      arm64) PLATFORM=linux-arm64 SHA256=237ede0f4994d61f523802c4cf562d4e48bae74c188add792d06d051b907cecf ;; \
+    esac && \
+    omp="$(npm prefix -g)/lib/omp/omp" && mkdir -p "${omp%/*}" && \
+    curl -fsSL -o "$omp" "https://github.com/can1357/oh-my-pi/releases/download/v19.0.1/omp-${PLATFORM}" && \
+    echo "${SHA256}  $omp" | sha256sum -c - && chmod 775 "$omp"
 # Claude Code: the pinned release binary, checked against its SHA-256 in
 # `AGENT_CLIS.claude.binarySha256` (a test checks they match), then its own
 # `install`. That downloads the version again into
@@ -144,8 +152,9 @@ RUN case "$(dpkg --print-architecture)" in \
 # claude-agent-acp and pi-acp are patched after install
 # (dockerfiles/agent-patches/ says what each patch changes and when it can
 # go); a patch fails the build if the release no longer matches it. pi-acp's
-# RUN also puts omp's wrapper in place (agent-patches/omp-homes.js). The
-# patches are copied as yaac (this stage's user) so that RUN can delete them.
+# RUN also puts omp's wrapper in place and unpacks its native add-on
+# (agent-patches/omp-homes.js). The patches are copied as yaac (this stage's
+# user) so that RUN can delete them.
 COPY --chown=yaac agent-patches /tmp/agent-patches
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.109.0 && \
     node /tmp/agent-patches/claude-agent-acp.js "$(npm root -g)/@agentclientprotocol/claude-agent-acp/dist/idle-compaction.js"
@@ -156,7 +165,7 @@ RUN npm install -g --ignore-scripts @agentclientprotocol/codex-acp@2.8.0
 # Runs the pinned pi CLI above (`pi --mode rpc`).
 RUN npm install -g --ignore-scripts pi-acp@0.0.34 && \
     node /tmp/agent-patches/pi-acp.js "$(npm root -g)/pi-acp/dist/index.js" && \
-    node /tmp/agent-patches/omp-homes.js "$(npm root -g)/@oh-my-pi/pi-coding-agent/dist/cli.js" && \
+    node /tmp/agent-patches/omp-homes.js "$(npm prefix -g)/lib/omp/omp" && \
     rm -rf /tmp/agent-patches
 # Under gVisor each file a Node program opens is slow: loading its
 # node_modules is about half of claude-agent-acp's start. So the patched

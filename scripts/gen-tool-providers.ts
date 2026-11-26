@@ -31,8 +31,10 @@
  * per-account gateways) can't be pinned to one host for the proxy's key
  * swap, so they are skipped and logged. OAuth-only providers are skipped too.
  *
- * Needs network access to models.dev and the pinned claude, codex, opencode,
- * pi and omp (with bun) on PATH (`AGENT_CLIS`; a mismatch stops the run). Run it when
+ * Needs network access to models.dev, the pinned claude, codex, opencode and
+ * pi on PATH, and omp's pinned npm package with bun, which the workspace
+ * image does not ship (`ompPackageRoot`). Each must be the `AGENT_CLIS`
+ * version; a mismatch stops the run. Run it when
  * bumping any of them; it is not part of `pnpm build`. A source whose
  * output can't be trusted (claude's table changed layout, an empty codex
  * catalog) stops the run without writing.
@@ -394,13 +396,21 @@ interface OmpProvider {
   models: { id: string; name?: string; baseUrl?: string; efforts: string[]; default?: string }[]
 }
 
+/**
+ * omp's npm package: `OMP_PACKAGE_DIR` if set, else the global install. The
+ * workspace image ships omp's release binary instead, and a global npm
+ * install would collide with its wrapper, so there the package goes in a
+ * scratch prefix that only this lookup (and bun) read.
+ */
 function ompPackageRoot(): string {
   const npmRoot = execFileSync('npm', ['root', '-g'], { encoding: 'utf8' }).trim()
-  const root = path.join(npmRoot, '@oh-my-pi', 'pi-coding-agent')
+  const root = process.env.OMP_PACKAGE_DIR ?? path.join(npmRoot, '@oh-my-pi', 'pi-coding-agent')
   if (!fs.existsSync(root)) {
     throw new Error(
-      `omp is not installed globally (looked in ${root}). Install it with ` +
-      '`npm i -g @oh-my-pi/pi-coding-agent bun` before regenerating.',
+      `omp's npm package is not in ${root}. Install it and bun into a scratch prefix ` +
+      `(\`npm i -g --prefix /tmp/omp-gen @oh-my-pi/pi-coding-agent@${AGENT_CLIS.omp.version} bun\`), then ` +
+      'regenerate with OMP_PACKAGE_DIR=/tmp/omp-gen/lib/node_modules/@oh-my-pi/pi-coding-agent and ' +
+      '/tmp/omp-gen/bin last on PATH.',
     )
   }
   requirePinned('omp', pkgVersion(root))

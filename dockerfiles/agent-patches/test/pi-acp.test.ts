@@ -130,6 +130,10 @@ beforeAll(() => {
   fs.mkdirSync(path.join(agentDir(), 'prompts'), { recursive: true })
   fs.writeFileSync(path.join(agentDir(), 'prompts', 'project-prompt.md'), 'From the project.')
   fs.mkdirSync(path.join(dir, 'home'))
+  fs.mkdirSync(path.join(dir, 'bin'))
+  for (const probe of ['npm', 'pi']) {
+    fs.writeFileSync(path.join(dir, 'bin', probe), `#!/bin/sh\n: > '${path.join(dir, `${probe}-ran`)}'\n`, { mode: 0o755 })
+  }
 })
 
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }))
@@ -150,7 +154,13 @@ async function start(): Promise<string> {
   log.length = 0
   adapter = spawn(process.execPath, [path.join(dir, 'pi-acp', 'dist', 'index.js')], {
     cwd: dir,
-    env: { ...process.env, PI_ACP_PI_COMMAND: path.join(dir, 'pi'), PI_CODING_AGENT_DIR: agentDir(), HOME: path.join(dir, 'home') },
+    env: {
+      ...process.env,
+      PATH: `${path.join(dir, 'bin')}:${process.env.PATH ?? ''}`,
+      PI_ACP_PI_COMMAND: path.join(dir, 'pi'),
+      PI_CODING_AGENT_DIR: agentDir(),
+      HOME: path.join(dir, 'home'),
+    },
   })
   let buf = ''
   adapter.stdout!.on('data', (chunk: Buffer) => {
@@ -176,8 +186,7 @@ async function start(): Promise<string> {
         log.push(`compaction ${String((update as { status?: string }).status)}`)
       }
       if (update?.sessionUpdate === 'agent_message_chunk' && update.content?.text?.includes('Compaction')) log.push('compaction text')
-      // Only the stand-in's own text: pi-acp adds a prelude whose content
-      // depends on the host (its update notice runs the real pi and npm).
+      // Only the stand-in's own text, not pi-acp's startup banner.
       const own = update?.sessionUpdate === 'agent_message_chunk' ? update.content?.text?.match(/(run|steer):[^;]*;/g) : null
       if (own) {
         agentText += own.join('')
@@ -306,6 +315,14 @@ describe('patchPiAcp', () => {
       .toEqual({ stopReason: 'end_turn' })
     expect(agentText).toBe('run:From the project.;')
     expect(fs.existsSync(path.join(dir, 'home', '.pi'))).toBe(false)
+  })
+
+  it('opens a session without asking npm for a newer pi or pi for its version', async () => {
+    await start()
+    // pi-acp reaches pi through PI_ACP_PI_COMMAND, so a `pi` from PATH
+    // would be a version probe.
+    expect(fs.existsSync(path.join(dir, 'npm-ran'))).toBe(false)
+    expect(fs.existsSync(path.join(dir, 'pi-ran'))).toBe(false)
   })
 
   it('is tested against the release the image installs', () => {

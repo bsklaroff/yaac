@@ -157,9 +157,22 @@ const CLAUDE_BINARY_SHA256: Partial<Record<string, string>> = {
   'linux-x64-musl': '641ef19622b485b5379491f10c5c60ebace53775f1cc700dce03b3d742bbb57a',
 }
 
+/** omp's `AGENT_CLIS.omp.binarySha256`, keyed by its release assets' names
+ *  (`omp-<platform>`). */
+const OMP_BINARY_SHA256: Partial<Record<string, string>> = {
+  'darwin-arm64': '2fe420bbd00f81899816e51cbeeb9593afa59d9368d62c9d3e78535d540e32f6',
+  'darwin-x64': '8d62502eede8c7a43311798434d0a31a1c024a3abc56bedc4da200cccf94fea1',
+  'linux-arm64': '237ede0f4994d61f523802c4cf562d4e48bae74c188add792d06d051b907cecf',
+  'linux-x64': '6ceef04430851bb1050c6fda3af467412eb44a11df0a6ff8121fe601013c5415',
+  'linux-musl-arm64': '69fda114c77a0c146b916ab76047ca603c00fa69068627f5b9ba52f9662636a0',
+  'linux-musl-x64': '6cb67da8e3c8374ec4a12df1b5c65646492c2cb139fa4d2c02b0f6ec5ce9da61',
+}
+
 /**
  * Each tool's agent CLI, pinned. `dockerfiles/Dockerfile.tools` installs the
- * same versions (a test checks) and so does a host install.
+ * same versions (a test checks) and so does a host install. omp comes as
+ * the release binary built from its package, since the package's bun
+ * script takes over a second to start under gVisor.
  *
  * yaac launches permission postures and effort levels as each CLI's flags
  * or config and reads the CLI's reports back (docs/permission-modes.md,
@@ -172,11 +185,14 @@ const CLAUDE_BINARY_SHA256: Partial<Record<string, string>> = {
  * (`codexLaunchConfig`), which no test covers.
  *
  * The auth daemon's Install button and the workspace image run only what
- * matches a SHA-256 pinned here, since release assets can be replaced in
- * place. Bump the sums with the version:
+ * matches a SHA-256 pinned here, and a host install runs omp only if it
+ * does, since release assets can be replaced in place. Bump the sums with
+ * the version:
  *
- * - `binarySha256`: claude's release binary per platform, the `checksum`s in
- *   `https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`.
+ * - `binarySha256`: the release binary per platform. claude's are the
+ *   `checksum`s in
+ *   `https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`,
+ *   omp's the `SHA256SUMS.txt` asset of its GitHub release.
  * - `installScriptSha256`: the `install.sh` asset of codex's release
  *   (`curl -fsSL <url> | shasum -a 256`).
  */
@@ -193,20 +209,17 @@ export const AGENT_CLIS = {
   },
   opencode: { package: '@opencode/cli', version: '2.2.7' },
   pi: { package: '@earendil-works/pi-coding-agent', version: '1.5.2' },
-  omp: { package: '@oh-my-pi/pi-coding-agent', version: '19.0.1' },
+  omp: {
+    package: '@oh-my-pi/pi-coding-agent',
+    version: '19.0.1',
+    binarySha256: OMP_BINARY_SHA256,
+  },
 } as const satisfies Record<AgentTool, {
   package: string
   version: string
-  binarySha256?: typeof CLAUDE_BINARY_SHA256
+  binarySha256?: Partial<Record<string, string>>
   installScriptSha256?: string
 }>
-
-/**
- * The bun omp runs under: its `omp` is a bun script (`#!/usr/bin/env bun`).
- * Installed from npm beside the agents, by the image and on a host, with its
- * install script, which puts the platform's binary in place.
- */
-export const BUN_RUNTIME = { package: 'bun', version: '1.4.5' } as const
 
 /**
  * The ACP adapter each tool uses in `acp` mode. The image install steps, the

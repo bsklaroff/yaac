@@ -8,7 +8,7 @@
  * longer fit fails the install (`applyEdits`). Bump the patch's `revision`
  * in `@yaac/shared/tool-install` whenever its edits change.
  *
- * Six changes, each deletable on its own once a pi-acp release makes it
+ * Seven changes, each deletable on its own once a pi-acp release makes it
  * unnecessary:
  *
  * 1. Steering. pi-acp gains the `_session/steering` extension claude's and
@@ -78,6 +78,15 @@
  *    and the user's own pi-acp would share one map, written without a
  *    lock, and a workspace would list the user's prompts rather than the
  *    project's. Goes once pi-acp reads its paths from pi's agent dir.
+ *
+ * 7. No version probes. Each `session/new` runs `pi --version` and `npm
+ *    view` (up to 800ms) to tell the user of a newer pi, then `pi --version`
+ *    again to head its startup banner, one after the other: under gVisor
+ *    about two seconds of every session's start. yaac pins pi
+ *    (`AGENT_CLIS.pi`), so the notice only suggests leaving the pin, and the
+ *    banner keeps its context and skill lists without the version line.
+ *    Goes once pi-acp can turn the notice off and stops spawning pi for its
+ *    banner.
  */
 
 import { applyEdits, patchFileFromArgv } from './apply-edits.js'
@@ -343,6 +352,30 @@ const EDITS = [
 `,
     insert: 'replace',
     text: `  const userDir = join2(process.env.PI_CODING_AGENT_DIR || join2(homedir2(), ".pi", "agent"), "prompts");
+`,
+  },
+  {
+    name: 'no update notice',
+    anchor: `    const updateNotice = buildUpdateNotice();
+`,
+    insert: 'replace',
+    text: `    const updateNotice = null;
+`,
+  },
+  {
+    name: 'no version line in the banner',
+    anchor: `function buildStartupInfo(opts) {
+  void opts.fileCommands;
+  const md = [];
+  try {
+    const piVersion = spawnSync("pi", ["--version"], { encoding: "utf-8" });
+`,
+    insert: 'replace',
+    text: `function buildStartupInfo(opts) {
+  void opts.fileCommands;
+  const md = [];
+  try {
+    const piVersion = { stdout: "" };
 `,
   },
   {

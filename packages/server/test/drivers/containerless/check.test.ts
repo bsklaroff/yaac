@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import os from 'node:os'
@@ -374,6 +375,46 @@ describe('assertHostCanLaunch', () => {
     await assertHostCanLaunch({ tool: 'pi', mode: 'acp' })
     expect(fs.readFileSync(path.join(prefix, 'lib', 'node_modules', 'pi-acp', 'dist', 'index.js'), 'utf8'))
       .toContain('"_session/steering"')
+  })
+
+  it('installs omp as its release binary, only once it matches the pinned SHA-256', async () => {
+    // A stand-in binary that unpacks an add-on for `--help`, so the real
+    // patch (the wrapper, the unpack) runs on it.
+    const binary = '#!/bin/sh\n[ "$1" = --help ] && mkdir -p "$PI_NATIVES_DIR/v" && : > "$PI_NATIVES_DIR/v/addon-${PI_NATIVE_VARIANT:-}.node"\n'
+    let served = 'not the pinned omp'
+    mockRunHost.mockImplementation((argv: string[]) => {
+      if (argv[0] === 'curl') {
+        const file = argv[argv.indexOf('-o') + 1]
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        fs.writeFileSync(file, served)
+      }
+      if (argv[0] === 'node') execFileSync(process.execPath, argv.slice(1), { stdio: 'pipe' })
+      return Promise.resolve({ stdout: 'tmux 3.4\n', stderr: '' })
+    })
+    // Pins the stand-in's sum for every platform, so the test runs on any.
+    const pins = AGENT_PACKAGES.omp.release?.sha256 ?? {}
+    const saved = { ...pins }
+    for (const platform of Object.keys(pins)) pins[platform] = createHash('sha256').update(binary).digest('hex')
+    try {
+      await expect(assertHostCanLaunch({ tool: 'omp', mode: 'tui' })).rejects.toThrow(/SHA-256 is \w+, not the pinned/)
+      expect(fs.existsSync(agentPackagePrefix(AGENT_PACKAGES.omp))).toBe(false)
+      served = binary
+      await assertHostCanLaunch({ tool: 'omp', mode: 'acp' })
+    } finally {
+      Object.assign(pins, saved)
+    }
+    const urls = mockRunHost.mock.calls.filter(([argv]) => (argv as string[])[0] === 'curl').map(([argv]) => (argv as string[]).at(-1))
+    expect(urls.at(-1)).toMatch(new RegExp(`/v${AGENT_PACKAGES.omp.version}/omp-${process.platform}-(musl-)?${process.arch}$`))
+    // npm installs no omp and no bun for it.
+    expect(ran()).not.toContain('npm')
+    const prefix = agentPackagePrefix(AGENT_PACKAGES.omp)
+    expect(fs.readFileSync(managedBin('omp'), 'utf8')).toContain('PI_NATIVES_DIR')
+    expect(fs.existsSync(path.join(prefix, 'lib', 'omp', 'natives', 'v', 'addon-baseline.node'))).toBe(true)
+
+    // curl downloads it, so a host without curl is told so.
+    fs.rmSync(prefix, { recursive: true })
+    missing('curl')
+    await expect(assertHostCanLaunch({ tool: 'omp', mode: 'tui' })).rejects.toThrow(/with curl, and "curl" is not on this host's PATH/)
   })
 
   it('asks for socat under acp, whose absence hangs a pane instead of failing', async () => {
