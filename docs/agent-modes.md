@@ -28,9 +28,10 @@ docs/permission-modes.md) all read that one table:
 
 Each file a Node program opens is slow under gVisor, so the workspace image
 starts the Node adapters from one file: `dockerfiles/Dockerfile.tools`
-bundles claude-agent-acp and pi-acp with esbuild after patching them, behind
-a stub that keeps Node's compile cache for later launches in the pod, and
-links `codex` to its native binary rather than npm's Node shim. Host installs
+bundles claude-agent-acp and pi-acp with esbuild after patching them, starts
+those two and codex-acp (published as one file already) through a stub that
+keeps Node's compile cache for later launches in the pod, and links `codex`
+to its native binary rather than npm's Node shim. Host installs
 run the adapters as npm lays them out, since bundling would need esbuild on
 the host.
 

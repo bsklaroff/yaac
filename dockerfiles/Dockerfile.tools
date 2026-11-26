@@ -175,23 +175,27 @@ RUN npm install -g --ignore-scripts pi-acp@0.0.34 && \
 # to a stub that turns on Node's compile cache for the bundle alone (a
 # variable would reach every node the agent runs) and flushes it once
 # loaded, so the next launch in the pod reads it. codex-acp is published
-# bundled already.
+# bundled already, so it gets only the stub.
 #
 # `codex` links straight to the native binary rather than npm's Node shim,
 # which costs a node start on every codex-acp launch (`CODEX_PATH=codex`)
 # and only tells codex how npm updates it, which matters to no one with
 # update checks off (/etc/codex/config.toml below).
 RUN npm install -g --ignore-scripts esbuild@0.28.2 && \
+    stub() { \
+      printf '%s\n' '#!/usr/bin/env node' "import m from 'node:module'" 'm.enableCompileCache()' \
+        "await import('./$2')" 'm.flushCompileCache()' > "$1/yaac-entry.mjs" && \
+      chmod 775 "$1/yaac-entry.mjs" && \
+      ln -sf "$1/yaac-entry.mjs" "$(npm prefix -g)/bin/$3"; \
+    } && \
     for pkg in @agentclientprotocol/claude-agent-acp pi-acp; do \
       dist="$(npm root -g)/$pkg/dist" && \
       esbuild "$dist/index.js" --bundle --platform=node --format=esm --log-level=warning \
         --outfile="$dist/yaac-bundle.mjs" \
         --banner:js="import{createRequire as yaacCreateRequire}from'module';const require=yaacCreateRequire(import.meta.url);" && \
-      printf '%s\n' '#!/usr/bin/env node' "import m from 'node:module'" 'm.enableCompileCache()' \
-        "await import('./yaac-bundle.mjs')" 'm.flushCompileCache()' > "$dist/yaac-entry.mjs" && \
-      chmod 775 "$dist/yaac-entry.mjs" && \
-      ln -sf "$dist/yaac-entry.mjs" "$(npm prefix -g)/bin/${pkg##*/}" || exit 1; \
+      stub "$dist" yaac-bundle.mjs "${pkg##*/}" || exit 1; \
     done && \
+    stub "$(npm root -g)/@agentclientprotocol/codex-acp/dist" index.js codex-acp && \
     npm uninstall -g esbuild && \
     codex="$(echo "$(npm root -g)"/@openai/codex/node_modules/@openai/codex-linux-*/vendor/*/bin/codex)" && \
     test -x "$codex" && ln -sf "$codex" "$(npm prefix -g)/bin/codex"
