@@ -81,6 +81,15 @@ interface Lane {
   consecutiveFailures: number
 }
 
+/** The running watchers, by workspace, for `reconnectStatusWatcher`. */
+const started = new Map<string, WorkspaceStatusWatcher>()
+
+/** Have a workspace's watcher dial again now if it is waiting to retry
+ *  (`WorkspaceStatusWatcher.reconnect`). */
+export function reconnectStatusWatcher(workspaceId: string): void {
+  started.get(workspaceId)?.reconnect()
+}
+
 export class WorkspaceStatusWatcher {
   private readonly lanes: Lane[]
   /** Bumped per window listing, so only the newest one is stored. */
@@ -116,6 +125,7 @@ export class WorkspaceStatusWatcher {
 
   start(): void {
     this.stopped = false
+    started.set(this.session.workspaceId, this)
     for (const lane of this.lanes) this.connect(lane)
   }
 
@@ -126,6 +136,7 @@ export class WorkspaceStatusWatcher {
    */
   stop(): void {
     this.stopped = true
+    if (started.get(this.session.workspaceId) === this) started.delete(this.session.workspaceId)
     for (const lane of this.lanes) {
       if (lane.respawnTimer) clearTimeout(lane.respawnTimer)
       lane.respawnTimer = null
@@ -204,6 +215,24 @@ export class WorkspaceStatusWatcher {
     void listWindows(send).then((entries) => {
       if (listing === this.listing) setWorkspaceWindows(projectId, workspaceId, entries)
     }, () => { /* see above */ })
+  }
+
+  /**
+   * Dial again now any lane that is waiting out a failed dial. A start calls
+   * it once its tmux session exists: the watcher starts when the runtime
+   * first reports the workspace, which under k8s is before a claimed pod
+   * has a session to attach to, so its first dial fails and the next would
+   * come a second later, with the agents' windows already open.
+   */
+  reconnect(): void {
+    for (const lane of this.lanes) {
+      if (!lane.respawnTimer) continue
+      clearTimeout(lane.respawnTimer)
+      lane.respawnTimer = null
+      lane.backoffMs = this.respawnDelayMs
+      lane.consecutiveFailures = 0
+      this.connect(lane)
+    }
   }
 
   /** Idempotent per generation; flips health, never status. */

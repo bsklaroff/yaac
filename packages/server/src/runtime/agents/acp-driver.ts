@@ -11,7 +11,7 @@
  *     tmux window                                   this driver
  *     ┌─────────────────────────────┐               ┌──────────────────┐
  *     │ acpd ── stdio ── ACP agent  │               │ AcpConversation  │
- *     │   └── /tmp/yaac-acp/<w>.sock│◄──ctrl+dial───┤ (JSON-RPC peer)  │
+ *     │   └── /tmp/yaac-acp/<w>.sock│◄─socket dial──┤ (JSON-RPC peer)  │
  *     └─────────────────────────────┘               └──────────────────┘
  *
  * Because a conversation is still a tmux window, launch, restart,
@@ -37,6 +37,7 @@ import { readAcpRecovery, readRecordedSessionNew } from './acp-log'
 import { type JsonRpcTransport } from './acp-jsonrpc'
 import { ControlModeConnection } from './control-mode'
 import {
+  acpHandshakeHold,
   dropAcpQueues,
   parkAcpQueue,
   registerAcpConversation,
@@ -75,7 +76,7 @@ function acpLogPath(paths: Pick<WorkspacePaths, 'acpLogDir'>, name: string): str
 
 /**
  * Delay before re-dialing a window whose acpd dropped the dial or never
- * bound its socket while `acpd dial` waited for it. Until a dial lands there is no
+ * bound its socket while the dial waited for it. Until a dial lands there is no
  * handshake, conversation id, row or chat pane, and session create waits on
  * it to deliver the initial prompt.
  */
@@ -299,10 +300,12 @@ class AcpConnection extends ControlModeConnection {
     const { tool } = session
     let child: StreamChild
     try {
-      // `acpd dial` over `ctrl` gives a raw duplex to the socket, waiting
-      // for acpd to bind it (dockerfiles/acpd/dial.go).
+      // A raw duplex to the socket, which waits for acpd to bind it, so a
+      // new window's dial connects as soon as acpd listens rather than after
+      // `ATTACH_RETRY_MS`. The endpoint is a UNIX socket so it stays out of
+      // the auto-forward port scan.
       const paths = workspaceDriver().workspacePaths(this.session.jobName)
-      child = this.dial(this.session, [paths.acpd, 'dial', acpSockPath(paths, handle)])
+      child = this.dial(this.session, { socket: acpSockPath(paths, handle) })
     } catch (err) {
       this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: dial failed: ${String(err)}`)
       this.retry(handle)
@@ -322,6 +325,7 @@ class AcpConnection extends ControlModeConnection {
       : takeAcpQueue(this.session.projectId, this.session.workspaceId, resumeSessionId)
     entry.conversation = new AcpConversation({
       transport: ctrlTransport(child),
+      setupHold: () => acpHandshakeHold(this.session.projectId, this.session.workspaceId),
       queue,
       cwd: path.posix.join(workspaceDriver().workspacePaths(this.session.jobName).workspaceDir, session.cwd),
       sessionCwd: session.cwd,
@@ -533,7 +537,6 @@ export const acpDriver: AgentDriver = {
       `--sock ${acpSockPath(spec.paths, spec.windowName)}`,
       `--log ${acpLogPath(spec.paths, spec.conversationId)}`,
       `--cwd ${spec.cwd}`,
-      ...(spec.waitFor ?? []).map((gitDir) => `--wait-for ${gitDir}`),
       '--',
       ...adapter.argv(spec),
     ].join(' ')

@@ -24,12 +24,22 @@ import { OMP_PLAN_VAR, OMP_FIRST_MESSAGE_OPTION } from './omp'
  */
 
 /**
+ * What starts every hook command: an `acp` agent reports over the protocol,
+ * and its launch sets `YAAC_NO_PANE_REPORT`, so its hooks end in the shell
+ * the tool starts for them. The tool waits for a hook before it goes on (a
+ * claude `SessionStart` before its session opens, a `UserPromptSubmit`
+ * before each request), and under gVisor every process counts, so the
+ * reporter scripts' own check would cost a second exec on that path.
+ */
+const UNLESS_ACP = '[ -n "${YAAC_NO_PANE_REPORT:-}" ] ||'
+
+/**
  * claude's and codex's session hook. `SessionStart` fires on `startup`,
  * `resume`, `clear` and `compact` (every change of conversation);
  * `SessionEnd` ends it. Hooks run via `/bin/sh -c` with the agent's env,
  * which resolves the home.
  */
-const sessionHook = (home: string, tool: string): string => `yaac-agent-links "${home}" ${tool}`
+const sessionHook = (home: string, tool: string): string => `${UNLESS_ACP} yaac-agent-links "${home}" ${tool}`
 
 /**
  * claude's model, mode and effort reporter. Model: `PostModelSwitch`
@@ -45,7 +55,7 @@ const sessionHook = (home: string, tool: string): string => `yaac-agent-links "$
  * whose staged bin lacks the script would show a hook error on every
  * prompt. `exec` keeps the payload on stdin.
  */
-const CLAUDE_REPORT_HOOK = 'command -v yaac-agent-report >/dev/null && exec yaac-agent-report || true'
+const CLAUDE_REPORT_HOOK = `${UNLESS_ACP} { command -v yaac-agent-report >/dev/null && exec yaac-agent-report; } || true`
 
 type Hooks = ReadonlyArray<readonly [event: string, command: string]>
 
@@ -303,11 +313,19 @@ interface HookMatcher {
 const MAX_SETTINGS_BYTES = 1024 * 1024
 
 /**
- * yaac hooks no longer installed, which a merge removes. claude's session
- * hook once named its home as `$HOME/.claude`, which under containerless is
- * the user's own (docs/legacy-compat-shims.md).
+ * yaac hooks no longer installed, which a merge removes
+ * (docs/legacy-compat-shims.md): claude's session hook naming its home as
+ * `$HOME/.claude`, which under containerless is the user's own; the model
+ * reporter `yaac-agent-report` replaced; and the hooks from before they
+ * skipped `acp` agents in their own shell (`UNLESS_ACP`).
  */
-const RETIRED_HOOKS = new Set(['yaac-agent-links "$HOME/.claude" claude'])
+const RETIRED_HOOKS = new Set([
+  'yaac-agent-links "$HOME/.claude" claude',
+  'command -v yaac-agent-model >/dev/null && exec yaac-agent-model || true',
+  'yaac-agent-links "$CLAUDE_CONFIG_DIR" claude',
+  'yaac-agent-links "$CODEX_HOME" codex',
+  'command -v yaac-agent-report >/dev/null && exec yaac-agent-report || true',
+])
 
 /**
  * Merge `wanted` into a settings file's `hooks` (claude's `settings.json`

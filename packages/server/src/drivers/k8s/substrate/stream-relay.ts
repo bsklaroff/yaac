@@ -389,13 +389,27 @@ export async function podClaim(jobName: string, request: object, opts: { timeout
  * emitted as 'error'.
  */
 export function dialCtrlStream(workspaceId: string, argv: string[]): StreamChild {
+  return rawStream(workspaceId, { kind: 'ctrl', cmd: argv })
+}
+
+/**
+ * The contract's `StreamChild` over a `unix` stream: a raw duplex to a UNIX
+ * socket in the pod, which streamd connects in its own process, waiting for
+ * the socket to be bound (dockerfiles/streamd/streamd.js `handleUnix`).
+ */
+export function dialSocketStream(workspaceId: string, socketPath: string): StreamChild {
+  return rawStream(workspaceId, { kind: 'unix', path: socketPath })
+}
+
+/** A `StreamChild` over a stream whose payload is raw bytes both ways. */
+function rawStream(workspaceId: string, params: { kind: 'ctrl'; cmd: string[] } | { kind: 'unix'; path: string }): StreamChild {
   const emitter = new EventEmitter()
   const dataCbs: Array<(chunk: Buffer | string) => void> = []
   const pending: string[] = []
   let sock: net.Socket | null = null
   let killed = false
 
-  relayDial(workspaceId, { kind: 'ctrl', cmd: argv }).then(
+  relayDial(workspaceId, params).then(
     (socket) => {
       if (killed) {
         socket.destroy()

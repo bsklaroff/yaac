@@ -680,10 +680,11 @@ describe.skipIf(!CAN_RUN)('containerless workspaces (real CLI + real server, no 
     }
     const command = (await commandsIn(path.join(project, 'claude', 'settings.json'), 'SessionStart'))
       .find((c) => c.includes('yaac-agent-links'))
-    expect(command).toBe('yaac-agent-links "$CLAUDE_CONFIG_DIR" claude')
+    // An acp agent skips it in the hook's own shell (`YAAC_NO_PANE_REPORT`).
+    expect(command).toBe('[ -n "${YAAC_NO_PANE_REPORT:-}" ] || yaac-agent-links "$CLAUDE_CONFIG_DIR" claude')
     // codex runs the same script from its own home.
     expect(await commandsIn(path.join(project, 'codex', 'hooks.json'), 'SessionStart'))
-      .toEqual(['yaac-agent-links "$CODEX_HOME" codex'])
+      .toEqual(['[ -n "${YAAC_NO_PANE_REPORT:-}" ] || yaac-agent-links "$CODEX_HOME" codex'])
 
     const binDir = path.join(project, 'sessions', workspaceId, 'bin')
     await expect(fs.access(path.join(binDir, 'yaac-agent-links'), fs.constants.X_OK))

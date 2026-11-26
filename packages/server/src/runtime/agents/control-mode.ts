@@ -30,7 +30,7 @@ import { StringDecoder } from 'node:string_decoder'
 import type { StreamChild, WorkspacePaths } from '#drivers/contract'
 import { workspaceDriver } from '#drivers/driver'
 import { serverLog } from '#lib/log'
-import type { AgentConnectDeps, AgentConnection, AgentObservation, DrivenWorkspace } from './drivers'
+import type { AgentConnectDeps, AgentConnection, AgentObservation, DialTarget, DrivenWorkspace } from './drivers'
 import type { WorkspaceWindow } from '#drivers/contract'
 
 /**
@@ -261,7 +261,7 @@ const DEAD_SUBSCRIPTION_PREFIX = 'dead-'
 export abstract class ControlModeConnection implements AgentConnection {
   protected done = false
   protected readonly log: (msg: string) => void
-  protected readonly dial: (session: DrivenWorkspace, argv: string[]) => StreamChild
+  protected readonly dial: (session: DrivenWorkspace, target: DialTarget) => StreamChild
   private child: StreamChild | null = null
   private client: ControlModeClient | null = null
   private heartbeatTimer: NodeJS.Timeout | null = null
@@ -281,7 +281,9 @@ export abstract class ControlModeConnection implements AgentConnection {
     this.heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 20_000
     this.commandTimeoutMs = deps.commandTimeoutMs ?? 10_000
     this.log = deps.log ?? serverLog
-    this.dial = deps.dial ?? ((s, argv) => workspaceDriver().dialCtrl(s.jobName, argv))
+    this.dial = deps.dial ?? ((s, target) => (Array.isArray(target)
+      ? workspaceDriver().dialCtrl(s.jobName, target)
+      : workspaceDriver().dialSocket(s.jobName, target.socket)))
   }
 
   /** Reconcile with the workspace's windows; run at attach, on every

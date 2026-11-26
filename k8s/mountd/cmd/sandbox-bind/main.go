@@ -7,7 +7,9 @@
 //
 // `binds` is started by mountd through `runsc exec`, with the binary handed
 // in by descriptor and an exact process spec, so nothing it runs or reads
-// comes from the workspace's image. Its request is its one argument.
+// comes from the workspace's image. Its request is its one argument. On
+// success it prints how long its own work took (`took 12ms`), which mountd
+// logs beside the whole entry's time, the rest of which is runsc's.
 //
 // `tree-start` runs in the tree container, which yaac's base image runs: it
 // binds that container's entries from the list in the node-mounts
@@ -19,6 +21,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 )
 
 func main() {
@@ -31,7 +34,12 @@ func main() {
 		if len(args) != 1 {
 			fail(fmt.Errorf("binds takes one argument"))
 		}
-		fail(runBinds(args[0]))
+		started := time.Now()
+		if err := runBinds(args[0]); err != nil {
+			fail(err)
+		}
+		fmt.Printf("took %s\n", time.Since(started).Round(time.Millisecond))
+		fail(nil)
 	case "tree-start":
 		if len(args) > 0 && args[0] == "--" {
 			args = args[1:]

@@ -140,6 +140,40 @@ describe('claimWorkspace', () => {
     )).rejects.toThrow(/not ready/)
   })
 
+  it('opens the session and the windows `open` names in one tmux, before waiting for the files, and writes them only after', async () => {
+    const marker = path.join(home, 'started.life')
+    const gitconfig = path.join(home, '.gitconfig')
+    let done = false
+    const open = "new-window -d -n agent 'exec acpd' \\; set-option -t =yaac:=agent remain-on-exit on"
+    const env = { ...base.env, QUOTED: "it's", ENDS: 'a;' }
+    const claim = (claimWorkspace as (r: unknown, d: unknown) => Promise<void>)(
+      { ...base, env, startedMarker: marker, waitMs: 60_000, open }, { home, run },
+    ).then(() => { done = true })
+    // The session and the agents' windows are up while the tree is filled.
+    await vi.waitFor(() => { expect(calls.map((c) => c.cmd)).toEqual(['sh']) })
+    expect(done).toBe(false)
+    await expect(fs.access(gitconfig)).rejects.toThrow()
+    await fs.writeFile(marker, '')
+    await claim
+    await fs.access(gitconfig)
+    // Nothing more: the session is not opened a second time.
+    expect(calls.map((c) => c.cmd)).toEqual(['sh'])
+
+    // The shell hands one tmux every argument as it was, then `open`'s.
+    const bin = path.join(home, 'bin')
+    await fs.mkdir(bin)
+    await fs.writeFile(path.join(bin, 'tmux'), '#!/bin/sh\nfor a in "$@"; do printf "%s\\n" "$a"; done\n', { mode: 0o755 })
+    const argv = execFileSync('/bin/sh', calls[0].args, { env: { PATH: `${bin}:/usr/bin:/bin` }, encoding: 'utf8' }).trimEnd().split('\n')
+    expect(argv.slice(0, 2)).toEqual(['-S', '/tmp/yaac-tmux/server'])
+    expect(argv).toContain("QUOTED")
+    expect(argv[argv.indexOf('QUOTED') + 1]).toBe("it's")
+    expect(argv[argv.indexOf('ENDS') + 1]).toBe('a\\;')
+    expect(argv.slice(argv.indexOf('new-session'), argv.indexOf('new-session') + 3)).toEqual(['new-session', '-d', '-s'])
+    expect(argv.slice(-12)).toEqual([
+      ';', 'new-window', '-d', '-n', 'agent', 'exec acpd', ';', 'set-option', '-t', '=yaac:=agent', 'remain-on-exit', 'on',
+    ])
+  })
+
   it('refuses a git value with a line break', async () => {
     await expect((claimWorkspace as (r: unknown, d: unknown) => Promise<void>)(
       { ...base, git: { ...base.git, name: 'a\n[core]' } }, { home, run },

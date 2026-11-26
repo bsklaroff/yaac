@@ -1,7 +1,7 @@
 import { ServerError } from '@yaac/shared/errors'
 import { execInWorkspace, runInStoppedCheckout } from './exec'
-import { dialCtrlStream, dialPtyStream, reviveStatusStream } from './dial'
-import { awaitReady, launchWorkspace, prepareSubstrate } from './launch'
+import { dialCtrlStream, dialPtyStream, dialSocketStream, reviveStatusStream } from './dial'
+import { launchWorkspace, prepareSubstrate } from './launch'
 import {
   dropWorkspace,
   releaseContainerlessDriver,
@@ -109,6 +109,7 @@ export function createContainerlessDriver(): WorkspaceDriver {
     // `exec` is a host shell, so there is no transport to wait for.
     awaitAgentTransport: () => Promise.resolve(),
     dialCtrl: (jobName, argv) => dialCtrlStream(jobName, argv),
+    dialSocket: (jobName, socketPath) => dialSocketStream(jobName, socketPath),
     dialPty: (jobName, argv, size) => dialPtyStream(jobName, argv, size),
     reviveStatusStream: () => reviveStatusStream(),
 
@@ -119,7 +120,10 @@ export function createContainerlessDriver(): WorkspaceDriver {
       watchNewWorkspace(handle.workspaceId, handle.jobName)
       return handle
     },
-    awaitReady: () => awaitReady(),
+    // Ready once `launch` resolves, so `open` runs at once.
+    awaitReady: async (handle, opts) => {
+      if (opts?.open !== undefined) await execInWorkspace(handle.jobName, `tmux -S ${containerlessWorkspacePaths(handle.jobName).tmuxSock} ${opts.open}`)
+    },
 
     // No spare pool here (creates are already fast).
     listSpares: () => Promise.resolve([]),

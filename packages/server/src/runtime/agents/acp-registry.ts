@@ -22,6 +22,34 @@ const panePids = new Map<string, string>()
  *  given pane pid. */
 const waiters = new Map<string, Set<{ panePid?: string; wake: (conversation: AcpConversation) => void }>>()
 
+/** Workspaces whose start is still setting up, each with the promise that
+ *  settles when it lets go (`holdAcpHandshakes`). */
+const holds = new Map<string, Promise<void>>()
+
+/**
+ * Hold the handshakes of a workspace's acp conversations until the returned
+ * function is called. A start opens its agents' windows before the
+ * workspace's files are final, so the adapters boot meanwhile; a
+ * conversation still has to open on the finished checkout, and its
+ * handshake is what opens it (docs/agent-modes.md "tmux supervises both").
+ */
+export function holdAcpHandshakes(projectId: string, workspaceId: string): () => void {
+  const key = `${projectId}/${workspaceId}`
+  let settle = (): void => {}
+  const held = new Promise<void>((resolve) => { settle = resolve })
+  holds.set(key, held)
+  return () => {
+    if (holds.get(key) === held) holds.delete(key)
+    settle()
+  }
+}
+
+/** Settles when the start holding the workspace's handshakes lets go;
+ *  undefined while none holds them. */
+export function acpHandshakeHold(projectId: string, workspaceId: string): Promise<void> | undefined {
+  return holds.get(`${projectId}/${workspaceId}`)
+}
+
 function sessionKey(projectId: string, workspaceId: string, conversationId: string): string {
   return `${projectId}/${workspaceId}/id:${conversationId}`
 }
@@ -165,6 +193,7 @@ export function _resetAcpRegistryForTests(): void {
   panePids.clear()
   waiters.clear()
   parkedQueues.clear()
+  holds.clear()
 }
 
 /**

@@ -58,23 +58,25 @@ export const NEW_WINDOW_TARGET = '=yaac:'
 /**
  * The tmux window option a session's agent reads one of its agent options
  * from, `on` or `off` (docs/sessions.md, "Agent options"). The server sets
- * it as the window launches and again when a running session's option
- * changes; yaac's pi extension and the claude-agent-acp patch read it.
+ * it as the window opens and again when a running session's option changes;
+ * yaac's pi extension and the claude-agent-acp patch read it.
  */
 export const AGENT_OPTION_WINDOW_OPTIONS: Record<AgentOption, string> = {
   idleCompaction: '@yaac-idle-compaction',
   idleCacheWarming: '@yaac-idle-cache-warming',
 }
 
-/** A command setting `options` on window `name`'s window options; empty
- *  when there are none. Free of single quotes, for the launch wrapper. The
- *  target is quoted because a launch may run in zsh, which reads a bare
- *  word starting with `=` as a command's path. */
-export function agentOptionsCmd(paths: Pick<WorkspacePaths, 'tmuxSock'>, name: string, options: AgentOptions): string {
+/**
+ * The tmux commands that set `options` on window `name`'s window options;
+ * none when there are none. They ride the tmux invocation that opens or
+ * respawns the window (`buildWindowsExec`), since a tmux client of their own
+ * costs tens of milliseconds in a gVisor pod; the agent first reads one long
+ * after that invocation ends.
+ */
+export function agentOptionCommands(name: string, options: AgentOptions): string[] {
   return Object.entries(options)
-    .map(([o, on]) => `${tmuxCmd(paths)} set-option -wq -t "${windowTarget(name)}" `
+    .map(([o, on]) => `set-option -wq -t ${windowTarget(name)} `
       + `${AGENT_OPTION_WINDOW_OPTIONS[o as AgentOption]} ${on === true ? 'on' : 'off'}`)
-    .join('; ')
 }
 
 /** What one agent's launch command is built from. */

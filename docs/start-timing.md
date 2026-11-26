@@ -45,13 +45,13 @@ A create or restart (`createWorkspace`):
 | `substrate` | The egress registration (k8s: proxy rollout check, ClusterIP, token). |
 | `prep` | Host-side files: tool homes, credentials, skills, history. |
 | `spec` | Building the launch spec after the legs above join. |
-| `launch` | The driver's launch (k8s: the proxy registration, then a taken spare's labels and CPU request, or the Job applied). |
-| `ready` | From launch to the runtime reporting ready (k8s: the pod Ready, then mountd's bind and streamd's claim call; docs/generic-workspace-pods.md "A claim"). |
+| `launch` | The driver's launch (k8s: the Job applied after the proxy registration; for a taken spare, starting its registration, labels and CPU request, which land within `ready`). |
+| `ready` | From launch to the runtime reporting ready (k8s: the pod Ready, then mountd's bind and streamd's claim call, which opens the windows of a start whose agents are all acp; docs/generic-workspace-pods.md "A claim"). |
 | `transport` | From ready to the agent transport answering (k8s: streamd through the relay). |
 | `origin` | Reading where origin's branch is now, for the catch-up below. |
 | `windows` | The command that opens the sessions' windows, with the setup that rides it. |
-| `setup` | That command when it opens no window (a start with no session, or a host acp agent that opened early in `windows`). |
-| `agent.<tool>` | From the window opening to the status watcher first seeing the agent at work on its opening message. |
+| `setup` | That command when it opens no window: a start with no session, or one whose agents are all acp, whose windows opened as the runtime came up (in `ready`; on a host, in `windows`). |
+| `agent.<tool>` | From the window opening (for windows that opened as the runtime came up, from `ready`'s end) to the status watcher first seeing the agent at work on its opening message. |
 
 `ready`, `transport` and the pod phases are absent under `containerless`,
 which has no boot to wait for.

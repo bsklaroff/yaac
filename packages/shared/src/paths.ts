@@ -292,8 +292,8 @@ export const CONTAINER_TMUX_SOCK = `${CONTAINER_TMUX_DIR}/server`
 /**
  * Where acpd puts one UNIX socket per ACP conversation, named for its tmux
  * window (`claude`, `claude-2`, …), which is also the status store's key.
- * The server connects over a streamd `ctrl` stream (`acpd dial <path>`), so
- * it needs no host mount and no TCP port for auto-forward to pick up.
+ * The server connects over a streamd `unix` stream, so it needs no host
+ * mount and no TCP port for auto-forward to pick up.
  */
 export const CONTAINER_ACP_DIR = '/tmp/yaac-acp'
 

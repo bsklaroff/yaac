@@ -1,8 +1,6 @@
-// acpd supervises one ACP agent process (see daemon.go), and dials one
-// agent's socket for the server (see dial.go).
+// acpd supervises one ACP agent process (see daemon.go).
 //
-//	acpd --sock <path> [--log <path>] [--cwd <path>] [--wait-for <path>]... -- <agent argv...>
-//	acpd dial <sock>
+//	acpd --sock <path> [--log <path>] [--cwd <path>] -- <agent argv...>
 //
 // The server starts it inside a tmux window (`acpDriver.launchCmd` in
 // packages/server/src/runtime/agents/acp-driver.ts), so tmux supervises it
@@ -20,8 +18,7 @@ import (
 	"syscall"
 )
 
-const usageLine = "usage: acpd --sock <path> [--log <path>] [--cwd <path>] [--wait-for <path>]... -- <agent argv...>\n" +
-	"       acpd dial <sock>"
+const usageLine = "usage: acpd --sock <path> [--log <path>] [--cwd <path>] -- <agent argv...>"
 
 func usage(msg string) {
 	fmt.Fprintf(os.Stderr, "[acpd] %s\n[acpd] %s\n", msg, usageLine)
@@ -29,7 +26,6 @@ func usage(msg string) {
 }
 
 // The daemon's options, up to the `--` before the agent's argv.
-// `--wait-for` may repeat, once per checkout a launch is still writing.
 func parseArgs(args []string) (config, error) {
 	var cfg config
 	sep := -1
@@ -48,8 +44,6 @@ func parseArgs(args []string) (config, error) {
 			cfg.logPath = args[i+1]
 		case "--cwd":
 			cfg.cwd = args[i+1]
-		case "--wait-for":
-			cfg.waitFor = append(cfg.waitFor, args[i+1])
 		default:
 			return cfg, fmt.Errorf("unknown option %s", args[i])
 		}
@@ -67,19 +61,11 @@ func parseArgs(args []string) (config, error) {
 }
 
 func main() {
-	// A write to a closed stdout or stderr (a pane gone, a dial's stream
-	// closed) returns an error rather than killing acpd. Caught rather than
+	// A write to a closed stdout or stderr (a pane gone) returns an error
+	// rather than killing acpd. Caught rather than
 	// ignored, so the agent does not inherit an ignored SIGPIPE.
 	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
-	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "dial" {
-		if len(args) != 2 {
-			usage("dial takes exactly one socket path")
-		}
-		os.Exit(dial(args[1], os.Stdin, os.Stdout))
-	}
-
-	cfg, err := parseArgs(args)
+	cfg, err := parseArgs(os.Args[1:])
 	if err != nil {
 		usage(err.Error())
 	}

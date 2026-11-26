@@ -92,9 +92,15 @@ describe('ensureAgentReporters', () => {
       hooks: {
         SessionStart: [
           { matcher: '*', hooks: [{ type: 'command', command: 'mine.sh' }] },
-          // What an older yaac installed, which would now name the user's
-          // own home under containerless.
+          // What older yaacs installed: one would now name the user's own
+          // home under containerless, one runs a script yaac no longer
+          // ships, and one costs an acp agent a second exec.
           { matcher: '*', hooks: [{ type: 'command', command: 'yaac-agent-links "$HOME/.claude" claude' }] },
+          { matcher: '*', hooks: [{ type: 'command', command: 'command -v yaac-agent-model >/dev/null && exec yaac-agent-model || true' }] },
+          { matcher: '*', hooks: [{ type: 'command', command: 'yaac-agent-links "$CLAUDE_CONFIG_DIR" claude' }] },
+        ],
+        PostModelSwitch: [
+          { matcher: '*', hooks: [{ type: 'command', command: 'command -v yaac-agent-model >/dev/null && exec yaac-agent-model || true' }] },
         ],
       },
     }))
@@ -109,8 +115,9 @@ describe('ensureAgentReporters', () => {
     // driver, and `$HOME` is the user's own under containerless. The model
     // reporter is guarded because claude hot-reloads the file and an older
     // workspace may lack the script.
-    const session = 'yaac-agent-links "$CLAUDE_CONFIG_DIR" claude'
-    const report = 'command -v yaac-agent-report >/dev/null && exec yaac-agent-report || true'
+    const unlessAcp = '[ -n "${YAAC_NO_PANE_REPORT:-}" ] ||'
+    const session = `${unlessAcp} yaac-agent-links "$CLAUDE_CONFIG_DIR" claude`
+    const report = `${unlessAcp} { command -v yaac-agent-report >/dev/null && exec yaac-agent-report; } || true`
     expect(await hooksIn(claudeSettings)).toEqual({
       SessionStart: ['mine.sh', session, report],
       SessionEnd: [session],
@@ -119,7 +126,7 @@ describe('ensureAgentReporters', () => {
       Stop: [report],
     })
     expect(JSON.parse(await fs.readFile(claudeSettings, 'utf8'))).toMatchObject(settings)
-    const codexSession = 'yaac-agent-links "$CODEX_HOME" codex'
+    const codexSession = `${unlessAcp} yaac-agent-links "$CODEX_HOME" codex`
     expect(await hooksIn(path.join(homes.codexDir, 'hooks.json')))
       .toEqual({ SessionStart: [codexSession], SessionEnd: [codexSession] })
 
@@ -139,6 +146,25 @@ describe('ensureAgentReporters', () => {
   })
 
   // A failed rename must not leave the temp file in a shared home.
+  // The tool waits for its hooks, and an acp agent reports over the
+  // protocol, so its hooks end in the shell the tool starts for them.
+  it('runs the reporters from the claude and codex hooks, except for an acp agent', async () => {
+    await ensureAgentReporters(await roots())
+    const claude = await hooksIn(path.join(homes.claudeDir, 'settings.json'))
+    const codex = await hooksIn(path.join(homes.codexDir, 'hooks.json'))
+    const commands = [...claude.SessionStart ?? [], ...codex.SessionStart ?? []]
+    const run = (cmd: string, env: Record<string, string>): Promise<string> => new Promise((resolve, reject) => {
+      execFile('/bin/sh', ['-c', cmd], {
+        env: { PATH: `${path.join(dir, 'bin')}:/usr/bin:/bin`, CLAUDE_CONFIG_DIR: '/c', CODEX_HOME: '/x', ...env },
+      }, (err, stdout) => (err ? reject(new Error(err.message)) : resolve(stdout)))
+    })
+    for (const cmd of commands) expect(await run(cmd, { YAAC_NO_PANE_REPORT: '1' })).toBe('')
+    await expect(fs.access(calls)).rejects.toThrow()
+    for (const cmd of commands) expect(await run(cmd, {})).toBe('')
+    expect((await fs.readFile(calls, 'utf8')).trim().split('\n').map((l) => l.split(' ')[0]).sort())
+      .toEqual(['yaac-agent-links', 'yaac-agent-links', 'yaac-agent-report'])
+  })
+
   it('leaves no temp file behind when a write cannot land', async () => {
     await fs.mkdir(path.join(homes.claudeDir, 'settings.json', 'occupied'), { recursive: true })
     await expect(ensureAgentReporters(await roots())).rejects.toThrow()

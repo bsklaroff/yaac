@@ -72,7 +72,12 @@ async function main(): Promise<void> {
     }
   }
 
-  const eager = [...staticExternals(metafile, 'dist/cli.js')].filter((name) => LAZY_ONLY.includes(name))
+  // dist/cli.js is the stub that turns the compile cache on and then loads
+  // the CLI with an `import()`, which every command runs.
+  const roots = ['dist/cli.js', ...(metafile.outputs['dist/cli.js']?.imports ?? [])
+    .filter((imp) => imp.kind === 'dynamic-import' && !imp.external).map((imp) => imp.path)]
+  const eager = [...new Set(roots.flatMap((root) => [...staticExternals(metafile, root)]))]
+    .filter((name) => LAZY_ONLY.includes(name))
 
   await fs.rm(metafilePath)
 

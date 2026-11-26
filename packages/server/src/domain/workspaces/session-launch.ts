@@ -10,15 +10,16 @@ import {
 } from '#db'
 import {
   agentDriver,
-  agentOptionsCmd,
   buildOpeningWrite,
   buildRespawnExec,
   buildWindowsExec,
   hasConversationHistory,
   verifyAgentWindowAlive,
+  whenAcpConversation,
   type SessionWindowSpec,
 } from '#runtime/agents'
 import { markOpening } from '#runtime/status'
+import { ACP_CONVERSATION_WAIT_MS, deliverPendingPrompt } from './conversation-registry'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { projectDir } from '@yaac/shared/project-paths'
@@ -78,7 +79,6 @@ export async function sessionLaunches(
   workspaceId: string,
   sessions: SessionRow[],
   paths: WorkspacePaths,
-  opts: { waitFor?: string[] } = {},
 ): Promise<SessionLaunch[]> {
   const ghRepos = await sessionGhRepos(workspaceId)
   const plans = await planSessionResumes(projectId, workspaceId, sessions)
@@ -88,7 +88,6 @@ export async function sessionLaunches(
     const model = s.model !== undefined ? launchableModel(s.tool, s.model) : undefined
     const effort = launchEffort(s.tool, model, s.effort, endpoints[i])
     const agentOptions = resolveAgentOptions(s.tool, s.agentOptions)
-    const setOptions = agentOptionsCmd(paths, s.window, agentOptions)
     const opening = s.mode === 'tui' && !resume && s.launchedAt === undefined ? s.firstPrompt : undefined
     if (opening !== undefined && !promptFits(opening)) {
       throw new ServerError('VALIDATION', `${PROMPT_TOO_LONG}, the most one launch argument holds; it was `
@@ -103,16 +102,16 @@ export async function sessionLaunches(
       window: s.window,
       cwd,
       resume,
+      agentOptions,
       ...(resume ? { resumes: conversationId } : {}),
       ...(opening !== undefined ? { opening } : {}),
       // `YAAC_SESSION_ID` tells the agent's own commands which session they
       // run in, which `yaac-mama` reports (`callingWorkspace`).
-      // The window options carry its agent options (`agentOptionsCmd`).
       // A session in a checkout whose repo's token may be `GH_TOKEN` takes
       // that one, from the variable the launch left it in.
       cmd: `export YAAC_SESSION_ID=${s.id}; `
         + (ghToken !== undefined ? `[ -z "\${${ghToken}:-}" ] || export GH_TOKEN="\$${ghToken}"; ` : '')
-        + (setOptions === '' ? '' : `${setOptions}; `) + agentDriver(s.mode).launchCmd({
+        + agentDriver(s.mode).launchCmd({
         tool: s.tool,
         conversationId,
         resume,
@@ -124,7 +123,6 @@ export async function sessionLaunches(
         ...(model !== undefined ? { model } : {}),
         ...(effort !== undefined ? { effort } : {}),
         agentOptions,
-        ...(opts.waitFor !== undefined && s.mode === 'acp' ? { waitFor: opts.waitFor } : {}),
         ...(opening !== undefined ? { opening: true } : {}),
       }),
     }
@@ -141,6 +139,24 @@ export function timeAgentBoots(workspaceId: string, launches: SessionLaunch[]): 
   const timing = timingOf(workspaceId)
   for (const { session, window, tool } of launches) {
     if (session.launchedAt === undefined && session.firstPrompt !== undefined) timing?.expect(window, `agent.${tool}`, Date.now())
+  }
+}
+
+/**
+ * Send each fresh acp session's opening message as soon as its conversation
+ * is up. The conversations pass sends it too
+ * (`reconcileWorkspaceConversations`), but only after the reconciler's
+ * debounce and the steps ahead of it, a quarter of a second or more behind
+ * the handshake. The message is taken once, by whichever gets there first.
+ */
+export function sendOpenings(
+  workspace: { projectId: string; workspaceId: string },
+  launches: SessionLaunch[],
+): void {
+  for (const { session, window } of launches) {
+    if (session.mode !== 'acp' || session.pendingPrompt === undefined) continue
+    void whenAcpConversation(workspace.projectId, workspace.workspaceId, window, ACP_CONVERSATION_WAIT_MS)
+      .then((conversation) => (conversation === undefined ? undefined : deliverPendingPrompt(session.id, conversation)))
   }
 }
 
@@ -238,6 +254,7 @@ export async function openWindows(
   if (cmds.length === 0) return ''
   const { stdout } = await runtime.exec(jobName, cmds.join(' && '), write !== undefined ? { stdin: write.stdin } : {})
   if (launches.length === 0) return stdout
+  sendOpenings(workspace, launches)
   await markSessionsLaunched(launches.map((l) => l.session.id))
   void verifyAgentWindowAlive(jobName, launches.map((l) => l.window)).catch((err: unknown) => {
     serverLog(`[server] sessions ${workspaceId}: ${err instanceof Error ? err.message : String(err)}`)

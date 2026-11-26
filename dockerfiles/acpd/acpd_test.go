@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -253,14 +252,12 @@ const hello = `{"jsonrpc":"2.0","method":"_acpd/hello","params":{"firstAttach":%
 
 func TestParseArgs(t *testing.T) {
 	cfg, err := parseArgs([]string{
-		"--sock", "/s", "--log", "/l", "--cwd", "/w",
-		"--wait-for", "/w/a/.git", "--wait-for", "/w/b/.git", "--", "agent", "--wait-for", "x",
+		"--sock", "/s", "--log", "/l", "--cwd", "/w", "--", "agent", "--sock", "x",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := config{sock: "/s", logPath: "/l", cwd: "/w",
-		waitFor: []string{"/w/a/.git", "/w/b/.git"}, argv: []string{"agent", "--wait-for", "x"}}
+	want := config{sock: "/s", logPath: "/l", cwd: "/w", argv: []string{"agent", "--sock", "x"}}
 	if !reflect.DeepEqual(cfg, want) {
 		t.Fatalf("got %+v", cfg)
 	}
@@ -733,98 +730,4 @@ func TestDefaultsToItsOwnDirectory(t *testing.T) {
 	wd, _ := os.Getwd()
 	real, _ := filepath.EvalSymlinks(wd)
 	waitUntil(t, "the agent's cwd", func() bool { return strings.Contains(readFile(t, log), real) })
-}
-
-func TestHoldsAClientUntilEveryCheckoutExists(t *testing.T) {
-	dir := t.TempDir()
-	log := filepath.Join(dir, "c.jsonl")
-	first := filepath.Join(dir, "a", ".git")
-	second := filepath.Join(dir, "b", ".git")
-	_, sock := start(t, []string{"sh", "-c", "echo booted; exec cat"}, withLog(log), func(c *config) {
-		c.waitFor = []string{first, second}
-	})
-	// The agent boots while the checkouts are still being written.
-	waitUntil(t, "the agent to boot", func() bool { return strings.Contains(readFile(t, log), "booted") })
-
-	// A client connects, but its handshake cannot start before the hello.
-	a := connect(t, sock)
-	a.send(t, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`+"\n")
-	os.MkdirAll(second, 0o755)
-	time.Sleep(200 * time.Millisecond)
-	if lines, _ := a.snapshot(); len(lines) != 0 {
-		t.Fatalf("served before the first checkout landed: %q", lines)
-	}
-
-	os.MkdirAll(first, 0o755)
-	a.waitFor(t, "hello and echo", lineCount(2))
-	lines, _ := a.snapshot()
-	if lines[0] != fmt.Sprintf(hello, true) || parse(t, lines[1])["method"] != "initialize" {
-		t.Fatalf("got %q", lines)
-	}
-}
-
-func TestDialWaitsForTheSocketAndRelaysBothWays(t *testing.T) {
-	sock := sockPath(t)
-	inR, inW := io.Pipe()
-	var out lockedBuffer
-	exited := make(chan int, 1)
-	// Dialed before acpd binds, as a window's first dial usually is.
-	go func() { exited <- dial(sock, inR, &out) }()
-	time.Sleep(100 * time.Millisecond)
-	start(t, []string{"cat"}, func(c *config) { c.sock = sock })
-
-	waitUntil(t, "hello through the dial", func() bool { return strings.Contains(out.String(), "_acpd/hello") })
-	inW.Write([]byte(`{"via":"dial"}` + "\n"))
-	waitUntil(t, "echo through the dial", func() bool { return strings.Contains(out.String(), `{"via":"dial"}`) })
-
-	// The server's stream closing ends the dial.
-	inW.Close()
-	select {
-	case code := <-exited:
-		if code != 0 {
-			t.Fatalf("dial exited %d", code)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the dial outlived its stdin")
-	}
-}
-
-func TestDialEndsWhenAcpdCloses(t *testing.T) {
-	d, sock := start(t, []string{"cat"})
-	inR, _ := io.Pipe()
-	var out lockedBuffer
-	exited := make(chan int, 1)
-	go func() { exited <- dial(sock, inR, &out) }()
-	waitUntil(t, "hello through the dial", func() bool { return strings.Contains(out.String(), "_acpd/hello") })
-	d.close()
-	select {
-	case <-exited:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the dial outlived acpd")
-	}
-}
-
-func TestDialGivesUpOnASocketThatNeverAppears(t *testing.T) {
-	defer func(r int, i time.Duration) { dialRetries, dialInterval = r, i }(dialRetries, dialInterval)
-	dialRetries, dialInterval = 3, time.Millisecond
-	if code := dial(sockPath(t), strings.NewReader(""), io.Discard); code != 1 {
-		t.Fatalf("dial exited %d", code)
-	}
-}
-
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
 }

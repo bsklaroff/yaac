@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { installFakeWorkspaceDriver, handleFixture } from '#test/support/fake-driver'
 import {
+  reconnectStatusWatcher,
   WorkspaceStatusWatcher,
   StatusWatcherManager,
 } from '#runtime/status/status-watcher'
@@ -379,6 +380,33 @@ function workspace(opts: { workspaceId: string; running?: boolean }): RuntimeHan
     state: opts.running === false ? 'pending' : 'running',
   })
 }
+
+describe('reconnectStatusWatcher', () => {
+  // A start calls it once its tmux session exists: the watcher's first
+  // dials, made as the runtime reported the workspace, failed for want of
+  // one, and their retry would come only after the backoff.
+  it('redials a watcher waiting out its backoff at once, and leaves a connected one alone', async () => {
+    const { watcher, children } = makeWatcher({ respawnDelayMs: 60_000 })
+    watcher.start()
+    expect(children).toHaveLength(2)
+    for (const c of children) c.emitExit()
+    // Both lanes now wait a minute before dialing again.
+    await new Promise((r) => setTimeout(r, 20))
+    expect(children).toHaveLength(2)
+
+    reconnectStatusWatcher('s1')
+    expect(children).toHaveLength(4)
+    // Nothing is waiting now, and another workspace has no watcher.
+    reconnectStatusWatcher('s1')
+    reconnectStatusWatcher('s2')
+    expect(children).toHaveLength(4)
+    // A stopped watcher is not redialed.
+    for (const c of children.slice(2)) c.emitExit()
+    watcher.stop()
+    reconnectStatusWatcher('s1')
+    expect(children).toHaveLength(4)
+  })
+})
 
 describe('StatusWatcherManager', () => {
   function makeManager(): { manager: StatusWatcherManager; children: FakeAttachChild[] } {

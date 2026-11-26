@@ -30,9 +30,9 @@ export { attachAcp, type AcpSocket } from './acp-bridge'
 // watcher lists the windows over its own.
 export { ControlModeClient, listWindows, type ControlModeNotification } from './control-mode'
 export { setAcpPermissionMode } from './acp-driver'
-export { acpLaunchModel } from './acp-adapters'
+export { acpAdapterFor, acpLaunchModel } from './acp-adapters'
 // The status watcher discards a stopped workspace's queued messages.
-export { acpConversation, dropAcpQueues, whenAcpConversation } from './acp-registry'
+export { acpConversation, dropAcpQueues, holdAcpHandshakes, whenAcpConversation } from './acp-registry'
 export {
   agentTitlesItself,
   getConversationFirstMessage,
@@ -40,7 +40,7 @@ export {
   resolveAgentPermissionMode,
 } from './agent-tools'
 export {
-  agentOptionsCmd,
+  agentOptionCommands,
   buildOpeningWrite,
   NEW_WINDOW_TARGET,
   tmuxCmd,
@@ -54,7 +54,7 @@ export { ensureAgentReporters } from './agent-reporters'
 export { ensureToolApiKeyConfig, type KeyProviders } from './tool-api-keys'
 export { ensureOmpSettings, ompTranscriptAsAcp } from './omp'
 export {
-  buildRespawnExec, buildWindowsExec, finishSetupCommand, pipeToLogCommand, type SessionWindowSpec,
+  buildRespawnExec, buildWindowsCommands, buildWindowsExec, finishSetupCommand, pipeToLogCommand, type SessionWindowSpec,
 } from './setup-commands'
 export { PromptNotRunError, type AcpConversation } from './acp-client'
 export { acpPage, acpRecord, acpStoredImage, activityStarts, readAcpFirstPrompt, readAcpLife, readAcpPage, replayAcpLog, type AcpLife, type RecordOrigin } from './acp-log'

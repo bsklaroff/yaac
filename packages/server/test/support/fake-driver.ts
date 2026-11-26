@@ -161,6 +161,7 @@ function defaultRuntime(): WorkspaceDriver {
     awaitAgentTransport: () => Promise.resolve(),
     // Enough for a mediator that only passes the stream along.
     dialCtrl: () => deadStreamChild(),
+    dialSocket: () => deadStreamChild(),
     dialPty: () => deadStreamPty(),
     reviveStatusStream: () => Promise.resolve(),
     // No spare waits unless a test puts one there.

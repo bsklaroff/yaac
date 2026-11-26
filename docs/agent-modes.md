@@ -28,12 +28,20 @@ docs/permission-modes.md) all read that one table:
 
 Each file a Node program opens is slow under gVisor, so the workspace image
 starts the Node adapters from one file: `dockerfiles/Dockerfile.tools`
-bundles claude-agent-acp and pi-acp with esbuild after patching them, starts
-those two and codex-acp (published as one file already) through a stub that
-keeps Node's compile cache for later launches in the pod, and links `codex`
-to its native binary rather than npm's Node shim. Host installs
-run the adapters as npm lays them out, since bundling would need esbuild on
-the host.
+bundles claude-agent-acp and pi-acp with esbuild after patching them, and
+links `codex` to its native binary rather than npm's Node shim. Compiling an
+adapter is a good part of its start, so the two bundles and codex-acp
+(published as one file already) start behind an entry
+(`dockerfiles/agent-patches/bundle-entry.mjs`) that turns on Node's compile
+cache in a folder beside it, and the build runs each bundled adapter once,
+to its first reply, to fill that folder: a pod's first start of one reads
+it, and codex-acp's first start fills its own for later ones. Node names a
+cache folder for the uid that wrote it, and a pod runs as the install's
+uid, so the entry links the build's folder under its own uid's name. A node
+whose CPU gives V8 other features than the build's names its caches
+differently: there the first start compiles and later ones read what it
+wrote. Host installs run the adapters as npm lays them out, since bundling
+would need esbuild on the host.
 
 How the adapters differ is described by per-tool profiles in
 `#runtime/agents/acp-adapters.ts`: the argv, the environment that carries a
@@ -63,7 +71,7 @@ and detach from freely.
 tmux window                                   server
 ┌─────────────────────────────┐               ┌──────────────────┐
 │ acpd ── stdio ── ACP agent  │               │ AcpConversation  │
-│   └── /tmp/yaac-acp/<w>.sock│◄──ctrl+dial───┤ (JSON-RPC peer)  │
+│   └── /tmp/yaac-acp/<w>.sock│◄─socket dial──┤ (JSON-RPC peer)  │
 └─────────────────────────────┘               └──────────────────┘
 ```
 
@@ -77,15 +85,28 @@ run the agent in (`/workspace` in a pod, a path under the data dir on a
 host). A missing cwd fails the spawn with `ENOENT`, the same error as a
 missing binary, so the path must be right.
 
-A containerless create whose sessions are all `acp` starts them before its
-checkout is written, since the adapter reads nothing from it until a conversation opens,
-and its boot then overlaps the checkout. `--wait-for <checkout>/.git`, once
-per checkout, makes acpd accept a client at once but hold it, sending no
-`_acpd/hello`, until every checkout's `.git` is renamed in; the client's
-handshake starts at the hello, so the conversation opens on the finished
-checkouts. A pod's acpd comes from
-its image, which may predate the flag, so a pod's agents start after the
-checkout as a `tui` agent always does.
+A create whose sessions are all `acp` agents of adapters that read nothing
+from the workspace until a conversation opens (`bootsEarly` in the adapter
+profiles) opens their windows as its runtime comes up, before its checkouts
+are final: the adapters' boot then overlaps the rest of the start. Only
+claude's adapter is marked: before `initialize` it reads only managed-policy
+settings, and it reads the cwd from `session/new` on. The others (opencode
+and omp start whole servers) are unchecked, so their windows open last. The
+driver runs the windows' command the moment the workspace's tmux
+session exists (`awaitReady`'s `open`): under k8s inside the claim call,
+ahead of its wait for the tree (docs/generic-workspace-pods.md "A claim"),
+on a host at once. The server holds those conversations' handshakes until
+the checkouts are final (`holdAcpHandshakes`): it dials acpd and gets its
+hello as usual, but sends `initialize` only once the catch-up with origin
+has run, so a conversation opens on the finished checkout. A start that
+fails keeps the hold until its unit is torn down. The hold lives in the
+server's memory, so a server restarted mid-create loses it: the reaper
+keeps the row while its runtime runs, and the new server's watcher
+hand-shakes the early windows at once, perhaps before the checkouts are
+final. That window is the few seconds a create takes, and is accepted. A
+`tui` agent
+starts on its opening message as soon as it is up, so its window opens last,
+as does every window of a restart, whose checkouts are restored first.
 
 ## The driver interface
 
@@ -706,9 +727,11 @@ docs/event-driven-reconcile.md). A fresh ACP session does not wait for it:
 its opening message waits on its session row (`pendingPrompt`) from before
 the agent starts, and the create or open returns once the agent's window is
 launched, as a `tui` one does, so the adapter's start-up (about two seconds
-for claude) is not part of it. The sweep that records the conversation
-sends the held prompt to that session's conversation once its handshake is
-done, even after a server or workspace restart. A server that went down mid-handshake finds
+for claude) is not part of it. The launch that opened the window sends the
+held prompt once that session's conversation finishes its handshake
+(`sendOpenings`), and the sweep that records the conversation sends one
+still held, so it goes out even after a server or workspace restart; the
+prompt is taken from the row once, by whichever is first. A server that went down mid-handshake finds
 an agent that has answered `initialize` but whose conversation nothing names
 (acpd says the agent is not fresh, and `initialize` is not repeated on a live
 process). Its next connection adopts the session acpd's record shows the

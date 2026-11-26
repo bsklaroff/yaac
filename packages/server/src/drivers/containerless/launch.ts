@@ -612,9 +612,4 @@ export function prepareSubstrate(): Promise<{ readonly kind: 'workspace-substrat
   return Promise.resolve({ kind: 'workspace-substrate' } as const)
 }
 
-/** See `WorkspaceDriver.awaitReady`. Ready once `launch` resolves. */
-export function awaitReady(): Promise<void> {
-  return Promise.resolve()
-}
-
 export { containerlessStateDir }

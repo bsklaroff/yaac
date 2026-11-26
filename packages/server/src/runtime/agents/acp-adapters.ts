@@ -14,7 +14,7 @@ import { PI_DEFAULT_PROVIDER, piProviderInfo } from '@yaac/shared/tool-providers
 import { envJsonAssignment } from '#lib/shell'
 import { claudeModelArg, opencodeConfigArg } from './agent-command'
 import { ompLaunchArgs } from './omp'
-import { CLAUDE_SESSION_META, CODEX_CAPABILITIES_META, OPENCODE_CAPABILITIES_META } from './acp-protocol'
+import { claudeSessionMeta, CODEX_CAPABILITIES_META, OPENCODE_CAPABILITIES_META } from './acp-protocol'
 import { type AcpSessionProfile } from './acp-client'
 import type { AgentLaunchSpec } from './drivers'
 
@@ -32,6 +32,13 @@ export interface AcpAdapterProfile extends AcpSessionProfile {
    * while both advertise `model` in `configOptions`.
    */
   modelVia: 'env' | 'set_config_option'
+  /**
+   * Whether a start may boot the adapter before the workspace's checkouts
+   * and its home's git and npm config are final: it reads none of them
+   * until `session/new`. Set only where that has been checked
+   * (docs/agent-modes.md).
+   */
+  bootsEarly?: true
 }
 
 /** The model to name for an ACP conversation. For pi, the provider decides
@@ -69,13 +76,15 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
    * ACP's `default` mode is "Manual". `dontAsk` (deny anything not
    * pre-approved) is never selected by yaac and reads as `manual`.
    *
-   * Its running/idle report must be asked for (`CLAUDE_SDK_MESSAGE`).
+   * Its running/idle report must be asked for (`CLAUDE_SDK_MESSAGE`), and
+   * it takes the launch's effort with the session (`claudeSessionMeta`).
    *
    * The CLI withholds its Artifact tools from Agent SDK sessions, which is
    * how the adapter starts it, unless `CLAUDE_CODE_ARTIFACT` is set. The
    * TUI gets them by default, so the chat pane opts in to match.
    */
   claude: {
+    bootsEarly: true,
     argv: () => [ACP_ADAPTERS.claude.binary],
     env: (spec) => [
       'CLAUDE_CODE_ARTIFACT=1',
@@ -92,7 +101,7 @@ const PROFILES: Record<AgentTool, AcpAdapterProfile> = {
     modelVia: 'env',
     forwardAsksUnderBypass: false,
     steers: true,
-    sessionMeta: CLAUDE_SESSION_META,
+    sessionMeta: claudeSessionMeta,
   },
 
   /**

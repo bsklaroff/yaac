@@ -180,6 +180,7 @@ function matchesFields(obj: FakeObject, selector: string): boolean {
 class FakeCluster {
   private store = new Map<string, FakeObject>()
   private interceptors: Array<(call: FakeCall) => unknown> = []
+  private holds: Array<{ match: (req: { method: string; path: string }) => boolean; released: Promise<void> }> = []
   private missingKinds = new Set<string>()
   private nextUid = 1
   calls: FakeCall[] = []
@@ -205,6 +206,7 @@ class FakeCluster {
   reset(): void {
     this.store.clear()
     this.interceptors = []
+    this.holds = []
     this.missingKinds.clear()
     this.calls = []
     this.podLogs.clear()
@@ -253,6 +255,22 @@ class FakeCluster {
    */
   intercept(fn: (call: FakeCall) => unknown): void {
     this.interceptors.push(fn)
+  }
+
+  /**
+   * Hold back the requests `match` picks, by HTTP method and the stubbed
+   * path (the target as JSON), until the returned function is called, as a
+   * slow API server would: each is answered, and lands, only then.
+   */
+  hold(match: (req: { method: string; path: string }) => boolean): () => void {
+    let release = (): void => {}
+    this.holds.push({ match, released: new Promise((resolve) => { release = resolve }) })
+    return release
+  }
+
+  /** @internal Settles once no hold keeps `req` back. */
+  async heldBack(req: { method: string; path: string }): Promise<void> {
+    await Promise.all(this.holds.filter((h) => h.match(req)).map((h) => h.released))
   }
 
   /** Make a kind behave as if its API group is not installed (404 on every call). */
@@ -338,7 +356,7 @@ class FakeRequest {
   setQueryParam(k: string, v: string): void { this.query[k] = v }
   setHeaderParam(k: string, v: string): void { this.headers[k] = v }
   setBody(body: string): void { this.body = body }
-  setSignal(): void { /* answers are synchronous, so nothing to abort */ }
+  setSignal(): void { /* nothing aborts an answer */ }
 }
 
 const response = (status: number, data: unknown, headers: Record<string, string> = {}) => ({
@@ -407,7 +425,7 @@ const fakeConfiguration = {
   baseServer: { makeRequestContext: (path: string, method: string) => new FakeRequest(path, method) },
   authMethods: {},
   httpApi: {
-    send: (req: FakeRequest) => ({ toPromise: () => new Promise((resolve) => { resolve(respond(req)) }) }),
+    send: (req: FakeRequest) => ({ toPromise: () => fakeCluster.heldBack(req).then(() => respond(req)) }),
   },
 }
 

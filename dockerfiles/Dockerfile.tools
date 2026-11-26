@@ -154,10 +154,20 @@ RUN case "$(dpkg --print-architecture)" in \
 # go); a patch fails the build if the release no longer matches it. pi-acp's
 # RUN also puts omp's wrapper in place and unpacks its native add-on
 # (agent-patches/omp-homes.js). The patches are copied as yaac (this stage's
-# user) so that RUN can delete them.
+# user) so the bundling RUN below, the last to use them, can delete them.
 COPY --chown=yaac agent-patches /tmp/agent-patches
+# The SDK inside claude-agent-acp carries its own copy of the claude CLI,
+# which is the release installed above, byte for byte, while the two pins
+# agree. Then the copy becomes a link to the installed one: the image is one
+# 373 MB file smaller, and a node keeps one file in memory for `tui` and
+# `acp` sessions rather than two. When a bump leaves the pins apart, both
+# stay.
 RUN npm install -g @agentclientprotocol/claude-agent-acp@0.109.0 && \
-    node /tmp/agent-patches/claude-agent-acp.js "$(npm root -g)/@agentclientprotocol/claude-agent-acp/dist/idle-compaction.js"
+    node /tmp/agent-patches/claude-agent-acp.js "$(npm root -g)/@agentclientprotocol/claude-agent-acp/dist" && \
+    cli="$(readlink -f /home/yaac/.local/bin/claude)" && \
+    for sdk in "$(npm root -g)"/@agentclientprotocol/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk-linux-*/claude; do \
+      if cmp -s "$cli" "$sdk"; then ln -sf "$cli" "$sdk"; fi; \
+    done
 # Runs the codex CLI above (`codex app-server`, via the CODEX_PATH its launch
 # sets), so bump the two together within codex-acp's `@openai/codex`
 # dependency range. Its own codex copy still installs, unused.
@@ -165,27 +175,30 @@ RUN npm install -g --ignore-scripts @agentclientprotocol/codex-acp@2.8.0
 # Runs the pinned pi CLI above (`pi --mode rpc`).
 RUN npm install -g --ignore-scripts pi-acp@0.0.34 && \
     node /tmp/agent-patches/pi-acp.js "$(npm root -g)/pi-acp/dist/index.js" && \
-    node /tmp/agent-patches/omp-homes.js "$(npm prefix -g)/lib/omp/omp" && \
-    rm -rf /tmp/agent-patches
+    node /tmp/agent-patches/omp-homes.js "$(npm prefix -g)/lib/omp/omp"
 # Under gVisor each file a Node program opens is slow: loading its
 # node_modules is about half of claude-agent-acp's start. So the patched
 # adapters are bundled into one file each, written beside their entry so
 # what the bundle still looks up at run time (claude's CLI, through the SDK
 # package) resolves from the adapter's own node_modules. Their bin links go
-# to a stub that turns on Node's compile cache for the bundle alone (a
-# variable would reach every node the agent runs) and flushes it once
-# loaded, so the next launch in the pod reads it. codex-acp is published
-# bundled already, so it gets only the stub.
+# to an entry (agent-patches/bundle-entry.mjs) that turns on Node's compile
+# cache for the bundle alone, in a folder beside it. Compiling the bundle is
+# a good part of an adapter's start, so each bundled adapter is run once
+# here, to its first reply (agent-patches/bake-compile-cache.mjs), and every
+# pod's first start reads what that left. codex-acp is published as one file
+# already, so it gets only the entry, and its first start in a pod fills its
+# cache. Node writes cache files for their owner only; they are opened to
+# group 0 like the rest of the image (docs/arbitrary-uid-images.md).
 #
 # `codex` links straight to the native binary rather than npm's Node shim,
 # which costs a node start on every codex-acp launch (`CODEX_PATH=codex`)
 # and only tells codex how npm updates it, which matters to no one with
 # update checks off (/etc/codex/config.toml below).
 RUN npm install -g --ignore-scripts esbuild@0.28.2 && \
-    stub() { \
-      printf '%s\n' '#!/usr/bin/env node' "import m from 'node:module'" 'm.enableCompileCache()' \
-        "await import('./$2')" 'm.flushCompileCache()' > "$1/yaac-entry.mjs" && \
+    entry() { \
+      sed "s|'./yaac-bundle.mjs'|'./$2'|" /tmp/agent-patches/bundle-entry.mjs > "$1/yaac-entry.mjs" && \
       chmod 775 "$1/yaac-entry.mjs" && \
+      mkdir -p "$1/yaac-compile-cache" && \
       ln -sf "$1/yaac-entry.mjs" "$(npm prefix -g)/bin/$3"; \
     } && \
     for pkg in @agentclientprotocol/claude-agent-acp pi-acp; do \
@@ -193,9 +206,12 @@ RUN npm install -g --ignore-scripts esbuild@0.28.2 && \
       esbuild "$dist/index.js" --bundle --platform=node --format=esm --log-level=warning \
         --outfile="$dist/yaac-bundle.mjs" \
         --banner:js="import{createRequire as yaacCreateRequire}from'module';const require=yaacCreateRequire(import.meta.url);" && \
-      stub "$dist" yaac-bundle.mjs "${pkg##*/}" || exit 1; \
+      entry "$dist" yaac-bundle.mjs "${pkg##*/}" && \
+      node /tmp/agent-patches/bake-compile-cache.mjs "$(npm prefix -g)/bin/${pkg##*/}" || exit 1; \
     done && \
-    stub "$(npm root -g)/@agentclientprotocol/codex-acp/dist" index.js codex-acp && \
+    entry "$(npm root -g)/@agentclientprotocol/codex-acp/dist" index.js codex-acp && \
+    find "$(npm root -g)" -maxdepth 4 -type d -name yaac-compile-cache -exec chmod -R g=u {} + && \
+    rm -rf /tmp/agent-patches && \
     npm uninstall -g esbuild && \
     codex="$(echo "$(npm root -g)"/@openai/codex/node_modules/@openai/codex-linux-*/vendor/*/bin/codex)" && \
     test -x "$codex" && ln -sf "$codex" "$(npm prefix -g)/bin/codex"

@@ -64,12 +64,6 @@
 //   - `_acpd/exit {code, signal}`: the agent process is gone, so an attached
 //     server can tell that from a dropped connection without probing. Also
 //     recorded, since a notice sent while detached simply goes nowhere.
-//
-// With `--wait-for`, the agent starts at once but a client is held, with no
-// hello, until every given path exists. A launch can then start the agent
-// while its checkouts are still being written, and the conversation still
-// opens on the finished checkouts, since a client's handshake begins at the
-// hello.
 package main
 
 import (
@@ -98,8 +92,6 @@ const (
 	settleMax   = 200 * time.Millisecond
 	// The least time between two time marks.
 	timeMark = time.Second
-	// How often a held client checks for `--wait-for`.
-	waitForPoll = 25 * time.Millisecond
 	// Record-failure restarts allowed before acpd exits. A full disk does
 	// not heal, so exiting beats respawning forever.
 	recordRestartLimit = 3
@@ -117,8 +109,7 @@ type config struct {
 	logPath string
 	// The agent's working directory (the workspace checkout, which differs
 	// per driver). Empty means acpd's own, which is the window tmux opened.
-	cwd     string
-	waitFor []string
+	cwd string
 	// Where acpd's own diagnostics and the agent's stderr go: the tmux pane,
 	// where a human attaching would look.
 	logOut    io.Writer
@@ -163,7 +154,6 @@ type daemon struct {
 	listener    net.Listener
 	closing     bool
 	recordReady bool
-	waited      bool
 	// Set while acpd tears the agent down on purpose, so its exit is not
 	// read as the agent dying.
 	restarting     bool
@@ -566,32 +556,6 @@ func (d *daemon) listen() error {
 	return nil
 }
 
-// Hold until every `--wait-for` path exists, or acpd is closing.
-func (d *daemon) whenReady() {
-	for {
-		d.mu.Lock()
-		done := d.waited || d.closing
-		d.mu.Unlock()
-		if done {
-			return
-		}
-		missing := false
-		for _, p := range d.cfg.waitFor {
-			if _, err := os.Stat(p); err != nil {
-				missing = true
-				break
-			}
-		}
-		if !missing {
-			d.mu.Lock()
-			d.waited = true
-			d.mu.Unlock()
-			return
-		}
-		time.Sleep(waitForPoll)
-	}
-}
-
 // During a restart, refuse: an accepted `initialize` would reach the dying
 // agent and set `everSpoke` for a handshake the new agent never saw. The
 // server retries with backoff.
@@ -607,7 +571,6 @@ func (d *daemon) refuses() bool {
 }
 
 func (d *daemon) serve(conn net.Conn) {
-	d.whenReady()
 	d.attachMu.Lock()
 	defer d.attachMu.Unlock()
 

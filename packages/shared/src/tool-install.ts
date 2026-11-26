@@ -35,16 +35,16 @@ export interface AgentPackage {
   /**
    * A script in `dockerfiles/agent-patches/` the install runs on the package
    * once it is in place, as the image build does, given the path of `entry`
-   * in the package's dir (`lib/<binary>/` for a release). `revision` names
-   * the patched install apart from an unpatched or older one, so bump it
-   * whenever the script changes.
+   * in the package's dir (`lib/<binary>/` for a release): the file it edits,
+   * or their folder. `revision` names the patched install apart from an
+   * unpatched or older one, so bump it whenever the script changes.
    */
   patch?: { script: string; entry: string; revision: number }
 }
 
 /** Packages yaac patches after installing; see `AgentPackage.patch`. */
 const PATCHES: Record<string, AgentPackage['patch']> = {
-  'claude-agent-acp': { script: 'claude-agent-acp.js', entry: 'dist/idle-compaction.js', revision: 1 },
+  'claude-agent-acp': { script: 'claude-agent-acp.js', entry: 'dist', revision: 3 },
   'pi-acp': { script: 'pi-acp.js', entry: 'dist/index.js', revision: 7 },
   omp: { script: 'omp-homes.js', entry: 'omp', revision: 3 },
 }

@@ -456,24 +456,33 @@ with the current paths for any workspace recovery finds dead, and
   stopped, restarted or deleted. A workspace still running from before keeps
   its private HOME in its tmux server until it stops or restarts.
 
-## claude's session hook naming `$HOME/.claude`
+## Retired yaac hooks in the shared claude and codex settings
 
-yaac's claude `SessionStart` and `SessionEnd` hooks, merged into each
-project's shared claude `settings.json`, once passed the home as
-`"$HOME/.claude"`. A containerless workspace now runs on the user's own
-`$HOME`, so the hooks name `"$CLAUDE_CONFIG_DIR"`, and `mergeHooks` in
-`packages/server/src/runtime/agents/agent-reporters.ts` drops the old
-command (`RETIRED_HOOKS`) whenever a create merges the file.
+yaac merges its reporter hooks into each project's shared claude
+`settings.json` and codex `hooks.json`, and `mergeHooks` in
+`packages/server/src/runtime/agents/agent-reporters.ts` drops the commands
+in `RETIRED_HOOKS` whenever a create merges the file. They are what older
+installs wrote and nothing writes now:
 
-- **What it reads.** The `hooks` of `<project>/claude/settings.json`.
-- **What breaks silently if it goes too early.** Both hooks fire on every
-  session change. Under containerless the old one names the user's own
-  `~/.claude`, so it reports the conversation with no transcript path, and
-  the two race to set the pane's conversation, so a row can lose its
-  transcript path.
-- **When it is safe to remove.** Once every project's claude settings have
-  been merged by a create since the change, that is, every project has
-  started a workspace since.
+- claude's session hook naming its home `"$HOME/.claude"`, which under
+  containerless, now on the user's own `$HOME`, is the user's own claude
+  home;
+- `command -v yaac-agent-model … || true` on `SessionStart` and
+  `PostModelSwitch`, a script `yaac-agent-report` replaced;
+- the session and report hooks from before each began with the `acp`
+  opt-out (`UNLESS_ACP`), for claude and codex alike.
+
+- **What it reads.** The `hooks` of `<project>/claude/settings.json` and
+  `<project>/codex/hooks.json`.
+- **What breaks silently if it goes too early.** A project whose file still
+  holds them runs them beside the current hooks on every session change and
+  prompt: the `$HOME/.claude` one races the current session hook for the
+  pane's conversation, so a row can lose its transcript path; the others
+  each start a shell the tool waits for before it opens a session or sends
+  a request, the start-up cost the guard exists to remove.
+- **When it is safe to remove.** Once every project's claude and codex
+  settings have been merged by a create since the change, that is, every
+  project has started a workspace since.
 
 ## Session windows the `add_sessions` migration named
 
@@ -704,24 +713,31 @@ socket the proxy no longer serves, and both are fixed at launch.
   it.
 - **When this note can go.** Once no such pod is running.
 
-## Pods whose image has the Node acpd
+## Pods whose streamd lacks the `unix` stream
 
 No code: a note for an upgrade. The server launches an acp agent as
-`/opt/yaac/acpd/acpd` and attaches to it with `acpd dial`, both the Go
-binary the base image now carries. A workspace pod keeps the image it was
-claimed with across an upgrade (docs/generic-workspace-pods.md "Server
-restarts and upgrades"), and an older image has only the Node acpd
-(`/opt/yaac/acpd/main.js`, dialed with socat).
+`/opt/yaac/acpd/acpd`, the Go binary the base image carries, and attaches
+to it through streamd's `unix` stream. A workspace pod keeps the image it
+was claimed with across an upgrade (docs/generic-workspace-pods.md "Server
+restarts and upgrades"), and two kinds of older image have a streamd
+without that stream, which answers `unknown kind "unix"`:
+
+- an image with the Go acpd, which the server attached to with `acpd dial`;
+- an older one still, with only the Node acpd (`/opt/yaac/acpd/main.js`).
 
 - **What it reads.** Nothing; no shim covers it.
 - **What breaks.** In a k8s workspace that has run since before the
   upgrade, every attach to an acp conversation fails, and the driver keeps
-  re-dialing. The old acpd keeps the agent running and recording, so a
+  re-dialing. The running acpd keeps its agent working and recording, so a
   running turn still shows, but nothing can be sent to it and a permission
-  ask cannot be answered. Restarting the agent, or opening a new acp agent
-  in that workspace, exits 127. Restarting the workspace fixes it, since it
-  gets a new pod; new workspaces are unaffected.
-- **When this note can go.** Once no such pod is running.
+  ask cannot be answered. What a new acp agent there does depends on the
+  image. With the Go acpd it starts, since the binary takes the new
+  launch's arguments, but it never attaches, so its opening prompt is never
+  delivered. With only the Node acpd, restarting an agent or opening a new
+  one exits 127. Restarting the workspace fixes both, since it gets a new
+  pod; new workspaces are unaffected.
+- **When this note can go.** Once no pod claimed before the upgrade is
+  running.
 
 ## Hosted URLs naming a share
 

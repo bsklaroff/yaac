@@ -188,6 +188,7 @@ export {
 export {
   bootStreamd,
   dialCtrlStream,
+  dialSocketStream,
   dialPtyStream,
   relayDial,
   podExec,

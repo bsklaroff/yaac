@@ -113,8 +113,14 @@ export interface AcpSessionProfile {
    * pi-acp steers only as yaac patches it (dockerfiles/agent-patches/pi-acp.js).
    */
   steers: boolean
-  /** `_meta` sent with `session/new` and `session/load`. */
-  sessionMeta?: Record<string, unknown>
+  /**
+   * `_meta` sent with `session/new` and `session/load`, for a session
+   * launched at `effort` and, for `session/new`, in session mode `modeId`.
+   * An adapter that takes either there starts its agent at it, which saves
+   * the call that would set it afterwards; one that ignores them is still
+   * sent that call.
+   */
+  sessionMeta?: (launch: { effort?: string; modeId?: string }) => Record<string, unknown>
   /** `_meta` sent in `initialize`'s client capabilities: the adapter's own
    *  opt-ins, such as how it reports subagents. */
   capabilitiesMeta?: Record<string, unknown>
@@ -148,6 +154,12 @@ export interface AcpConversationDeps {
    * restart). Absent for a new conversation.
    */
   resumeSessionId?: string
+  /**
+   * What a fresh agent's handshake waits for, if anything: the agent may be
+   * up before its workspace's files are final (`holdAcpHandshakes`), and the
+   * handshake is what first reads them.
+   */
+  setupHold?: () => Promise<void> | undefined
   /** Event tap for the owning connection. Panes use `subscribe` instead. */
   onEvent?: (event: AcpEventInit) => void
   /** Fired when the session id is first known, so the caller can record it.
@@ -891,6 +903,13 @@ export class AcpConversation {
    */
   private async handshake(firstAttach: boolean): Promise<void> {
     try {
+      // Only awaited when held: a reattach reads its posture before the
+      // next message is taken in, which may be an ask.
+      const held = firstAttach ? this.deps.setupHold?.() : undefined
+      if (held !== undefined) {
+        await held
+        if (this.closed) return
+      }
       if (!firstAttach && this.sessionId !== undefined) {
         this.log(`[server] acp: reattached to session ${this.sessionId}`)
         // Ready once the record is read, before the turn is classified; a
@@ -948,6 +967,8 @@ export class AcpConversation {
       // Read before the session's own level is reported (`reportEffort`),
       // which the row follows.
       const launchEffort = await this.deps.effort?.()
+      // `session/new` waits for `initialize`'s reply: the ACP SDK the
+      // adapters are built on refuses one sent before it.
       const init = firstAttach
         ? await this.peer.request<AcpInitializeResult>(ACP.initialize, {
           protocolVersion: ACP_PROTOCOL_VERSION,
@@ -964,7 +985,7 @@ export class AcpConversation {
           sessionId: this.sessionId,
           cwd: this.deps.cwd,
           mcpServers: [],
-          ...this.sessionMeta(),
+          ...this.sessionMeta(launchEffort),
         })
         this.sessionModes = loaded.modes
         this.sessionConfig = loaded.configOptions
@@ -978,7 +999,7 @@ export class AcpConversation {
           ?? await this.peer.request<AcpNewSessionResult>(ACP.sessionNew, {
             cwd: this.deps.cwd,
             mcpServers: [],
-            ...this.sessionMeta(),
+            ...this.sessionMeta(launchEffort, this.profileModeId(this.permissionMode())),
           })
         if (typeof created.sessionId !== 'string' || created.sessionId === '') {
           throw new Error('session/new returned no session id')
@@ -1044,9 +1065,17 @@ export class AcpConversation {
     this.deps.onEffort?.(current)
   }
 
-  private sessionMeta(): { _meta?: Record<string, unknown> } {
-    const meta = this.deps.profile?.sessionMeta
+  private sessionMeta(effort: string | undefined, modeId?: string): { _meta?: Record<string, unknown> } {
+    const meta = this.deps.profile?.sessionMeta?.({
+      ...(effort !== undefined ? { effort } : {}),
+      ...(modeId !== undefined ? { modeId } : {}),
+    })
     return meta === undefined ? {} : { _meta: meta }
+  }
+
+  /** The adapter's session mode for `posture`, if it has one. */
+  private profileModeId(posture: PermissionMode | undefined): string | undefined {
+    return posture === undefined ? undefined : this.deps.profile?.modeIds[posture]
   }
 
   /**

@@ -114,7 +114,8 @@ as the model is), else off.
 
 Every agent reads its options from its tmux window, as the window options
 `@yaac-idle-compaction` and `@yaac-idle-cache-warming` (`on` or `off`). The
-launch sets them before the agent starts (`agentOptionsCmd`), and a running
+launch sets them in the tmux command that opens the window
+(`agentOptionCommands`), and a running
 session's change sets them again (`POST
 /api/workspace/:id/sessions/:sessionId/agent-options`), after recording it
 on the row. Only the chat pane's settings pill offers that change, so a
@@ -129,6 +130,9 @@ its own decision is made:
   whether to from claude's settings files, which every session of the
   project shares. yaac patches it (`dockerfiles/agent-patches/claude-agent-acp.js`)
   to also ask the window option each time it would arm the timer or fire.
+  The same patch stops the adapter running `claude auth status` for every
+  session and prompt, a second start of the CLI whose answer yaac does not
+  read.
 - **pi and omp**: neither has a per-session switch (pi's `cacheWarming`
   setting is global), but both ask their extensions before each warm-up.
   yaac's extension (`agent-reporters.ts`) stops every warm-up between runs
