@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import http from 'node:http'
 import https from 'node:https'
 import net from 'node:net'
+import tls from 'node:tls'
+import { X509Certificate } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import { ProxyObjects } from 'yaac-proxy-sidecar/object-watch'
 import { LABEL_WORKSPACE_ID, type RefreshedBundles } from 'yaac-proxy-sidecar/objects'
@@ -173,6 +175,23 @@ function git(method: string, path: string, body?: string): Promise<{ status: num
 }
 
 describe('handleMitm', () => {
+  it('presents each host a CA-signed leaf naming it, over one shared key', async () => {
+    const caCert = new X509Certificate(ctx.ca.pem)
+    const leaves = await Promise.all(([['platform.claude.com', mitmPorts.wa], ['github.com', gitPort]] as const)
+      .map(([servername, port]) => new Promise<X509Certificate>((resolve, reject) => {
+        // The handshake itself checks the chain and the name.
+        const socket = tls.connect({ host: '127.0.0.1', port, servername, ca: ctx.ca.pem }, () => {
+          resolve(socket.getPeerX509Certificate()!)
+          socket.end()
+        })
+        socket.on('error', reject)
+      })))
+    expect(leaves.map((l) => l.subjectAltName)).toEqual(['DNS:platform.claude.com', 'DNS:github.com'])
+    expect(leaves.every((l) => l.verify(caCert.publicKey))).toBe(true)
+    const [a, b] = leaves.map((l) => l.publicKey.export({ type: 'spki', format: 'der' }))
+    expect(a.equals(b)).toBe(true)
+  }, 60_000)
+
   it('sends each repo\'s token under its own path only, and refuses a read-only repo every git write', async () => {
     gitRequests = []
     const basic = (t: string): string => `Basic ${Buffer.from(`x-access-token:${t}`).toString('base64')}`

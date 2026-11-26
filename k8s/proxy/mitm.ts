@@ -2,7 +2,7 @@
  * The two ways a workspace's TLS connection leaves the proxy: MITM'd, when
  * the proxy injects credentials into it or redirects it, or tunneled
  * untouched (docs/workspace-egress.md). The proxy's CA signs a leaf
- * certificate per MITM'd host.
+ * certificate per MITM'd host, all over one shared key pair.
  */
 
 import http from 'node:http'
@@ -55,14 +55,21 @@ export interface MitmContext {
 }
 
 export type CA = {
-  key: forge.pki.rsa.PrivateKey
+  key: crypto.KeyObject
   cert: forge.pki.Certificate
   pem: string
 }
 
-type LeafEntry = { key: string; cert: string; expires: number }
+/**
+ * The key pair every leaf certificate shares. A leaf is only ever presented
+ * to a workspace that trusts this proxy's CA, so the CA key is the secret
+ * that matters; a key per host would instead block the event loop for every
+ * new host while it is generated.
+ */
+const leafKeys = forge.pki.rsa.generateKeyPair(2048)
+const leafKeyPem = forge.pki.privateKeyToPem(leafKeys.privateKey)
 
-const leafCache = new Map<string, LeafEntry>()
+const leafCache = new Map<string, { cert: string; expires: number }>()
 
 const LEAF_VALIDITY_MS = 24 * 60 * 60 * 1000
 const LEAF_REFRESH_MS = 60 * 60 * 1000
@@ -111,21 +118,36 @@ export function generateCA(): CA {
     { name: 'subjectKeyIdentifier' },
   ])
   cert.sign(keys.privateKey, forge.md.sha256.create())
-  return { key: keys.privateKey, cert, pem: forge.pki.certificateToPem(cert) }
+  return {
+    key: crypto.createPrivateKey(forge.pki.privateKeyToPem(keys.privateKey)),
+    cert,
+    pem: forge.pki.certificateToPem(cert),
+  }
 }
 
-/** A leaf certificate for `hostname` signed by `ca`, cached until near
+/** forge's own TBSCertificate builder, which @types/node-forge omits. */
+const getTBSCertificate = (forge.pki as unknown as {
+  getTBSCertificate: (cert: forge.pki.Certificate) => forge.asn1.Asn1
+}).getTBSCertificate
+
+/** Sign `cert` with `key` through node:crypto. forge signs in pure JS, which
+ *  holds the event loop for tens of milliseconds per certificate. */
+function signCert(cert: forge.pki.Certificate, key: crypto.KeyObject): void {
+  cert.signatureOid = cert.siginfo.algorithmOid = forge.pki.oids.sha256WithRSAEncryption
+  cert.tbsCertificate = getTBSCertificate(cert)
+  const tbs = Buffer.from(forge.asn1.toDer(cert.tbsCertificate).getBytes(), 'binary')
+  cert.signature = crypto.sign('sha256', tbs, key).toString('binary')
+}
+
+/** The PEM leaf certificate for `hostname` signed by `ca`, cached until near
  *  expiry. */
-function leafCert(ca: CA, hostname: string): { key: string; cert: string } {
+function leafCert(ca: CA, hostname: string): string {
   const cached = leafCache.get(hostname)
   const now = Date.now()
-  if (cached && (cached.expires - LEAF_REFRESH_MS) > now) {
-    return { key: cached.key, cert: cached.cert }
-  }
+  if (cached && (cached.expires - LEAF_REFRESH_MS) > now) return cached.cert
 
-  const keys = forge.pki.rsa.generateKeyPair(2048)
   const cert = forge.pki.createCertificate()
-  cert.publicKey = keys.publicKey
+  cert.publicKey = leafKeys.publicKey
   cert.serialNumber = randomSerial()
   cert.validity.notBefore = new Date()
   cert.validity.notAfter = new Date(now + LEAF_VALIDITY_MS)
@@ -144,13 +166,10 @@ function leafCert(ca: CA, hostname: string): { key: string; cert: string } {
       keyIdentifier: ca.cert.generateSubjectKeyIdentifier().getBytes(),
     },
   ])
-  cert.sign(ca.key, forge.md.sha256.create())
-
-  const keyPem = forge.pki.privateKeyToPem(keys.privateKey)
+  signCert(cert, ca.key)
   const certPem = forge.pki.certificateToPem(cert)
-
-  leafCache.set(hostname, { key: keyPem, cert: certPem, expires: now + LEAF_VALIDITY_MS })
-  return { key: keyPem, cert: certPem }
+  leafCache.set(hostname, { cert: certPem, expires: now + LEAF_VALIDITY_MS })
+  return certPem
 }
 
 /**
@@ -169,12 +188,10 @@ export function handleMitm(
   direct: DirectUpstream | null,
 ): void {
   const { ca, objects } = ctx
-  const leaf = leafCert(ca, hostname)
-
   const tlsSocket = new tls.TLSSocket(clientSocket, {
     isServer: true,
-    key: leaf.key,
-    cert: leaf.cert + ca.pem,
+    key: leafKeyPem,
+    cert: leafCert(ca, hostname) + ca.pem,
   })
 
   /**

@@ -30,6 +30,7 @@ import http from 'node:http'
 import net from 'node:net'
 import dgram from 'node:dgram'
 import dns from 'node:dns'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import forge from 'node-forge'
@@ -174,13 +175,13 @@ async function loadOrGenerateCA(): Promise<{ ca: CA; sshHostKey: string }> {
   if (stored) console.log('[proxy] Loaded existing CA')
   const result = stored
     ? {
-      key: forge.pki.privateKeyFromPem(stored.keyPem),
+      key: crypto.createPrivateKey(stored.keyPem),
       cert: forge.pki.certificateFromPem(stored.certPem),
       pem: stored.certPem,
     }
     : generateCA()
   await writeCa(encodeCa({
-    keyPem: forge.pki.privateKeyToPem(result.key),
+    keyPem: result.key.export({ type: 'pkcs1', format: 'pem' }) as string,
     certPem: result.pem,
     bundlePem: combineCaBundle(fs.readFileSync(SYSTEM_ROOTS_PATH, 'utf8'), result.pem),
     sshHostKey,
