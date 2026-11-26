@@ -134,9 +134,10 @@ describe('openSession', () => {
     const claude = await openSession(local, WS, { tool: 'claude', mode: 'tui', agentOptions: { idleCompaction: true }, rememberDefaults: true })
     expect(claude.agentOptions).toEqual({ idleCompaction: true })
     const launch = execs.join('\n')
-    // Every agent finds its options on its window; claude's terminal UI also
-    // takes its own as a flag.
-    expect(launch).toContain(`set-option -wq -t "=yaac:=${claude.window}" @yaac-idle-compaction on; `)
+    // Every agent finds its options on its window, set by the tmux command
+    // that opens it; claude's terminal UI also takes its own as a flag.
+    expect(launch).toMatch(new RegExp(`new-window .* -n ${claude.window} .* \\\\; set-option -wq -t =yaac:=${claude.window} @yaac-idle-compaction on`))
+    expect(launch).not.toContain('; tmux ')
     expect(launch).toContain('--settings "{\\"idleCompaction\\":true}"')
 
     expect((await openSession(local, WS, { tool: 'claude', mode: 'acp' })).agentOptions).toEqual({ idleCompaction: true })
@@ -230,7 +231,7 @@ describe('changeSessionAgentOptions', () => {
     await changeSessionAgentOptions(local, pi.id, { idleCacheWarming: true })
     expect((await getSessionRow(pi.id))?.agentOptions).toEqual({ idleCacheWarming: true })
     expect(execs).toHaveLength(1)
-    expect(execs[0]).toMatch(new RegExp(`set-option -wq -t "=yaac:=${pi.window}" @yaac-idle-cache-warming on$`))
+    expect(execs[0]).toMatch(new RegExp(`^tmux -S \\S+ set-option -wq -t =yaac:=${pi.window} @yaac-idle-cache-warming on$`))
 
     await expect(changeSessionAgentOptions(local, pi.id, { idleCompaction: true })).rejects.toMatchObject({ code: 'VALIDATION' })
     // claude's terminal UI reads its option only at launch.

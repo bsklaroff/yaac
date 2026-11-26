@@ -46,6 +46,7 @@ import {
   SERVER_MAMA_PORT,
   bootStreamd,
   dialCtrlStream,
+  dialSocketStream,
   dialPtyStream,
   ensureKubernetes,
   k8sWorkspacePaths,
@@ -101,6 +102,7 @@ export function createK8sDriver(): WorkspaceDriver {
     awaitAgentTransport: (jobName, opts) => waitForStreamd(jobName, opts),
     // The relay addresses streams by workspace id, not Job name.
     dialCtrl: (jobName, argv) => dialCtrlStream(workspaceIdFromJobName(jobName), argv),
+    dialSocket: (jobName, socketPath) => dialSocketStream(workspaceIdFromJobName(jobName), socketPath),
     dialPty: (jobName, argv, size) => dialPtyStream(workspaceIdFromJobName(jobName), argv, size),
     reviveStatusStream: (jobName) => bootStreamd(jobName),
 
@@ -124,7 +126,7 @@ export function createK8sDriver(): WorkspaceDriver {
     syncProjectSecrets: (projectId, values, runValues) => syncProjectSecrets(projectId, values, runValues),
     refreshedCredentials: () => refreshedCredentials(),
     launch: (spec) => launchWorkspace(spec),
-    awaitReady: (handle) => awaitWorkspaceReady(handle),
+    awaitReady: (handle, opts) => awaitWorkspaceReady(handle, opts),
     salvageTree: (target) => salvageTree(target),
     importTree: (target) => importTree(target),
     declareForwards: (workspaceId, forwards) => Promise.resolve(declareWorkspaceForwards(workspaceId, forwards)),

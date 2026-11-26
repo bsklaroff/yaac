@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   _resetAcpRegistryForTests,
+  acpHandshakeHold,
   dropAcpQueues,
+  holdAcpHandshakes,
   parkAcpQueue,
   registerAcpConversation,
   takeAcpQueue,
@@ -65,6 +67,36 @@ describe('whenAcpConversation', () => {
     const waited = whenAcpConversation('demo', 'wt-1', 'claude', 5_000)
     await vi.advanceTimersByTimeAsync(5_000)
     await expect(waited).resolves.toBeUndefined()
+  })
+})
+
+describe('holdAcpHandshakes', () => {
+  // A start opens its agents' windows before the checkouts are final; the
+  // conversations wait on the hold before their handshake reads them.
+  it('holds one workspace\'s handshakes until let go, and a second start\'s hold replaces the first', async () => {
+    expect(acpHandshakeHold('demo', 'wt-1')).toBeUndefined()
+    const release = holdAcpHandshakes('demo', 'wt-1')
+    const held = acpHandshakeHold('demo', 'wt-1')
+    expect(held).toBeDefined()
+    expect(acpHandshakeHold('demo', 'wt-2')).toBeUndefined()
+    let settled = false
+    void held!.then(() => { settled = true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    release()
+    await held
+    expect(acpHandshakeHold('demo', 'wt-1')).toBeUndefined()
+    // Letting go twice is harmless.
+    release()
+
+    // A failed start's late release cannot end its successor's hold.
+    const first = holdAcpHandshakes('demo', 'wt-1')
+    const second = holdAcpHandshakes('demo', 'wt-1')
+    first()
+    expect(acpHandshakeHold('demo', 'wt-1')).toBeDefined()
+    second()
+    expect(acpHandshakeHold('demo', 'wt-1')).toBeUndefined()
   })
 })
 

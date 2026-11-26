@@ -332,8 +332,10 @@ posture and run code at startup.
 
 An `acp` conversation has no UI of its own, so yaac does two things:
 
-- **It tells the adapter** the posture over `session/set_mode` once the
-  handshake has a session. This decides which questions are asked at all;
+- **It tells the adapter** the posture. claude's adapter takes it with the
+  new session (`_meta.claudeCode.options.permissionMode`, as yaac patches
+  it); any session not in the posture's mode once it opens is sent
+  `session/set_mode`. This decides which questions are asked at all;
   without it the adapter asks about everything.
 - **It forwards the remaining asks** to the chat pane, which docks each
   unanswered one above the composer (`PendingAsks`) and marks where it was

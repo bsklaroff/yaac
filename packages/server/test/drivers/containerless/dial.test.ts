@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import { setDataDir } from '@yaac/shared/paths'
 import { workspaceDir } from '@yaac/shared/project-paths'
-import { dialCtrlStream } from '#drivers/containerless/dial'
+import net from 'node:net'
+import { dialCtrlStream, dialSocketStream } from '#drivers/containerless/dial'
 import { containerlessJobName } from '#drivers/containerless/paths'
 
 const UUID = '7d3c1f0a-5b2e-4c8d-9a6f-1e2b3c4d5e6f'
@@ -32,5 +33,33 @@ describe('dialCtrlStream', () => {
     await new Promise((r) => setTimeout(r, 100))
     child.stdin?.write('list-windows\n')
     expect(await exited).toBe(0)
+  })
+})
+
+describe('dialSocketStream', () => {
+  // A new acp window's socket is dialed before acpd binds it; the dial
+  // waits for it, and holds what was written meanwhile.
+  it('connects once the socket is bound, and reports its end as exit', async () => {
+    const sock = path.join(dataDir, 'a.sock')
+    let peer: net.Socket | undefined
+    const server = net.createServer((c) => {
+      peer = c
+      c.pipe(c)
+    })
+    try {
+      const child = dialSocketStream(JOB, sock)
+      let got = ''
+      child.stdout?.on('data', (c) => { got += c.toString() })
+      const exited = new Promise<void>((resolve) => child.on('exit', () => resolve()))
+      child.stdin?.write('early ')
+      await new Promise<void>((resolve) => server.listen(sock, resolve))
+      await vi.waitFor(() => { expect(got).toBe('early ') })
+      child.stdin?.write('late')
+      await vi.waitFor(() => { expect(got).toBe('early late') })
+      peer?.destroy()
+      await exited
+    } finally {
+      server.close()
+    }
   })
 })

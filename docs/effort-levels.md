@@ -140,8 +140,11 @@ the last level picked for each model, by model id.
 
 Every pinned adapter offers effort as the session config option with the ACP
 category `thought_level`. A new or loaded conversation is put at the row's
-effort with `session/set_config_option`, read before the session reports its
-own. A level the session does not offer is reported in the pane and
+effort, read before the session reports its own. claude's adapter takes it
+with the session (`_meta.claudeCode.options.effort` on `session/new` and
+`session/load`), so its CLI starts at that level; any session not at the
+level once it opens is sent `session/set_config_option`. A level the session
+does not offer is reported in the pane and
 survived, like a model it would not take. The option's current value and
 choices are read from every message carrying session state (handshake
 replies, `set_config_option` replies, `config_option_update`), which also

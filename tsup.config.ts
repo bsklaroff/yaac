@@ -4,7 +4,7 @@ import { buildStamp } from '@yaac/shared/build-info'
 const stamp = buildStamp(import.meta.dirname)
 
 export default defineConfig({
-  entry: { cli: 'packages/cli/src/cli.ts' },
+  entry: { cli: 'packages/cli/src/bin.ts' },
   format: 'esm',
   target: 'node22',
   outDir: 'dist',
@@ -20,7 +20,8 @@ export default defineConfig({
   },
   // Bundle the @yaac/* workspace packages; npm deps stay external and
   // resolve from the published package's dependencies. The CLI's dynamic
-  // `import()`s (see packages/cli/src/cli.ts) become separate chunks in
+  // `import()`s (see packages/cli/src/cli.ts, which bin.ts itself loads
+  // that way) become separate chunks in
   // dist/, which keeps the server graph and the slow @kubernetes/client-node
   // load off fast commands like `yaac --version`.
   noExternal: [/^@yaac\//],

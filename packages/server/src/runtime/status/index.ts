@@ -40,6 +40,7 @@ export {
   type ObservedWindow,
 } from './status-store'
 export {
+  reconnectStatusWatcher,
   StatusWatcherManager,
   type WatchedWorkspace,
 } from './status-watcher'

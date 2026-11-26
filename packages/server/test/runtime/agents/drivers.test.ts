@@ -19,6 +19,7 @@ import {
   _resetAcpRegistryForTests,
   acpConversation,
   acpConversationByHandle,
+  holdAcpHandshakes,
 } from '#runtime/agents/acp-registry'
 import { installFakeWorkspaceDriver, workspacePathsFixture } from '#test/support/fake-driver'
 import type { StreamChild, WorkspaceDriver } from '#drivers/contract'
@@ -187,8 +188,8 @@ class FakeTuiTmux extends FakeStream {
 
 /** An acp dial: a `FakeTmux` for the control-mode attach, `acpd` for each
  *  conversation's socket. */
-function acpDial(acpd: (s: DrivenWorkspace, argv: string[]) => StreamChild): NonNullable<AgentConnectDeps['dial']> {
-  return (s, argv) => (argv[0] === 'tmux' ? (lastTmux = new FakeTmux()) : acpd(s, argv))
+function acpDial(acpd: (s: DrivenWorkspace, socket: string) => StreamChild): NonNullable<AgentConnectDeps['dial']> {
+  return (s, target) => (Array.isArray(target) ? (lastTmux = new FakeTmux()) : acpd(s, target.socket))
 }
 
 /**
@@ -409,11 +410,6 @@ describe('agentDriver', () => {
     expect(acp).not.toContain('resume')
     // Embedded in a single-quoted respawn-window, so no quotes.
     expect(acp).not.toContain("'")
-    // Started ahead of its checkouts, acpd holds the conversation until
-    // each one's `.git` lands.
-    expect(acp).not.toContain('--wait-for')
-    expect(agentDriver('acp').launchCmd({ ...spec, waitFor: ['/workspace/api/.git', '/workspace/web/.git'] }))
-      .toContain('--cwd /workspace --wait-for /workspace/api/.git --wait-for /workspace/web/.git --')
     // The adapter takes no flags, so the model goes in an env var.
     const withModel = agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5' })
     expect(withModel).toMatch(/^CLAUDE_CODE_ARTIFACT=1 ANTHROPIC_MODEL=claude-opus-5-5 YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/acpd\/acpd /)
@@ -1157,7 +1153,7 @@ describe('agentDriver', () => {
     const streams = new Map([['codex', new FakeStream()], ['opencode', new FakeStream()]])
     tmuxWindows = 'codex\nopencode\n'
     connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
-      dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`/${h}.sock`))!)!),
+      dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.includes(`/${h}.sock`))!)!),
       log: () => {},
     })))
     const capabilities = async (handle: string): Promise<unknown> => {
@@ -1182,7 +1178,7 @@ describe('agentDriver', () => {
     tmuxWindows = 'codex\npi\n'
     const seen: AgentObservation[] = []
     connections.push(agentDriver('acp').connect(session, (o) => seen.push(o), withSessions('acp', {
-      dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`/${h}.sock`))!)!),
+      dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.includes(`/${h}.sock`))!)!),
       recordedSessions: () => Promise.resolve([
         { handle: 'codex', conversationId: 'acp-codex' },
         { handle: 'pi', conversationId: 'acp-pi' },
@@ -1654,7 +1650,7 @@ describe('agentDriver', () => {
     const streams = new Map([['claude', new FakeStream()], ['claude-2', new FakeStream()]])
     tmuxWindows = 'claude\nclaude-2\n'
     connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
-      dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.join(' ').includes(`${h}.sock`))!)!),
+      dial: acpDial((_s, argv) => streams.get([...streams.keys()].find((h) => argv.includes(`${h}.sock`))!)!),
       recordedSessions: () => Promise.resolve([
         { handle: 'claude', conversationId: 'acp-a' },
         { handle: 'claude-2', conversationId: 'acp-b' },
@@ -2081,6 +2077,67 @@ describe('agentDriver', () => {
     // The adapter's starting level is never reported: the row would be left
     // there if the connection dropped before the launch's call landed.
     await vi.waitFor(() => expect(reportedEfforts(seen)).toEqual(['high', 'low']))
+  })
+
+  // claude's adapter takes the level and the mode with the session, so its
+  // CLI starts in them and neither call follows; and a start that is still
+  // writing the workspace's files holds the handshake that would first read
+  // them. `session/new` waits for `initialize`'s reply, as the ACP SDK
+  // requires.
+  it("starts claude at its session's effort and mode, after a start's hold on its handshake", async () => {
+    const connect = (stream: FakeStream): void => {
+      connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
+        dial: acpDial(() => stream),
+        permissionMode: () => Promise.resolve('bypass'),
+        effort: () => Promise.resolve('high'),
+        log: () => {},
+      })))
+    }
+    const effort = { id: 'effort', category: 'thought_level', type: 'select', currentValue: 'high', options: [{ value: 'low' }, { value: 'high' }] }
+    const modes = (current: string): Record<string, unknown> => ({
+      currentModeId: current, availableModes: [{ id: 'default', name: 'Manual' }, { id: 'bypassPermissions', name: 'Bypass' }],
+    })
+
+    const release = holdAcpHandshakes('demo', 'wt-1')
+    const stream = new FakeStream()
+    tmuxWindows = 'claude\n'
+    connect(stream)
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    stream.feed(helloLine(true))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(stream.sent()).toEqual([])
+
+    release()
+    await vi.waitFor(() => expect(stream.sent().map((m) => m.method)).toEqual(['initialize']))
+    const [init] = stream.sent()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(stream.sent()).toHaveLength(1)
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(stream.sent().map((m) => m.method)).toEqual(['initialize', 'session/new']))
+    const created = stream.sent()[1]
+    expect((created.params as { _meta: { claudeCode: { options?: unknown } } })._meta.claudeCode.options)
+      .toEqual({ effort: 'high', permissionMode: 'bypassPermissions' })
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, result: { sessionId: 'acp-1', modes: modes('bypassPermissions'), configOptions: [effort] } })}\n`)
+    await vi.waitFor(() => expect(acpConversation('demo', 'wt-1', 'acp-1')).toBeDefined())
+    await acpConversation('demo', 'wt-1', 'acp-1')!.whenReady(5_000)
+    expect(stream.sent().map((m) => m.method)).toEqual(['initialize', 'session/new'])
+
+    // An adapter that ignores the mode is told it over the protocol.
+    for (const c of connections.splice(0)) c.close()
+    _resetAcpRegistryForTests()
+    paneOptions.clear()
+    const plain = new FakeStream()
+    connect(plain)
+    await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
+    plain.feed(helloLine(true))
+    await vi.waitFor(() => expect(plain.sent().map((m) => m.method)).toEqual(['initialize']))
+    const [init2] = plain.sent()
+    plain.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init2.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+    await vi.waitFor(() => expect(plain.sent().map((m) => m.method)).toEqual(['initialize', 'session/new']))
+    const created2 = plain.sent()[1]
+    plain.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created2.id, result: { sessionId: 'acp-2', modes: modes('default'), configOptions: [effort] } })}\n`)
+    await vi.waitFor(() => expect(plain.sent().some((m) => m.method === 'session/set_mode')).toBe(true))
+    expect(plain.sent().some((m) => m.method === 'session/set_config_option')).toBe(false)
   })
 
   // A reattach runs no handshake, so the session's state comes from the
@@ -2554,7 +2611,7 @@ describe('agentDriver', () => {
 
   it('waits in the dial for acpd to bind its socket, and re-dials one that never did', async () => {
     const streams: FakeStream[] = []
-    const dials: string[][] = []
+    const dials: string[] = []
     tmuxWindows = 'claude\n'
     connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
       // A long settled interval, so only the fast retry after a drop can make
@@ -2572,9 +2629,9 @@ describe('agentDriver', () => {
     })))
 
     await vi.waitFor(() => expect(streams.length).toBe(2), { timeout: 5_000 })
-    // Through the driver's acpd, which retries the connect itself, so a dial
-    // landing just before acpd binds still connects once it does.
-    expect(dials[0]).toEqual(['/opt/yaac/acpd/acpd', 'dial', '/tmp/yaac-acp/claude.sock'])
+    // The dial is to the window's socket, which the driver waits for, so a
+    // dial landing just before acpd binds still connects once it does.
+    expect(dials[0]).toBe('/tmp/yaac-acp/claude.sock')
     await vi.waitFor(() => expect(acpConversationByHandle('demo', 'wt-1', 'claude')).toBeDefined())
   })
 
@@ -2590,7 +2647,7 @@ describe('agentDriver', () => {
       heartbeatIntervalMs: 600_000,
       log: () => {},
       dial: acpDial((_s, argv) => {
-        dialed.push(argv.join(' '))
+        dialed.push(argv)
         return new FakeStream()
       }),
     })))

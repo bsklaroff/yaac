@@ -22,7 +22,7 @@ import {
 } from '#db'
 import { KEEPER_WINDOW, type RuntimeSnapshot } from '#drivers/contract'
 import { isWorkspaceTerminating, readWorkspaceWindows } from '#runtime/status'
-import { agentOptionsCmd, tmuxCmd, windowTarget } from '#runtime/agents'
+import { agentOptionCommands, tmuxCmd, windowTarget } from '#runtime/agents'
 import { serverLog } from '#lib/log'
 import { ServerError } from '@yaac/shared/errors'
 import { refuseUnsignedTool, resolveCreate } from './create'
@@ -225,7 +225,9 @@ export async function changeSessionAgentOptions(principal: Actor, sessionId: str
   const unit = await workspaceDriver().find(session.workspaceId).catch(() => undefined)
   if (unit?.running !== true) return
   const runtime = workspaceDriver()
-  await runtime.exec(unit.jobName, agentOptionsCmd(runtime.workspacePaths(unit.jobName), session.window, options), { maxAttempts: 1 })
+  const set = agentOptionCommands(session.window, options)
+  if (set.length === 0) return
+  await runtime.exec(unit.jobName, `${tmuxCmd(runtime.workspacePaths(unit.jobName))} ${set.join(' \\; ')}`, { maxAttempts: 1 })
 }
 
 /** Name a session; blank clears the name. */

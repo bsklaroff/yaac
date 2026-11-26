@@ -682,8 +682,7 @@ export interface WorkspacePaths {
   terminalLogDir: string
   /** Where pasted images are, as the agent sees them. */
   attachmentsDir: string
-  /** The acpd binary: the acp launch command runs it, and the server dials
-   *  each conversation's socket through it (`acpd dial`). */
+  /** The acpd binary, which the acp launch command runs. */
   acpd: string
   /** The file whose touch asks the tree container for a checkpoint pass,
    *  where workspaces have one. */
@@ -835,6 +834,13 @@ export interface WorkspaceDriver {
    * the caller owns the backoff.
    */
   dialCtrl(jobName: string, argv: string[]): StreamChild
+  /**
+   * Open a raw duplex to the UNIX socket at `socketPath` inside the
+   * workspace (an `acp` conversation's acpd), connecting as soon as the
+   * socket is bound, for up to about two seconds. Synchronous, like
+   * `dialCtrl`; a socket never bound closes the stream.
+   */
+  dialSocket(jobName: string, socketPath: string): StreamChild
   /** Open a PTY stream running `argv`. Synchronous, like `dialCtrl`. */
   dialPty(jobName: string, argv: string[], size: { cols?: number; rows?: number }): StreamPty
   /**
@@ -930,10 +936,17 @@ export interface WorkspaceDriver {
   /** Start the workspace. A caller may relaunch after tearing down a
    *  failed attempt. */
   launch(spec: WorkspaceSpec): Promise<RuntimeHandle>
-  /** Wait until the workspace is up and its setup has run (the agent
-   *  transport is `awaitAgentTransport`). Rejects if it does not get
-   *  there. */
-  awaitReady(handle: RuntimeHandle): Promise<void>
+  /**
+   * Wait until the workspace is up and its setup has run (the agent
+   * transport is `awaitAgentTransport`). Rejects if it does not get there.
+   *
+   * `open` is tmux commands for the workspace's tmux to run the moment its
+   * session exists, ahead of the rest of its setup, written as a shell
+   * passes them to one `tmux` (`\;` between commands): a start's agent
+   * windows, whose agents then boot while the workspace is made ready. What
+   * they start must not read the workspace's files yet.
+   */
+  awaitReady(handle: RuntimeHandle, opts?: { open?: string }): Promise<void>
   /**
    * Declare which workspace ports should be reachable and return one
    * mapping per entry, in order, held until `deregisterWorkspace`. The

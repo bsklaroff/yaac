@@ -2019,9 +2019,9 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
 
     // An ACP workspace has its own launch command and label, so it gets its
     // own pod, shared by the cases below. It uses `accept-edits` rather than
-    // `bypass` so the enforcement path runs: the posture is sent over
-    // `session/set_mode` and unsettled asks go to the pane. No case needs a
-    // turn to finish.
+    // `bypass` so the enforcement path runs: the posture is sent over the
+    // protocol and unsettled asks go to the pane. No case needs a turn to
+    // finish.
     beforeAll(async () => {
       await setupProject(NAME)
       const created = await createWorkspace(
@@ -2256,8 +2256,9 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
         }
       }, 600_000)
 
-    // Under acp the posture is not a launch flag but a `session/set_mode`
-    // call after the handshake.
+    // Under acp the posture is not a launch flag but part of the protocol:
+    // claude's goes in `session/new`, another adapter's in a
+    // `session/set_mode` after it.
     it('tells the adapter its posture over the protocol, not on the command line', async () => {
       const { stdout: startCmd } = await execInJob(jobName, [
         'sh', '-c',
@@ -2265,24 +2266,28 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       ])
       expect(startCmd).not.toContain('--permission-mode')
 
-      // `accept-edits` is `acceptEdits` on the wire.
-      const recorded = await vi.waitFor(async () => {
-        const { stdout } = await execInJob(jobName, ['sh', '-c', `cat /home/yaac/.yaac-acp/${conversationId}.jsonl`])
-        expect(stdout).toContain('session/set_mode')
-        return stdout
-      }, { timeout: 120_000, interval: 1000 })
-      const lines = recorded.split('\n').flatMap((l) => {
+      // `accept-edits` is `acceptEdits` on the wire. claude takes it in
+      // `session/new`, so the session opens in it and no `session/set_mode`
+      // follows.
+      const parse = (text: string): Array<Record<string, unknown>> => text.split('\n').flatMap((l) => {
         try { return [JSON.parse(l) as Record<string, unknown>] } catch { return [] }
       })
-      const setMode = lines.find((m) => m.method === 'session/set_mode')
-      expect(setMode?.params).toMatchObject({ modeId: 'acceptEdits' })
-
+      const created = (lines: Array<Record<string, unknown>>): Record<string, unknown> | undefined => {
+        const request = lines.find((m) => m.method === 'session/new')
+        return lines.find((m) => m.method === undefined && m.id === request?.id && 'result' in m)
+      }
+      const recorded = await vi.waitFor(async () => {
+        const { stdout } = await execInJob(jobName, ['sh', '-c', `cat /home/yaac/.yaac-acp/${conversationId}.jsonl`])
+        expect(created(parse(stdout))).toBeDefined()
+        return stdout
+      }, { timeout: 120_000, interval: 1000 })
+      const lines = parse(recorded)
+      const sessionNew = lines.find((m) => m.method === 'session/new')
+      expect(sessionNew?.params).toMatchObject({ _meta: { claudeCode: { options: { permissionMode: 'acceptEdits' } } } })
       // Check the parsed reply (a substring would also match the request).
-      // A refused mode leaves the conversation in its default posture.
-      const reply = lines.find((m) =>
-        m.method === undefined && m.id === setMode?.id && 'result' in m)
-      expect(reply, `no reply to session/set_mode in:\n${recorded}`).toBeDefined()
-      expect(reply?.error).toBeUndefined()
+      expect(created(lines)?.result, `session/new's reply in:\n${recorded}`)
+        .toMatchObject({ modes: { currentModeId: 'acceptEdits' } })
+      expect(lines.some((m) => m.method === 'session/set_mode')).toBe(false)
     }, 180_000)
   })
 

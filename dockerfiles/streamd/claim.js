@@ -102,6 +102,11 @@ async function restoreOpencode(home, run) {
   return hasCheckpoint
 }
 
+/** `s` as one shell word. */
+function shellQuote(s) {
+  return `'${s.replace(/'/g, "'\\''")}'`
+}
+
 /** Wait for `file` to exist, or fail after `ms`. */
 async function awaitMarker(file, ms) {
   const deadline = Date.now() + ms
@@ -161,7 +166,15 @@ export function tmuxClaimArgs({ env, cwd, statusRight }) {
  *   workspace's files ready before anything reads them;
  * - `git`: `{name, email, safeDirectories}` for `~/.gitconfig`;
  * - `npmRegistry`: the install's npm cache, when the workspace uses it;
- * - `env`, `cwd`, `statusRight`: the tmux session (`tmuxClaimArgs`).
+ * - `env`, `cwd`, `statusRight`: the tmux session (`tmuxClaimArgs`);
+ * - `open`: tmux commands that open the workspace's agent windows, written
+ *   as a shell passes them to one tmux (`\;` between commands). With it the
+ *   session and those windows open first, in one tmux, so the agents boot
+ *   while the files are made ready; the server holds them off the files
+ *   until then (`holdAcpHandshakes`). Without it the session opens last.
+ *
+ * opencode's history is restored before any window opens, since an agent
+ * may be opencode.
  *
  * The variables also join streamd's own environment, so every command the
  * server runs in the pod afterwards (an exec stream, a pty) sees them as a
@@ -174,6 +187,10 @@ export async function claimWorkspace(req, deps = {}) {
   const home = deps.home ?? process.env.HOME ?? '/home/yaac'
   const run = deps.run ?? runCommand
   Object.assign(deps.processEnv ?? process.env, req.env ?? {})
+  const opencode = await restoreOpencode(home, run)
+  const claimArgs = tmuxClaimArgs({ env: req.env ?? {}, cwd: req.cwd, statusRight: req.statusRight ?? '' })
+  const early = typeof req.open === 'string'
+  if (early) await run('sh', ['-c', `tmux ${claimArgs.map(shellQuote).join(' ')} \\; ${req.open}`])
   if (typeof req.startedMarker === 'string') await awaitMarker(req.startedMarker, req.waitMs ?? 0)
   const git = req.git
   await Promise.all([
@@ -182,8 +199,7 @@ export async function claimWorkspace(req, deps = {}) {
     })),
     typeof req.npmRegistry === 'string' ? writeNpmRegistry(home, req.npmRegistry) : undefined,
   ])
-  const opencode = await restoreOpencode(home, run)
-  await run('tmux', tmuxClaimArgs({ env: req.env ?? {}, cwd: req.cwd, statusRight: req.statusRight ?? '' }))
+  if (!early) await run('tmux', claimArgs)
   if (opencode && deps.run === undefined) {
     // Detached under the pod's init, so it outlives this stream; the pod's
     // preStop hook runs the same script one last time with `stop`.

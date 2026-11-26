@@ -146,7 +146,7 @@ export function clientCapabilities(meta?: Record<string, unknown>): Record<strin
  * client gets a command's output only once it ends.
  *
  * claude's adapter changes even more for AIR (a read's text is dropped), so
- * claude is not told this; see `CLAUDE_SESSION_META`.
+ * claude is not told this; see `claudeSessionMeta`.
  */
 export const CODEX_CAPABILITIES_META = {
   jetbrains: { air: { version: 1, capabilities: ['nativeSubagentSessions', 'asyncTasks'] } },
@@ -1684,7 +1684,7 @@ export function sessionStateModeId(state: unknown): string | undefined {
  *
  *  - claude forwards the Agent SDK's `session_state_changed` as a
  *    `CLAUDE_SDK_MESSAGE` notification, once asked for it in the session's
- *    `_meta` (`CLAUDE_SESSION_META`).
+ *    `_meta` (`claudeSessionMeta`).
  *  - codex-acp sends `session_info_update` with `_meta.codex.threadStatus`.
  *  - pi-acp sends `session_info_update` with `_meta.piAcp.running`.
  *
@@ -1695,18 +1695,30 @@ export const CLAUDE_SDK_MESSAGE = '_claude/sdkMessage'
 
 /**
  * `_meta` for claude's `session/new` and `session/load`: the Agent SDK
- * messages it forwards as `CLAUDE_SDK_MESSAGE`. Besides the running/idle
- * report, the task messages are how claude reports subagents and background
- * tasks to a client that is not AIR (`AcpProjection.applyClaudeSdk`), and a
- * compaction's boundary is where its trigger and token counts are.
+ * messages it forwards as `CLAUDE_SDK_MESSAGE`, and the effort its CLI
+ * starts at. Besides the running/idle report, the task messages are how
+ * claude reports subagents and background tasks to a client that is not AIR
+ * (`AcpProjection.applyClaudeSdk`), and a compaction's boundary is where its
+ * trigger and token counts are. A level the model lacks is ignored, and the
+ * session's own answer says which level it runs at. The session mode is
+ * taken at `session/new` as yaac patches the adapter
+ * (dockerfiles/agent-patches/claude-agent-acp.js); its answer says the mode
+ * too, so an adapter that ignored it is sent `session/set_mode`.
  */
-export const CLAUDE_SESSION_META = {
-  claudeCode: {
-    emitRawSDKMessages: [
-      'session_state_changed', 'task_started', 'task_updated', 'task_progress', 'task_notification',
-      'background_tasks_changed', 'compact_boundary',
-    ].map((subtype) => ({ type: 'system', subtype })),
-  },
+export function claudeSessionMeta({ effort, modeId }: { effort?: string; modeId?: string }): Record<string, unknown> {
+  const options = {
+    ...(effort !== undefined ? { effort } : {}),
+    ...(modeId !== undefined ? { permissionMode: modeId } : {}),
+  }
+  return {
+    claudeCode: {
+      emitRawSDKMessages: [
+        'session_state_changed', 'task_started', 'task_updated', 'task_progress', 'task_notification',
+        'background_tasks_changed', 'compact_boundary',
+      ].map((subtype) => ({ type: 'system', subtype })),
+      ...(Object.keys(options).length > 0 ? { options } : {}),
+    },
+  }
 }
 
 /**

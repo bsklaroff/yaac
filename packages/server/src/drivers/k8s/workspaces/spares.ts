@@ -48,7 +48,7 @@ import { treeImage } from './tree-mounts'
 
 /** Spares this process took, by job name, with their pods, images and
  *  node-mounts dirs, until their launch adopts them. */
-export const taken = new Map<string, { podName: string; image: string; nodeMountsDir: string }>()
+export const taken = new Map<string, { podName: string; node: string; image: string; nodeMountsDir: string }>()
 
 /** A spare's CPU request while it waits. It reserves a workspace's memory
  *  from creation, since a memory request cannot be raised in place on a
@@ -256,14 +256,14 @@ export async function takeSpare(args: { image: string; scratchBytes: number; mad
     const podName = pod?.metadata?.name
     const volume = (pod as { spec?: { volumes?: Array<{ name?: string; hostPath?: { path?: string } }> } } | undefined)
       ?.spec?.volumes?.find((v) => v.name === 'node-mounts')?.hostPath?.path
-    if (podName === undefined || volume === undefined) continue
+    if (podName === undefined || volume === undefined || spare.node === undefined) continue
     try {
       await removeLabelIf({ apiVersion: 'v1', kind: 'Pod', name: podName, namespace: k8sNamespace() }, LABEL_PREWARMED, 'true')
     } catch {
       // Taken by a concurrent start, or gone.
       continue
     }
-    taken.set(spare.jobName, { podName, image: spare.image, nodeMountsDir: volume.slice(volume.lastIndexOf('/') + 1) })
+    taken.set(spare.jobName, { podName, node: spare.node, image: spare.image, nodeMountsDir: volume.slice(volume.lastIndexOf('/') + 1) })
     return spare.workspaceId
   }
   return undefined

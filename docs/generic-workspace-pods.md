@@ -138,7 +138,9 @@ pod's part:
    workspace that started never is.
 2. **Launch.** For a taken pod, the egress registration is written
    alongside its labels and its in-place CPU raise, since nothing in a spare
-   reaches out before its claim call. Otherwise the registration is written
+   reaches out before its claim call. They land while mountd binds it,
+   which needs only the workspace-id label the spare was made with, and the
+   claim call waits for them. Otherwise the registration is written
    first and a pod is created on demand on a ready node. A start whose pod
    spec must carry something of its own (run secrets, a byo volume's claim,
    a release's priority), or whose image was built since the take, deletes
@@ -149,12 +151,18 @@ pod's part:
    node-mounts directory, writes the list the tree container binds from, and
    enters the workspace container once to bind its entries.
 4. **Claim call.** One streamd request (`dockerfiles/streamd/claim.js`)
-   handled in streamd's own process: wait for the tree container's started
-   marker on the trigger volume, write `~/.gitconfig` and `~/.npmrc`, restore
-   opencode's history, and run one tmux that sets the workspace's variables
-   in the server's environment and opens the session at the cwd. Every
-   window inherits the variables, and no object in the cluster holds them.
-5. **Open.** The life's steps and the sessions' windows, as any start.
+   handled in streamd's own process: restore opencode's history, wait for
+   the tree container's started marker on the trigger volume, write
+   `~/.gitconfig` and `~/.npmrc`, and run one tmux that sets the workspace's
+   variables in the server's environment and opens the session at the cwd.
+   Every window inherits the variables, and no object in the cluster holds
+   them. A start whose agents are all `acp` hands the call the tmux commands
+   that open their windows; the session and those windows then open in that
+   one tmux, before the wait for the marker, so the adapters boot while the
+   tree is filled, and
+   the server holds their handshakes until the checkouts are final
+   (docs/agent-modes.md "tmux supervises both").
+5. **Open.** The life's steps and any windows not opened yet, as any start.
 
 mountd, for one bind:
 

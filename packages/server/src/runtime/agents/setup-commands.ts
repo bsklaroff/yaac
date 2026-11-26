@@ -7,10 +7,10 @@
  * `workspace-bin/yaac-workspace-init`; only steps needing host coordination
  * are here.
  */
-import { NEW_WINDOW_TARGET, tmuxCmd, windowTarget } from './agent-command'
+import { agentOptionCommands, NEW_WINDOW_TARGET, tmuxCmd, windowTarget } from './agent-command'
 import { nameSessionCommand } from './agent-tools'
 import { KEEPER_STARTING, KEEPER_WINDOW, type WorkspacePaths } from '#drivers/contract'
-import type { AgentMode, AgentTool } from '@yaac/shared/types'
+import type { AgentMode, AgentOptions, AgentTool } from '@yaac/shared/types'
 
 /**
  * One session's window to open: its name, which is its handle, and the
@@ -28,6 +28,18 @@ export interface SessionWindowSpec {
    *  starts it: codex and opencode announce a resumed conversation only at
    *  its next turn. */
   resumes?: string
+  /** Its agent options, set on its window as it opens
+   *  (`agentOptionCommands`). */
+  agentOptions?: AgentOptions
+}
+
+/** The commands that follow a window's own in its tmux invocation: its
+ *  agent options, and the conversation it resumes. */
+function windowSettings(spec: SessionWindowSpec): string {
+  return [
+    ...agentOptionCommands(spec.window, spec.agentOptions ?? {}),
+    ...(spec.resumes !== undefined ? [nameSessionCommand(windowTarget(spec.window), spec.tool, spec.resumes)] : []),
+  ].map((cmd) => ` \\; ${cmd}`).join('')
 }
 
 /**
@@ -49,14 +61,14 @@ export function finishSetupCommand(paths: WorkspacePaths): string {
  *  and its options: how an exited session is resumed. */
 export function buildRespawnExec(spec: SessionWindowSpec, paths: WorkspacePaths): string {
   const target = windowTarget(spec.window)
-  return `${tmuxCmd(paths)} respawn-window -k -t ${target} -c ${spec.cwd} '${spec.cmd}'`
-    + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')
+  return `${tmuxCmd(paths)} respawn-window -k -t ${target} -c ${spec.cwd} '${spec.cmd}'${windowSettings(spec)}`
 }
 
 /**
  * Create the sessions' windows, in one exec; the empty string for nothing
  * to run. `first` are tmux commands the same invocation runs ahead of them
- * (a life's log hooks, which a window must open under).
+ * (a life's log hooks, which a window must open under). The commands alone
+ * are `buildWindowsCommands`.
  *
  * Each session's window keeps its pane when the agent exits
  * (`remain-on-exit`), so an agent that quits or crashes leaves its session
@@ -73,6 +85,16 @@ export function buildWindowsExec(
   paths: WorkspacePaths,
   first: string[] = [],
 ): string {
+  const cmds = buildWindowsCommands(sessions, first)
+  return cmds === '' ? '' : `${tmuxCmd(paths)} ${cmds}`
+}
+
+/**
+ * `buildWindowsExec`'s tmux commands without the `tmux` that runs them,
+ * joined as a shell passes them to one tmux (`\;` between commands): what
+ * `WorkspaceDriver.awaitReady` takes as `open`.
+ */
+export function buildWindowsCommands(sessions: SessionWindowSpec[], first: string[] = []): string {
   // One tmux invocation for all of it: tmux runs a client's command group
   // to completion, so the watcher sees all the windows or none, and each
   // further start of tmux costs tens of milliseconds in a gVisor pod.
@@ -81,8 +103,8 @@ export function buildWindowsExec(
     return `new-window -d -t ${NEW_WINDOW_TARGET} -n ${spec.window} -c ${spec.cwd} '${spec.cmd}'`
       + ` \\; set-option -t ${target} remain-on-exit on`
       + (spec.mode === 'acp' ? ` \\; ${pipeToLogCommand(target)}` : '')
-      + (spec.resumes !== undefined ? ` \\; ${nameSessionCommand(target, spec.tool, spec.resumes)}` : '')
+      + windowSettings(spec)
   })
   const cmds = [...first, ...sessionCmds]
-  return cmds.length === 0 ? '' : `${tmuxCmd(paths)} ${cmds.join(' \\; ')}`
+  return cmds.join(' \\; ')
 }

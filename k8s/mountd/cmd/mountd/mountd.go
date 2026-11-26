@@ -348,10 +348,15 @@ func (m *mounter) bind(ctx context.Context, r *bindRequest, phases *bindPhases) 
 		workspace = append(workspace, wire.Bind{N: counts[f.From], From: f.From, Target: f.Target})
 		counts[f.From]++
 	}
-	if err := m.enter(ctx, container, wire.Request{Binds: workspace, Roots: r.Roots, UID: m.cfg.uid, GID: m.cfg.gid}); err != nil {
+	inside, err := m.enter(ctx, container, wire.Request{Binds: workspace, Roots: r.Roots, UID: m.cfg.uid, GID: m.cfg.gid})
+	if err != nil {
 		return err
 	}
-	phases.mark("enter", &at)
+	enter := "enter"
+	if inside != "" {
+		enter = fmt.Sprintf("enter (inside %s, %d binds)", inside, len(workspace))
+	}
+	phases.mark(enter, &at)
 	m.mu.Lock()
 	m.done[r.Dir] = r.Token
 	m.mu.Unlock()
@@ -395,14 +400,15 @@ const enterTimeout = 30 * time.Second
 // handed in by descriptor, so nothing is read from the image, with an
 // exact process spec (environment, user, capabilities), and its request as
 // data. What comes back is the project's report and nothing more: capped,
-// and only ever quoted.
-func (m *mounter) enter(ctx context.Context, container string, req wire.Request) error {
+// and only ever quoted. On success it answers how long the program's own
+// work took, as it reported it, or "" when it reported none.
+func (m *mounter) enter(ctx context.Context, container string, req wire.Request) (string, error) {
 	if len(req.Binds) == 0 {
-		return nil
+		return "", nil
 	}
 	root, err := m.runscRoot(container)
 	if err != nil {
-		return err
+		return "", err
 	}
 	arg, _ := json.Marshal(req)
 	caps := []string{"CAP_SYS_ADMIN", "CAP_DAC_OVERRIDE", "CAP_CHOWN"}
@@ -416,17 +422,17 @@ func (m *mounter) enter(ctx context.Context, container string, req wire.Request)
 	})
 	specFile, err := os.CreateTemp("", "process-*.json")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer os.Remove(specFile.Name())
 	if _, err := specFile.Write(spec); err != nil {
 		specFile.Close()
-		return err
+		return "", err
 	}
 	specFile.Close()
 	helper, err := os.Open(m.cfg.helper)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer helper.Close()
 	ctx, cancel := context.WithTimeout(ctx, enterTimeout)
@@ -436,9 +442,15 @@ func (m *mounter) enter(ctx context.Context, container string, req wire.Request)
 	out := &cappedBuffer{max: 16 * 1024}
 	cmd.Stdout, cmd.Stderr = out, out
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("binding in the workspace container: %w: %q", err, out.String())
+		return "", fmt.Errorf("binding in the workspace container: %w: %q", err, out.String())
 	}
-	return nil
+	// Only a duration is taken from the report, never its text.
+	if took, ok := strings.CutPrefix(strings.TrimSpace(out.String()), "took "); ok {
+		if d, err := time.ParseDuration(took); err == nil {
+			return d.String(), nil
+		}
+	}
+	return "", nil
 }
 
 type cappedBuffer struct {

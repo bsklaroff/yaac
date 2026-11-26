@@ -38,7 +38,8 @@ import type { StartWorkspaceRequest } from '#domain/workspaces/start'
 import type { WorkspaceCreateResult } from '#domain/workspaces/create'
 import { createWorkflow, resolveWorkflow, setProjectEnvVar, setRunSecret, setScratchDirs, showWorkflow } from '#domain/projects'
 import { _clearTmuxAliveCacheForTests } from '#runtime/status/liveness'
-import { _resetAcpRegistryForTests, registerAcpConversation } from '#runtime/agents/acp-registry'
+import { _resetAcpRegistryForTests, acpHandshakeHold, registerAcpConversation } from '#runtime/agents/acp-registry'
+import { workspaceDriver } from '#drivers/driver'
 import type { AcpConversation } from '#runtime/agents'
 import { serverLog } from '#lib/log'
 import { createTempDataDir, cleanupTempDir, createTestRepo } from '@yaac/test-utils/setup'
@@ -75,6 +76,7 @@ import { closeDb, getDb } from '#db/client'
 import { repos } from '#db/schema'
 import { getRepo, insertRepo, linkProjectRepo, listWorkspaceRepos, type WorkspaceRepoRow } from '#db/repo-store'
 import { cloneRepo, initHostedRepo } from '#domain/git'
+import { onOriginFetched } from '#domain/repos'
 import {
   BUILT_IN_USER_ID,
   createWorkspaceGroup,
@@ -239,6 +241,14 @@ describe('prepareStart', () => {
   const fetched = (branch: string, commit: string, repoId = DEMO_PROJECT_ID): Promise<void> => vi.waitFor(async () => {
     expect((await git(repoDir(repoId), ['rev-parse', `origin/${branch}`])).trim()).toBe(commit)
   }, { timeout: 30_000 })
+  /** Settles once a fetch of the repo's origin has finished, as the start
+   *  that began it sees it; the ref moving comes a little before. */
+  const fetchEnds: Array<{ repoId: string; done: () => void }> = []
+  onOriginFetched((repoId) => {
+    for (const w of fetchEnds.splice(0).filter((x) => x.repoId === repoId)) w.done()
+  })
+  const fetchEnded = (repoId = DEMO_PROJECT_ID): Promise<void> =>
+    new Promise((done) => { fetchEnds.push({ repoId, done }) })
 
   /** The conversation an acp agent brings up, for cases about other things. */
   const upConversation = { whenReady: () => Promise.resolve(), prompt: () => Promise.resolve() } as unknown as AcpConversation
@@ -275,6 +285,11 @@ describe('prepareStart', () => {
           return Promise.resolve({ stdout: '42\n', stderr: '' })
         }
         return Promise.resolve({ stdout: answer(cmd), stderr: '' })
+      },
+      // As a driver does: `open`'s tmux commands run in the workspace as it
+      // comes up.
+      awaitReady: async (handle, opts) => {
+        if (opts?.open !== undefined) await workspaceDriver().exec(handle.jobName, `tmux ${opts.open}`)
       },
       takeSpare: (args) => {
         takes.push(args)
@@ -1157,28 +1172,29 @@ describe('prepareStart', () => {
     // A fresh chat conversation has no id until its agent answers
     // `session/new`, so a chat create returns without waiting for it and
     // leaves its prompt on the row, held before the agent starts so no sweep
-    // can find the conversation first. The sweep that records the
-    // conversation sends it (conversation-registry.test.ts).
+    // can find the conversation first. The launch sends it once the
+    // conversation is up; the sweep that records the conversation sends one
+    // still held (conversation-registry.test.ts).
     // Under the session id the client minted, which its provisioning row
     // names from the start.
     it('holds a chat workspace\'s prompt from before its agent starts, and returns without waiting for it', async () => {
       const sessionId = randomUUID()
       let heldAtLaunch: string | undefined
+      let window: string | undefined
       let rows: ReturnType<typeof listProvisioning> | undefined
-      let released!: () => void
-      const agentUp = new Promise<void>((resolve) => { released = resolve })
+      const prompted: string[] = []
+      const chat = {
+        whenReady: () => Promise.resolve(),
+        prompt: (text: string) => { prompted.push(text); return Promise.resolve() },
+      } as unknown as AcpConversation
       installDriver({
         exec: async (jobName, cmd) => {
           execs.push({ jobName, cmd })
-          if (SESSION_WINDOW.test(cmd)) heldAtLaunch = (await listWorkspaceSessions('wt-chat'))[0]?.pendingPrompt
-          rows ??= listProvisioning()
-          const window = /display-message -p -t yaac:(\S+) '#\{pane_pid\}'/.exec(cmd)?.[1]
-          if (window !== undefined) {
-            void agentUp.then(() => registerAcpConversation(
-              DEMO_PROJECT_ID, 'wt-chat', { handle: window, conversationId: 'minted', panePid: '42' }, upConversation,
-            ))
-            return { stdout: '42\n', stderr: '' }
+          if (SESSION_WINDOW.test(cmd)) {
+            heldAtLaunch = (await listWorkspaceSessions('wt-chat'))[0]?.pendingPrompt
+            window = / -n ((?:claude|codex|opencode|pi)-[0-9a-f]{8}) /.exec(cmd)?.[1]
           }
+          rows ??= listProvisioning()
           return { stdout: '', stderr: '' }
         },
       })
@@ -1189,7 +1205,13 @@ describe('prepareStart', () => {
       expect(heldAtLaunch).toBe('go')
       expect((await listWorkspaceSessions('wt-chat'))[0]).toMatchObject({ id: sessionId, pendingPrompt: 'go' })
       expect(progress).not.toContain('Connecting to Claude Code...')
-      released()
+      expect(prompted).toEqual([])
+
+      // The launch sends it once the conversation is up, with no reconcile
+      // pass running here, and takes it off the row so no sweep sends it too.
+      registerAcpConversation(DEMO_PROJECT_ID, 'wt-chat', { handle: window!, conversationId: 'minted', panePid: '42' }, chat)
+      await vi.waitFor(() => { expect(prompted).toEqual(['go']) })
+      expect((await listWorkspaceSessions('wt-chat'))[0]?.pendingPrompt).toBeUndefined()
     })
 
     // The adapter can die after the create has returned, up to its
@@ -1299,26 +1321,60 @@ describe('prepareStart', () => {
         .rejects.toThrow('workflow "api-init" runs in api, which this start does not include')
     })
 
-    it('starts a containerless chat agent alongside its checkout, holding its conversation until the checkout lands', async () => {
-      installDriver({ kind: 'containerless' })
-      await start({ workspaceId: 'wt-early', mode: 'acp' })
+    it('opens a chat agent\'s window as the runtime comes up, holding its conversation until the setup that reads the checkout has run', async () => {
+      for (const kind of ['k8s', 'containerless'] as const) {
+        execs.length = 0
+        const held: Array<[string, boolean]> = []
+        installDriver({
+          kind,
+          exec: (jobName, cmd) => {
+            execs.push({ jobName, cmd })
+            const what = SESSION_WINDOW.test(cmd) ? 'windows' : cmd.includes(`rename-window -t =yaac:=${KEEPER_STARTING}`) ? 'setup' : undefined
+            if (what !== undefined) held.push([what, acpHandshakeHold(DEMO_PROJECT_ID, `wt-early-${kind}`) !== undefined])
+            return Promise.resolve({ stdout: '', stderr: '' })
+          },
+        })
+        await start({ workspaceId: `wt-early-${kind}`, mode: 'acp' })
 
-      // The agent's command goes first, after only the life's log hooks
-      // its window is logged under; acpd holds the conversation until
-      // `.git` exists. The setup that reads the checkout follows it.
-      const agents = execs.findIndex(({ cmd }) => SESSION_WINDOW.test(cmd))
-      const setup = execs.findIndex(({ cmd }) => cmd.includes(`rename-window -t =yaac:=${KEEPER_STARTING}`))
-      expect(execs[agents].cmd).toMatch(/hooks\.conf' \\; new-window.*--wait-for \/workspace\/\.git --/)
-      expect(setup).toBeGreaterThan(agents)
-      expect(execs[setup].cmd).not.toMatch(SESSION_WINDOW)
-      expect(execs[setup].cmd).not.toContain('hooks.conf')
+        // The agent's command goes first, after only the life's log hooks
+        // its window is logged under, and its handshake is held. The setup
+        // that reads the checkout follows, with nothing to move, so the
+        // conversation may open before it.
+        expect(held).toEqual([['windows', true], ['setup', false]])
+        const agents = execs.findIndex(({ cmd }) => SESSION_WINDOW.test(cmd))
+        const setup = execs.findIndex(({ cmd }) => cmd.includes(`rename-window -t =yaac:=${KEEPER_STARTING}`))
+        expect(execs[agents].cmd).toMatch(/hooks\.conf' \\; new-window/)
+        expect(execs[setup].cmd).not.toMatch(SESSION_WINDOW)
+        expect(execs[setup].cmd).not.toContain('hooks.conf')
+        expect(acpHandshakeHold(DEMO_PROJECT_ID, `wt-early-${kind}`)).toBeUndefined()
+      }
 
-      // A terminal agent reads the checkout as it starts, so it waits for it.
-      execs.length = 0
-      await start({ workspaceId: 'wt-tui', mode: 'tui' })
-      const tui = sessionExec()!
-      expect(tui).toContain('hooks.conf')
-      expect(tui).not.toContain('--wait-for')
+      // A start that fails after its agents opened, before its checkout is
+      // final, keeps them held until its unit is torn down, so none opens on
+      // the failed checkout.
+      let heldAtTeardown: boolean | undefined
+      installDriver({
+        awaitAgentTransport: () => Promise.reject(new Error('setup failed')),
+        destroy: (target) => {
+          heldAtTeardown = acpHandshakeHold(DEMO_PROJECT_ID, 'wt-early-failed') !== undefined
+          units = units.filter((u) => u.workspaceId !== target.workspaceId)
+          return Promise.resolve(true)
+        },
+      })
+      await expect(start({ workspaceId: 'wt-early-failed', mode: 'acp' })).rejects.toThrow('setup failed')
+      expect(heldAtTeardown).toBe(true)
+      expect(acpHandshakeHold(DEMO_PROJECT_ID, 'wt-early-failed')).toBeUndefined()
+
+      // A terminal agent reads the checkout as it starts, so it waits for it,
+      // as does an acp agent whose adapter is not known to boot without it.
+      for (const [workspaceId, over] of [['wt-tui', { mode: 'tui' }], ['wt-codex-acp', { mode: 'acp', tool: 'codex' }]] as const) {
+        execs.length = 0
+        installDriver()
+        await start({ workspaceId, ...over })
+        const late = sessionExec()!
+        expect(late).toContain('hooks.conf')
+        expect(late).toContain(`rename-window -t =yaac:=${KEEPER_STARTING}`)
+      }
     })
 
     it('refuses a bad start, before provisioning', async () => {
@@ -1572,12 +1628,16 @@ describe('prepareStart', () => {
 
     it('catches up ahead of the agent when the fetch has landed by the time its window opens, and runs nothing for a tip that has not moved', async () => {
       const tip = await pushTo(origin, 'main', 'early.txt')
+      let ended: Promise<void> | undefined
       // The runtime comes up only after the checkout is made and the fetch
       // has then landed.
       installRealCheckouts({
         awaitReady: async (unit) => {
           await vi.waitFor(() => fs.access(path.join(dirOf(unit.workspaceId), '.git')), { timeout: 30_000 })
+          // The held fetch, once; a later start's runs unheld.
+          ended ??= fetchEnded()
           release()
+          await ended
           await fetched('main', tip)
         },
       })
@@ -1601,13 +1661,16 @@ describe('prepareStart', () => {
     // Nothing runs in a workspace before its windows open, so a checkout
     // that cannot be fast-forwarded can be reset there without losing a
     // write.
-    it('resets a checkout to a force-pushed branch only ahead of the agent, and never one whose agent opened early', async () => {
+    it('resets a checkout to a force-pushed branch only ahead of the agent, which a chat agent that opened early is held for', async () => {
       /** A runtime that comes up once the checkout is made and the fetch,
        *  released then, has landed. */
-      const upAfterFetch = (tip: string): Partial<WorkspaceDriver> => ({
+      const upAfterFetch = (tip: string, ended?: Promise<void>): Partial<WorkspaceDriver> => ({
         awaitReady: async (unit) => {
           await vi.waitFor(() => fs.access(path.join(dirOf(unit.workspaceId), '.git')), { timeout: 30_000 })
+          // The held fetch, once; a later start's runs unheld.
+          ended ??= fetchEnded()
           release()
+          await ended
           await fetched('main', tip)
         },
       })
@@ -1627,16 +1690,27 @@ describe('prepareStart', () => {
       expect((await checkout('wt-forced-early'))?.startCommit).toBe(rewritten)
       await caughtUp('wt-forced-early', 'catchup=reset')
 
-      // A chat agent of a containerless workspace opens before its checkout
-      // lands, so by this command it may be at work: fast-forward only.
+      // A chat agent opens before its checkout is final, but its
+      // conversation is held until this command has run, so its checkout is
+      // reset too.
       release = hold()
       const again = await pushTo(origin, 'main', 'again.txt', { rewrite: true })
-      installDriver({ kind: 'containerless', ...upAfterFetch(again) })
+      let heldAtMove: boolean | undefined
+      installDriver({
+        kind: 'containerless',
+        ...upAfterFetch(again),
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          if (cmd.includes('reset --hard')) heldAtMove = acpHandshakeHold(DEMO_PROJECT_ID, 'wt-chat') !== undefined
+          return Promise.resolve({ stdout: answer(cmd), stderr: '' })
+        },
+      })
       execs = []
       await start({ workspaceId: 'wt-chat', mode: 'acp' })
       const [move] = moves()
-      expect(move).toContain(`merge --ff-only ${again} `)
-      expect(move).not.toContain('reset --hard')
+      expect(move).toContain(`reset --hard ${again}`)
+      expect(heldAtMove).toBe(true)
+      expect(acpHandshakeHold(DEMO_PROJECT_ID, 'wt-chat')).toBeUndefined()
     })
 
     it('leaves a workspace behind origin when the fetch outlasts the wait after its launch', async () => {

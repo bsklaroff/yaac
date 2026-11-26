@@ -1,8 +1,11 @@
 // In-process tests for streamd: handshake auth, each stream kind, and the
 // framing codec, all over loopback sockets.
 import net from 'node:net'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 // Untyped plain-JS modules (they run under bare node in the pod).
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
@@ -248,6 +251,37 @@ describe('tcp streams', () => {
   it('refuses an invalid port', async () => {
     const port = await startDaemon()
     const { reply } = await handshake(port, { token: TOKEN, kind: 'tcp', port: 'nope' })
+    expect(reply.ok).toBe(false)
+  })
+})
+
+describe('unix streams', () => {
+  // The server dials a new acp window's socket before acpd has bound it, so
+  // the stream waits for it rather than failing.
+  it('connects once the socket is bound, holding what the client sent first, and splices both ways', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'streamd-unix-'))
+    const sock = path.join(dir, 'a.sock')
+    const echo = net.createServer((c) => c.pipe(c))
+    try {
+      const port = await startDaemon()
+      const { socket, reply } = await handshake(port, { token: TOKEN, kind: 'unix', path: sock })
+      expect(reply.ok).toBe(true)
+      socket.write('early ')
+      await new Promise<void>((resolve) => echo.listen(sock, resolve))
+      socket.write('late')
+      socket.resume()
+      let got = ''
+      socket.on('data', (c: Buffer) => { got += c.toString('utf8') })
+      await vi.waitFor(() => { expect(got).toBe('early late') })
+    } finally {
+      echo.close()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a stream with no path', async () => {
+    const port = await startDaemon()
+    const { reply } = await handshake(port, { token: TOKEN, kind: 'unix' })
     expect(reply.ok).toBe(false)
   })
 })

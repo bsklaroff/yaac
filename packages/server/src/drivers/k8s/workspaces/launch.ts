@@ -243,6 +243,10 @@ interface Launch {
   spec: WorkspaceSpec
   claim: ClaimRequest
   nodeMountsDir: string
+  /** A taken spare's registration, labels and CPU raise, still landing. */
+  applied: Promise<unknown>
+  /** A taken spare's pod, whose node is known without its labels. */
+  pod?: { podName: string; node: string }
 }
 
 const launches = new Map<string, Launch>()
@@ -310,12 +314,17 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     taken.delete(jobName)
   }
   let nodeMountsDir: string
+  let applied: Promise<unknown> = Promise.resolve()
+  let adopted: Launch['pod']
   if (spare !== undefined) {
     nodeMountsDir = spare.nodeMountsDir
+    adopted = { podName: spare.podName, node: spare.node }
     const pod = { apiVersion: 'v1', kind: 'Pod', name: spare.podName, namespace: k8sNamespace() }
     // Nothing in a spare reaches out until its claim call, so the
-    // registration is written beside its labels.
-    await Promise.all([
+    // registration is written beside its labels, and none of it holds up
+    // mountd's bind, which needs only the workspace-id label the spare was
+    // made with: `awaitWorkspaceReady` waits for it before the claim call.
+    applied = Promise.all([
       applyProxyRegistration(spec.workspaceId, substrate.registration),
       patchObject(pod, { metadata: { labels } }),
       // The take removed the pod's spare label; the Job's goes here.
@@ -326,7 +335,10 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
         serverLog(`[workspace] ${spec.workspaceId}: raising its CPU request failed: ${String(err)}`)
       }),
     ])
-    taken.delete(jobName)
+    // The pod stays taken until its project label lands: before that the
+    // pool would list it as an orphan, since the take removed its spare
+    // label, and reap it mid-claim.
+    applied.finally(() => taken.delete(jobName)).catch(() => { /* awaited before the claim call */ })
   } else {
     await applyProxyRegistration(spec.workspaceId, substrate.registration)
     nodeMountsDir = newNodeMountsDir(spec.workspaceId)
@@ -359,7 +371,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
       ...(spec.siteId !== undefined ? { priorityClassName: PRIORITY_CLASS_RELEASE } : {}),
     }))
   }
-  launches.set(jobName, { spec, claim, nodeMountsDir })
+  launches.set(jobName, { spec, claim, nodeMountsDir, applied, ...(adopted !== undefined ? { pod: adopted } : {}) })
   return {
     workspaceId: spec.workspaceId,
     projectId: spec.projectId,
@@ -484,26 +496,37 @@ export function bindRequest(args: {
  * Wait for a launched workspace's pod to be ready, then make it its
  * workspace's: once the life's start instruction names each checkout's
  * commit, mountd takes or builds its trees and mounts and binds
- * what the workspace owns, and streamd's claim call, which first waits for
- * the tree container to report the files ready, sets the environment and
- * opens the session.
+ * what the workspace owns, and streamd's claim call sets the environment,
+ * opens the session and waits for the tree container to report the files
+ * ready. `open` rides the claim call, run as the session opens, before that
+ * wait (`WorkspaceDriver.awaitReady`).
  */
-export async function awaitWorkspaceReady(handle: RuntimeHandle): Promise<void> {
+export async function awaitWorkspaceReady(handle: RuntimeHandle, opts: { open?: string } = {}): Promise<void> {
   const launch = launches.get(handle.jobName)
   try {
-    await waitForJobPodReady(handle.jobName, READY_TIMEOUT_MS)
-    if (launch === undefined) return
+    if (launch === undefined) {
+      await waitForJobPodReady(handle.jobName, READY_TIMEOUT_MS)
+      return
+    }
     const { spec } = launch
-    const pod = findWorkspacePod(await readWorkspacePods(), spec.workspaceId)
-    if (pod?.node === undefined) throw new Error(`workspace ${spec.workspaceId}'s pod is not on a node`)
     const wait = spec.tree?.restoring === true ? RESTORE_WAIT_MS : FILL_WAIT_MS
-    const start = spec.tree !== undefined ? await awaitStartInstruction(spec, Date.now() + FILL_WAIT_MS) : undefined
-    await mountdBind(pod.node, {
-      token: `${handle.jobName}:${launch.nodeMountsDir}`,
-      ...bindRequest({ spec, start, podName: pod.podName, nodeMountsDir: launch.nodeMountsDir }),
-    })
+    // A taken spare's writes land meanwhile, and fail the wait at once if
+    // they fail (its pod gone, say), rather than leaving it to time out.
+    await Promise.all([launch.applied, (async () => {
+      await waitForJobPodReady(handle.jobName, READY_TIMEOUT_MS)
+      // A pod made on demand is found by its labels; a taken spare's may
+      // still be landing.
+      const pod = launch.pod ?? findWorkspacePod(await readWorkspacePods(), spec.workspaceId)
+      if (pod?.node === undefined) throw new Error(`workspace ${spec.workspaceId}'s pod is not on a node`)
+      const start = spec.tree !== undefined ? await awaitStartInstruction(spec, Date.now() + FILL_WAIT_MS) : undefined
+      await mountdBind(pod.node, {
+        token: `${handle.jobName}:${launch.nodeMountsDir}`,
+        ...bindRequest({ spec, start, podName: pod.podName, nodeMountsDir: launch.nodeMountsDir }),
+      })
+    })()])
     await podClaim(handle.jobName, {
       ...launch.claim,
+      ...(opts.open !== undefined ? { open: opts.open } : {}),
       ...(spec.tree !== undefined ? { startedMarker: treeStartedMarker(spec.tree.life), waitMs: wait } : {}),
     }, { timeoutMs: wait + 60_000 })
   } finally {

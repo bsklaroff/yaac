@@ -27,7 +27,7 @@ vi.mock('#drivers/k8s/substrate/stream-relay', async (importOriginal) => ({
 vi.mock('#drivers/k8s/substrate/pod-wait', () => ({ waitForJobPodReady: vi.fn().mockResolvedValue(undefined) }))
 
 import type * as streamRelayModule from '#drivers/k8s/substrate/stream-relay'
-import { awaitWorkspaceReady, launchWorkspace, prepareWorkspaceSubstrate, reapSpare, takeSpare } from '#drivers/k8s/workspaces'
+import { awaitWorkspaceReady, launchWorkspace, listSpares, prepareWorkspaceSubstrate, reapSpare, takeSpare } from '#drivers/k8s/workspaces'
 import { PROXY_AUTH_SECRET_NAME, installId, k8sNamespace, nodeMountsNodePath } from '#drivers/k8s/substrate'
 import { resetProxyClusterIpCache } from '#drivers/k8s/cluster'
 import { UTILITY_MIRROR_TAG } from '#drivers/k8s/cluster/utility-image'
@@ -373,7 +373,16 @@ describe('launchWorkspace', () => {
     const substrate = await prepareWorkspaceSubstrate(INTENT)
     fakeCluster.calls = []
 
+    // Its labels land late. Until they do, the pod has neither a spare's
+    // label nor a project's, and the pool must not take it for an orphan.
+    const labelsLand = fakeCluster.hold((req) => req.method === 'PATCH' && req.path.endsWith('"name":"yaac-s1-x"}'))
     const handle = await launchWorkspace(specOf(substrate))
+    expect(handle).toMatchObject({ workspaceId: 's1', projectId: PROJECT_ID, jobName: 'yaac-s1' })
+    expect((await listSpares()).map((s) => s.workspaceId)).toEqual([])
+    labelsLand()
+    // Bound on its own node, at the node-mounts dir it was created with,
+    // while its writes land; the claim call waits for them.
+    await awaitWorkspaceReady(handle)
 
     // The registration beside the adoption (nothing in a spare reaches out
     // before its claim call), and no Job of its own.
@@ -388,10 +397,6 @@ describe('launchWorkspace', () => {
     expect(fakeCluster.get<{ metadata: { labels: Record<string, string> } }>('Job', 'yaac-s1')?.metadata.labels).toEqual(labels)
     const resized = fakeCluster.get<{ spec: { containers: Array<{ resources: { requests: Record<string, string> } }> } }>('Pod', 'yaac-s1-x')
     expect(resized?.spec.containers[0].resources.requests).toEqual({ cpu: '3m', memory: '1' })
-    expect(handle).toMatchObject({ workspaceId: 's1', projectId: PROJECT_ID, jobName: 'yaac-s1' })
-
-    // Bound on its own node, at the node-mounts dir it was created with.
-    await awaitWorkspaceReady(handle)
     expect(fakeMountd.sent('/bind')).toEqual([expect.objectContaining({
       node: 'n1', body: expect.objectContaining({ pod: 'yaac-s1-x', dir: 's1.0a0b0c0d' }) as unknown,
     })])
@@ -420,15 +425,19 @@ describe('launchWorkspace', () => {
     seedSpare()
     await takeSpare({ image: 'localhost:5000/img:tag', scratchBytes: 8 * GiB, madeSince: 0 })
     fakeCluster.intercept((c) => { if (c.subresource === 'resize') throw apiError(422, 'resize is not supported') })
-    await expect(launchWorkspace(specOf(substrate))).resolves.toMatchObject({ jobName: 'yaac-s1' })
+    const handle = await launchWorkspace(specOf(substrate))
+    expect(handle).toMatchObject({ jobName: 'yaac-s1' })
+    await awaitWorkspaceReady(handle)
     expect(fakeCluster.get<{ metadata: { labels: Record<string, string> } }>('Pod', 'yaac-s1-x')?.metadata.labels)
       .toHaveProperty('yaac.project-id', PROJECT_ID)
 
+    // A spare gone since the take fails the wait at once, not at its timeout.
     fakeCluster.reset()
     seedSpare()
     await takeSpare({ image: 'localhost:5000/img:tag', scratchBytes: 8 * GiB, madeSince: 0 })
     fakeCluster.remove('Pod', 'yaac-s1-x', k8sNamespace())
-    await expect(launchWorkspace(specOf(substrate))).rejects.toThrow(/404[\s\S]*yaac-s1-x/)
+    await expect(awaitWorkspaceReady(await launchWorkspace(specOf(substrate))))
+      .rejects.toThrow(/404[\s\S]*yaac-s1-x/)
   })
 
   it('makes a pod on demand, deleting the spare it took, for an image built since the take', async () => {

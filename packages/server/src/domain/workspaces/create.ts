@@ -66,7 +66,8 @@ import { getDefaultBranch, hasCommit, isGitAuthError, resolveRemoteRef, writeKno
 import { serverLog } from '#lib/log'
 import { ofCheckout, startTiming, type StartTiming } from '#lib/start-timing'
 import type { AcpConversation } from '#runtime/agents'
-import { AgentLaunchDeadError, buildWindowsExec, ensureAgentReporters, ensureOmpSettings, ensureToolApiKeyConfig, finishSetupCommand, verifyAgentWindowAlive, whenAcpConversation, openSandboxDir } from '#runtime/agents'
+import { acpAdapterFor, AgentLaunchDeadError, buildWindowsCommands, buildWindowsExec, ensureAgentReporters, ensureOmpSettings, ensureToolApiKeyConfig, finishSetupCommand, holdAcpHandshakes, verifyAgentWindowAlive, whenAcpConversation, openSandboxDir } from '#runtime/agents'
+import { reconnectStatusWatcher } from '#runtime/status'
 import {
   applyWorkspaceEvent,
   getGitIdentity,
@@ -85,7 +86,7 @@ import {
   type SessionRow,
   type VolumeLease,
 } from '#db'
-import { leaveOpenings, sessionLaunches, timeAgentBoots } from './session-launch'
+import { leaveOpenings, sendOpenings, sessionLaunches, timeAgentBoots } from './session-launch'
 import { reportAgentLaunchFailure, throwIfProvisionStopped } from './provisioning'
 import { recordTrackedScratchDirs } from './tracked-scratch-dirs'
 import { catchUp, followOrigin, MOVE_TIMEOUT_MS, type Following } from './origin-catch-up'
@@ -338,6 +339,13 @@ interface WorkspaceSetupParams {
    * workspace.
    */
   onLaunched: (handle: RuntimeHandle) => void
+  /**
+   * Called with the release of the acp handshakes a start holds while its
+   * agents boot early (`holdAcpHandshakes`). A start that succeeds releases
+   * them itself; one that fails leaves them held for its caller to release
+   * once the teardown has run, so no agent opens on a failed checkout.
+   */
+  onHold: (release: () => void) => void
   options: WorkspaceCreateOptions
   /**
    * Host-side checkout provisioning (branch checks, `createCheckout`),
@@ -362,7 +370,7 @@ interface WorkspaceSetupParams {
  */
 async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHandle> {
   const {
-    spec, projectId, workspaceId, sessions, life, onLaunched, options, workspace, checkouts, timing,
+    spec, projectId, workspaceId, sessions, life, onLaunched, onHold, options, workspace, checkouts, timing,
   } = params
   const runtime = workspaceDriver()
 
@@ -384,9 +392,36 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
     (runtime.kind === 'containerless' ? wait : timing.time(name, wait))
   const jobName = handle.jobName
   const paths = runtime.workspacePaths(jobName)
+  // An acp agent whose adapter reads nothing from the workspace until its
+  // conversation opens (`bootsEarly`) can boot ahead of it. A start whose
+  // sessions are all such agents, in checkouts it is writing, opens their
+  // windows as the runtime comes up (`awaitReady`'s `open`) and holds their
+  // handshakes until the checkouts are final (`holdAcpHandshakes`). The
+  // adapters' boot then overlaps the rest of the start. The life's log
+  // hooks go first, since a session's window is logged into the life's dir
+  // as it opens.
+  const seenAt = (c: PlannedCheckout): string => path.posix.join(paths.workspaceDir, c.path)
+  const launches = await sessionLaunches(projectId, workspaceId, sessions, paths)
+  const tools = [...new Set(launches.map((l) => TOOL_LABELS[l.tool]))]
+  const announceAgents = (): void => {
+    throwIfProvisionStopped(workspaceId)
+    if (tools.length > 0) emit(`Starting ${tools.join(', ')}...`, options)
+  }
+  const hooks = await lifeHooksCommand(projectId, workspaceId, life, paths)
+  const windowCmds = buildWindowsCommands(launches, [hooks])
+  const windows = buildWindowsExec(launches, paths, [hooks])
+  const opensEarly = launches.length > 0 && checkouts.every((c) => !c.reuse)
+    && sessions.every((s) => s.mode === 'acp' && acpAdapterFor(s.tool).bootsEarly === true)
+  const unit = { projectId, workspaceId, jobName }
+  const openHandshakes = opensEarly ? holdAcpHandshakes(projectId, workspaceId) : () => {}
+  onHold(openHandshakes)
+  if (opensEarly) announceAgents()
   // Mark the waits handled so one abandoned by a race cannot surface later
-  // as an unhandled rejection.
-  const podReady = booted('ready', runtime.awaitReady(handle))
+  // as an unhandled rejection. On a host the wait is only the windows'
+  // command, so it is timed as that.
+  const podReady = runtime.kind === 'containerless' && opensEarly
+    ? timing.time('windows', runtime.awaitReady(handle, { open: windowCmds }))
+    : booted('ready', runtime.awaitReady(handle, opensEarly ? { open: windowCmds } : {}))
   podReady.catch(() => { /* observed via race */ })
   // A restore that cannot read its checkpoint never reports ready; the tree
   // container says why beside the start instruction.
@@ -412,6 +447,12 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   } finally {
     restoreWatch = false
   }
+  // The tmux session exists now, so the status watcher can attach.
+  reconnectStatusWatcher(workspaceId)
+  if (opensEarly) {
+    timeAgentBoots(workspaceId, launches)
+    sendOpenings(unit, launches)
+  }
   // Where its tree is, for a salvage after a stop with no final pass.
   if (spec.tree) {
     const node = (await runtime.find(workspaceId).catch(() => undefined))?.node
@@ -422,47 +463,20 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   transportReady.catch(() => { /* observed via race */ })
   await Promise.race([transportReady, workspaceFailure])
 
-  // An acp agent reads nothing from the checkouts until its conversation
-  // opens, so one going into checkouts this create is writing starts now,
-  // and acpd holds the conversation until each checkout's `.git` lands. The
-  // adapter's boot then overlaps the checkout. Containerless only: there
-  // acpd ships with this server, while a pod's comes from its image, which
-  // may predate `--wait-for`. The life's log hooks go first, since a
-  // session's window is logged into the life's dir as it opens.
-  const seenAt = (c: PlannedCheckout): string => path.posix.join(paths.workspaceDir, c.path)
-  const early = runtime.kind === 'containerless' && checkouts.every((c) => !c.reuse) && sessions.every((s) => s.mode === 'acp')
-  const launches = await sessionLaunches(projectId, workspaceId, sessions, paths, {
-    ...(early ? { waitFor: checkouts.map((c) => `${seenAt(c)}/.git`) } : {}),
-  })
-  const tools = [...new Set(launches.map((l) => TOOL_LABELS[l.tool]))]
-  const announceAgents = (): void => {
-    throwIfProvisionStopped(workspaceId)
-    if (tools.length > 0) emit(`Starting ${tools.join(', ')}...`, options)
-  }
-  const windows = buildWindowsExec(
-    launches, paths, [await lifeHooksCommand(projectId, workspaceId, life, paths)],
-  )
-  const opensEarly = early && launches.length > 0
-  if (opensEarly) {
-    announceAgents()
-    await timing.time('windows', runtime.exec(jobName, windows))
-    timeAgentBoots(workspaceId, launches)
-  }
-
   // Everything below reads the checkout, so join it now.
   const following = await workspace
 
-  // A checkout whose fetch has landed with a newer tip is moved to it here.
-  // That is ahead of the agents, which then never see the older tree,
-  // unless they opened early: those may already be at work, so their
-  // checkouts are only fast-forwarded. One whose fetch is still running
-  // catches up after the launch, if it lands soon enough.
-  const unit = { projectId, workspaceId, jobName }
+  // A checkout whose fetch has landed with a newer tip is moved to it
+  // here. That is ahead of the agents, which then never see the older
+  // tree: ones that opened early are still held off it. One whose fetch
+  // is still running catches up after the launch, if it lands soon enough.
   const caught = await timing.time('origin', catchUp(unit, following, 0, (message) => {
     serverLog(`[workspace] ${workspaceId}: ${message}`)
     options.onProgress?.(`Note: ${message}`)
-  }, { live: opensEarly }))
+  }, { live: false }))
+  // With nothing to move, the agents may read the checkouts now.
   if (caught.cmds.length > 0) emit('Catching up with origin...', options)
+  else openHandshakes()
 
   // Then the life's log hooks and the sessions, unless they opened early,
   // in one command with the checkout's own setup to save round
@@ -481,11 +495,15 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
     ...(opensEarly || windows === '' ? [] : [windows]),
     finishSetupCommand(paths),
   ]
-  if (!early) announceAgents()
+  if (!opensEarly) announceAgents()
   await leaveOpenings(unit, launches)
   const { stdout } = await timing.time(opensEarly || windows === '' ? 'setup' : 'windows',
     runtime.exec(jobName, setup.join(' && '), caught.cmds.length > 0 ? { timeout: MOVE_TIMEOUT_MS } : {}))
-  if (!opensEarly) timeAgentBoots(workspaceId, launches)
+  openHandshakes()
+  if (!opensEarly) {
+    timeAgentBoots(workspaceId, launches)
+    sendOpenings(unit, launches)
+  }
   await markSessionsLaunched(launches.map((l) => l.session.id))
   await caught.settle(stdout)
   followOrigin(unit, caught.waiting)
@@ -1699,6 +1717,7 @@ async function provisionWorkspace(
   let handle: RuntimeHandle
   let attached: { volumeId: string; lease: VolumeLease } | undefined
   let staged: string | undefined
+  let releaseHandshakes = (): void => {}
   try {
     if (options.volumeId !== undefined) {
       const volume = await attachVolume(workspaceId, options.volumeId)
@@ -1721,6 +1740,7 @@ async function provisionWorkspace(
       onLaunched: (h) => {
         target = { projectId, workspaceId: workspaceId, unitName: h.jobName }
       },
+      onHold: (release) => { releaseHandshakes = release },
       options, workspace: workspaceTask, checkouts, timing,
     })
     void timeInPod(timing, projectId, workspaceId, treeName, launchedAt).finally(timing.hold())
@@ -1745,6 +1765,9 @@ async function provisionWorkspace(
     } catch {
       podGone = false
     }
+    // Only now may the early agents' held handshakes go: each conversation
+    // ends with its unit, and none opens on the failed checkout.
+    releaseHandshakes()
 
     // Free the declared host ports for the next create.
     await workspaceDriver().deregisterWorkspace(workspaceId)

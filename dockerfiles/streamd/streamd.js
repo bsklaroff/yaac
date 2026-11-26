@@ -5,12 +5,15 @@
  * setup; listens on the pod IP.
  *
  * Every connection starts with ONE JSON handshake line:
- *   {"token": "<streamToken>", "kind": "pty"|"ctrl"|"exec"|"tcp", ...params}
+ *   {"token": "<streamToken>", "kind": "pty"|"ctrl"|"exec"|"tcp"|"unix", ...params}
  * answered by one JSON reply line ({"ok":true} or {"ok":false,"error"}),
  * after which the stream's payload flows:
  *
  * - tcp  {port}         raw byte splice to localhost:<port>, dialed in-pod
  *                       so localhost-bound dev servers are reachable.
+ * - unix {path}         raw byte splice to a UNIX socket in the pod (an
+ *                       ACP conversation's acpd), retrying the connect
+ *                       while the socket is not bound yet; see handleUnix.
  * - ctrl {cmd: [argv]}  spawn argv with piped stdio, no TTY; stdin/stdout
  *                       spliced raw (tmux control mode is a line
  *                       protocol). Socket close ⇔ process kill/exit.
@@ -46,6 +49,11 @@ export const DEFAULT_STREAM_PORT = 10300
 /** Handshake-line cap + deadline (it precedes any payload byte). */
 const HANDSHAKE_MAX_BYTES = 16 * 1024
 const HANDSHAKE_TIMEOUT_MS = 10_000
+/** How a `unix` stream waits for its socket to be bound: acpd binds it a
+ *  moment after tmux opens its window, and a server dialing a new window
+ *  usually comes first. Two seconds, generous for a loaded gVisor node. */
+const UNIX_CONNECT_TRIES = 40
+const UNIX_CONNECT_INTERVAL_MS = 50
 /** Cap on concurrent streams, so a runaway client cannot exhaust the pod. */
 const MAX_STREAMS = 128
 /** Per-stream cap on buffered exec output. */
@@ -106,6 +114,45 @@ function handleTcp(socket, params, leftover) {
   target.on('close', () => socket.destroy())
   socket.on('close', () => target.destroy())
   socket.on('error', () => target.destroy())
+  return { ok: true }
+}
+
+/**
+ * Splice the stream to a UNIX socket, connected in streamd's own process,
+ * so an ACP attach costs no process in the sandbox. The connect is retried
+ * until the socket answers or `UNIX_CONNECT_TRIES` run out, which closes
+ * the stream; client bytes are held until it connects.
+ */
+function handleUnix(socket, params, leftover) {
+  if (typeof params.path !== 'string' || params.path === '') return { ok: false, error: 'unix: path must be a string' }
+  const held = leftover.length > 0 ? [leftover] : []
+  const hold = (chunk) => { held.push(chunk) }
+  socket.on('data', hold)
+  let closed = false
+  socket.once('close', () => { closed = true })
+  const attempt = (tries) => {
+    if (closed) return
+    const target = net.connect({ path: params.path, allowHalfOpen: true })
+    target.once('error', () => {
+      if (tries <= 1 || closed) socket.destroy()
+      else setTimeout(() => attempt(tries - 1), UNIX_CONNECT_INTERVAL_MS)
+    })
+    target.once('connect', () => {
+      if (closed) {
+        target.destroy()
+        return
+      }
+      socket.removeListener('data', hold)
+      for (const chunk of held) target.write(chunk)
+      socket.pipe(target)
+      target.pipe(socket)
+      target.on('error', () => socket.destroy())
+      target.on('close', () => socket.destroy())
+      socket.on('close', () => target.destroy())
+      socket.on('error', () => target.destroy())
+    })
+  }
+  attempt(UNIX_CONNECT_TRIES)
   return { ok: true }
 }
 
@@ -390,7 +437,7 @@ export function createStreamd({
       }
 
       const leftover = buf.subarray(nl + 1)
-      const handlers = { tcp: handleTcp, ctrl: handleCtrl, exec: handleExec, pty: handlePty, ports: handlePorts, claim: handleClaim }
+      const handlers = { tcp: handleTcp, unix: handleUnix, ctrl: handleCtrl, exec: handleExec, pty: handlePty, ports: handlePorts, claim: handleClaim }
       const handler = handlers[params.kind]
       if (!handler) {
         refuse(`unknown kind ${JSON.stringify(params.kind)}`)

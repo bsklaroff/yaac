@@ -134,6 +134,10 @@ export interface AgentConnection {
   close(): void
 }
 
+/** What a connection dials in a workspace: a command run as a ctrl stream
+ *  (`WorkspaceDriver.dialCtrl`), or a UNIX socket (`dialSocket`). */
+export type DialTarget = string[] | { socket: string }
+
 /** What a connection needs but may not fetch itself (the DB) or should not
  *  hard-code (timeouts, the dial). */
 export interface AgentConnectDeps {
@@ -142,9 +146,9 @@ export interface AgentConnectDeps {
    * failed read leaves the connection watching what it had.
    */
   sessions?: () => Promise<WatchedSession[]>
-  /** Test hook replacing the ctrl-stream dial, the process boundary both
-   *  drivers are mocked at. */
-  dial?: (session: DrivenWorkspace, argv: string[]) => StreamChild
+  /** Test hook replacing the driver's dials, the process boundary both
+   *  drivers are mocked at: a ctrl stream running an argv, or a socket. */
+  dial?: (session: DrivenWorkspace, target: DialTarget) => StreamChild
   /** Heartbeat cadence over the open connection. */
   heartbeatIntervalMs?: number
   /** Reply deadline for a command sent over the connection. */
@@ -179,17 +183,11 @@ export interface AgentLaunchSpec {
   /** Effort level, in the tool's words. See `AgentCmdSpec`. */
   effort?: string
   /** Every option its tool has. A `tui` claude takes its own as a flag; the
-   *  rest read the window option `agentOptionsCmd` sets. */
+   *  rest read the window option `agentOptionCommands` sets. */
   agentOptions?: AgentOptions
   piProvider?: PiProvider
   /** The permission posture to launch in. See `AgentCmdSpec`. */
   permissionMode: PermissionMode
-  /**
-   * `acp` only: the launch runs before the checkouts are complete, so the
-   * conversation must not open until each of these paths, their `.git`s,
-   * lands (acpd's `--wait-for`). The adapter boots meanwhile.
-   */
-  waitFor?: string[]
   /** `tui` only: launch a fresh agent with the opening message
    *  `buildOpeningWrite` left. An `acp` one's is sent over the protocol. */
   opening?: true
