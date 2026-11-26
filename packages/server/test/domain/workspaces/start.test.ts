@@ -420,17 +420,20 @@ describe('prepareStart', () => {
         .toMatchObject({ model: 'claude-opus-5', permissionMode: 'manual' })
       // Only a person's create is remembered.
       expect((await getProjectRow(DEMO_PROJECT_ID))?.createDefaults.claude)
-        .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan', agentOptions: {} })
+        .toEqual({ model: 'claude-sonnet-5', permissionMode: 'plan', efforts: {}, agentOptions: {} })
     })
 
-    // docs/effort-levels.md. One level name means the same across a tool's
-    // models, so a remembered effort carries to any model that has it.
-    it('resolves effort per model: named if it has it, else remembered if it has it, else its default', async () => {
-      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { effort: 'max' })
+    // docs/effort-levels.md. A level is remembered for the model it was
+    // picked on, so it never carries to another.
+    it('resolves effort per model: named if it has it, else the last picked for that model, else its default', async () => {
+      await settled({ tool: 'claude', model: 'claude-opus-4-6', effort: 'max', rememberDefaults: true })
       expect((await settled({ tool: 'claude', model: 'claude-opus-4-6' })).effort).toBe('max')
-      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { effort: 'xhigh' })
-      // opus-4-6 has no xhigh: its own default instead.
-      expect((await settled({ tool: 'claude', model: 'claude-opus-4-6' })).effort).toBe('high')
+      // opus-4-7 has max too, but no pick of its own: its default.
+      expect((await settled({ tool: 'claude', model: 'claude-opus-4-7' })).effort).toBe('xhigh')
+      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { efforts: { 'claude-opus-4-7': 'low' } })
+      expect((await getProjectRow(DEMO_PROJECT_ID))?.createDefaults.claude?.efforts)
+        .toEqual({ 'claude-opus-4-6': 'max', 'claude-opus-4-7': 'low' })
+      expect((await settled({ tool: 'claude', model: 'claude-opus-4-7' })).effort).toBe('low')
       // Claude Code offers opus-4-5 no effort at all.
       expect((await settled({ tool: 'claude', model: 'claude-opus-4-5' })).effort).toBeUndefined()
 
@@ -449,15 +452,30 @@ describe('prepareStart', () => {
 
     // docs/permission-modes.md "A spawned workspace's posture".
     it("holds a delegate's start to its ceiling, taking after its calling session, and refuses a tool no one signed in to", async () => {
-      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { permissionMode: 'bypass', mode: 'acp' })
+      await recordProjectCreate(DEMO_PROJECT_ID, 'claude', { permissionMode: 'bypass', mode: 'acp', agentOptions: { idleCompaction: false } })
+      await recordProjectCreate(DEMO_PROJECT_ID, 'codex', { efforts: { 'gpt-5.2': 'xhigh' } })
       await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'caller' })
-      await insertSession(DEMO_PROJECT_ID, 'caller', { cwd: '', tool: 'codex', mode: 'tui', model: 'gpt-5.5', permissionMode: 'auto' })
+      await insertSession(DEMO_PROJECT_ID, 'caller', { cwd: '', tool: 'codex', mode: 'tui', model: 'gpt-5.5', permissionMode: 'auto', effort: 'low' })
       await saveToolAuth('codex', 'k')
       await saveToolAuth('claude', 'k')
       const agent = workspaceDelegate(BUILT_IN_USER_ID, 'caller', { projectId: DEMO_PROJECT_ID, ceiling: 'auto' })
-      // Unnamed, the calling session's tool, model and agent mode, and the
-      // ceiling rather than the project's remembered posture.
-      expect(await settled({ actor: agent, mode: undefined })).toMatchObject({ tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'auto' })
+      // Unnamed, the calling session's tool, model, agent mode and effort,
+      // and the ceiling rather than the project's remembered posture.
+      expect(await settled({ actor: agent, mode: undefined }))
+        .toMatchObject({ tool: 'codex', model: 'gpt-5.5', mode: 'tui', permissionMode: 'auto', effort: 'low' })
+      // Its effort only on its own model: gpt-5.2 has `low` too, but takes
+      // the level last picked for it, and gpt-5.3-codex its default.
+      expect((await settled({ actor: agent, model: 'gpt-5.2' })).effort).toBe('xhigh')
+      expect((await settled({ actor: agent, model: 'gpt-5.3-codex' })).effort).toBe(EFFORTS.codex['gpt-5.3-codex'].default)
+      expect((await settled({ actor: agent, effort: 'high' })).effort).toBe('high')
+      // A caller's agent options carry to its own tool only.
+      await recordWorkspaceCreated({ projectId: DEMO_PROJECT_ID, workspaceId: 'claude-caller' })
+      await insertSession(DEMO_PROJECT_ID, 'claude-caller', {
+        cwd: '', tool: 'claude', mode: 'acp', permissionMode: 'auto', agentOptions: { idleCompaction: true },
+      })
+      const claudeAgent = workspaceDelegate(BUILT_IN_USER_ID, 'claude-caller', { projectId: DEMO_PROJECT_ID, ceiling: 'auto' })
+      expect((await settled({ actor: claudeAgent })).agentOptions).toEqual({ idleCompaction: true })
+      expect((await settled({ actor: agent, tool: 'claude' })).agentOptions).toEqual({ idleCompaction: false })
       // Another tool takes the ceiling, stepped down to what the tool has.
       expect(await settled({ actor: agent, tool: 'claude' })).toMatchObject({ tool: 'claude', permissionMode: 'auto' })
       expect(await settled({ actor: { ...agent, ceiling: 'plan' }, tool: 'codex' })).toMatchObject({ permissionMode: 'read-only' })
@@ -467,6 +485,36 @@ describe('prepareStart', () => {
       // Its settings are never remembered as the project's.
       await settled({ actor: agent, tool: 'claude', permissionMode: 'manual', rememberDefaults: true })
       expect((await getProjectRow(DEMO_PROJECT_ID))?.createDefaults.claude?.permissionMode).toBe('bypass')
+    })
+
+    // A delegate's start takes after its caller's checkout, not the
+    // project's last create, but at origin's default branches.
+    it("starts a delegate's workspace with its caller's repos, layout and session cwd where it names none", async () => {
+      const web = await seedSecondRepo('web')
+      await start({ repos: [{ repo: 'demo' }], nested: false, rememberDefaults: true })
+      await saveToolAuth('claude', 'k')
+      await recordWorkspaceCreated({
+        projectId: DEMO_PROJECT_ID, workspaceId: 'caller', cwd: 'demo',
+        repos: [{ repoId: DEMO_PROJECT_ID, path: 'demo', baseBranch: 'dev' }, { repoId: web, path: 'web', baseBranch: 'main' }],
+      })
+      const { id: sessionId } = await insertSession(DEMO_PROJECT_ID, 'caller', { cwd: 'web', tool: 'claude', mode: 'tui', permissionMode: 'bypass' })
+      const as = (claimed?: string): Actor => workspaceDelegate(BUILT_IN_USER_ID, 'caller', {
+        projectId: DEMO_PROJECT_ID, ...(claimed !== undefined ? { sessionId: claimed } : {}),
+      })
+      const checkouts = async (workspaceId: string): Promise<Array<[string, string, string | undefined]>> =>
+        (await listWorkspaceRepos(workspaceId)).map((c) => [c.repoId, c.path, c.baseBranch])
+
+      const both = await start({ actor: as(sessionId) })
+      expect(await checkouts(both.workspaceId)).toEqual([[DEMO_PROJECT_ID, 'demo', 'main'], [web, 'web', 'main']])
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, both.workspaceId)).toMatchObject({ cwd: 'web' })
+      // Outside any session, the workspace's own cwd.
+      const unclaimed = await start({ actor: as() })
+      expect(await getWorkspaceRow(DEMO_PROJECT_ID, unclaimed.workspaceId)).toMatchObject({ cwd: 'demo' })
+      // Named repos take nothing from the caller, the layout included; a
+      // branch alone needs one repo.
+      const named = await start({ actor: as(sessionId), repos: [{ repo: 'web' }] })
+      expect(await checkouts(named.workspaceId)).toEqual([[web, '', 'main']])
+      await expect(start({ actor: as(sessionId), branch: 'dev' })).rejects.toThrow(/names the start of exactly one repo/)
     })
 
     it('starts a workspace on steps of a delegate\'s own only at bypass, its own project only', async () => {

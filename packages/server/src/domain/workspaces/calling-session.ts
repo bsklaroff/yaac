@@ -5,6 +5,7 @@ import {
   launchableModel,
   morePermissive,
   type AgentMode,
+  type AgentOptions,
   type AgentTool,
   type PermissionMode,
 } from '@yaac/shared/types'
@@ -14,11 +15,15 @@ import {
 export interface CallingSession {
   /** The session, when the claimed one is open in the workspace. */
   sessionId?: string
+  /** Where the claimed session runs, relative to the workspace root. */
+  cwd?: string
   tool: AgentTool
   /** Its current model, as its agent last reported it, when launchable. */
   model?: string
   permissionMode: PermissionMode
   mode: AgentMode
+  effort?: string
+  agentOptions: AgentOptions
 }
 
 /**
@@ -49,17 +54,19 @@ export async function callingSession(
   // launchable one is passed on.
   const model = lead.model !== undefined ? launchableModel(lead.tool, lead.model) : undefined
   return {
-    ...(own !== undefined ? { sessionId: own.id } : {}),
+    ...(own !== undefined ? { sessionId: own.id, cwd: own.cwd } : {}),
     tool: lead.tool,
     ...(model !== undefined ? { model } : {}),
     permissionMode: lead.permissionMode,
     mode: lead.mode,
+    ...(lead.effort !== undefined ? { effort: lead.effort } : {}),
+    agentOptions: lead.agentOptions,
   }
 }
 
-/** The calling session of a workspace's delegate, whose tool, model and
- *  agent mode what it starts takes where it names none; none for anyone
- *  else. */
+/** The calling session of a workspace's delegate, whose tool, model,
+ *  agent mode, effort and agent options what it starts takes where it names
+ *  none; none for anyone else. */
 export async function delegateSession(actor: Actor | undefined): Promise<CallingSession | undefined> {
   if (actor?.kind !== 'delegate' || actor.via.kind !== 'workspace' || actor.projectId === undefined) return undefined
   return await callingSession({ workspaceId: actor.via.id, projectId: actor.projectId }, actor.via.sessionId)

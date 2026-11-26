@@ -53,8 +53,8 @@ function toProjectRow(
   links: ProjectRepoLink[],
 ): ProjectRow {
   const createDefaults: Partial<Record<AgentTool, ToolCreateDefaults>> = {}
-  for (const { tool, model, permissionMode, mode, effort, agentOptions } of defaults) {
-    createDefaults[tool] = { ...nullsToUndefined({ model, permissionMode, mode, effort }), agentOptions }
+  for (const { tool, model, permissionMode, mode, efforts, agentOptions } of defaults) {
+    createDefaults[tool] = { ...nullsToUndefined({ model, permissionMode, mode }), efforts, agentOptions }
   }
   return { ...nullsToUndefined(r), createDefaults, repos: links }
 }
@@ -212,8 +212,8 @@ export async function listProjectRows(): Promise<ProjectRow[]> {
 
 /**
  * Remember a create's choices as the project's next defaults: the tool,
- * whichever of model, permission mode, agent mode, effort and agent options
- * were given (for that tool), and what the workspace started with (which
+ * whichever of model, permission mode, agent mode, per-model efforts and
+ * agent options were given (for that tool), and what the workspace started with (which
  * repos, each one's branch if named, the layout and the cwd). Omitted
  * fields are left unchanged.
  *
@@ -237,7 +237,9 @@ export async function recordProjectCreate(
     ...(picked.model !== undefined ? { model: picked.model } : {}),
     ...(picked.permissionMode !== undefined ? { permissionMode: picked.permissionMode } : {}),
     ...(picked.mode !== undefined ? { mode: picked.mode } : {}),
-    ...(picked.effort !== undefined ? { effort: picked.effort } : {}),
+    ...(picked.efforts !== undefined && Object.keys(picked.efforts).length > 0
+      ? { efforts: sql`${projectToolDefaults.efforts} || ${JSON.stringify(picked.efforts)}::jsonb` }
+      : {}),
     ...(picked.agentOptions !== undefined && Object.keys(picked.agentOptions).length > 0
       ? { agentOptions: sql`${projectToolDefaults.agentOptions} || ${JSON.stringify(picked.agentOptions)}::jsonb` }
       : {}),
@@ -263,6 +265,7 @@ export async function recordProjectCreate(
       projectId,
       tool,
       ...set,
+      ...(picked.efforts !== undefined ? { efforts: picked.efforts } : {}),
       ...(picked.agentOptions !== undefined ? { agentOptions: picked.agentOptions } : {}),
     })
     // drizzle rejects an empty `set`, so with nothing to update just ensure

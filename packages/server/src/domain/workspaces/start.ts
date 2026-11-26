@@ -18,11 +18,28 @@ import { VOLUME_NEED } from './steps'
 import { modelDisplayName } from '#domain/auth'
 import { authorizeProject, isPerson, requireWithinCeiling, type Actor } from '#domain/access'
 import { assertWorkflowRepos, resolveWorkflow, workflowLaunch } from '#domain/projects'
-import { getProjectRow, getWorkflow, listWorkspaceRepos, recordProjectCreate, storeWorkflow, type LaunchSpec } from '#db'
-import { resolveStart, storedSelection, type StartRequest, type WorkspaceStart } from './checkouts'
+import {
+  getProjectRow,
+  getWorkflow,
+  getWorkspaceRow,
+  listWorkspaceRepos,
+  recordProjectCreate,
+  storeWorkflow,
+  type LaunchSpec,
+  type ProjectRow,
+} from '#db'
+import { resolveStart, storedSelection, withBaseSelection, type StartRequest, type WorkspaceStart } from './checkouts'
+import { delegateSession } from './calling-session'
 import { ServerError } from '@yaac/shared/errors'
 import { FULL_COMMIT_PATTERN, graphHasTask, parseStepGraph, type StepGraph } from '@yaac/shared/steps'
-import { type AgentMode, type AgentOptions, type AgentTool, type PermissionMode, type RepoStart } from '@yaac/shared/types'
+import {
+  type AgentMode,
+  type AgentOptions,
+  type AgentTool,
+  type PermissionMode,
+  type RepoSelection,
+  type RepoStart,
+} from '@yaac/shared/types'
 
 /** A request to start a workspace. */
 export interface StartWorkspaceRequest {
@@ -201,7 +218,8 @@ async function prepareAuthorizedStart(
   if (bringsSteps(request.steps)) requireWithinCeiling(principal, 'bypass', 'steps it starts a workspace with run commands as the workspace does')
   const project = await getProjectRow(projectId)
   if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-  const start = resolveStart(project, request)
+  const caller = request.repos === undefined ? await callerSelection(principal, project) : undefined
+  const start = resolveStart(project, withBaseSelection(caller, request))
   checkStartCommits(start)
   const workflow = await startWorkflow(projectId, request)
   if (workflow !== undefined) {
@@ -270,7 +288,7 @@ async function prepareAuthorizedStart(
     await recordProjectCreate(projectId, setup.tool, {
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
-      ...(request.effort !== undefined ? { effort: request.effort } : {}),
+      ...(request.effort !== undefined && setup.model !== undefined ? { efforts: { [setup.model]: request.effort } } : {}),
       ...(request.mode !== undefined ? { mode: request.mode } : {}),
       ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     }, {
@@ -458,6 +476,24 @@ export async function startOf(
     nested,
     cwd: rows.find((r) => r.path === workspace.cwd && (!nested || r.path !== ''))?.repoId ?? '.',
   }
+}
+
+/**
+ * What a start by a workspace's delegate takes where it names no repos: the
+ * calling workspace's repos still linked to the project, each at its
+ * default branch, their layout, and the calling session's cwd (else the
+ * workspace's). None for anyone else, or when every repo the caller holds
+ * has been unlinked, so the start takes the project's instead.
+ */
+export async function callerSelection(actor: Actor, project: ProjectRow): Promise<RepoSelection | undefined> {
+  if (actor.kind !== 'delegate' || actor.via.kind !== 'workspace' || actor.projectId !== project.id) return undefined
+  const row = await getWorkspaceRow(project.id, actor.via.id)
+  if (row === undefined) return undefined
+  const cwd = (await delegateSession(actor))?.cwd ?? row.cwd
+  const own = await startOf({ workspaceId: row.workspaceId, cwd }, 'branch')
+  const repos = own.repos.filter((r) => project.repos.some((l) => l.repo.id === r.repo)).map(({ repo }) => ({ repo }))
+  if (repos.length === 0 && own.repos.length > 0) return undefined
+  return { repos, nested: own.nested, cwd: repos.some((r) => r.repo === own.cwd) ? own.cwd : '.' }
 }
 
 /**

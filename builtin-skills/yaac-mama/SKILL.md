@@ -233,8 +233,9 @@ pass — the server resolves who is calling and answers for that project only.
   - **`--effort`**: how hard the new agent's model thinks, in the tool's own
     words (`low`, `high`, `xhigh`, opencode's `default`, …). `yaac-mama
     models` lists each model's levels and stars its default; one the model
-    lacks is refused. Omitted, the project's last choice where the model has
-    it, else the model's default.
+    lacks is refused. Omitted, your own level when it runs your model, else
+    the level last picked in the project for that model, else the model's
+    default.
   - **`--permission-mode`**: how much the new agent may do before it asks —
     `bypass`, `auto`, `accept-edits`, `manual` or `plan`, most permissive
     first. Omitted, it **inherits your own** (or, when the tool
@@ -257,16 +258,17 @@ pass — the server resolves who is calling and answers for that project only.
     several.
     This workspace's own repo folders are in `$YAAC_CHECKOUTS`
     (colon-separated; `.` is a repo at the workspace root). Omitted, the
-    new workspace gets the repos the project's last create included, each
-    at its default branch. **`--no-repos`** starts with none: an empty
-    workspace dir.
+    new workspace gets this workspace's repos, each at its default branch
+    (not your base branch: name it with `--branch` or `--repo` to start
+    there). **`--no-repos`** starts with none: an empty workspace dir.
   - **`--nested`** / **`--no-nested`**: whether a lone repo sits in a folder
     named for it or at the workspace root. Several repos always sit in
-    folders, one each, under the workspace dir. Omitted, the project's last
-    choice.
+    folders, one each, under the workspace dir. Omitted, this workspace's
+    layout when `--repo` is omitted too, else the project's last choice.
   - **`--cwd <dir>`**: where the new agent starts, a selected repo's folder
-    or `.` for the workspace root. Omitted, the project's last choice where
-    that repo is selected, else a lone repo, else the root.
+    or `.` for the workspace root. Omitted, your own cwd when `--repo` is
+    omitted too; with `--repo`, the project's last choice where that repo
+    is selected, else a lone repo, else the root.
   - **`--group`**: file the new workspace in this group, creating the group
     if it does not exist. Good for a fan-out you want kept together. A
     group with a **workspace limit** runs at most that many workspaces at
@@ -293,9 +295,10 @@ pass — the server resolves who is calling and answers for that project only.
     parent — its tool, current model, UI mode, permission mode, group, and the
     branch it forked from (the child starts from that branch's *latest* tip
     on origin, not from this workspace's commits: push, and name your branch in
-    the prompt, to hand work over). The permission mode is stepped down to
-    your own when the parent's is more permissive; naming one above yours is
-    refused.
+    the prompt, to hand work over). Its effort and agent options are the
+    project's, as for a person's create, not yours. The permission mode is
+    stepped down to your own when the parent's is more permissive; naming
+    one above yours is refused.
   - It starts only on a **natural stop** — `yaac-mama stop` or the user
     stopping the workspace. A workspace that crashes, runs out of memory, or
     whose agent simply exits does **not** start what is queued after it; that

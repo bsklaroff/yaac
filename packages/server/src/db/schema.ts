@@ -302,8 +302,9 @@ export const projectToolDefaults = snakeCase.table('project_tool_defaults', {
   model: text(),
   permissionMode: text().$type<PermissionMode>(),
   mode: text().$type<AgentMode>(),
-  /** In the tool's words; used where the next create's model has it. */
-  effort: text(),
+  /** The effort last picked for each model, by model id, in the tool's
+   *  words; used where a create runs that model and names none. */
+  efforts: jsonb().$type<Record<string, string>>().notNull().default({}),
   /** Each agent option last picked; one never picked is absent. */
   agentOptions: jsonb().$type<AgentOptions>().notNull().default({}),
 }, (t) => [uniqueIndex().on(t.projectId, t.tool)])

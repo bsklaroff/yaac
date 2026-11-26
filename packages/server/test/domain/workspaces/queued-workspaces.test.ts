@@ -201,6 +201,20 @@ describe('queueWorkspace', () => {
     expect(other).toMatchObject({ tool: 'claude', model: FALLBACK_MODELS.claude, mode: 'tui', selection: startsAt('develop') })
     // A prefix names the parent like an id does.
     expect(other.parentWorkspaceId).toBe('parent-1')
+
+    // Under a parent, a delegate's own session lends nothing: its effort on
+    // the parent's very model is not taken, nor its agent mode. With no
+    // parent, both are.
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller' })
+    const { id } = await insertSession(PROJ, 'caller', { cwd: '', tool: 'codex', mode: 'acp', model: 'gpt-5.5', permissionMode: 'bypass', effort: 'low' })
+    const caller = workspaceDelegate(BUILT_IN_USER_ID, 'caller', { projectId: PROJ, sessionId: id })
+    expect(await queueWorkspace(caller, PROJ, { parent: 'parent-1', prompt: 'x' }))
+      .toMatchObject({ model: 'gpt-5.5', mode: 'tui', effort: 'medium' })
+    expect(await queueWorkspace(caller, PROJ, { start: { inMinutes: 5 }, prompt: 'x' }))
+      .toMatchObject({ model: 'gpt-5.5', mode: 'acp', effort: 'low' })
+    // Nor its tool, under a parent that knows none (one with no agent).
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'agentless', repos: [{ repoId: PROJ, path: '' }] })
+    expect((await queueWorkspace(caller, PROJ, { parent: 'agentless', prompt: 'x' })).tool).toBe('claude')
   })
 
   it('follows a named workflow until it launches, and hands its name on; steps of its own are fixed', async () => {
@@ -330,7 +344,23 @@ describe('queueWorkspace', () => {
     expect((await updateQueuedWorkspace(local, own.id, { branch: 'dev' })).selection.repos).toEqual([{ repo: WEB, branch: 'dev' }])
     expect((await updateQueuedWorkspace(local, child.id, { cwd: '.' })).selection).toEqual({ ...inherited, cwd: '.' })
 
+    // With no parent, a delegate's entry takes its calling workspace's
+    // repos, layout and cwd as its creates do, each repo at origin's
+    // default branch.
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'solo', cwd: 'demo', repos: [{ repoId: PROJ, path: 'demo', baseBranch: 'develop' }] })
+    const caller = workspaceDelegate(BUILT_IN_USER_ID, 'solo', { projectId: PROJ })
+    const scheduled = await queueWorkspace(caller, PROJ, { start: { inMinutes: 5 }, prompt: 'z' })
+    expect(scheduled.selection).toEqual({ repos: [{ repo: PROJ, branch: expect.stringMatching(/^(main|master)$/) as string }], nested: true, cwd: PROJ })
+
     await unlinkProjectRepo(WEB, PROJ)
+    // A repo the caller holds but the project no longer links is left out,
+    // and a cwd in it falls back to the root.
+    const unlinked = await queueWorkspace(workspaceDelegate(BUILT_IN_USER_ID, 'both', { projectId: PROJ }), PROJ, { start: { inMinutes: 5 }, prompt: 'z' })
+    expect(unlinked.selection).toMatchObject({ repos: [{ repo: PROJ }], nested: true, cwd: '.' })
+    // One whose every repo is unlinked hands on nothing: the project's.
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'web-only', repos: [{ repoId: WEB, path: '' }] })
+    const stranded = await queueWorkspace(workspaceDelegate(BUILT_IN_USER_ID, 'web-only', { projectId: PROJ }), PROJ, { start: { inMinutes: 5 }, prompt: 'z' })
+    expect(stranded.selection).toMatchObject({ repos: [{ repo: PROJ }], nested: false })
     await runQueuedWorkspace(local, child.id)
     await vi.waitFor(async () => expect((await getQueuedWorkspaceRow(child.id))?.launchError).toMatch(/has no repo/))
     expect(mockCreate).not.toHaveBeenCalled()

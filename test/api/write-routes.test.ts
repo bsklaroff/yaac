@@ -820,7 +820,9 @@ describe('write routes', () => {
       expect(await getProjectRow(DEMO)).toMatchObject({
         lastTool: 'pi',
         createDefaults: {
-          claude: { model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max', agentOptions: { idleCompaction: true } },
+          claude: {
+            model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', efforts: { 'claude-sonnet-5': 'max' }, agentOptions: { idleCompaction: true },
+          },
           pi: { permissionMode: 'bypass' },
         },
       })
@@ -837,7 +839,7 @@ describe('write routes', () => {
       expect(mockCreateWorkspace.mock.calls.at(-1)?.[1]).toMatchObject({ session: { tool: 'pi', mode: 'acp' } })
       // ...and records only the agent.
       expect((await getProjectRow(DEMO))?.createDefaults.claude).toEqual({
-        model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', effort: 'max', agentOptions: { idleCompaction: true },
+        model: 'claude-sonnet-5', permissionMode: 'plan', mode: 'acp', efforts: { 'claude-sonnet-5': 'max' }, agentOptions: { idleCompaction: true },
       })
 
       // An effort is one lowercase word, since it is embedded bare in the
@@ -846,7 +848,7 @@ describe('write routes', () => {
         method: 'POST', body: JSON.stringify({ project: DEMO, tool: 'claude', effort: 'max; rm' }),
       }))
       expect(res.status).toBe(400)
-      expect((await getProjectRow(DEMO))?.createDefaults.pi).toEqual({ permissionMode: 'bypass', agentOptions: {} })
+      expect((await getProjectRow(DEMO))?.createDefaults.pi).toEqual({ permissionMode: 'bypass', efforts: {}, agentOptions: {} })
     })
 
     // And the session the webapp minted the id of, which the create opens.

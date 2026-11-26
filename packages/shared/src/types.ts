@@ -491,21 +491,21 @@ export interface ToolCreateDefaults {
   model?: string
   permissionMode?: PermissionMode
   mode?: AgentMode
-  effort?: string
+  /** The effort last picked for each model, by model id. */
+  efforts?: Record<string, string>
   agentOptions?: AgentOptions
 }
 
 /**
- * The model, posture, effort and agent options a create for `tool` runs
- * with when the request names none of them: what the project remembers for
- * that agent where it still fits, else the fallback. Both the create form and the
+ * The model, posture and agent options a create for `tool` runs with when
+ * the request names none of them: what the project remembers for that agent
+ * where it still fits, else the fallback. Both the create form and the
  * server call this, so the form shows what an untouched create would run.
  *
  * A remembered posture the tool lacks goes through
  * `launchablePermissionMode`. A remembered api-key tool's model must name
  * the credential's current provider; any claude or codex model stands, since the
- * catalog is not an allowlist. A remembered effort stands where the model
- * has it, else the model's default; a model with no effort levels gets none.
+ * catalog is not an allowlist.
  */
 export function resolveToolCreateDefaults(args: {
   driver: DriverKind
@@ -515,24 +515,18 @@ export function resolveToolCreateDefaults(args: {
   provider?: string
   /** What the tool runs when nothing is remembered (`defaultModelFor`). */
   defaultModel: string
-  /** A model's effort levels, from the catalog (`ModelOption.efforts`). */
-  effortsFor: (model: string) => ModelEfforts | undefined
-}): { model: string; permissionMode: PermissionMode; effort?: string; agentOptions: AgentOptions } {
+}): { model: string; permissionMode: PermissionMode; agentOptions: AgentOptions } {
   const { driver, tool, remembered, provider } = args
   const posture = remembered?.permissionMode
   const qualified = isApiKeyTool(tool)
   const rememberedModel = remembered?.model
   const modelFits = rememberedModel !== undefined
     && (!qualified || provider === undefined || rememberedModel.startsWith(`${provider}/`))
-  const model = modelFits ? rememberedModel : args.defaultModel
-  const efforts = args.effortsFor(model)
-  const effort = efforts !== undefined ? effortFor(efforts, remembered?.effort) : undefined
   return {
-    model,
+    model: modelFits ? rememberedModel : args.defaultModel,
     permissionMode: posture !== undefined
       ? launchablePermissionMode(tool, posture)
       : defaultPermissionMode(driver, tool),
-    ...(effort !== undefined ? { effort } : {}),
     agentOptions: resolveAgentOptions(tool, undefined, remembered?.agentOptions),
   }
 }

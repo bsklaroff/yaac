@@ -266,8 +266,9 @@ but --title, --steps and --no-steps):
                    for opencode and pi (e.g. anthropic/claude-opus-4-8).
   --effort <level> how hard the model thinks, in the tool's own words (e.g.
                    low, high, xhigh); `yaac-mama models` lists each model's
-                   levels and stars its default. Omitted, the project's last
-                   choice where the model has it, else the model's default.
+                   levels and stars its default. Omitted, your own level when
+                   it runs your model, else the level last picked in the
+                   project for that model, else the model's default.
   --permission-mode <mode>
                    how much the new agent may do before it asks: bypass, auto,
                    accept-edits, manual, then plan or read-only (codex's
@@ -284,15 +285,18 @@ but --title, --steps and --no-steps):
                    its folder (this workspace's own are in $YAAC_CHECKOUTS,
                    colon-separated, . for one at the root), at this branch
                    on origin, or with a full commit in the branch's place
-                   at that commit; repeat it for several. Omitted, the repos
-                   the project's last create included, each at its default
-                   branch.
+                   at that commit; repeat it for several. Omitted, this
+                   workspace's repos (those still linked to the project),
+                   each at origin's default branch, not your base branch.
   --no-repos       start with no repos: an empty workspace dir.
   --nested         put a lone repo in a folder named for it instead of at the
                    workspace root (--no-nested: at the root). Several repos
-                   always sit in folders. Omitted, the project's last choice.
+                   always sit in folders. Omitted, this workspace's layout
+                   when --repo is omitted too, else the project's last
+                   choice.
   --cwd <dir>      where the new agent starts: a selected repo's folder, or .
-                   for the workspace root. Omitted, the project's last choice
+                   for the workspace root. Omitted, your own cwd when --repo
+                   is omitted too; with --repo, the project's last choice
                    where that repo is selected, else a lone repo, else the
                    root.
   --branch <name>  reference branch on origin for a workspace that starts with
@@ -378,8 +382,10 @@ queue also takes at most one of:
                    what the queued workspace waits on: a workspace in this
                    project ("$YAAC_WORKSPACE_ID" for this one), or a queued
                    workspace's id (to chain after it). Options it omits
-                   default to that parent's settings; the permission mode is
-                   still never more permissive than your own.
+                   default to that parent's settings (its effort and agent
+                   options to the project's, as for a person's create); the
+                   permission mode is still never more permissive than your
+                   own.
                    Required unless --group names an existing group with a
                    workspace limit (see group set-limit; `yaac-mama list`
                    shows it): then the queued workspace waits for room

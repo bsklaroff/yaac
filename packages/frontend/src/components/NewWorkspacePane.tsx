@@ -15,7 +15,7 @@ import { IMAGE_KEY, imageStateLabel, useFollowBuilds } from '#lib/images'
 import { openSession, showSession } from '#lib/createWorkspace'
 import { dialogHoldsFocus } from '#lib/dialogFocus'
 import { shownGroups } from '#lib/groups'
-import { entryStart, SCHEDULE, START_AT, START_IN, START_WHEN_ROOM, type NewWorkspaceForm, type PendingDraft } from '#lib/newWorkspace'
+import { entryStart, SCHEDULE, START_AT, START_IN, START_WHEN_ROOM, type AgentPicks, type NewWorkspaceForm, type PendingDraft } from '#lib/newWorkspace'
 import { compileRepeat, DEFAULT_REPEAT, EVERY_MINUTES, parseRepeat, REPEAT_KINDS, WEEK, type Repeat, type RepeatKind } from '#lib/routines'
 import { useTimeZone, zonedInputInstant, zonedInputValue } from '#lib/time'
 import { checkoutLabel } from '#lib/checkouts'
@@ -48,7 +48,6 @@ import type {
   PermissionMode,
   QueuedWorkspaceEntry,
   RepoSelection,
-  ToolCreateDefaults,
   WorkspaceListEntry,
 } from '@yaac/shared/types'
 import {
@@ -364,7 +363,7 @@ export function NewWorkspacePane({ projectId, bar }: {
   const tool = form.tool ?? seed?.tool ?? defaults.lastTool
   const base = defaults.forTool(tool)
   const picks = form.picked?.tool === tool ? form.picked.picks : {}
-  const setPicks = (patch: ToolCreateDefaults): void => update({ picked: { tool, picks: { ...picks, ...patch } } })
+  const setPicks = (patch: AgentPicks): void => update({ picked: { tool, picks: { ...picks, ...patch } } })
   // A seed's model/mode/posture apply only if it is for the same tool.
   const fromSeed = seed !== undefined && seed.tool === tool ? seed : undefined
   const model = picks.model ?? fromSeed?.model ?? base.model
@@ -376,11 +375,14 @@ export function NewWorkspacePane({ projectId, bar }: {
   const permissionMode = picks.permissionMode ?? seededPosture ?? base.permissionMode
   const modelOption = base.models.find((m) => m.id === model)
   const modelName = modelOption?.name
-  // Picked, seeded or remembered, where this model has it; else its default.
-  // A model with no levels (or none known) has no effort.
+  // The first this model has of: picked, seeded on the same model, last
+  // picked for this model; else its default, as the server resolves it
+  // (docs/effort-levels.md). A model with no levels (or none known) has no
+  // effort.
   const efforts = modelOption?.efforts
   const effort = efforts !== undefined
-    ? effortFor(efforts, picks.effort ?? fromSeed?.effort ?? base.effort)
+    ? effortFor(efforts, [picks.effort, fromSeed?.model === model ? fromSeed.effort : undefined, base.efforts[model]]
+      .find((l) => l !== undefined && efforts.levels.includes(l)))
     : undefined
   // Each picked, else seeded, else remembered (`base`), else off.
   const agentOptions = resolveAgentOptions(tool, { ...fromSeed?.agentOptions, ...picks.agentOptions }, base.agentOptions)

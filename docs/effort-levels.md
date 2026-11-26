@@ -105,24 +105,25 @@ followed.
 
 ## Resolution
 
-`resolveToolCreateDefaults` and `resolveCreate` pick an effort after the
-model, most specific first:
+`resolveCreate` picks an effort after the model, most specific first:
 
 1. what the request named, refused if the model has levels and lacks it, or
    if it is a catalog model with none; a model outside the catalog takes it
    as is, like the model itself;
-2. what the project remembers for the agent, if the model has it (one level
-   name means the same across a tool's models);
-3. the model's default;
-4. none, for a model with no levels.
+2. for a `yaac-mama` start that runs its caller's model, the calling
+   session's level;
+3. the level last picked in the project for that model, if it still has it;
+4. the model's default;
+5. none, for a model with no levels.
 
-Only a level the request named is remembered. A model change in the pane
-or an `edit-queued` keeps a picked level the new model has and re-resolves
-one it lacks. `yaac-mama` resolves the same way, with no ceiling (effort is
-not a restraint) and no inheritance from the caller, whose level may not
-exist on the child's model; a named level the model lacks is refused before
-the detached create starts. `yaac-mama models` lists each model's levels and
-stars its default.
+A level is remembered per model because levels are set per model: a high
+pick on one model says nothing about what another should run. Only a level
+the request named is remembered, under the model the create runs. The
+create form resolves the same way (`useCreateDefaults` hands it the
+per-model picks). A model change in the pane or an `edit-queued` keeps a
+level picked there that the new model has and re-resolves one it lacks. `yaac-mama` has no ceiling on effort (it is not a restraint);
+a named level the model lacks is refused before the detached create starts.
+`yaac-mama models` lists each model's levels and stars its default.
 
 A restart relaunches each session at its own row's effort, checked against
 the model it relaunches on, so a level that model lacks becomes its
@@ -130,9 +131,10 @@ default, as does a row with none.
 
 ## Storage
 
-A nullable `effort` column on `project_tool_defaults`, `workspaces`,
-`queued_workspaces` and `draft_workspaces`. Null means no effort, which is
-what a model without levels launches with.
+A nullable `effort` column on `workspaces`, `queued_workspaces` and
+`draft_workspaces`. Null means no effort, which is what a model without
+levels launches with. `project_tool_defaults.efforts` is a JSON object of
+the last level picked for each model, by model id.
 
 ## Under `acp`
 
