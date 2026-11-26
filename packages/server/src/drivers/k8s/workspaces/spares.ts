@@ -23,7 +23,7 @@ import {
   mountdKeepReady,
   mountdReports,
   nodeUnreadyReason,
-  proxyServiceClusterIp,
+  mountdImage,
   readyNodes,
   serverBuild,
 } from '#drivers/k8s/cluster'
@@ -109,8 +109,8 @@ export async function genericPodParams(args: {
   nodes: string[]
   tree: boolean
 }): Promise<PodJobParams> {
-  const [proxyHost, build, tree, env] = await Promise.all([
-    proxyServiceClusterIp(),
+  const [netshimImage, build, tree, env] = await Promise.all([
+    mountdImage(),
     serverBuild(),
     args.tree ? treeImage() : Promise.resolve(undefined),
     genericEnv(args.workspaceId),
@@ -125,7 +125,7 @@ export async function genericPodParams(args: {
     helpers: helpersSubPath(build),
     scratchBytes: args.scratchBytes,
     ...args.resources,
-    proxyHost,
+    netshimImage,
     ...(tree !== undefined ? { treeImage: tree } : {}),
     nodeNames: args.nodes,
   }

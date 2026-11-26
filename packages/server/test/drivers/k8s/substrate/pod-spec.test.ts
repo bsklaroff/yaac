@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   installSecurityContext,
+  netshimContainer,
   processIdentity,
   sentryTmpfsAnnotations,
+  socketVolume,
+  socketsNodePath,
 } from '#drivers/k8s/substrate'
 
 describe('sentryTmpfsAnnotations', () => {
@@ -56,5 +59,37 @@ describe('processIdentity', () => {
   it('refuses to invent a uid when the platform has none', () => {
     vi.spyOn(process, 'getuid').mockReturnValue(undefined as unknown as number)
     expect(() => processIdentity()).toThrow(/POSIX/)
+  })
+})
+
+describe('socketVolume', () => {
+  it('names the sandbox\'s own directory under the install\'s socket root, made by kubelet when absent', () => {
+    // The relay finds a pod's directory by this volume's name and path.
+    expect(socketVolume('ws-1.0f0f0f0f')).toEqual({
+      name: 'sockets', hostPath: { path: `${socketsNodePath()}/ws-1.0f0f0f0f`, type: 'DirectoryOrCreate' },
+    })
+  })
+})
+
+describe('netshimContainer', () => {
+  it('runs netshim from the given image as a restarting sidecar with only the network capabilities it needs', () => {
+    expect(netshimContainer('registry.local/yaac-mountd:abc')).toEqual({
+      name: 'netshim',
+      image: 'registry.local/yaac-mountd:abc',
+      imagePullPolicy: 'IfNotPresent',
+      restartPolicy: 'Always',
+      command: ['/usr/local/bin/netshim'],
+      // Its address goes on loopback, for a program that dials its own
+      // hostname.
+      env: [{ name: 'POD_IP', valueFrom: { fieldRef: { fieldPath: 'status.podIP' } } }],
+      // Root for iptables, writable root filesystem for its lock, and no
+      // capability but the two its route and NAT rules take.
+      securityContext: { runAsUser: 0, runAsGroup: 0, capabilities: { drop: ['ALL'], add: ['NET_ADMIN', 'NET_RAW'] } },
+      // Started once its ingress socket is bound, which it binds last.
+      startupProbe: { exec: { command: ['test', '-S', '/run/yaac/ingress.sock'] }, periodSeconds: 1, failureThreshold: 30 },
+      // Limits like every container, or kubelet sets no pod memory cap.
+      resources: { requests: { cpu: '10m', memory: '16Mi' }, limits: { cpu: '1', memory: '128Mi' } },
+      volumeMounts: [{ name: 'sockets', mountPath: '/run/yaac' }],
+    })
   })
 })

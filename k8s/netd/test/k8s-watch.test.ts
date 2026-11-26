@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as clientNode from '@kubernetes/client-node'
 import type { KubernetesObject } from '@kubernetes/client-node'
-import { inClusterClient, mapNodePod, mapPod, mapService, watchNodePods, watchPods, watchServices } from 'yaac-netd/k8s-watch'
+import { inClusterClient, mapNodePod, watchNodePods } from 'yaac-netd/k8s-watch'
 
 /**
  * Fake client-node informer, driven by the test. `ListWatch` is the API
@@ -54,34 +54,13 @@ vi.mock('@kubernetes/client-node', async (importOriginal) => ({
 /** A client whose list calls record their arguments instead of dialing. */
 function fakeClient() {
   const listNamespacedPod = vi.fn(() => Promise.resolve({ items: [] }))
-  const listNamespacedService = vi.fn(() => Promise.resolve({ items: [] }))
   const client = {
     kubeConfig: {},
-    core: { listNamespacedPod, listNamespacedService },
+    core: { listNamespacedPod },
     namespace: 'yaac',
-  } as unknown as Parameters<typeof watchPods>[0]
-  return { client, listNamespacedPod, listNamespacedService }
+  } as unknown as Parameters<typeof watchNodePods>[0]
+  return { client, listNamespacedPod }
 }
-
-describe('mapPod', () => {
-  it('maps an API pod to netd\'s shape', () => {
-    expect(mapPod({
-      metadata: { name: 'p', namespace: 'yaac', labels: { 'yaac.workspace-id': 's1' } },
-      status: { podIP: '10.244.0.9' },
-    })).toEqual({ name: 'p', namespace: 'yaac', podIp: '10.244.0.9' })
-  })
-
-  it('drops a pod with no IP yet — a half-built pod must yield no rules', () => {
-    expect(mapPod({ metadata: { name: 'p', namespace: 'n' }, status: {} })).toBeNull()
-    expect(mapPod({ metadata: { name: 'p', namespace: 'n' } })).toBeNull()
-  })
-
-  it('drops anything without an identity', () => {
-    expect(mapPod({ metadata: { namespace: 'n' }, status: { podIP: '1.2.3.4' } })).toBeNull()
-    expect(mapPod({ metadata: { name: 'p' }, status: { podIP: '1.2.3.4' } })).toBeNull()
-    expect(mapPod({})).toBeNull()
-  })
-})
 
 describe('mapNodePod', () => {
   it('maps a running pod to its uid and memory request, init containers included', () => {
@@ -107,35 +86,6 @@ describe('mapNodePod', () => {
   it('drops a pod that is not running or has no uid', () => {
     expect(mapNodePod({ metadata: { name: 'p', uid: 'u' }, status: { phase: 'Pending' } })).toBeNull()
     expect(mapNodePod({ metadata: { name: 'p' }, status: { phase: 'Running' } })).toBeNull()
-  })
-})
-
-describe('mapService', () => {
-  it('maps an API Service to netd\'s shape', () => {
-    expect(mapService({
-      metadata: { name: 'yaac-proxy', namespace: 'yaac' },
-      spec: { clusterIP: '10.96.0.50' },
-    })).toEqual({ name: 'yaac-proxy', clusterIp: '10.96.0.50' })
-  })
-
-  it('drops a Service with no ClusterIP or no name', () => {
-    expect(mapService({ metadata: { name: 's' }, spec: {} })).toBeNull()
-    expect(mapService({ metadata: {}, spec: { clusterIP: '10.96.0.1' } })).toBeNull()
-  })
-})
-
-describe('watchNodePods', () => {
-  beforeEach(() => { informers.length = 0 })
-
-  it('watches and lists every pod of this install on this node, by field selector', async () => {
-    const { client, listNamespacedPod } = fakeClient()
-    watchNodePods(client, 'node-a', () => { /* unused */ })
-    const [informer] = informers
-    expect(informer.path).toBe('/api/v1/namespaces/yaac/pods')
-    expect(informer.labelSelector).toBeUndefined()
-    expect(informer.fieldSelector).toBe('spec.nodeName=node-a')
-    await informer.listFn()
-    expect(listNamespacedPod).toHaveBeenCalledWith({ namespace: 'yaac', fieldSelector: 'spec.nodeName=node-a' })
   })
 })
 
@@ -166,7 +116,7 @@ describe('inClusterClient', () => {
   })
 })
 
-describe('watchPods', () => {
+describe('watchNodePods', () => {
   let onChange: ReturnType<typeof vi.fn<() => void>>
 
   beforeEach(() => {
@@ -181,38 +131,29 @@ describe('watchPods', () => {
     vi.restoreAllMocks()
   })
 
-  it('watches and lists only this install\'s workspace and builder pods, never the proxy', async () => {
-    // Another install's pods, or the proxy itself, must never be
-    // redirected here; scoping the watches keeps them out of the store.
+  it('watches and lists every pod of this install on this node, by field selector', async () => {
     const { client, listNamespacedPod } = fakeClient()
-    const pods = watchPods(client, onChange)
-    expect(informers.map((i) => [i.path, i.labelSelector])).toEqual([
-      ['/api/v1/namespaces/yaac/pods', 'yaac.workspace-id,app!=yaac-proxy'],
-      ['/api/v1/namespaces/yaac/pods', 'yaac.build-id'],
-    ])
+    watchNodePods(client, 'node-a', onChange)
+    const [informer] = informers
+    expect(informer.path).toBe('/api/v1/namespaces/yaac/pods')
+    expect(informer.labelSelector).toBeUndefined()
+    expect(informer.fieldSelector).toBe('spec.nodeName=node-a')
     // client-node applies the selector to the watch only.
-    for (const informer of informers) await informer.listFn()
-    expect(listNamespacedPod.mock.calls).toEqual([
-      [{ namespace: 'yaac', labelSelector: 'yaac.workspace-id,app!=yaac-proxy' }],
-      [{ namespace: 'yaac', labelSelector: 'yaac.build-id' }],
-    ])
-    // Both kinds are redirected alike.
-    informers[0].objects = [{ metadata: { name: 'w', namespace: 'yaac' }, status: { podIP: '10.244.0.9' } } as KubernetesObject]
-    informers[1].objects = [{ metadata: { name: 'b', namespace: 'yaac' }, status: { podIP: '10.244.0.10' } } as KubernetesObject]
-    expect(pods().map((p) => p.name)).toEqual(['w', 'b'])
+    await informer.listFn()
+    expect(listNamespacedPod).toHaveBeenCalledWith({ namespace: 'yaac', fieldSelector: 'spec.nodeName=node-a' })
   })
 
-  it('reads through to the store, mapping and dropping unusable pods', () => {
-    const pods = watchPods(fakeClient().client, onChange)
+  it('reads through to the store, mapping and dropping pods that are not running', () => {
+    const pods = watchNodePods(fakeClient().client, 'node-a', onChange)
     informers[0].objects = [
-      { metadata: { name: 'a', namespace: 'yaac' }, status: { podIP: '10.244.0.9' } } as KubernetesObject,
-      { metadata: { name: 'half-built', namespace: 'yaac' } },
+      { metadata: { name: 'a', uid: 'u1' }, status: { phase: 'Running' }, spec: { containers: [] } } as KubernetesObject,
+      { metadata: { name: 'pending', uid: 'u2' }, status: { phase: 'Pending' } } as KubernetesObject,
     ]
-    expect(pods()).toEqual([{ name: 'a', namespace: 'yaac', podIp: '10.244.0.9' }])
+    expect(pods().map((p) => p.name)).toEqual(['a'])
   })
 
   it('starts at once and notifies on every delta kind', () => {
-    watchPods(fakeClient().client, onChange)
+    watchNodePods(fakeClient().client, 'node-a', onChange)
     const [informer] = informers
     expect(informer.startCalls).toBe(1)
     informer.emit('add')
@@ -223,7 +164,7 @@ describe('watchPods', () => {
 
   it('restarts with doubling backoff after errors, one restart per burst', () => {
     // client-node's informer stops on any non-410 error.
-    watchPods(fakeClient().client, onChange)
+    watchNodePods(fakeClient().client, 'node-a', onChange)
     const [informer] = informers
     informer.emit('error', new Error('a'))
     informer.emit('error', new Error('b'))
@@ -238,7 +179,7 @@ describe('watchPods', () => {
   })
 
   it('resets the backoff after a long healthy run', () => {
-    watchPods(fakeClient().client, onChange)
+    watchNodePods(fakeClient().client, 'node-a', onChange)
     const [informer] = informers
     informer.emit('error', new Error('boom'))
     vi.advanceTimersByTime(1_000)
@@ -250,7 +191,7 @@ describe('watchPods', () => {
   })
 
   it('treats a start() rejection as an error and retries', async () => {
-    watchPods(fakeClient().client, onChange)
+    watchNodePods(fakeClient().client, 'node-a', onChange)
     const [informer] = informers
     informer.startResult = () => Promise.reject(new Error('no apiserver'))
     informer.emit('error', new Error('first'))
@@ -258,20 +199,5 @@ describe('watchPods', () => {
     expect(informer.startCalls).toBe(2)
     await vi.advanceTimersByTimeAsync(2_000)
     expect(informer.startCalls).toBe(3)
-  })
-})
-
-describe('watchServices', () => {
-  it('watches every Service in the install namespace', async () => {
-    informers.length = 0
-    const { client, listNamespacedService } = fakeClient()
-    const services = watchServices(client, () => { /* unused */ })
-    const [informer] = informers
-    expect(informer.path).toBe('/api/v1/namespaces/yaac/services')
-    expect(informer.labelSelector).toBeUndefined()
-    await informer.listFn()
-    expect(listNamespacedService).toHaveBeenCalledWith({ namespace: 'yaac' })
-    informer.objects = [{ metadata: { name: 'yaac-proxy' }, spec: { clusterIP: '10.96.0.50' } } as KubernetesObject]
-    expect(services()).toEqual([{ name: 'yaac-proxy', clusterIp: '10.96.0.50' }])
   })
 })

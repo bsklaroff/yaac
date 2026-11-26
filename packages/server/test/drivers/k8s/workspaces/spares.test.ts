@@ -16,8 +16,8 @@ import { fakeMountd } from '#test/drivers/k8s/fake-mountd'
 vi.hoisted(() => { process.env.YAAC_BUILD_ID = 'build-1' })
 
 import { keepReadyTrees, listSpares, reapSpare, reconcileHelpersGc, takeSpare, warmSpare } from '#drivers/k8s/workspaces'
-import { PROXY_AUTH_SECRET_NAME, installId, k8sNamespace, nodeMountsNodePath } from '#drivers/k8s/substrate'
-import { resetProxyClusterIpCache } from '#drivers/k8s/cluster'
+import { PROXY_AUTH_SECRET_NAME, installId, k8sNamespace, nodeMountsNodePath, socketsNodePath } from '#drivers/k8s/substrate'
+import { registryRef, resolveMountdImageTag } from '#drivers/k8s/cluster'
 import type { WorkspaceResources } from '#drivers/contract'
 
 const GiB = 1024 ** 3
@@ -34,10 +34,10 @@ let dataDir: string
 
 beforeEach(async () => {
   dataDir = await createTempDataDir()
-  resetProxyClusterIpCache()
   fakeRegistry.install()
+  // netshim's image, which every spare runs.
+  fakeRegistry.tags.add(await resolveMountdImageTag())
   fakeCluster.seed(
-    { apiVersion: 'v1', kind: 'Service', metadata: { name: 'yaac-proxy', namespace: k8sNamespace() }, spec: { clusterIP: '10.96.0.5' } },
     {
       apiVersion: 'v1', kind: 'Secret', metadata: { name: PROXY_AUTH_SECRET_NAME, namespace: k8sNamespace() },
       data: { secret: Buffer.from(AUTH_SECRET).toString('base64') },
@@ -201,13 +201,19 @@ describe('warmSpare', () => {
     expect(env.YAAC_WORKSPACE_ID).toBe(id)
     expect(env.YAAC_STREAM_TOKEN).toBe(crypto.createHmac('sha256', AUTH_SECRET).update(id).digest('hex'))
     expect(env.GIT_SSH_COMMAND).toContain('ProxyCommand=')
-    // This build's helpers, a node-mounts dir of its own, and a tree
-    // container on the yaac base image.
+    // This build's helpers, node-mounts and socket dirs of its own, netshim
+    // from mountd's image (the proxy refuses it until a launch writes its
+    // registration, which keeps a spare offline), and a tree container on
+    // the yaac base image.
     expect(workspace.volumeMounts).toContainEqual(expect.objectContaining({ name: 'helpers', subPath: 'run/helpers/build-1' }))
-    expect(pod.volumes.find((v) => v.name === 'node-mounts')?.hostPath?.path)
-      .toMatch(new RegExp(`^${nodeMountsNodePath()}/${id}\\.[0-9a-f]{8}$`))
-    expect(pod.initContainers.map((c) => c.name)).toEqual(['tree'])
-    expect(pod.initContainers[0].image).toMatch(/-base:[0-9a-f]+$/)
+    const nodeMounts = pod.volumes.find((v) => v.name === 'node-mounts')?.hostPath?.path
+    expect(nodeMounts).toMatch(new RegExp(`^${nodeMountsNodePath()}/${id}\\.[0-9a-f]{8}$`))
+    expect(pod.volumes.find((v) => v.name === 'sockets')?.hostPath?.path)
+      .toBe(`${socketsNodePath()}/${nodeMounts?.split('/').pop() ?? ''}`)
+    expect(pod.initContainers.map((c) => c.name)).toEqual(['netshim', 'tree'])
+    expect(pod.initContainers[0].image).toBe(registryRef(await resolveMountdImageTag()))
+    expect(pod.initContainers[1].image).toMatch(/-base:[0-9a-f]+$/)
+    expect(fakeCluster.callsOf('apply', 'ConfigMap')).toEqual([])
   })
 
   it('refuses while no mountd is ready, since nothing could claim the spare', async () => {

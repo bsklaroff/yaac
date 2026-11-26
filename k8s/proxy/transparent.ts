@@ -1,5 +1,6 @@
 /**
- * Pure helpers for the proxy's transparent egress listeners.
+ * Pure helpers for the proxy's sandbox egress handlers: the TLS SNI peek and
+ * the Host header split (socket-ingress.ts hands connections to them).
  */
 
 /**
@@ -94,8 +95,8 @@ export function parseSniFromClientHello(buf: Buffer): string | null {
 }
 
 /**
- * Split an HTTP/1.1 Host header into hostname and port. On the transparent
- * HTTP listener this header is the only record of the destination, so a
+ * Split an HTTP/1.1 Host header into hostname and port. For a plain-HTTP
+ * connection this header is the only record of the destination, so a
  * malformed value returns null rather than a guess.
  */
 export function splitHostHeader(

@@ -36,7 +36,19 @@ const layer = (...steps: string[]): string => ['ARG BASE_IMAGE', 'FROM ${BASE_IM
 /** A step the project's allowlist refuses: curl fails, the step carries
  *  on, and the build records the host. */
 const REFUSED_FETCH = `RUN curl -sS -m 20 -o /dev/null https://example.org/ || echo refused-${NONCE}`
-const COPYING = layer(`RUN echo tiny-${NONCE}`, REFUSED_FETCH, 'COPY conf/a.txt /tmp/a.txt')
+/**
+ * The acceptance test's half in a `RUN` step (docs/workspace-egress.md), as
+ * root: the apiserver's Service, the cloud metadata address and an internet
+ * address each get the proxy's 403 on a completed plain-HTTP request (every
+ * dial connects, and port 443 is read as TLS), and no unix socket is in
+ * reach, and the step holds no CAP_NET_RAW (bit 13 of its bounding set).
+ * Any other answer fails the build.
+ */
+const SANDBOXED = 'USER root\nRUN for u in http://kubernetes.default.svc.cluster.local/ http://169.254.169.254/ http://1.1.1.1/; '
+  + 'do c=$(curl -s -o /dev/null -m 20 -w "%{http_code}" "$u"); [ "$c" = 403 ] || { echo "reached $u: $c"; exit 1; }; done; '
+  + 'b=$(awk \'/^CapBnd/ { print $2 }\' /proc/self/status); [ $(( 0x$b >> 13 & 1 )) = 0 ] || { echo "holds CAP_NET_RAW: $b"; exit 1; }; '
+  + `! find / -xdev -type s 2>/dev/null | grep . && echo sandboxed-${NONCE}\nUSER yaac`
+const COPYING = layer(`RUN echo tiny-${NONCE}`, REFUSED_FETCH, SANDBOXED, 'COPY conf/a.txt /tmp/a.txt')
 
 let testEnv: YaacTestEnv
 let server: SpawnedServer
@@ -176,6 +188,7 @@ describe('yaac image (real CLI + real server)', () => {
     // The image's own build is the chain's last.
     const buildId = [...built.stdout.matchAll(/Build ([0-9a-f-]{36}) succeeded\./g)].at(-1)?.[1] ?? ''
     expect(built.stdout).toContain(`tiny-${NONCE}`)
+    expect(built.stdout).toContain(`sandboxed-${NONCE}`)
     expect(await refused('image', 'build', 'demo', 'tiny', '--revision', '99')).toContain('tiny has no revision 99')
     expect((await ok('image', 'build', 'demo', 'tiny')).stdout).toMatch(/already built|Follow it with/)
 

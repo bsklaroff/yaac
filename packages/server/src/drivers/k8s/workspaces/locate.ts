@@ -64,6 +64,23 @@ export async function findWorkspaceForTeardown(workspaceId: string): Promise<Tea
 }
 
 /**
+ * The RuntimeClass of workspace pods from before the socket datapath
+ * (docs/legacy-compat-shims.md "Workspaces on the gvisor class").
+ */
+const LEGACY_RUNTIME_CLASS = 'gvisor'
+
+/**
+ * Workspaces whose pod runs on the legacy RuntimeClass: it has a network
+ * interface and nothing left to carry its traffic, so the server stops it,
+ * and a restart brings it back in the current shape.
+ */
+export async function outdatedWorkspaces(): Promise<RuntimeHandle[]> {
+  return (await readPods())
+    .filter((p) => p.runtimeClass === LEGACY_RUNTIME_CLASS && !p.terminating)
+    .map(runtimeHandleFromPod)
+}
+
+/**
  * Live workspace counts per project, excluding unclaimed spares. A count is
  * only for display, so an unreachable substrate yields empty counts rather
  * than an error.

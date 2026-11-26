@@ -16,6 +16,7 @@ import {
   findWorkspace,
   findWorkspaceForTeardown,
   listWorkspaces,
+  outdatedWorkspaces,
 } from '#drivers/k8s/workspaces/locate'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 
@@ -201,3 +202,22 @@ describe('countWorkspaces', () => {
 
 })
 
+describe('outdatedWorkspaces', () => {
+  it('names the workspaces whose pod runs on the RuntimeClass from before the socket datapath, and no others', async () => {
+    // An old pod has an interface and nothing left to carry its traffic; a
+    // current one runs on gvisor-nonet. One already terminating needs no
+    // stop.
+    setActiveClusterCache(healthyCache([
+      pod({ workspaceId: 'old', jobName: 'yaac-old', runtimeClass: 'gvisor' }),
+      pod({ workspaceId: 'new', jobName: 'yaac-new', runtimeClass: 'gvisor-nonet' }),
+      pod({ workspaceId: 'going', jobName: 'yaac-going', runtimeClass: 'gvisor', terminating: true, running: false }),
+    ]))
+    expect((await outdatedWorkspaces()).map((h) => [h.workspaceId, h.jobName])).toEqual([['old', 'yaac-old']])
+    // Answered from the cache, with no listing.
+    expect(mockList).not.toHaveBeenCalled()
+
+    setActiveClusterCache(null)
+    mockList.mockRejectedValue(new Error('connection refused'))
+    await expect(outdatedWorkspaces()).rejects.toMatchObject({ code: 'RUNTIME_UNAVAILABLE' })
+  })
+})

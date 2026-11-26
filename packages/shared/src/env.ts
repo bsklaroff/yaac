@@ -191,46 +191,6 @@ export const env = {
   },
 
   /**
-   * `YAAC_CNI_VETH_PREFIX` — name prefix the CNI gives each pod's host-side
-   * veth. netd only redirects traffic from interfaces with this prefix, so
-   * it never touches non-workload traffic.
-   *
-   * Unset → `cali` (Calico IPAM, as `yaac cluster install` sets up). Other
-   * CNIs use other names, e.g. `eni` for the AWS VPC CNI.
-   * `yaac cluster install --byo` refuses a prefix that matches no route on
-   * the node.
-   */
-  get cniVethPrefix(): string | undefined {
-    const raw = process.env.YAAC_CNI_VETH_PREFIX
-    return raw && raw.trim() !== '' ? raw.trim() : undefined
-  },
-
-  /**
-   * `YAAC_POD_CIDRS` — comma-separated pod CIDRs added to the ones netd
-   * discovers and excludes from redirection. Needed when the CNI assigns pod
-   * IPs outside any Calico IPPool or node `spec.podCIDR` (e.g. a VPC CNI);
-   * otherwise pod-to-pod 443/80 traffic is sent through the proxy.
-   *
-   * Returned unvalidated so the consumer (`podCidrSources`) can report each
-   * invalid entry by name instead of dropping it silently.
-   */
-  get podCidrs(): string[] {
-    const raw = process.env.YAAC_POD_CIDRS
-    if (!raw) return []
-    return raw.split(',').map((c) => c.trim()).filter((c) => c.length > 0)
-  },
-
-  /**
-   * `YAAC_KUBE_PROXY_EXTERNAL` — set to `1` when kube-proxy does not run as
-   * a pod `--byo` can find, as on k3s (where it runs inside the kubelet).
-   * Setting it wrongly only breaks egress: netd's Envoy cannot reach the
-   * proxy's ClusterIP, and the NetworkPolicy still blocks direct egress.
-   */
-  get kubeProxyExternal(): boolean {
-    return process.env.YAAC_KUBE_PROXY_EXTERNAL === '1'
-  },
-
-  /**
    * `YAAC_DISK_WARN_FLOOR_GIB` / `YAAC_DISK_STOP_FLOOR_GIB` — free space on a
    * node's node-local root under which the server warns, then stops the
    * workspace holding the largest tree (docs/node-local-workspaces.md

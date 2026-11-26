@@ -5,7 +5,6 @@ beforeEach(() => { vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns') })
 
 
 import {
-  buildBuilderEgressNpManifest,
   buildEgressWorldDenyNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
@@ -13,17 +12,19 @@ import {
   buildServerFrontIngressNpManifest,
   buildServerTokenIngressNpManifest,
   buildServerIngressNpManifest,
-  buildWorkspaceEgressNpManifest,
 } from '#drivers/k8s/cluster'
 import {
   EGRESS_WORLD_DENY_NAME,
   LABEL_ROLE,
   MOUNTD_APP_NAME,
   MOUNTD_PORT,
+  NETD_APP_NAME,
+  NETD_STREAM_PORT,
+  NPM_CACHE_APP_NAME,
+  NPM_CACHE_PORT,
   PROXY_APP_NAME,
   PROXY_INGRESS_NP_NAME,
   PROXY_PORT,
-  RELAY_PORT,
   SERVER_APP_NAME,
   SERVER_EGRESS_NP_NAME,
   SERVER_FRONT_INGRESS_NP_NAME,
@@ -33,10 +34,8 @@ import {
   SERVER_INGRESS_NP_NAME,
   SERVER_MAMA_PORT,
   SERVER_POD_PORT,
-  POD_STREAM_PORT,
-  WORKSPACE_EGRESS_NP_NAME,
+  SOCKET_EGRESS_PORT,
 } from '#drivers/k8s/substrate/proxy-constants'
-import { LABEL_WORKSPACE_ID } from '#drivers/k8s/substrate/pods'
 
 interface Spec {
   podSelector: Record<string, unknown>
@@ -62,65 +61,41 @@ describe('buildEgressWorldDenyNpManifest', () => {
     expect(spec.policyTypes).toEqual(['Egress'])
   })
 
-  it('exempts only the proxy, the server, session pods, and builders', () => {
-    // NotIn/DoesNotExist also match unlabelled pods, so new pods are denied
-    // by default. The server keeps its exclusion although its own egress
-    // policy selects it, so this one can never cut it off the apiserver.
+  it('exempts only the proxy and the server, covering workspace and builder pods too', () => {
+    // NotIn also matches unlabelled pods, so new pods are denied by
+    // default. Sandboxes have no interface, and policy denies them as well.
+    // The server keeps its exclusion although its own egress policy selects
+    // it, so this one can never cut it off the apiserver.
     expect(spec.podSelector).toEqual({
       matchExpressions: [
         { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME, SERVER_APP_NAME] },
-        { key: LABEL_WORKSPACE_ID, operator: 'DoesNotExist' },
-        { key: LABEL_ROLE, operator: 'NotIn', values: ['builder'] },
       ],
     })
   })
 })
 
-describe('buildWorkspaceEgressNpManifest', () => {
-  it('admits the node CIDRs it is given, and nothing world-ward', () => {
-    const np = buildWorkspaceEgressNpManifest(['10.89.0.7/32', '10.244.93.192/32']) as unknown as {
-      metadata: { name: string; namespace: string }
-      spec: { policyTypes: string[]; egress: Array<{ to?: Array<{ ipBlock?: { cidr: string } }> }> }
-    }
-
-    expect(np.metadata.name).toBe(WORKSPACE_EGRESS_NP_NAME)
-    expect(np.metadata.namespace).toBe('test-ns')
-    expect(np.spec.policyTypes).toEqual(['Egress'])
-    // Every destination is a node address: a workspace reaches the
-    // internet only through netd's node-local listener, so egress fails
-    // closed when netd is missing.
-    const cidrs = np.spec.egress.flatMap((r) => (r.to ?? []).map((t) => t.ipBlock?.cidr))
-    expect(cidrs).toContain('10.89.0.7/32')
-    expect(cidrs).toContain('10.244.93.192/32')
-    expect(cidrs.every((c) => c === undefined || c.endsWith('/32'))).toBe(true)
-  })
-
-  // npm cache access is per project, granted by the cache's own
-  // label-keyed policy (npm-cache.test.ts).
-  it('grants no workspace the npm cache', () => {
-    expect(JSON.stringify(buildWorkspaceEgressNpManifest(['10.89.0.7/32']))).not.toContain('yaac-npm-cache')
-  })
-})
-
 describe('buildProxyIngressNpManifest', () => {
-  it('locks the proxy to the node CIDRs, so only netd may originate PP2', () => {
-    // The transparent ports trust a PROXY-protocol header naming the
-    // source pod. A pod that could dial them directly could claim to be any
-    // workspace, so only node addresses are allowed.
+  it('admits netd\'s relay to the socket egress port, and only the server and the node to the control port', () => {
+    // The relay names each sandbox in its header and sends the proxy auth
+    // secret; no sandbox has an address to dial the proxy from. The node
+    // stays for the kubelet's readiness probe.
     const np = buildProxyIngressNpManifest(['10.89.0.7/32']) as unknown as {
       metadata: { name: string }
-      spec: {
-        podSelector: Record<string, unknown>
-        policyTypes: string[]
-        ingress: Array<{ from?: Array<{ ipBlock?: { cidr: string } }> }>
-      }
+      spec: { podSelector: Record<string, unknown>; policyTypes: string[]; ingress: unknown[] }
     }
-
     expect(np.metadata.name).toBe(PROXY_INGRESS_NP_NAME)
     expect(np.spec.podSelector).toEqual({ matchLabels: { app: PROXY_APP_NAME } })
     expect(np.spec.policyTypes).toEqual(['Ingress'])
-    expect(np.spec.ingress.flatMap((r) => (r.from ?? []).map((f) => f.ipBlock?.cidr)))
-      .toContain('10.89.0.7/32')
+    expect(np.spec.ingress).toEqual([
+      {
+        from: [{ podSelector: { matchLabels: { app: NETD_APP_NAME } } }],
+        ports: [{ protocol: 'TCP', port: SOCKET_EGRESS_PORT }],
+      },
+      {
+        from: [{ ipBlock: { cidr: '10.89.0.7/32' } }, { podSelector: { matchLabels: { app: SERVER_APP_NAME } } }],
+        ports: [{ protocol: 'TCP', port: PROXY_PORT }],
+      },
+    ])
   })
 })
 
@@ -182,52 +157,24 @@ describe('buildServerTokenIngressNpManifest', () => {
   })
 })
 
-describe('buildBuilderEgressNpManifest', () => {
-  // A build reaches the world only through the proxy, like a workspace, and
-  // the main registry's pod port for its parent and its push. A builder
-  // whose redirect netd has not programmed has no egress.
-  const manifest = buildBuilderEgressNpManifest(['10.89.0.7/32']) as unknown as {
-    metadata: { name: string }; spec: Spec
-  }
-
-  it('gives every builder pod a workspace\'s egress plus the registry\'s pod port', () => {
-    expect(manifest.metadata.name).toBe('yaac-builder-egress')
-    expect(manifest.spec.podSelector).toEqual({ matchLabels: { [LABEL_ROLE]: 'builder' } })
-    expect(manifest.spec.policyTypes).toEqual(['Egress'])
-    const workspace = buildWorkspaceEgressNpManifest(['10.89.0.7/32']) as unknown as { spec: Spec }
-    expect(manifest.spec.egress).toEqual([
-      ...workspace.spec.egress!,
-      {
-        to: [{
-          namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'yaac' } },
-          podSelector: { matchLabels: { app: 'yaac-main-registry' } },
-        }],
-        ports: [{ protocol: 'TCP', port: 5002 }],
-      },
-    ])
-    // Nothing world-ward: no public block, no cluster DNS.
-    expect(JSON.stringify(manifest.spec.egress)).not.toContain('0.0.0.0/0')
-    expect(JSON.stringify(manifest.spec.egress)).not.toContain('kube-dns')
-  })
-})
-
 describe('buildProxyEgressNpManifest', () => {
   const egressOf = (apiserver: { cidrs: string[]; ports: number[] }) =>
     (buildProxyEgressNpManifest(['10.89.0.2/32'], [], apiserver) as unknown as { spec: Spec }).spec.egress!
 
-  it('adds the proxy\'s in-cluster peers to the server\'s floor, by selector', () => {
+  it('adds the proxy\'s in-cluster peers to the server\'s floor, by selector, and no sandbox', () => {
     const egress = egressOf({ cidrs: [], ports: [] })
-    // The same floor, less the server's registry rule.
     const server = buildServerEgressNpManifest(['10.89.0.2/32'], [], { cidrs: ['10.0.0.1/32'], ports: [6443] }, null) as
       unknown as { spec: Spec }
     expect(egress.slice(0, 2)).toEqual(server.spec.egress!.slice(0, 2))
+    // The mama listener, then the two install services a registration may
+    // name in `clusterServices`: the npm cache and the registry's pod port,
+    // the same rule the server's floor has.
     expect(egress.slice(3)).toEqual([
       { to: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [{ protocol: 'TCP', port: SERVER_MAMA_PORT }] },
-      {
-        to: [{ podSelector: { matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }] } }],
-        ports: [{ protocol: 'TCP', port: POD_STREAM_PORT }],
-      },
+      { to: [{ podSelector: { matchLabels: { app: NPM_CACHE_APP_NAME } } }], ports: [{ protocol: 'TCP', port: NPM_CACHE_PORT }] },
+      server.spec.egress![2],
     ])
+    expect(JSON.stringify(egress)).not.toContain('yaac.workspace-id')
   })
 
   // An exact allowlist entry may name a node, but a CONNECT reaching the
@@ -268,7 +215,7 @@ describe('buildServerEgressNpManifest', () => {
   const build = (tor: string | null) => buildServerEgressNpManifest(nodes, ['10.96.0.10/32'], apiserver, tor) as
     unknown as { metadata: { name: string }; spec: Spec }
 
-  it('selects the server by role, on its floor, adding the proxy, the node pods it asks and the apiserver', () => {
+  it('selects the server by role, on its floor, adding the proxy, netd, the node pods it asks and the apiserver', () => {
     const manifest = build(null)
     expect(manifest.metadata.name).toBe(SERVER_EGRESS_NP_NAME)
     // Not `app`: a `cluster check` probe carrying the role must not join the
@@ -276,10 +223,9 @@ describe('buildServerEgressNpManifest', () => {
     expect(manifest.spec.podSelector).toEqual({ matchLabels: { [LABEL_ROLE]: 'server' } })
     expect(manifest.spec.policyTypes).toEqual(['Egress'])
     expect(manifest.spec.egress!.slice(3)).toEqual([
-      {
-        to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
-        ports: [{ protocol: 'TCP', port: PROXY_PORT }, { protocol: 'TCP', port: RELAY_PORT }],
-      },
+      { to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }], ports: [{ protocol: 'TCP', port: PROXY_PORT }] },
+      // Each node's relay, which carries its streams into a workspace.
+      { to: [{ podSelector: { matchLabels: { app: NETD_APP_NAME } } }], ports: [{ protocol: 'TCP', port: NETD_STREAM_PORT }] },
       // Each node's disk pod, which only the server may ask.
       { to: [{ podSelector: { matchLabels: { app: 'yaac-disk' } } }], ports: [{ protocol: 'TCP', port: 8790 }] },
       // Each node's agent, which binds a workspace into its pod.

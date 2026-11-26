@@ -1,10 +1,12 @@
 import {
-  buildProxyIngressNpManifest,
-  buildWorkspaceEgressNpManifest,
-  cniVethPrefix,
+  apiserverEndpoints,
+  buildRegistrationConfigMapManifest,
   ensureUtilityImage,
   ensureNamespace,
+  mountdImage,
   nodeIpBlocks,
+  npmCacheHost,
+  proxyRegistrationName,
   REGISTRY_NAMESPACE,
   REGISTRY_SERVICE_NAME,
   REGISTRY_SERVICE_PORT,
@@ -24,17 +26,17 @@ import { isIP } from 'node:net'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
+  EGRESS_WORLD_DENY_NAME,
   GLOBAL_CLAIM_NAME,
   LABEL_CLAIM,
   LABEL_INSTALL_ID,
-  LABEL_NPM_CACHE,
   LABEL_ROLE,
-  LABEL_SITE_ID,
   LABEL_WORKSPACE_ID,
   NETD_APP_NAME,
+  NETD_SITE_PORT,
+  NETD_STREAM_PORT,
   NFS_PORT,
   NPM_CACHE_APP_NAME,
-  NPM_CACHE_PORT,
   POD_STREAM_PORT,
   PROXY_APP_NAME,
   PROXY_PORT,
@@ -44,8 +46,6 @@ import {
   SITE_TUNNEL_CLOUDFLARE_APP_NAME,
   SITE_TUNNEL_TAILNET_APP_NAME,
   SITE_TUNNEL_TAILNET_TLS_SECRET_NAME,
-  SERVER_FRONT_INGRESS_NP_NAME,
-  SERVER_INGRESS_NP_NAME,
   PROXY_EGRESS_NP_NAME,
   ROLE_SERVER,
   SERVER_EGRESS_NP_NAME,
@@ -53,7 +53,7 @@ import {
   VOLUMES_CLAIM_NAME,
   SERVER_POD_PORT,
   RUNTIME_CLASS_GVISOR,
-  TRANSPARENT_HTTPS_PORT,
+  SANDBOX_DNS,
   applyObject,
   buildPriorityClassManifests,
   currentKubeContext,
@@ -68,15 +68,15 @@ import {
   readObject,
   runPodToCompletion,
   installSecurityContext,
+  netshimContainer,
+  socketVolume,
   untoleratedTaints,
-  workspaceIdLabels,
   GVISOR_NODE_LABEL,
   WORKSPACE_POOL_KEY,
   nodeLocalNodePath,
   runOnEachNode,
 } from '#drivers/k8s/substrate'
 import type { InstallIdentity, NodeTaint, PodToleration } from '#drivers/k8s/substrate'
-import { CALICO_NAMESPACES, assessVethSource, probeWorkloadVeths, readCalicoNode } from './cni-adopt'
 import { tokenEndpointCheck } from './token-endpoint'
 import { GVISOR_INSTALLER_APP_NAME } from './gvisor-installer'
 import { deployedInstallIdentity } from './server-deploy'
@@ -150,11 +150,13 @@ export const NODE_PIDS_LIMIT = 32768
  *   is Ready on every node, which it only is once runsc and the node tuning
  *   are in place.
  * - Pod probes, run concurrently: the end-to-end probe (registry pull and
- *   the global claim shared with a peer pod), egress enforcement, the npm
- *   cache, the site edge's wall (and, with a tunnel, its connection), a pod
+ *   the global claim shared with a peer pod), mountd's bind into a
+ *   sandbox, egress (NetworkPolicy enforced between yaac's own pods, a
+ *   sandbox reaching nothing but its allowlist through the socket
+ *   datapath, and the server's own egress), the npm cache through the
+ *   proxy, the site edge's wall (and, with a tunnel, its connection), a pod
  *   on every node of a multi-node cluster (warn), and storage semantics.
- * - datapath: Calico and netd Ready; veth-source: netd's pod-to-veth
- *   mapping resolves on every node.
+ * - datapath: netd, whose relay carries every sandbox's traffic, Ready.
  * - vap: ValidatingAdmissionPolicy available (builds need it).
  *
  * Once a check fails, the pod-based gates that depend on it are skipped.
@@ -258,7 +260,7 @@ export async function runClusterCheck(
 
   const PROBE_GATES = [
     'node-fixups', 'gvisor', 'gvisor-installer', 'probe', 'mountd', 'egress', 'npm-cache', 'sites',
-    'datapath', 'veth-source', 'per-node', 'storage-semantics', 'vap', 'node-local-fs',
+    'datapath', 'per-node', 'storage-semantics', 'vap', 'node-local-fs',
   ] as const
   const skipFrom = (from: (typeof PROBE_GATES)[number], detail: string): void => {
     for (const name of PROBE_GATES.slice(PROBE_GATES.indexOf(from))) {
@@ -325,11 +327,6 @@ export async function runClusterCheck(
   add(sitesResult)
 
   add(await runDatapathCheck())
-  // netd reports Ready even with no pod-to-veth mappings, so a wrong veth
-  // prefix is only caught here.
-  add(await runVethSourceCheck())
-  // Reported after the datapath, which says whether a node has a redirect
-  // at all.
   add(perNodeResult)
   add(semanticsResult)
   add(await runVapAvailabilityCheck())
@@ -1474,22 +1471,17 @@ async function runPerNodeProbe(
   }
 }
 
-const NETPOL_PROBE_POD_NAME = 'yaac-cluster-check-egress'
+const ENFORCEMENT_PROBE_POD_NAME = 'yaac-cluster-check-enforcement'
+const SANDBOX_PROBE_POD_NAME = 'yaac-cluster-check-egress'
 
-/** One address the egress probe must fail to dial, and how it reports. */
-interface EgressTarget {
-  /** Marker infix: the probe prints `NP_<key>_OPEN` or `NP_<key>_LOCKED`. */
-  key: string
-  /** Null when the target is not deployed (or cannot be resolved). */
-  ip: string | null
-  port: number
-  /** How a pass names it. */
-  denied: string
-  /** How a pass names it when there was nothing to dial. */
-  absent: string
-  /** The failure when the probe reached it. */
-  open: { detail: string; fix: string }
-}
+/**
+ * The one host a sandbox probe's registration allows, fetched over plain
+ * HTTP since the probe image has no TLS client. It answers 200 to `/`.
+ */
+const PROBE_ALLOWED_HOST = 'example.com'
+
+/** The verdict of one half of a probe gate; `warn` downgrades a pass. */
+type ProbeHalf = { open: { detail: string; fix: string } } | { pass: string; warn?: string }
 
 /** A Service's ClusterIP, or null when it does not exist. */
 async function serviceIp(name: string, namespace: string): Promise<string | null> {
@@ -1572,153 +1564,24 @@ async function efsMountTargets(handle: string): Promise<Array<{ server: string; 
 }
 
 /**
- * Verify the CNI enforces workspace egress policy; a non-enforcing CNI
- * fails open. A pod labeled like a workspace (but without the install id
- * label, so listWorkspacePods ignores it) must fail to reach, by IP:
- * the apiserver, the proxy's transparent port, the registry, the yaac
- * server, and the global volume's NFS server. Targets that do not exist
- * are reported as unverified. Then the server's own egress is probed
- * (`runServerEgressProbe`).
+ * The egress gate, in three halves, each failing on its own:
+ *  - enforcement: NetworkPolicy is enforced between two of yaac's own pods
+ *    (`runEnforcementProbe`). This is all `--byo` asks of a cluster's CNI.
+ *  - the sandbox: a pod in a workspace's shape reaches its allowlist and
+ *    nothing else through the socket datapath (`runSandboxEgressProbe`).
+ *  - the server's own egress (`runServerEgressProbe`).
+ * Without its egress policy the proxy would let a workspace with a `*`
+ * allowlist reach the server's node port as its owner, which no probe can
+ * test, so the policy's presence is checked too.
  */
 async function runNetworkPolicyProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
   try {
-    // Workspace egress is allowed only to netd's listener range, and the
-    // proxy's transparent ports admit only node addresses (netd's Envoy).
-    const nodeCidrs = await nodeIpBlocks()
-    await applyObject(buildWorkspaceEgressNpManifest(nodeCidrs))
-    await applyObject(buildProxyIngressNpManifest(nodeCidrs))
-    const apiserverIp = await serviceIp('kubernetes', 'default')
-    if (!apiserverIp) {
-      return {
-        name: 'egress', status: 'warn',
-        detail: 'could not resolve the apiserver ClusterIP — enforcement unverified',
-      }
-    }
-
-    // Everything a session must not dial directly, with how it reports an
-    // open path. A target that is not deployed is reported as unverified.
-    const nfsServers = await sharedVolumeNfsServers()
-    const targets: EgressTarget[] = [
-      {
-        key: 'REGISTRY',
-        ip: await serviceIp(REGISTRY_SERVICE_NAME, REGISTRY_NAMESPACE),
-        port: REGISTRY_SERVICE_PORT,
-        denied: 'the image registry',
-        absent: 'registry not deployed — that half unverified',
-        // The registry serves every image anonymously and carries the
-        // trusted images.
-        open: {
-          detail: 'a session-labeled pod reached the image registry directly — the bus '
-            + 'every workspace image and the trusted chain travel on',
-          fix: 'Session egress must default-deny everything but the node\'s netd '
-            + 'listener range, and the registry admits only the node and builder '
-            + 'pods. Restart the yaac server so both policies are re-applied.',
-        },
-      },
-      {
-        key: 'SERVER',
-        ip: await serviceIp(SERVER_APP_NAME, ns),
-        port: SERVER_POD_PORT,
-        denied: 'the yaac server',
-        absent: 'server not deployed in-cluster — that half unverified',
-        // The server treats a loopback Host as its owner, so its ingress
-        // policies are all that keep workspaces off the control plane
-        // (docs/server-in-cluster.md).
-        open: {
-          detail: 'a session-labeled pod reached the yaac server directly — '
-            + 'claiming a loopback Host makes it the server\'s owner, so any session '
-            + 'could drive the control plane that manages every other one',
-          fix: `The ${SERVER_INGRESS_NP_NAME} and ${SERVER_FRONT_INGRESS_NP_NAME} `
-            + 'NetworkPolicies must admit the server port from the node addresses '
-            + 'and the fronting alone, so a pod dialing the Service or pod IP is '
-            + 'dropped. Re-run `yaac cluster install`, which applies both with '
-            + 'the Deployment (the server re-applies the node half on start).',
-        },
-      },
-      ...nfsServers.map((nfs, i) => ({
-        key: `NFS${String(i)}`,
-        ip: nfs.ip ?? null,
-        port: NFS_PORT,
-        denied: `the NFS server ${nfs.server}`,
-        absent: `NFS server ${nfs.server} unresolvable from here — that half unverified`,
-        // The NFS server trusts any client-claimed uid (AUTH_SYS). Not
-        // present on kind.
-        open: {
-          detail: `a session-labeled pod reached the NFS server behind ${GLOBAL_CLAIM_NAME} `
-            + `(${nfs.server}) — it trusts whatever uid a client claims, so any session `
-            + 'could read and write every project as anyone',
-          fix: 'Session egress must default-deny everything but the node\'s netd listener '
-            + 'range. Restart the yaac server so the session policy is re-applied, and '
-            + 'firewall the NFS server to the node addresses as well — a kernel mount comes '
-            + 'from the node, never from a pod.',
-        },
-      })),
-      {
-        key: 'PROXY',
-        ip: await serviceIp(PROXY_APP_NAME, ns),
-        port: TRANSPARENT_HTTPS_PORT,
-        denied: 'a transparent port directly (forgery lock holds)',
-        absent: 'proxy not deployed — forgery-lock half unverified',
-        // A direct dial would let a pod forge a PROXY-protocol header and
-        // impersonate another workspace. The proxy deploys on first
-        // workspace create, so it may be absent.
-        open: {
-          detail: 'a session-labeled pod dialed a proxy transparent port directly — the '
-            + 'forgery lock is open, so a pod could impersonate another session',
-          fix: 'The proxy-ingress NetworkPolicy must admit the transparent '
-            + 'ports from the node CIDRs only, and the session-egress policy '
-            + 'must admit nothing but the netd listener range. Restart the '
-            + 'yaac server so ensureProxyResources re-applies both.',
-        },
-      },
-    ]
-    const dials = targets.filter((t) => t.ip).map((t) =>
-      `; nc -w 4 ${t.ip ?? ''} ${String(t.port)} </dev/null >/dev/null 2>&1`
-      + ` && echo NP_${t.key}_OPEN || echo NP_${t.key}_LOCKED`).join('')
-
-    const { phase, logs } = await runProbePod(NETPOL_PROBE_POD_NAME, {
-      timeoutMs: 60_000,
-      labels: workspaceIdLabels('cluster-check-egress-probe'),
-      // Same runtime as workspace pods, so gVisor netstack traffic is covered.
-      spec: { runtimeClassName: RUNTIME_CLASS_GVISOR },
-      container: {
-        image: await ensureProbeImage(),
-        command: [
-          'sh', '-c',
-          `nc -w 4 ${apiserverIp} 443 </dev/null && echo NP_REACHED || echo NP_BLOCKED${dials}`,
-        ],
-      },
-    })
-    if (phase !== 'Succeeded') {
-      return {
-        name: 'egress', status: 'fail',
-        detail: `egress probe pod ended in phase ${phase}`,
-        fix: KIND_SETUP_FIX,
-      }
-    }
-
-    if (logs.includes('NP_REACHED')) {
-      return {
-        name: 'egress', status: 'fail',
-        detail: 'a session-labeled pod reached the apiserver directly — the CNI is not enforcing NetworkPolicy',
-        fix: 'Session egress lockdown fails open without NetworkPolicy '
-          + 'enforcement, leaving the proxy allowlist advisory. Re-run '
-          + '`yaac cluster install`, which installs Calico as the CNI and '
-          + 'policy engine.\nOn a byo cluster, whose CNI yaac did not install, '
-          + 'this is the probe that says its engine '
-          + 'is not actually enforcing plain networking.k8s.io/v1 policy — '
-          + '"Calico is installed" does not imply it. Policy-only Calico over '
-          + 'a foreign IPAM needs its policy plane genuinely wired up.',
-      }
-    }
-    const open = targets.find((t) => logs.includes(`NP_${t.key}_OPEN`))
-    if (open) return { name: 'egress', status: 'fail', ...open.open }
-    // Without its egress policy, the proxy would let a workspace with a `*`
-    // allowlist reach the server's node port as its owner. No pod probe can
-    // test that path, so check the policy exists.
-    const proxyDeployed = targets.some((t) => t.key === 'PROXY' && t.ip)
-    if (proxyDeployed && !await readObject({
+    const enforcement = await runEnforcementProbe()
+    if ('open' in enforcement) return { name: 'egress', status: 'fail', ...enforcement.open }
+    const sandbox = await runSandboxEgressProbe()
+    if ('open' in sandbox) return { name: 'egress', status: 'fail', ...sandbox.open }
+    if (await serviceIp(PROXY_APP_NAME, ns) && !await readObject({
       apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', name: PROXY_EGRESS_NP_NAME, namespace: ns,
     })) {
       return {
@@ -1728,23 +1591,15 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
         fix: 'Restart the yaac server (`yaac cluster restart`), which applies it on start.',
       }
     }
-    if (logs.includes('NP_BLOCKED')) {
-      const server = await runServerEgressProbe(apiserverIp)
-      if ('open' in server) return { name: 'egress', status: 'fail', ...server.open }
-      const denied = targets.filter((t) => t.ip).map((t) => t.denied)
-      const deniedHalf = denied.length ? `, and cannot dial ${denied.join(', nor ')}` : ''
-      const unverified = targets.filter((t) => !t.ip).map((t) => t.absent)
-      const unverifiedHalf = unverified.length ? ` (${unverified.join('; ')})` : ''
-      return {
-        name: 'egress', status: 'pass',
-        detail: `session egress is default-denied at the CNI${deniedHalf}${unverifiedHalf}; ${server.pass}`,
-      }
-    }
-    return {
-      name: 'egress', status: 'fail',
-      detail: `egress probe produced no verdict (logs: ${logs.trim().slice(0, 80) || 'empty'})`,
-      fix: KIND_SETUP_FIX,
-    }
+    const apiserverIp = await serviceIp('kubernetes', 'default')
+    const server: ProbeHalf = apiserverIp
+      ? await runServerEgressProbe(apiserverIp)
+      : { pass: 'the apiserver has no ClusterIP to resolve, so the server\'s own egress is unverified' }
+    if ('open' in server) return { name: 'egress', status: 'fail', ...server.open }
+    const detail = `${enforcement.pass}; ${sandbox.pass}; ${server.pass}`
+    return sandbox.warn !== undefined
+      ? { name: 'egress', status: 'warn', detail: `${sandbox.warn}; ${detail}` }
+      : { name: 'egress', status: 'pass', detail }
   } catch (err) {
     return {
       name: 'egress', status: 'fail',
@@ -1752,6 +1607,226 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
       fix: KIND_SETUP_FIX,
     }
   }
+}
+
+/**
+ * Whether the cluster enforces NetworkPolicy, between two of yaac's own
+ * pods. A runc pod the world-deny policy covers (any pod of the namespace
+ * but the proxy and the server) must fail to dial the main registry and the
+ * yaac server, whose ingress admits neither. A dropped connect is the only
+ * answer policy gives, so this half asserts on connects. The policies
+ * around yaac's own pods rest on this; no sandbox does, having no
+ * interface.
+ */
+async function runEnforcementProbe(): Promise<ProbeHalf> {
+  const targets = [
+    { key: 'REGISTRY', ip: await serviceIp(REGISTRY_SERVICE_NAME, REGISTRY_NAMESPACE), port: REGISTRY_SERVICE_PORT, what: 'the image registry' },
+    { key: 'SERVER', ip: await serviceIp(SERVER_APP_NAME, k8sNamespace()), port: SERVER_POD_PORT, what: 'the yaac server' },
+  ].filter((t): t is typeof t & { ip: string } => t.ip !== null)
+  if (targets.length === 0) return { pass: 'no registry or server to dial, so policy enforcement is unverified' }
+  const { phase, logs } = await runProbePod(ENFORCEMENT_PROBE_POD_NAME, {
+    timeoutMs: 60_000,
+    labels: { app: ENFORCEMENT_PROBE_POD_NAME },
+    container: {
+      image: await ensureProbeImage(),
+      command: ['sh', '-c', targets.map((t) => `nc -w 4 ${t.ip} ${String(t.port)} </dev/null >/dev/null 2>&1`
+        + ` && echo NP_${t.key}_OPEN || echo NP_${t.key}_LOCKED; `).join('') + 'echo NP_DONE'],
+    },
+  })
+  if (phase !== 'Succeeded' || !logs.includes('NP_DONE')) {
+    return { open: { detail: `the enforcement probe pod produced no verdict (phase ${phase})`, fix: KIND_SETUP_FIX } }
+  }
+  const open = targets.filter((t) => logs.includes(`NP_${t.key}_OPEN`))
+  if (open.length > 0) {
+    return { open: {
+      detail: `a pod the ${EGRESS_WORLD_DENY_NAME} policy covers reached ${open.map((t) => t.what).join(' and ')} `
+        + '— the cluster is not enforcing NetworkPolicy',
+      fix: 'yaac\'s own pods are walled by plain networking.k8s.io/v1 NetworkPolicy, which some engine '
+        + 'must enforce. Re-run `yaac cluster install`, which installs Calico on kind. On a byo '
+        + 'cluster, turn on the network policy engine its provider offers (any engine, Cilium included).',
+    } }
+  }
+  return { pass: `NetworkPolicy is enforced (a walled pod cannot dial ${targets.map((t) => t.what).join(', nor ')})` }
+}
+
+/**
+ * Run `script` in a sandbox in a workspace's shape: the gVisor runtime with
+ * no network interface, netshim and its socket directory, netshim's DNS,
+ * root with no raw socket, and a registration of its own allowing
+ * `allowedHosts` and naming `clusterServices`. Every dial it makes goes
+ * through netd's relay and the proxy. The registration and the pod are
+ * removed afterwards.
+ */
+async function runSandboxProbe(name: string, opts: {
+  allowedHosts: string[]
+  clusterServices?: string[]
+  script: string
+  timeoutMs: number
+}): Promise<{ phase: string; logs: string }> {
+  const probeId = `check-${crypto.randomBytes(4).toString('hex')}`
+  const registration = {
+    rules: [], allowedHosts: opts.allowedHosts, projectId: 'cluster-check', owner: 'none',
+    ...(opts.clusterServices ? { clusterServices: opts.clusterServices } : {}),
+  }
+  await applyObject(buildRegistrationConfigMapManifest(probeId, 'cluster-check', registration))
+  try {
+    return await runProbePod(name, {
+      timeoutMs: opts.timeoutMs,
+      // No install id, so no workspace listing sees it; netd's relay finds
+      // it by this label and its `sockets` volume.
+      labels: { [LABEL_WORKSPACE_ID]: probeId },
+      spec: {
+        runtimeClassName: RUNTIME_CLASS_GVISOR,
+        ...SANDBOX_DNS,
+        initContainers: [netshimContainer(await mountdImage())],
+        volumes: [socketVolume(`${probeId}.${crypto.randomBytes(4).toString('hex')}`)],
+      },
+      container: {
+        image: await ensureProbeImage(),
+        securityContext: { runAsUser: 0, capabilities: { drop: ['NET_RAW'] } },
+        command: ['sh', '-c', opts.script],
+      },
+    })
+  } finally {
+    await deleteObject({
+      apiVersion: 'v1', kind: 'ConfigMap', name: proxyRegistrationName(probeId), namespace: k8sNamespace(),
+    }).catch(() => {})
+  }
+}
+
+/** Whether the proxy and netd are up for a sandbox probe, or why not. */
+async function sandboxDatapathAbsent(): Promise<string | null> {
+  if (!await serviceIp(PROXY_APP_NAME, k8sNamespace())) return 'the proxy is not deployed yet (it deploys with the first workspace)'
+  const netd = await daemonSetReadiness(NETD_APP_NAME, k8sNamespace()).catch(() => null)
+  if (!netd?.ok) return `${NETD_APP_NAME} is not ready`
+  return null
+}
+
+/** One address the sandbox probe must be refused, and how a pass names it. */
+interface SandboxTarget {
+  /** Marker infix: the probe prints `EG_<key> <status>`. */
+  key: string
+  url: string
+  what: string
+}
+
+/**
+ * The plan's acceptance test (docs/workspace-egress.md "What a sandbox
+ * sees"), from a sandbox in a workspace's shape, as root: a request to
+ * the server, the apiserver, a node, another sandbox, a literal internet
+ * address and the shared tier's NFS servers each completes with the
+ * proxy's 403, while the allowlisted host answers. A dial here always
+ * connects, since netshim takes it, so each is judged on the request's
+ * status, never on a connect, and a request with no answer is a broken
+ * datapath. The container must also see no unix socket: only netshim's
+ * container mounts the socket directory.
+ */
+async function runSandboxEgressProbe(): Promise<ProbeHalf> {
+  const ns = k8sNamespace()
+  const absent = await sandboxDatapathAbsent()
+  if (absent) return { pass: `${absent}, so sandbox egress is unverified` }
+  const [serverIp, apiserver, node, peer, nfs] = await Promise.all([
+    serviceIp(SERVER_APP_NAME, ns),
+    apiserverEndpoints().then((a) => ({ ip: a.cidrs.find((c) => !c.includes(':'))?.replace(/\/32$/, ''), port: a.ports[0] })),
+    nodeIpBlocks().then((cidrs) => cidrs.find((c) => !c.includes(':'))?.replace(/\/32$/, '')),
+    runningSandboxIp(),
+    sharedVolumeNfsServers(),
+  ])
+  const targets: SandboxTarget[] = [
+    ...(serverIp ? [
+      { key: 'SERVER', url: `http://${serverIp}:${String(SERVER_POD_PORT)}/api/health`, what: 'the yaac server by address' },
+      {
+        key: 'SERVER_NAME',
+        url: `http://${SERVER_APP_NAME}.${ns}.svc.cluster.local:${String(SERVER_POD_PORT)}/api/health`,
+        what: 'the yaac server by name',
+      },
+    ] : []),
+    // Port 443 would go to the proxy's TLS handler, which this client
+    // cannot speak to; any other port of the same address shows the
+    // request goes to the proxy.
+    ...(apiserver.ip ? [{
+      key: 'API', url: `http://${apiserver.ip}:${String(apiserver.port && apiserver.port !== 443 ? apiserver.port : 80)}/`,
+      what: 'the apiserver',
+    }] : []),
+    ...(node ? [{ key: 'NODE', url: `http://${node}:10250/`, what: `node ${node}'s kubelet` }] : []),
+    ...(peer ? [{ key: 'PEER', url: `http://${peer}:${String(POD_STREAM_PORT)}/`, what: 'another sandbox' }] : []),
+    { key: 'WORLD', url: 'http://1.1.1.1/', what: 'a literal internet address' },
+    ...nfs.flatMap((n, i) => (n.ip ? [{ key: `NFS${String(i)}`, url: `http://${n.ip}:${String(NFS_PORT)}/`, what: `the NFS server ${n.server}` }] : [])),
+  ]
+  const script = [
+    // busybox wget prints the status line with -S, and keeps no body on an
+    // error status; `none` is a request that got no answer at all.
+    'eg() { st=$(wget -S -T 20 -O /dev/null "$2" 2>&1 | sed -n \'s|^ *HTTP/1\\.[01] \\([0-9][0-9][0-9]\\).*|\\1|p\' | head -1); '
+      + 'echo "EG_$1 ${st:-none}"; }',
+    `eg ALLOWED http://${PROBE_ALLOWED_HOST}/`,
+    ...targets.map((t) => `eg ${t.key} ${t.url}`),
+    's=$(find / -type s ! -path "/proc/*" ! -path "/sys/*" 2>/dev/null | head -3 | tr "\\n" " "); echo "EG_SOCKETS ${s:-none}"',
+    'echo EG_DONE',
+  ].join('\n')
+  const { phase, logs } = await runSandboxProbe(SANDBOX_PROBE_POD_NAME, {
+    allowedHosts: [PROBE_ALLOWED_HOST], script, timeoutMs: 180_000,
+  })
+  const status = (key: string): string | undefined => new RegExp(`^EG_${key} (\\S+)`, 'm').exec(logs)?.[1]
+  const fix = 'Every sandbox connection crosses netshim, netd\'s relay and the proxy (docs/workspace-egress.md). '
+    + `Inspect \`kubectl -n ${ns} logs ds/${NETD_APP_NAME} -c relay\` and \`kubectl -n ${ns} logs deploy/${PROXY_APP_NAME}\`, `
+    + 'and restart the yaac server (`yaac cluster restart`), which re-applies both.'
+  if (phase !== 'Succeeded' || !logs.includes('EG_DONE')) {
+    return { open: { detail: `the sandbox egress probe pod produced no verdict (phase ${phase})`, fix } }
+  }
+  const allowed = status('ALLOWED')
+  if (allowed === 'none' || allowed === undefined) {
+    return { open: { detail: `a sandbox's request to ${PROBE_ALLOWED_HOST}, which its allowlist admits, got no answer — `
+      + 'sandboxes have no egress', fix } }
+  }
+  // A 5xx is the proxy's own answer when it reaches no upstream (a cluster
+  // with no internet): the request completed through the datapath, which
+  // the targets' 403s prove too, so that is a warning, not a failure.
+  const noUpstream = /^5/.test(allowed)
+  if (!/^[23]/.test(allowed) && !noUpstream) {
+    return { open: { detail: `a sandbox's request to ${PROBE_ALLOWED_HOST}, which its allowlist admits, was answered ${allowed}`, fix } }
+  }
+  const silent = targets.filter((t) => status(t.key) === 'none' || status(t.key) === undefined)
+  if (silent.length > 0) {
+    return { open: { detail: `a sandbox's request to ${silent.map((t) => t.what).join(' and ')} got no answer, where the `
+      + 'proxy refuses it — the request did not complete, so the datapath is broken', fix } }
+  }
+  const reached = targets.filter((t) => status(t.key) !== '403')
+  if (reached.length > 0) {
+    return { open: {
+      detail: `a sandbox reached ${reached.map((t) => `${t.what} (answered ${status(t.key) ?? '?'})`).join(' and ')}, `
+        + 'which the proxy must refuse',
+      fix,
+    } }
+  }
+  const sockets = /^EG_SOCKETS (.*)$/m.exec(logs)?.[1]?.trim()
+  if (sockets !== 'none') {
+    return { open: {
+      detail: `a sandbox's own container sees unix sockets (${sockets ?? '?'}) — with host-uds on, it could connect to `
+        + 'the node sockets behind them',
+      fix: 'Only netshim\'s container may mount the socket directory. Restart the yaac server so pods are made in their current shape.',
+    } }
+  }
+  const unverified = [
+    ...(peer ? [] : ['no other sandbox ran to try']),
+    ...nfs.filter((n) => !n.ip).map((n) => `NFS server ${n.server} unresolvable from here — unverified`),
+  ]
+  return {
+    pass: `a sandbox ${noUpstream ? 'reaches the proxy' : `reaches ${PROBE_ALLOWED_HOST}`} and is refused `
+      + `${targets.map((t) => t.what).join(', ')}${unverified.length ? ` (${unverified.join('; ')})` : ''}, and sees no node socket`,
+    ...(noUpstream
+      ? { warn: `the proxy answered ${allowed} to a sandbox's request for ${PROBE_ALLOWED_HOST}: it reaches no upstream, `
+        + 'so allowlisted hosts were not shown to answer (a cluster with no internet)' }
+      : {}),
+  }
+}
+
+/** A running workspace pod's address, for the sandbox probe to try; null with none. */
+async function runningSandboxIp(): Promise<string | null> {
+  return (await listObjects<{ status?: { podIP?: string } }>('v1', 'Pod', {
+    namespace: k8sNamespace(),
+    labelSelector: `${LABEL_WORKSPACE_ID},${LABEL_INSTALL_ID}=${installId()}`,
+    fieldSelector: 'status.phase=Running',
+  })).find((p) => p.status?.podIP)?.status?.podIP ?? null
 }
 
 const SERVER_EGRESS_PROBE_POD_NAME = 'yaac-cluster-check-server-egress'
@@ -1853,14 +1928,16 @@ function npmCacheFix(): string {
 }
 
 /**
- * Check the npm cache serves workspaces: a gVisor pod labeled like a
- * workspace of a cache-using project fetches a packument and tarball via
- * the cache's ClusterIP. This covers the network policies and the cache's
- * route to npmjs.
+ * Check the npm cache serves workspaces: a sandbox whose registration names
+ * the cache in `clusterServices`, as a cache-using workspace's does, fetches
+ * a packument and tarball by the cache's name, which netd's relay and the
+ * proxy carry to it. This covers the cache's policies, the proxy's path to
+ * it, and the cache's route to npmjs.
  *
  * No ready cache is a warn: new workspaces then install from npmjs
- * (`servingNpmCacheUrl`). A ready cache that fails to serve is a fail,
- * since new workspaces would install through it.
+ * (`servingNpmCacheUrl`), and so is a proxy not deployed yet. A ready cache
+ * that fails to serve is a fail, since new workspaces would install
+ * through it.
  */
 async function runNpmCacheProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
@@ -1874,27 +1951,29 @@ async function runNpmCacheProbe(): Promise<CheckResult> {
         fix: npmCacheFix(),
       }
     }
+    const absent = await sandboxDatapathAbsent()
+    if (absent) {
+      return { name: 'npm-cache', status: 'warn', detail: `${absent}, so the cache is unverified from a sandbox` }
+    }
+    const host = npmCacheHost()
     const fetches = NPM_CACHE_PROBE_PATHS
-      .map((p) => `wget -q -T 60 -O /dev/null http://${ip}:${NPM_CACHE_PORT}/${p}`)
+      .map((p) => `wget -q -T 60 -O /dev/null http://${host}/${p}`)
       .join(' && ')
-    const { phase, logs } = await runProbePod(NPM_CACHE_PROBE_POD_NAME, {
+    const { phase, logs } = await runSandboxProbe(NPM_CACHE_PROBE_POD_NAME, {
+      allowedHosts: [],
+      clusterServices: [host],
+      script: `(${fetches}) && echo NPM_CACHE_OK || echo NPM_CACHE_FAILED`,
       timeoutMs: 150_000,
-      labels: { ...workspaceIdLabels('cluster-check-npm-cache-probe'), [LABEL_NPM_CACHE]: 'true' },
-      spec: { runtimeClassName: RUNTIME_CLASS_GVISOR },
-      container: {
-        image: await ensureProbeImage(),
-        command: ['sh', '-c', `(${fetches}) && echo NPM_CACHE_OK || echo NPM_CACHE_FAILED`],
-      },
     })
     if (phase === 'Succeeded' && logs.includes('NPM_CACHE_OK')) {
       return {
         name: 'npm-cache', status: 'pass',
-        detail: `a session pod fetched a package through ${NPM_CACHE_APP_NAME}`,
+        detail: `a sandbox fetched a package through ${NPM_CACHE_APP_NAME}, by way of the proxy`,
       }
     }
     return {
       name: 'npm-cache', status: 'fail',
-      detail: `a session pod could not fetch a package through ${NPM_CACHE_APP_NAME} `
+      detail: `a sandbox could not fetch a package through ${NPM_CACHE_APP_NAME} `
         + `(phase ${phase}${logs.trim() ? `, logs: ${logs.trim().slice(0, 80)}` : ''}), `
         + 'so every session\'s pnpm install fails',
       fix: npmCacheFix(),
@@ -1913,56 +1992,59 @@ const SITES_PROBE_POD_NAME = 'yaac-cluster-check-sites'
 /**
  * The sites gate: site traffic flows through the two tunnels and the
  * router, so none of them may reach the server (which treats a loopback
- * `Host` as its owner), the proxy's control port, or a workspace that is
- * not a release (docs/server-in-cluster.md "The site edge"). A probe pod
- * labelled as each, held to its policies, must fail to dial all three. One
- * labelled as a Cloudflare pod must also fail to dial the router's tailnet
- * listener, which trusts the login a request carries. The tailnet tunnel
- * is the exception for the server while the install names a server name,
- * since it fronts the server at that name, so its probe skips the server.
+ * `Host` as its owner), the proxy's control port, or netd's stream port,
+ * which carries the server's streams into workspaces (docs/server-in-cluster.md
+ * "The site edge"). A probe pod labelled as each, held to its policies,
+ * must fail to dial all three. One labelled as a tunnel must also fail to
+ * dial netd's site port, which takes no secret and so is the router's
+ * alone, while the router's must reach it, as every site request does
+ * (docs/public-sites.md "The router"). One labelled as a Cloudflare pod
+ * must also fail to dial the router's tailnet listener, which trusts the
+ * login a request carries. The tailnet tunnel is the exception for the
+ * server while the install names a server name, since it fronts the server
+ * at that name, so its probe skips the server.
  *
  * With a Cloudflare tunnel installed, one holding no connection is a warn.
  * With a tailnet tunnel, one not joined or with no certificate is a warn,
  * and so, where this machine is on the tailnet, is a site domain that does
  * not resolve to the tunnel.
- *
- * The workspace dialed is a real one (carrying the install id, which the
- * other probes' pods lack), on streamd's port, which always listens.
  */
 async function runSitesProbe(): Promise<CheckResult> {
   const ns = k8sNamespace()
   const fix = 'The edge\'s NetworkPolicies must admit nothing but the tunnels\' outside peers, DNS, the router '
     + 'and release pods. Re-run `yaac cluster install`, which re-applies them.'
   try {
-    const workspace = (await listObjects<{ status?: { podIP?: string } }>('v1', 'Pod', {
-      namespace: ns,
-      labelSelector: `${LABEL_WORKSPACE_ID},${LABEL_INSTALL_ID}=${installId()},!${LABEL_SITE_ID}`,
-      fieldSelector: 'status.phase=Running',
+    const netd = (await listObjects<{ status?: { podIP?: string } }>('v1', 'Pod', {
+      namespace: ns, labelSelector: `app=${NETD_APP_NAME}`, fieldSelector: 'status.phase=Running',
     })).find((p) => p.status?.podIP)?.status?.podIP ?? null
     const targets = [
       { key: 'SERVER', ip: await serviceIp(SERVER_APP_NAME, ns), port: SERVER_POD_PORT, what: 'the yaac server' },
       { key: 'PROXY', ip: await serviceIp(PROXY_APP_NAME, ns), port: PROXY_PORT, what: 'the proxy\'s control port' },
-      { key: 'WORKSPACE', ip: workspace, port: POD_STREAM_PORT, what: 'a workspace that is not a release' },
+      { key: 'NETD_STREAM', ip: netd, port: NETD_STREAM_PORT, what: 'netd\'s stream port, into workspaces' },
     ].filter((t): t is typeof t & { ip: string } => t.ip !== null)
     if (targets.length === 0) {
       return {
         name: 'sites', status: 'warn',
-        detail: 'no server, proxy or workspace is running to dial — the site edge\'s wall is unverified',
+        detail: 'no server, proxy or netd is running to dial — the site edge\'s wall is unverified',
       }
     }
+    const netdSite = netd === null ? [] : [{
+      key: 'NETD_SITE', ip: netd, port: NETD_SITE_PORT, what: 'netd\'s site port',
+    }]
     const routerIp = await serviceIp(SITE_ROUTER_APP_NAME, ns)
     const routerTailnet = routerIp === null ? [] : [{
       key: 'ROUTER_TAILNET', ip: routerIp, port: SITE_ROUTER_TAILNET_PORT, what: 'the router\'s tailnet listener',
     }]
     const serverName = (await siteTailnetDevice())?.serverName
     const probes = [
-      { app: SITE_TUNNEL_CLOUDFLARE_APP_NAME, suffix: 'cloudflare', targets: [...targets, ...routerTailnet] },
+      { app: SITE_TUNNEL_CLOUDFLARE_APP_NAME, suffix: 'cloudflare', targets: [...targets, ...routerTailnet, ...netdSite] },
       {
         app: SITE_TUNNEL_TAILNET_APP_NAME,
         suffix: 'tailnet',
-        targets: serverName ? targets.filter((t) => t.key !== 'SERVER') : targets,
+        targets: [...serverName ? targets.filter((t) => t.key !== 'SERVER') : targets, ...netdSite],
       },
-      { app: SITE_ROUTER_APP_NAME, suffix: 'router', targets },
+      // The router's dials include the one it must make.
+      { app: SITE_ROUTER_APP_NAME, suffix: 'router', targets: [...targets, ...netdSite] },
     ]
     const image = await ensureProbeImage()
     const runs = await Promise.all(probes.map(async (probe) => ({
@@ -1986,9 +2068,19 @@ async function runSitesProbe(): Promise<CheckResult> {
         fix: KIND_SETUP_FIX,
       }
     }
+    const mustReach = (app: string, key: string): boolean => app === SITE_ROUTER_APP_NAME && key === 'NETD_SITE'
     const open = runs.flatMap((r) => r.targets
-      .filter((t) => r.logs.includes(`SITE_${t.key}_OPEN`))
+      .filter((t) => !mustReach(r.app, t.key) && r.logs.includes(`SITE_${t.key}_OPEN`))
       .map((t) => `a pod labelled as ${r.app} reached ${t.what}`))
+    const cutOff = runs.flatMap((r) => r.targets
+      .filter((t) => mustReach(r.app, t.key) && r.logs.includes(`SITE_${t.key}_LOCKED`)))
+    if (cutOff.length > 0) {
+      return {
+        name: 'sites', status: 'fail',
+        detail: `a pod labelled as ${SITE_ROUTER_APP_NAME} could not dial netd's site port, which every site request crosses`,
+        fix: `netd's ingress policy must admit the router on its site port. Restart the yaac server, which re-applies it.`,
+      }
+    }
     if (open.length > 0) {
       return {
         name: 'sites', status: 'fail',
@@ -1997,7 +2089,8 @@ async function runSitesProbe(): Promise<CheckResult> {
       }
     }
     const notes = [`the site tunnels and router cannot dial ${targets.map((t) => t.what).join(', nor ')}`
-      + (serverName ? ` (bar the tailnet tunnel to the server, which it fronts at ${serverName})` : '')]
+      + (serverName ? ` (bar the tailnet tunnel to the server, which it fronts at ${serverName})` : '')
+      + (netd === null ? '' : ', and only the router reaches netd\'s site port')]
     const warns: Array<{ detail: string; fix: string }> = []
     const cloudflare = await siteCloudflareStatus()
     if (cloudflare === 'disconnected') {
@@ -2104,78 +2197,39 @@ async function daemonSetReadiness(name: string, namespace: string): Promise<{ ok
 }
 
 /**
- * The datapath gate: calico-node and netd must both be Ready. Without
- * Calico, egress policy is not enforced (fails open); without netd,
- * workspaces have no redirect and lose egress (fails closed).
+ * The datapath gate: netd must be Ready on every node. Its relay carries
+ * every sandbox's traffic, so a node without it has sandboxes with no
+ * egress, terminals and sites (they fail closed).
  */
 async function runDatapathCheck(): Promise<CheckResult> {
   try {
-    const calicoNode = await readCalicoNode()
-    if (calicoNode.kind === 'error') throw new Error(calicoNode.message)
-    const calicoStatus = calicoNode.kind === 'found' ? calicoNode.value.status : undefined
-    const calicoReady = calicoStatus?.numberReady ?? 0
-    const calicoWanted = calicoStatus?.desiredNumberScheduled ?? 0
-    if (!(calicoReady > 0) || calicoReady !== calicoWanted) {
-      return {
-        name: 'datapath', status: 'fail',
-        detail: calicoNode.kind === 'absent'
-          ? `no calico-node in ${CALICO_NAMESPACES.join(' or ')} — NetworkPolicy is not being enforced`
-          : `calico-node is ${calicoReady}/${calicoWanted} ready — NetworkPolicy is not being enforced`,
-        fix: 'Calico is the CNI and policy engine. Re-run `yaac cluster install` '
-          + '(on a byo cluster, whose Calico yaac did not install, `--byo`), '
-          + `or inspect with \`kubectl -n ${calicoNode.namespace} get pods -l k8s-app=calico-node\`.`,
-      }
-    }
-
     const netd = await daemonSetReadiness(NETD_APP_NAME, k8sNamespace()).catch(() => null)
     if (!netd?.ok) {
       const pods = await listObjects<RawContainerPod>('v1', 'Pod', {
         namespace: k8sNamespace(), labelSelector: `app=${NETD_APP_NAME}`,
       }).catch(() => [])
-      // Name the unhealthy container: netd's readiness is Envoy's config
-      // ack, so the DaemonSet counts cannot tell netd and Envoy apart.
+      // Name the unhealthy container: the DaemonSet counts cannot tell the
+      // relay and netd apart.
       const blocked = netdNotReadyContainers(pods)
       return {
         name: 'datapath', status: 'fail',
         detail: netd
-          ? `${NETD_APP_NAME} is ${netd.ratio} ready — session egress has no redirect`
+          ? `${NETD_APP_NAME} is ${netd.ratio} ready — sandboxes on the other nodes have no traffic`
             + (blocked.length ? ` (${blocked.join(', ')})` : '')
-          : `${NETD_APP_NAME} is not deployed — session egress has no redirect`,
-        fix: 'netd steers session egress into the proxy. `yaac cluster install` '
+          : `${NETD_APP_NAME} is not deployed — sandboxes have no traffic`,
+        fix: 'netd\'s relay carries every sandbox\'s traffic. `yaac cluster install` '
           + 're-applies it (the server also re-ensures it whenever it '
           + 'brings the proxy up). Inspect both containers with '
-          + `\`kubectl -n ${k8sNamespace()} logs ds/${NETD_APP_NAME} -c netd\` and `
-          + '`-c envoy`.',
+          + `\`kubectl -n ${k8sNamespace()} logs ds/${NETD_APP_NAME} -c relay\` and `
+          + '`-c netd`.',
       }
     }
-    return {
-      name: 'datapath', status: 'pass',
-      detail: `calico-node and ${NETD_APP_NAME} ready (policy enforced, egress redirected)`,
-    }
+    return { name: 'datapath', status: 'pass', detail: `${NETD_APP_NAME} ready on every node (${netd.ratio})` }
   } catch (err) {
     return {
       name: 'datapath', status: 'fail',
       detail: `could not query the datapath components (${k8sErrorSummary(err)})`,
       fix: KIND_SETUP_FIX,
-    }
-  }
-}
-
-/**
- * The pod-to-veth gate: read each node's routing table through its netd
- * pod and judge it with `assessVethSource`, the same verdict `--byo` uses.
- */
-async function runVethSourceCheck(): Promise<CheckResult> {
-  const prefix = cniVethPrefix()
-  try {
-    const outcomes = await probeWorkloadVeths(execFileAsync, prefix)
-    const { status, detail, fix } = assessVethSource(outcomes, prefix)
-    return { name: 'veth-source', status, detail, ...(fix ? { fix } : {}) }
-  } catch (err) {
-    return {
-      name: 'veth-source', status: 'warn',
-      detail: `could not read the node routing tables (${k8sErrorSummary(err)}) — the pod → veth `
-        + `source for ${prefix}* is unverified`,
     }
   }
 }

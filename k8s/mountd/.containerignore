@@ -3,3 +3,7 @@ cmd/arborist/gitindex_test.go
 cmd/mountd/mountd_test.go
 cmd/mountd/confined_test.go
 internal/wire/binds_test.go
+internal/pp2/pp2_test.go
+internal/sockets/sockets_test.go
+cmd/netshim/netshim_test.go
+cmd/relay/relay_test.go

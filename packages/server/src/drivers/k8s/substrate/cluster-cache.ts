@@ -4,7 +4,8 @@ import {
   type InformerCacheDeps,
   type MakeInformerFn,
 } from './informer-cache'
-import { k8sNamespace } from './api'
+import { k8sNamespace, listObjects } from './api'
+import { NETD_APP_NAME } from './proxy-constants'
 import {
   listWorkspaceJobs,
   listWorkspacePods,
@@ -26,9 +27,10 @@ import { serverLog } from '#lib/log'
 import type { RefreshedToolCredentials } from '@yaac/shared/types'
 
 /**
- * Every informer the server runs: workspace pods, workspace Jobs, and the
- * two objects the egress proxy reports through. Consumers read the caches
- * and subscribe to `onDelta` instead of listing the cluster.
+ * Every informer the server runs: workspace pods, workspace Jobs, the two
+ * objects the egress proxy reports through, and netd's pods, whose
+ * addresses the stream dial and the site endpoints use. Consumers read the
+ * caches and subscribe to `onDelta` instead of listing the cluster.
  */
 
 /** Informers over workspace pods and the Jobs that own them. */
@@ -36,7 +38,42 @@ export type WorkspaceDeltaSource = 'workspace-pods' | 'workspace-jobs'
 /** The proxy's outputs: its record ConfigMap (a snapshot input) and the
  *  rotations it captured (which the owners' stores have to adopt). */
 type ProxyDeltaSource = 'proxy-state' | 'proxy-refreshed'
-export type DeltaSource = WorkspaceDeltaSource | ProxyDeltaSource
+export type DeltaSource = WorkspaceDeltaSource | ProxyDeltaSource | 'netd-pods'
+
+/**
+ * A netd pod, keyed by name: a node's old and new pod overlap while one
+ * replaces the other, and keying by node would let the old pod's late
+ * deletion evict the new one. `live` while it runs with an address and is
+ * not being deleted.
+ */
+interface NetdPod {
+  name: string
+  node: string
+  ip: string
+  live: boolean
+}
+
+/** Map one API Pod to a NetdPod; null without a name or a node. */
+function mapNetdPod(obj: unknown): NetdPod | null {
+  const p = obj as {
+    metadata?: { name?: string; deletionTimestamp?: unknown }
+    spec?: { nodeName?: string }
+    status?: { phase?: string; podIP?: string }
+  }
+  if (!p.metadata?.name || !p.spec?.nodeName) return null
+  const ip = p.status?.podIP ?? ''
+  return {
+    name: p.metadata.name,
+    node: p.spec.nodeName,
+    ip,
+    live: p.status?.phase === 'Running' && ip !== '' && p.metadata.deletionTimestamp == null,
+  }
+}
+
+/** Each node's live netd pod address. */
+function liveNetdAddresses(pods: NetdPod[]): Map<string, string> {
+  return new Map(pods.filter((p) => p.live).map((p) => [p.node, p.ip]))
+}
 
 interface ClusterCacheDeps {
   /** Threaded to every informer cache (tests inject fakes). */
@@ -50,6 +87,7 @@ export class ClusterCache {
   private readonly jobs: InformerCache<JobInfo>
   private readonly proxyState: InformerCache<ProxyState>
   private readonly proxyRefreshed: InformerCache<Record<string, RefreshedToolCredentials>>
+  private readonly netd: InformerCache<NetdPod>
   private readonly listeners = new Set<(source: DeltaSource) => void>()
   private readonly deps: ClusterCacheDeps
 
@@ -90,6 +128,13 @@ export class ClusterCache {
       mapItem: mapProxyRefreshedObject,
       keyOf: () => 'refreshed',
     })
+    this.netd = this.buildCache('netd-pods', {
+      path: `/api/v1/namespaces/${ns}/pods`,
+      labelSelector: `app=${NETD_APP_NAME}`,
+      listFn: () => getCoreApi().listNamespacedPod({ namespace: ns, labelSelector: `app=${NETD_APP_NAME}` }),
+      mapItem: mapNetdPod,
+      keyOf: (p) => p.name,
+    })
   }
 
   start(): void {
@@ -97,6 +142,7 @@ export class ClusterCache {
     this.jobs.start()
     this.proxyState.start()
     this.proxyRefreshed.start()
+    this.netd.start()
   }
 
   stop(): void {
@@ -104,6 +150,7 @@ export class ClusterCache {
     this.jobs.stop()
     this.proxyState.stop()
     this.proxyRefreshed.stop()
+    this.netd.stop()
   }
 
   /** Subscribe to deltas (multi-listener; errors are isolated). */
@@ -129,6 +176,13 @@ export class ClusterCache {
    *  yet, by owner. */
   refreshedCredentials(): Record<string, RefreshedToolCredentials> {
     return this.proxyRefreshed.items()[0] ?? {}
+  }
+
+  /** Running netd pods, node name to pod address, or null while the
+   *  informer is not healthy. */
+  netdPods(): Map<string, string> | null {
+    if (!this.netd.healthy()) return null
+    return liveNetdAddresses(this.netd.items())
   }
 
   healthy(source: WorkspaceDeltaSource): boolean {
@@ -194,4 +248,13 @@ export async function readWorkspacePods(projectId?: string): Promise<PodInfo[]> 
 export async function readWorkspaceJobs(): Promise<JobInfo[]> {
   const cache = activeClusterCache
   return cache?.healthy('workspace-jobs') ? cache.workspaceJobs() : listWorkspaceJobs()
+}
+
+/** This install's running netd pods, node name to pod address, read as
+ *  `readWorkspacePods` reads pods. */
+export async function readNetdPods(): Promise<Map<string, string>> {
+  const cached = activeClusterCache?.netdPods()
+  if (cached) return cached
+  const pods = await listObjects('v1', 'Pod', { namespace: k8sNamespace(), labelSelector: `app=${NETD_APP_NAME}` })
+  return liveNetdAddresses(pods.map(mapNetdPod).filter((p): p is NetdPod => p !== null))
 }

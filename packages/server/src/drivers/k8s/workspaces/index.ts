@@ -23,6 +23,7 @@ export {
   findWorkspace,
   findWorkspaceForTeardown,
   listWorkspaces,
+  outdatedWorkspaces,
 } from './locate'
 export { reapNodeLocal } from './node-local-sweep'
 export {

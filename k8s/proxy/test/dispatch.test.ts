@@ -17,7 +17,7 @@ import { generateSshHostKey } from 'yaac-proxy-sidecar/ssh-session'
 
 /**
  * Every dial a workspace can steer, against the non-public guard: the
- * transparent TLS tunnel, the MITM'd TLS path, a CONNECT (the SSH tunnel
+ * TLS tunnel routed by SNI, the MITM'd TLS path, a CONNECT (the SSH tunnel
  * listener's) and plain HTTP. DNS is stubbed, since it is what a rebinding
  * name lies through; upstreams are loopback servers, which only an explicit
  * allowlist entry or a server-named redirect may reach. A WebSocket upstream
@@ -87,7 +87,12 @@ beforeAll(async () => {
   })
   // `*` beside the exact entries: it admits no non-public address itself,
   // and must not stop the exact entries from admitting theirs.
-  register('named', { allowedHosts: ['*', '127.0.0.1', 'git.corp.test', '192.0.2.1', 'pool.test', '*.corp.test'] })
+  register('named', { allowedHosts: ['*', '127.0.0.1', 'git.corp.test', '192.0.2.1', 'pool.test', '*.corp.test',
+    // The install's own services, which an exact entry must not reach.
+    'yaac-npm-cache.yaac-test.svc.cluster.local', 'yaac-registry.yaac', 'box'] })
+  // A workspace the server hands one cluster service, here a loopback
+  // server, and no allowlist at all.
+  register('cache', { allowedHosts: [], clusterServices: [`127.0.0.1:${String(httpPort)}`] })
   // An image build of the ssh project: its repo grant and redirect must
   // not apply, since a build only tunnels.
   objects.applyRegistration({
@@ -146,6 +151,7 @@ beforeAll(async () => {
     liveTunnels: new LiveTunnels(),
     recordBlockedHost: (_ws, host) => { blocked.push(host) },
     isBuild: (id) => id.startsWith('build-'),
+    installNamespaces: ['yaac-test', 'yaac'],
     lookup: (hostname) => {
       lookups.push(hostname)
       const answers = ANSWERS[hostname]
@@ -166,7 +172,7 @@ afterAll(() => { for (const s of servers) s.close() })
 
 /**
  * Open a connection the proxy dispatches as `workspaceId`'s to
- * `hostname:port`, as a CONNECT or as transparent TLS, and return what the
+ * `hostname:port`, as a CONNECT or as TLS routed by SNI, and return what the
  * client reads before the proxy closes it.
  */
 async function exchange(workspaceId: string, hostname: string, port: number, connect: boolean): Promise<string> {
@@ -371,6 +377,27 @@ describe('dispatchToUpstream and forwardPlainHttp', () => {
     expect((await run('cat /etc/passwd')).stderr).toContain('carries only git commands')
     entry.close()
     expect(lookups).toEqual([])
+  }, 30_000)
+
+  it('forward to a cluster service the registration names, and refuse the install\'s services by any other way', async () => {
+    // Named by the server: past the empty allowlist and the guard.
+    expect(await plainGet('cache', '127.0.0.1', httpPort)).toEqual({ status: 200, body: 'upstream saw /x' })
+    // Only that host and port.
+    expect((await plainGet('cache', '127.0.0.1', tcpPort)).status).toBe(403)
+    expect(blocked).toEqual(['127.0.0.1'])
+    blocked = []
+
+    // An exact entry naming one of the install's services reaches none, on
+    // any path, and nothing is looked up.
+    for (const host of ['yaac-npm-cache.yaac-test.svc.cluster.local', 'yaac-registry.yaac', 'box']) {
+      const res = await plainGet('named', host, httpPort)
+      expect(res.status, host).toBe(403)
+      expect(res.body, host).toContain('install\'s own services')
+      expect(await exchange('named', host, tcpPort, true), host).toMatch(/^HTTP\/1\.1 403 Forbidden\r\n[^]*install's own/)
+      expect(await exchange('named', host, 443, false), host).toBe('')
+    }
+    expect(lookups).toEqual([])
+    expect(blocked).toEqual([])
   }, 30_000)
 
   it('tunnel a build\'s allowed dials untouched: no ssh session, no redirect, no MITM', async () => {

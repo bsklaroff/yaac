@@ -917,29 +917,75 @@ mounted set comes from the same pod listing that keeps live project trees.
   once no `shared-images` directory is left under the install's node-local
   tree.
 
-## The gvisor-nested RuntimeClass
+## Retired RuntimeClasses
 
-An install that offered nested containers also applied a `gvisor-nested`
-RuntimeClass and registered a `runsc-nested` containerd handler, with its
-own `/etc/containerd/runsc-nested.toml`, on each node. Install no longer
-applies either, but deletes neither: the class is cluster-scoped and an
-older install sharing the cluster may still schedule on it, and the
-installer appends its containerd block once, guarded by a marker, so a node
-that has the old two-handler block keeps it. Nodes added since get only
-`runsc`. Nothing yaac runs names the class, so the leftover is inert, but on
-a mixed node pool it points at a handler that newer nodes lack. The one
-piece of code is the byo uninstall hint (`byoUninstall` in
-`install/delete.ts`), which names `gvisor-nested` with `--ignore-not-found`.
+Older installs applied RuntimeClasses that install does not apply now, each
+naming a containerd handler with its own flag file on every node: an install
+that offered nested containers applied `gvisor-nested` (handler
+`runsc-nested`, `/etc/containerd/runsc-nested.toml`), and every install
+before the socket datapath applied `gvisor` (handler `runsc`,
+`/etc/containerd/runsc.toml`, a sandbox with a network interface). Install
+deletes neither class: they are cluster-scoped and an older install sharing
+the cluster may still schedule on them. The installer appends each
+containerd block once, guarded by a marker, so a node that has an old block
+keeps it, and nodes added since get only `runsc-nonet`. Nothing yaac runs
+names the old classes, so the leftovers are inert, but on a mixed node pool
+they point at handlers that newer nodes lack. The one piece of code is the
+byo uninstall hint (`byoUninstall` in `install/delete.ts`), which names
+`gvisor` and `gvisor-nested` with `--ignore-not-found`.
 
-- **What it reads.** Nothing at runtime; the hint names the class.
+- **What it reads.** Nothing at runtime; the hint names the classes.
 - **What breaks silently if it goes too early.** A byo user following the
-  uninstall hint leaves `gvisor-nested` behind on a cluster yaac no longer
-  uses.
+  uninstall hint leaves `gvisor` or `gvisor-nested` behind on a cluster yaac
+  no longer uses.
 - **When it is safe to remove.** Once no supported upgrade starts from a
-  version that applied `gvisor-nested`; on a given cluster, once `kubectl
-  get runtimeclass gvisor-nested` finds nothing. An operator can delete the
-  class whenever no install on the cluster predates this change. The node
-  handler and its config go when the node is replaced.
+  version that applied either; on a given cluster, once `kubectl get
+  runtimeclass gvisor gvisor-nested` finds nothing. An operator can delete
+  a class whenever no install on the cluster predates the change that
+  stopped applying it. The node handlers and their configs go when the node
+  is replaced.
+
+## Workspaces on the gvisor class
+
+A workspace pod made before the socket datapath runs on the `gvisor`
+RuntimeClass: it has a network interface, and nothing is left to carry its
+traffic (no redirect, no DNS stub, no relay into it by pod address). So the
+`outdated-workspaces` reconcile step stops each one, as a user's stop does
+(`reconcileOutdatedWorkspaces`, over the driver's `outdatedWorkspaces`,
+which under k8s lists workspace pods whose `runtimeClassName` is `gvisor`).
+Its tree container takes the final checkpoint on the way down, and a restart
+brings it back in the current shape; a turn that was running is lost. A
+site's live release is stopped too, and the site replaces it as it does an
+evicted one (docs/public-sites.md "A live release whose runtime is gone").
+Spares and builders need nothing: both are reaped at every server start.
+
+- **What it reads.** Workspace pods in the cluster cache, by RuntimeClass.
+- **What breaks silently if it goes too early.** A workspace from before
+  the upgrade lists as running with no egress and no terminal: every stream
+  dial fails as unknown, which the stale reaper never reaps, and a site whose
+  live release is one keeps answering 503.
+- **When it is safe to remove.** Once no supported upgrade starts from a
+  release with the redirect datapath; on a given cluster, once `kubectl get
+  pods -A -o jsonpath='{..runtimeClassName}'` lists no `gvisor`.
+
+## The redirect's policies
+
+The redirect datapath had policies of its own: `yaac-workspace-egress`,
+`yaac-workspace-ingress-lock`, `yaac-builder-egress` and
+`yaac-npm-cache-workspace-egress`, and one `yaac-site-<site id>` per site.
+Nothing writes them now. `ensureProxyResources` deletes the four by name
+(`RETIRED_POLICY_NAMES` in `cluster/policy-manifests.ts`), and the site
+sync's prune deletes every NetworkPolicy labelled `app=yaac-site`.
+
+- **What it reads.** Those names in the install namespace, and per-site
+  policies by label.
+- **What breaks silently if it goes too early.** Nothing harmful on a
+  cluster where it already ran. On one where it never ran, the policies sit
+  inert, selecting pods that have no interface, and confuse an operator
+  reading the namespace's policies.
+- **When it is safe to remove.** On the same condition as "Workspaces on
+  the gvisor class"; on a given cluster, once `kubectl get networkpolicy -A`
+  lists none of those names and nothing labelled `app=yaac-site`.
 
 ## The yaac-nestable image
 

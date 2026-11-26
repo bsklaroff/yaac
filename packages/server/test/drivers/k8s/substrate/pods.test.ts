@@ -94,9 +94,11 @@ describe('listWorkspacePods', () => {
   })
 
   it('maps raw pods into PodInfo rows', async () => {
-    serve([rawPod()])
+    // The node and the RuntimeClass, when the spec names them: the stream
+    // dial finds netd by the one, the upgrade stop old pods by the other.
+    serve([rawPod(), { ...rawPod({ name: 'yaac-demo-s1-placed' }), spec: { nodeName: 'n1', runtimeClassName: 'gvisor' } }])
     const pods = await listWorkspacePods()
-    expect(pods).toEqual([{
+    expect(pods[0]).toEqual({
       jobName: 'yaac-demo-s1',
       podName: 'yaac-demo-s1-x1y2z',
       workspaceId: 's1',
@@ -106,7 +108,8 @@ describe('listWorkspacePods', () => {
       terminating: false,
       createdAtMs: Date.parse('2026-06-01T00:00:00Z'),
       labels: expect.any(Object) as Record<string, string>,
-    }])
+    })
+    expect(pods[1]).toMatchObject({ podName: 'yaac-demo-s1-placed', node: 'n1', runtimeClass: 'gvisor' })
   })
 
   // The informer skips the same pods, so every reader agrees.

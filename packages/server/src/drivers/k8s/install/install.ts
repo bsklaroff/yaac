@@ -59,7 +59,6 @@ import {
   siteDomainArg,
   tailnetServeHost,
 } from './arg-guards'
-import { assessCniAdoption, gatherCniFacts } from './cni-adopt'
 import { ensurePinnedManifest } from './pinned-manifest'
 import { readInstallRecord, recordInstall, type InstallRecord } from '@yaac/shared/install-record'
 import {
@@ -393,7 +392,7 @@ export async function runClusterInstall(
       + 'Session pods cannot run until it lands runsc on a node and labels it.',
     )
   })
-  deps.log('Deploying the netd egress redirect (DaemonSet)...')
+  deps.log('Deploying netd, the relay for sandbox traffic (DaemonSet)...')
   await ensureNetd()
   await deployNpmCache(deps)
   await deploySiteEdge(deps, siteDomain, serverName)
@@ -814,28 +813,7 @@ async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise
 }
 
 /**
- * `--byo` CNI check: verify what `installCalico` would otherwise guarantee
- * (details in cni-adopt.ts). Refuses rather than warns, since each problem
- * (eBPF dataplane, replaced kube-proxy, missing pod CIDRs) fails silently
- * as missing egress. Whether NetworkPolicy is enforced is left to the
- * final check's `egress` probe.
- */
-async function verifyAdoptedCni(deps: ClusterInstallDeps): Promise<void> {
-  deps.log('Verifying the CNI this cluster already runs...')
-  const facts = await gatherCniFacts()
-  const { refusals, warnings, notes } = assessCniAdoption(facts)
-  for (const note of notes) deps.log(`  recorded: ${note}`)
-  for (const warning of warnings) deps.log(`  ! ${warning}`)
-  if (refusals.length > 0) {
-    throw new ClusterInstallError(
-      `Cannot adopt this cluster's CNI:\n\n${refusals.map((r) => `  - ${r}`).join('\n\n')}`,
-    )
-  }
-  deps.log('  CNI accepted: Calico in the iptables dataplane, kube-proxy owning ClusterIP DNAT.')
-}
-
-/**
- * Every `--byo` check, before anything is applied or built: nodes, CNI,
+ * Every `--byo` check, before anything is applied or built: nodes,
  * Tailscale operator, storage classes, install identity, cluster and
  * environment. Each refuses on failure. Then records the install and
  * returns the storage classes for the claims.
@@ -851,7 +829,6 @@ async function verifyByoCluster(
     nodeArchitectureProblems(nodes, hostNodeArchitecture()))
   refuseIfAny('This cluster\'s nodes cannot take the gVisor runtime', nodeOsProblems(nodes))
   deps.log(`  ${String(nodes.length)} node(s): ${hostNodeArchitecture()}, containerd on a mutable OS.`)
-  await verifyAdoptedCni(deps)
   await verifyTailnetOperator(deps, '--byo')
   const storage = await verifyStorageClasses(deps, opts)
   await verifyInstallIdentity(installId)

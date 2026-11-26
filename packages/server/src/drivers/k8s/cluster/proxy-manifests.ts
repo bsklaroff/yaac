@@ -1,7 +1,5 @@
 import {
   BUILDER_ROLE_GUARD_NAME,
-  DNS_SINKHOLE,
-  DNS_STUB_PORT,
   LABEL_INSTALL_ID,
   LABEL_BUILD_ID,
   LABEL_PROJECT_ID,
@@ -9,7 +7,6 @@ import {
   LABEL_PROXY_OUTPUT,
   LABEL_ROLE,
   LABEL_WORKSPACE_ID,
-  POD_STREAM_PORT,
   PRIORITY_CLASS_INFRA,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
@@ -23,16 +20,13 @@ import {
   PROXY_REGISTRATION_PREFIX,
   PROXY_SA_NAME,
   PROXY_STATE_CONFIGMAP_NAME,
-  RELAY_PORT,
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
   SERVER_APP_NAME,
   SERVER_MAMA_PORT,
   SERVER_MAMA_SERVICE_NAME,
   SERVER_SA_NAME,
-  TRANSPARENT_HTTPS_PORT,
-  TRANSPARENT_HTTP_PORT,
-  TRANSPARENT_TUNNEL_PORT,
+  SOCKET_EGRESS_PORT,
   installId,
   installSecurityContext,
   k8sNamespace,
@@ -78,7 +72,7 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
       template: {
         metadata: { labels: podLabels },
         spec: {
-          // Needs its token to watch pods and inputs and write outputs
+          // Needs its token to watch its inputs and write its outputs
           // (buildProxyRoleManifest).
           serviceAccountName: PROXY_SA_NAME,
           automountServiceAccountToken: true,
@@ -92,27 +86,14 @@ export function buildProxyDeploymentManifest(imageRef: string): Record<string, u
               name: 'proxy',
               image: imageRef,
               imagePullPolicy: 'IfNotPresent',
-              // Lets the non-root proxy bind udp/53 for the DNS stub.
-              securityContext: { capabilities: { add: ['NET_BIND_SERVICE'] } },
               ports: [
                 { containerPort: PROXY_PORT },
-                { containerPort: TRANSPARENT_HTTPS_PORT },
-                { containerPort: TRANSPARENT_HTTP_PORT },
-                { containerPort: TRANSPARENT_TUNNEL_PORT },
-                { containerPort: RELAY_PORT },
-                { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
+                { containerPort: SOCKET_EGRESS_PORT },
               ],
               env: [
                 { name: 'API_PORT', value: String(PROXY_PORT) },
-                { name: 'TRANSPARENT_HTTPS_PORT', value: String(TRANSPARENT_HTTPS_PORT) },
-                { name: 'TRANSPARENT_HTTP_PORT', value: String(TRANSPARENT_HTTP_PORT) },
-                { name: 'TRANSPARENT_TUNNEL_PORT', value: String(TRANSPARENT_TUNNEL_PORT) },
-                // Stream relay (docs/stream-relay.md): authenticated CONNECT into
-                // workspace pods' streamd.
-                { name: 'RELAY_PORT', value: String(RELAY_PORT) },
-                { name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) },
-                { name: 'DNS_STUB_PORT', value: String(DNS_STUB_PORT) },
-                { name: 'DNS_SINKHOLE', value: DNS_SINKHOLE },
+                // netd's relay hands it sandbox egress here.
+                { name: 'SOCKET_EGRESS_PORT', value: String(SOCKET_EGRESS_PORT) },
                 // Where in-workspace yaac-mama calls are relayed to.
                 {
                   name: 'MAMA_RELAY_URL',
@@ -235,7 +216,7 @@ export function buildProxyServiceAccountManifest(): Record<string, unknown> {
 }
 
 /**
- * The proxy's Role: read pods, Secrets and ConfigMaps (namespace-wide, since
+ * The proxy's Role: read Secrets and ConfigMaps (namespace-wide, since
  * `list`/`watch` cannot be limited by name), and update only its three
  * output objects. `create` cannot be limited by name either, so the server
  * pre-creates the outputs (`ensureProxyResources`).
@@ -246,7 +227,7 @@ export function buildProxyRoleManifest(): Record<string, unknown> {
     kind: 'Role',
     metadata: { name: PROXY_SA_NAME, namespace: k8sNamespace(), labels: { app: PROXY_APP_NAME } },
     rules: [
-      { apiGroups: [''], resources: ['pods', 'secrets', 'configmaps'], verbs: ['get', 'list', 'watch'] },
+      { apiGroups: [''], resources: ['secrets', 'configmaps'], verbs: ['get', 'list', 'watch'] },
       {
         apiGroups: [''],
         resources: ['secrets'],
@@ -417,6 +398,7 @@ export function buildBuildRegistrationConfigMapManifest(
   buildId: string,
   projectId: string,
   allowedHosts: string[],
+  clusterServices: string[],
 ): Record<string, unknown> {
   return {
     apiVersion: 'v1',
@@ -430,7 +412,7 @@ export function buildBuildRegistrationConfigMapManifest(
         [LABEL_PROJECT_ID]: projectId,
       }),
     },
-    data: { 'registration.json': JSON.stringify({ rules: [], allowedHosts, projectId, owner: 'none' }) },
+    data: { 'registration.json': JSON.stringify({ rules: [], allowedHosts, projectId, owner: 'none', clusterServices }) },
   }
 }
 
@@ -476,20 +458,13 @@ export function buildProxyServiceManifest(): Record<string, unknown> {
     },
     spec: {
       type: 'ClusterIP',
-      // The ClusterIP is read at workspace create for the pod's DNS
-      // (proxyServiceClusterIp); it is stable because the Service is never
-      // recreated.
       selector: { app: PROXY_APP_NAME },
       // port == targetPort: policies name the pod port, so a remap would
       // silently diverge.
       ports: [
         { name: 'proxy', port: PROXY_PORT, targetPort: PROXY_PORT },
-        // The relay, which the in-cluster server dials via the Service.
-        { name: 'relay', port: RELAY_PORT, targetPort: RELAY_PORT },
-        { name: 'transparent-https', port: TRANSPARENT_HTTPS_PORT, targetPort: TRANSPARENT_HTTPS_PORT },
-        { name: 'transparent-http', port: TRANSPARENT_HTTP_PORT, targetPort: TRANSPARENT_HTTP_PORT },
-        { name: 'transparent-tunnel', port: TRANSPARENT_TUNNEL_PORT, targetPort: TRANSPARENT_TUNNEL_PORT },
-        { name: 'dns', port: DNS_STUB_PORT, targetPort: DNS_STUB_PORT, protocol: 'UDP' },
+        // netd's relay dials it by the Service's name.
+        { name: 'socket-egress', port: SOCKET_EGRESS_PORT, targetPort: SOCKET_EGRESS_PORT },
       ],
     },
   }

@@ -275,25 +275,6 @@ describe('yaac cluster install (real CLI)', () => {
       },
       120_000,
     )
-
-    // The CNI gate refuses a bad config value rather than silently
-    // narrowing netd's exclusion set.
-    it.skipIf(process.platform !== 'linux' || !onPath('podman'))(
-      '--byo refuses a YAAC_POD_CIDRS entry it cannot use, naming the entry',
-      async () => {
-        // A plausible typo plus an out-of-range mask.
-        fake.state = {}
-        const { stderr, exitCode } = await install(
-          { YAAC_POD_CIDRS: '172.31.0.0/16, 172.31/16, 10.0.0.0/33' }, '--rwx-storage-class', 'nfs',
-        )
-        expect(exitCode).toBe(1)
-        expect(stderr).toMatch(/not usable IPv4 CIDRs/)
-        expect(stderr).toContain('172.31/16')
-        expect(stderr).toContain('10.0.0.0/33')
-        expect(stderr).not.toMatch(/CIDRs:[^.]*172\.31\.0\.0\/16/)
-      },
-      120_000,
-    )
   })
 })
 
@@ -319,16 +300,13 @@ const FAKE_RESOURCES: Record<string, { groupVersion: string; plural: string; nam
   Namespace: { groupVersion: 'v1', plural: 'namespaces', namespaced: false },
   Node: { groupVersion: 'v1', plural: 'nodes', namespaced: false },
   Pod: { groupVersion: 'v1', plural: 'pods', namespaced: true },
-  DaemonSet: { groupVersion: 'apps/v1', plural: 'daemonsets', namespaced: true },
   Deployment: { groupVersion: 'apps/v1', plural: 'deployments', namespaced: true },
-  PriorityClass: { groupVersion: 'scheduling.k8s.io/v1', plural: 'priorityclasses', namespaced: false },
   RuntimeClass: { groupVersion: 'node.k8s.io/v1', plural: 'runtimeclasses', namespaced: false },
   StorageClass: { groupVersion: 'storage.k8s.io/v1', plural: 'storageclasses', namespaced: false },
   IngressClass: { groupVersion: 'networking.k8s.io/v1', plural: 'ingressclasses', namespaced: false },
   CustomResourceDefinition: {
     groupVersion: 'apiextensions.k8s.io/v1', plural: 'customresourcedefinitions', namespaced: false,
   },
-  IPPool: { groupVersion: 'crd.projectcalico.org/v1', plural: 'ippools', namespaced: false },
   Service: { groupVersion: 'v1', plural: 'services', namespaced: true },
   Secret: { groupVersion: 'v1', plural: 'secrets', namespaced: true },
 }
@@ -350,20 +328,6 @@ function fakeObjects(state: FakeClusterState): Array<{ kind: string; metadata: R
         },
       },
     },
-    {
-      kind: 'DaemonSet',
-      metadata: { name: 'calico-node', namespace: 'kube-system' },
-      status: { numberReady: 1, desiredNumberScheduled: 1 },
-      spec: { template: { spec: { containers: [{ name: 'calico-node', env: [] }] } } },
-    },
-    {
-      kind: 'Pod',
-      metadata: { name: 'kube-proxy-1', namespace: 'kube-system', labels: { 'k8s-app': 'kube-proxy' } },
-      spec: { nodeName: 'pool-1' },
-      status: { phase: 'Running' },
-    },
-    { kind: 'PriorityClass', metadata: { name: 'system-node-critical' }, value: 2000001000 },
-    { kind: 'IPPool', metadata: { name: 'default-ipv4-ippool' }, spec: { cidr: '10.244.0.0/16' } },
     ...(state.operatorAbsent
       ? []
       : [
@@ -388,8 +352,7 @@ function fakeObjects(state: FakeClusterState): Array<{ kind: string; metadata: R
 
 /**
  * A fake API server for a healthy cluster: one Ready node of this
- * machine's architecture running containerd, Calico with kube-proxy, the
- * Tailscale operator, an NFS class and a default block class, and no yaac
+ * machine's architecture running containerd, the Tailscale operator, an NFS class and a default block class, and no yaac
  * server. `state` changes it between runs. Anything else reads as
  * NotFound. The kubeconfig's context is `fake-byo`, so kubectl's own
  * `config current-context` answers it too.

@@ -6,20 +6,18 @@ import { EventEmitter } from 'node:events'
 import { WorkspaceExecError, type StreamChild } from '#drivers/contract'
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FRAME_SIGNAL, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
 import { k8sNamespace, readObject } from './api'
+import { readNetdPods, readWorkspacePods } from './cluster-cache'
 import { workspaceIdFromJobName } from './pods'
-import {
-  PROXY_AUTH_SECRET_NAME,
-  RELAY_PORT,
-  proxyServiceHost,
-} from './proxy-constants'
+import { NETD_STREAM_PORT, PROXY_AUTH_SECRET_NAME } from './proxy-constants'
 
 /**
  * Server side of the stream relay (docs/stream-relay.md). All steady-state
  * traffic between the server and a workspace pod (terminal PTYs, the status
  * watcher's tmux control stream, forwarded TCP, one-shot commands) goes over
- * a plain TCP connection through the proxy's relay listener to the pod's
- * streamd, bypassing the apiserver. kubectl exec is used only where
- * streamd may not be running (`bootStreamd`) and for non-workspace pods.
+ * a plain TCP connection to netd's relay on the workspace's node, which
+ * splices it to the pod's streamd through its `ingress.sock`, bypassing the
+ * apiserver. kubectl exec is used only where streamd may not be running
+ * (`bootStreamd`) and for non-workspace pods.
  *
  * Each stream starts with a relay auth line
  * `{token: <proxyAuthSecret>, workspaceId}` and a streamd handshake line
@@ -34,15 +32,15 @@ const DIAL_TIMEOUT_MS = 15_000
  * Minimum `podExec` budget, and so minimum dial deadline. The dial deadline
  * describes the shared transport, not one caller's patience: the stale
  * reaper's tmux probes ask for 2s (runtime/status/liveness.ts), but a dial
- * through the proxy can take longer on a host busy building images, and a
+ * through the relay can take longer on a host busy building images, and a
  * slow dial must not be mistaken for a dead relay.
  */
 const MIN_EXEC_TIMEOUT_MS = 5_000
 /**
  * Idle time before TCP keepalive probes start on a relay stream. A stream
  * can sit idle for days (an idle workspace's ACP conversation), and the
- * Service's NAT forgets an idle flow (kube-proxy's conntrack keeps an
- * established one 24h). The far end's close then never arrives, and the
+ * cluster's connection tracking forgets an idle flow. The far end's close
+ * then never arrives, and the
  * stream looks open while carrying nothing. Probes keep the flow known and
  * close a stream whose peer is gone.
  */
@@ -63,19 +61,23 @@ export function _resetRelayCacheForTests(): void {
 }
 
 /**
- * The relay address: the proxy's Service, dialed pod-to-pod since the
- * server runs in the same namespace (docs/server-in-cluster.md).
+ * The relay address for a workspace: the netd pod on its pod's node, both
+ * from the server's informers (`readNetdPods`). A pod whose node is not
+ * known yet, or a node with no running netd, has none.
  */
-function resolveRelayAddr(): RelayAddr {
-  const addr = proxyServiceHost(k8sNamespace(), RELAY_PORT)
-  const idx = addr.lastIndexOf(':')
-  return { host: addr.slice(0, idx), port: Number.parseInt(addr.slice(idx + 1), 10) }
+async function resolveRelayAddr(workspaceId: string): Promise<RelayAddr> {
+  const pods = (await readWorkspacePods()).filter((p) => p.workspaceId === workspaceId && p.node !== undefined)
+  const pod = pods.find((p) => !p.terminating) ?? pods[0]
+  if (pod?.node === undefined) throw new Error('the workspace\'s pod is on no node yet')
+  const host = (await readNetdPods()).get(pod.node)
+  if (host === undefined) throw new Error(`no running netd on node ${pod.node}`)
+  return { host, port: NETD_STREAM_PORT }
 }
 
 /**
- * The install's proxy auth secret: the proxy's control-API key, the relay
- * bearer token, and the HMAC key for per-workspace stream tokens. Null
- * before the proxy's first deploy creates it.
+ * The install's proxy auth secret: the relay's bearer token toward the
+ * proxy and from the server, and the HMAC key for per-workspace stream
+ * tokens. Null before the proxy's first deploy creates it.
  */
 export async function readProxyAuthSecret(): Promise<string | null> {
   const secret = await readObject<{ data?: Record<string, string> }>({
@@ -134,10 +136,10 @@ export async function relayDial(
   opts: { timeoutMs?: number } = {},
 ): Promise<net.Socket> {
   const timeoutMs = opts.timeoutMs ?? DIAL_TIMEOUT_MS
-  const addr = resolveRelayAddr()
-  const [secret, token] = await Promise.all([
+  const [secret, token, addr] = await Promise.all([
     relaySecret(),
     podStreamToken(workspaceId),
+    resolveRelayAddr(workspaceId),
   ]).catch((err: unknown) => {
     throw new RelayDialError(`stream relay: ${err instanceof Error ? err.message : String(err)}`)
   })

@@ -13,9 +13,10 @@
  *    domain to the tailnet listener with the caller's login, or to the
  *    yaac server for the install's server name. Install applies it only
  *    once given an auth key.
- *  - Per site, a headless Service selecting the live release and a policy
- *    admitting the router to the site's release pods. The server applies
- *    these (`syncSiteObjects`).
+ *  - Per site, a headless Service with no selector, naming the live
+ *    release, and the EndpointSlice the server writes for it: netd on the
+ *    release's node, whose relay carries the router's requests into the
+ *    release (`syncSiteObjects`).
  *
  * No policy here admits an edge pod to the proxy or a workspace that is
  * not a release, nor the router or the Cloudflare tunnel to the server, and
@@ -25,8 +26,9 @@
  */
 import crypto from 'node:crypto'
 import {
-  LABEL_SITE_ID,
-  LABEL_WORKSPACE_ID,
+  NETD_APP_NAME,
+  NETD_SITE_PORT,
+  PP2_TLV_ID,
   PRIORITY_CLASS_INFRA,
   SERVER_APP_NAME,
   SERVER_POD_PORT,
@@ -49,7 +51,9 @@ import {
   k8sNamespace,
   listObjects,
   patchObject,
+  readNetdPods,
   readObject,
+  readWorkspacePods,
   siteServiceName,
   waitForRollout,
   type ObjectRef,
@@ -64,10 +68,10 @@ import { prebuiltRef } from './registry'
 import { apiserverEndpoints, clusterDnsCidrs, nodeIpBlocks } from './cluster-cidrs'
 import { contextHash } from './image-tags'
 import { ensureNamespace } from './proxy-apply'
-import { ENVOY_MIRROR_TAG } from './netd'
+import { ENVOY_MIRROR_TAG } from './envoy-image'
 import { NON_PUBLIC_V4, PUBLIC_V6, dnsEgress } from './policy-manifests'
 
-/** Digest-pinned (multi-arch index) and mirrored like Envoy (netd.ts). */
+/** Digest-pinned (multi-arch index) and mirrored like Envoy (envoy-image.ts). */
 const CLOUDFLARED_VERSION = '2026.10.7'
 const CLOUDFLARED_PIN = 'sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba'
 export const CLOUDFLARED_UPSTREAM_IMAGE = `docker.io/cloudflare/cloudflared@${CLOUDFLARED_PIN}`
@@ -332,13 +336,15 @@ function buildRouterBootstrap(): string {
  * its Service; any other `Host` gets a 404.
  *
  * A site's cluster resolves the Service's absolute name (the trailing dot
- * skips the search domains) as `STRICT_DNS` every second. The Service is
- * headless, so the name resolves to the live release's pod IP and Envoy
- * dials the pod itself. Through a ClusterIP, Envoy's pooled keep-alive
- * connections would stay pinned to the old pod by conntrack after a
- * deploy moves the selector. With pod IPs, new requests go to the new
- * release as soon as DNS shows it, while open connections to the old one
- * finish. DNS shows it within a second where CoreDNS answers
+ * skips the search domains) as `STRICT_DNS` every second, and dials what it
+ * names on netd's site port with a PROXY protocol v2 header carrying the
+ * site id (`PP2_TLV_ID`). The Service is headless with an EndpointSlice the
+ * server writes, so the name resolves to the netd pod on the live
+ * release's node, whose relay reads the Service to find the release and
+ * its port. The id is fixed for the site, so a deploy that flips the
+ * release changes nothing here. A flip to another node changes the
+ * address, and new requests move as soon as DNS shows it, while open
+ * connections finish; DNS shows it within a second where CoreDNS answers
  * `cluster.local` names uncached: kind and `infra/hetzner-k3s`
  * (docs/cluster-setup.md "Uncached cluster DNS"). A site with no live
  * release resolves to nothing, so its cluster has no hosts and Envoy
@@ -385,12 +391,26 @@ function buildSiteRoutes(sites: SiteRoute[]): Record<string, string> {
               address: {
                 socket_address: {
                   address: `${siteServiceName(site.siteId)}.${k8sNamespace()}.svc.cluster.local.`,
-                  port_value: site.port,
+                  port_value: NETD_SITE_PORT,
                 },
               },
             },
           }],
         }],
+      },
+      transport_socket: {
+        name: 'envoy.transport_sockets.upstream_proxy_protocol',
+        typed_config: {
+          '@type': 'type.googleapis.com/envoy.extensions.transport_sockets.proxy_protocol.v3.ProxyProtocolUpstreamTransport',
+          config: {
+            version: 'V2',
+            added_tlvs: [{ type: PP2_TLV_ID, value: Buffer.from(site.siteId).toString('base64') }],
+          },
+          transport_socket: {
+            name: 'envoy.transport_sockets.raw_buffer',
+            typed_config: { '@type': 'type.googleapis.com/envoy.extensions.transport_sockets.raw_buffer.v3.RawBuffer' },
+          },
+        },
       },
     })),
   }
@@ -410,40 +430,77 @@ function routesConfigMap(sites: SiteRoute[]): Record<string, unknown> {
   }
 }
 
+/** The annotation on a site's Service naming its live release, which
+ *  netd's relay reads (k8s/mountd/cmd/relay). */
+const ANNOTATION_LIVE_WORKSPACE = 'yaac.live-workspace-id'
+
 /**
- * A site's headless Service and its ingress policy. With no live release
- * the selector names an empty workspace id, which no pod carries, so the
- * Service has no endpoints. Every selector also names the site, so a wrong
- * workspace id can never select a pod that is not one of its releases.
+ * A site's Service and its EndpointSlice. The Service is headless and has
+ * no selector: it names the live release in an annotation and the port the
+ * release serves on as its `targetPort`. The EndpointSlice holds one
+ * address, `netdIp`, the netd pod on the release's node, or none while no
+ * release is live or its node has no running netd, so the router answers
+ * 503.
  */
-function buildSiteManifests(site: SiteRoute): Array<Record<string, unknown>> {
+function buildSiteManifests(site: SiteRoute, netdIp: string | undefined): Array<Record<string, unknown>> {
   const name = siteServiceName(site.siteId)
   return [
     {
       apiVersion: 'v1',
       kind: 'Service',
-      metadata: metadata(name, SITE_OBJECT_APP),
+      metadata: {
+        ...metadata(name, SITE_OBJECT_APP),
+        annotations: { [ANNOTATION_LIVE_WORKSPACE]: site.liveWorkspaceId ?? '' },
+      },
       spec: {
         clusterIP: 'None',
-        selector: { [LABEL_SITE_ID]: site.siteId, [LABEL_WORKSPACE_ID]: site.liveWorkspaceId ?? '' },
-        ports: [{ name: 'http', port: site.port, targetPort: site.port, protocol: 'TCP' }],
+        ports: [{ name: 'site', port: NETD_SITE_PORT, targetPort: site.port, protocol: 'TCP' }],
       },
     },
     {
-      // Unioned with the workspace ingress lock, which admits only the proxy.
-      apiVersion: 'networking.k8s.io/v1',
-      kind: 'NetworkPolicy',
-      metadata: metadata(name, SITE_OBJECT_APP),
-      spec: {
-        podSelector: { matchLabels: { [LABEL_SITE_ID]: site.siteId } },
-        policyTypes: ['Ingress'],
-        ingress: [{
-          from: [{ podSelector: { matchLabels: { app: SITE_ROUTER_APP_NAME } } }],
-          ports: [tcp(site.port)],
-        }],
+      apiVersion: 'discovery.k8s.io/v1',
+      kind: 'EndpointSlice',
+      metadata: {
+        name,
+        namespace: k8sNamespace(),
+        labels: {
+          app: SITE_OBJECT_APP,
+          'kubernetes.io/service-name': name,
+          'endpointslice.kubernetes.io/managed-by': 'yaac',
+        },
       },
+      addressType: 'IPv4',
+      endpoints: netdIp !== undefined ? [{ addresses: [netdIp], conditions: { ready: true } }] : [],
+      ports: [{ name: 'site', port: NETD_SITE_PORT, protocol: 'TCP' }],
     },
   ]
+}
+
+/** The sites the last sync converged to, for `resyncSiteEndpoints`. */
+let syncedSites: SiteRoute[] = []
+
+/**
+ * Site writes, one at a time: a resync that read the sites before a sync
+ * and applied after it would put back a flipped site's previous release, or
+ * a pruned site's objects.
+ */
+let siteWrites: Promise<void> = Promise.resolve()
+function serialized(write: () => Promise<void>): Promise<void> {
+  const run = siteWrites.then(write, write)
+  siteWrites = run.catch(() => { /* the caller sees it */ })
+  return run
+}
+
+/** Apply each site's Service and EndpointSlice, pointed at the netd pod on
+ *  its live release's node as the informers see them now. */
+async function applySiteManifests(sites: SiteRoute[]): Promise<void> {
+  const [pods, netd] = await Promise.all([readWorkspacePods(), readNetdPods()])
+  const nodeOf = (workspaceId: string | undefined): string | undefined =>
+    pods.find((p) => p.workspaceId === workspaceId && p.node !== undefined && !p.terminating)?.node
+  await Promise.all(sites.flatMap((site) => {
+    const node = nodeOf(site.liveWorkspaceId)
+    return buildSiteManifests(site, node !== undefined ? netd.get(node) : undefined)
+  }).map((m) => applyObject(m)))
 }
 
 /**
@@ -451,23 +508,42 @@ function buildSiteManifests(site: SiteRoute): Array<Record<string, unknown>> {
  * (the k8s `syncSites` verb). Services go first, so a new cluster's name
  * exists when Envoy loads it, and pruning comes after the route table, once
  * it no longer names what it deletes. Stamping the router replicas, which
- * only hurries the table along, is last.
+ * only hurries the table along, is last. Per-site NetworkPolicies, which
+ * nothing writes any more, go with the prune.
  */
-export async function syncSiteObjects(sites: SiteRoute[]): Promise<void> {
-  await Promise.all(sites.flatMap(buildSiteManifests).map((m) => applyObject(m)))
+export function syncSiteObjects(sites: SiteRoute[]): Promise<void> {
+  return serialized(() => syncSites(sites))
+}
+
+async function syncSites(sites: SiteRoute[]): Promise<void> {
+  syncedSites = sites
+  await applySiteManifests(sites)
   const routes = routesConfigMap(sites)
   await applyObject(routes)
   const wanted = new Set(sites.map((s) => siteServiceName(s.siteId)))
-  for (const [apiVersion, kind] of [['v1', 'Service'], ['networking.k8s.io/v1', 'NetworkPolicy']] as const) {
+  for (const [apiVersion, kind] of [
+    ['v1', 'Service'], ['discovery.k8s.io/v1', 'EndpointSlice'], ['networking.k8s.io/v1', 'NetworkPolicy'],
+  ] as const) {
     const live = await listObjects(apiVersion, kind, {
       namespace: k8sNamespace(), labelSelector: `app=${SITE_OBJECT_APP}`,
     })
     await Promise.all(live
       .map((o) => o.metadata?.name ?? '')
-      .filter((name) => name && !wanted.has(name))
+      .filter((name) => name && !(kind !== 'NetworkPolicy' && wanted.has(name)))
       .map((name) => deleteObject({ apiVersion, kind, name, namespace: k8sNamespace() })))
   }
   await refreshRouterRoutes(routes.data as Record<string, string>)
+}
+
+/**
+ * Point every site's EndpointSlice at the netd pod on its release's node
+ * again, after a netd pod changed: a restarted one has a new address, and
+ * until this runs, and the router re-resolves, that node's sites answer
+ * 503. Also when a release's pod is placed, which the reconcile's next
+ * site pass covers.
+ */
+export function resyncSiteEndpoints(): Promise<void> {
+  return serialized(() => applySiteManifests(syncedSites))
 }
 
 /**
@@ -526,8 +602,9 @@ function networkPolicy(name: string, app: string, spec: Record<string, unknown>)
  *  - router ingress: the Cloudflare tunnel on the public port (by its
  *    current and its legacy label), the tailnet tunnel on the tailnet
  *    port, and the node on admin;
- *  - router egress: DNS, and release pods (any `yaac.site-id`) on any port,
- *    which each site's own policy narrows to its port.
+ *  - router egress: DNS, and netd's site port, whose relay carries a
+ *    request into the site's live release (netd's ingress policy admits
+ *    only the router there).
  */
 function buildSiteEdgePolicies(
   nodeCidrs: string[],
@@ -599,7 +676,7 @@ function buildSiteEdgePolicies(
       policyTypes: ['Egress'],
       egress: [
         dnsEgress(dnsCidrs),
-        { to: [{ podSelector: { matchExpressions: [{ key: LABEL_SITE_ID, operator: 'Exists' }] } }] },
+        { to: [{ podSelector: { matchLabels: { app: NETD_APP_NAME } } }], ports: [tcp(NETD_SITE_PORT)] },
       ],
     }),
   ]

@@ -5,12 +5,11 @@ import { apiserverEndpoints, clusterDnsCidrs, nodeAddressBlocks, nodeIpBlocks } 
 import { applyMainRegistryIngress, writeMainRegistryHosts } from './main-registry'
 import { syncNpmCacheNodes } from './npm-cache'
 import {
-  buildBuilderEgressNpManifest,
+  buildNetdEgressNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
   buildServerEgressNpManifest,
   buildServerIngressNpManifest,
-  buildWorkspaceEgressNpManifest,
 } from './policy-manifests'
 import { syncSiteEdgeNodes } from './site-edge'
 
@@ -20,7 +19,7 @@ import { syncSiteEdgeNodes } from './site-edge'
  * main registry's ensure cover only the nodes that exist when they run, so
  * a later node would lack two things:
  *  - its addresses in every NetworkPolicy that names nodes: those admitting
- *    them (kubelet probes, containerd pulls, netd's Envoy) and the egress
+ *    them (kubelet probes, containerd pulls) and the egress
  *    that cuts them from the public block. These are re-applied whenever
  *    the address set changes, which takes no pod.
  *  - its containerd hosts.toml for the main registry, without which it
@@ -59,13 +58,12 @@ export async function reconcileNodeSet(): Promise<void> {
     const serverEgress = renderServerEgress(nodeAddrs, dnsCidrs, apiserver)
     for (const manifest of [
       buildServerIngressNpManifest(nodeCidrs),
-      buildWorkspaceEgressNpManifest(nodeCidrs),
       buildProxyIngressNpManifest(nodeCidrs),
       buildProxyEgressNpManifest(nodeAddrs, dnsCidrs, apiserver),
-      buildBuilderEgressNpManifest(nodeCidrs),
+      buildNetdEgressNpManifest(dnsCidrs, apiserver),
       ...(serverEgress ? [serverEgress] : []),
     ]) await applyObject(manifest)
-    await syncNpmCacheNodes(nodeCidrs)
+    await syncNpmCacheNodes({ nodes: nodeCidrs, nodeAddrs, dns: dnsCidrs })
     await syncSiteEdgeNodes(nodeCidrs, dnsCidrs, apiserver)
     await applyMainRegistryIngress(nodeCidrs)
     // Unset after a failed server render, so the next pass retries it.

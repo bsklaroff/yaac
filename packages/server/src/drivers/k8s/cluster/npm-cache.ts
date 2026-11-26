@@ -20,17 +20,17 @@
  * egress proxy. The cache sends no credentials upstream.
  *
  * It fetches directly, not through the proxy, an accepted exception
- * (docs/workspace-egress.md). Only pods labelled `LABEL_NPM_CACHE` at launch
- * (npmCache on, npmjs allowed, no proxied npmjs secret) can reach it.
+ * (docs/workspace-egress.md). A workspace reaches it only through the
+ * proxy, and only when its registration names it in `clusterServices`
+ * (npmCache on, npmjs allowed, no proxied npmjs secret).
  *
  * Nothing prunes the cache yet.
  */
 import crypto from 'node:crypto'
 import {
-  LABEL_NPM_CACHE,
   NPM_CACHE_APP_NAME,
   NPM_CACHE_PORT,
-  LABEL_WORKSPACE_ID,
+  PROXY_APP_NAME,
   PRIORITY_CLASS_INFRA,
   installNameKey,
   k8sNamespace,
@@ -39,10 +39,11 @@ import {
   waitForRollout,
 } from '#drivers/k8s/substrate'
 import { prebuiltRef } from './registry'
-import { clusterPodCidrs, nodeIpBlocks } from './cluster-cidrs'
+import { clusterDnsCidrs, nodeAddressBlocks, nodeIpBlocks } from './cluster-cidrs'
+import { dnsEgress, wideEgress } from './policy-manifests'
 import { ensureNamespace } from './proxy-apply'
 
-/** Digest-pinned (multi-arch index) and mirrored like Envoy (netd.ts). */
+/** Digest-pinned (multi-arch index) and mirrored like Envoy (envoy-image.ts). */
 const VERDACCIO_VERSION = '6.10.4'
 const VERDACCIO_PIN = 'sha256:43c4067288b050422265407ea2fe747e511fcd0c407a85ec90ab9a326d9400cd'
 export const VERDACCIO_UPSTREAM_IMAGE = `docker.io/verdaccio/verdaccio@${VERDACCIO_PIN}`
@@ -83,11 +84,15 @@ function npmCachePvcName(): string {
  *  fails installs. */
 const NPM_CACHE_STORAGE_SIZE = '20Gi'
 
-/** The registry URL for workspaces: the Service's `.svc.cluster.local`
- *  name (the proxy's DNS resolves the install namespace's Services), with
- *  npm's trailing slash. */
+/** The cache's `host:port` by its Service's `.svc.cluster.local` name,
+ *  which the proxy dials for a workspace whose registration names it. */
+export function npmCacheHost(): string {
+  return `${NPM_CACHE_APP_NAME}.${k8sNamespace()}.svc.cluster.local:${NPM_CACHE_PORT}`
+}
+
+/** The registry URL for workspaces, with npm's trailing slash. */
 function npmCacheRegistryUrl(): string {
-  return `http://${NPM_CACHE_APP_NAME}.${k8sNamespace()}.svc.cluster.local:${NPM_CACHE_PORT}/`
+  return `http://${npmCacheHost()}/`
 }
 
 /**
@@ -222,24 +227,20 @@ function metadata(name: string): Record<string, unknown> {
 
 const port = { protocol: 'TCP', port: NPM_CACHE_PORT }
 
-/** The workspace pods the cache serves. */
-const admitted = {
-  matchLabels: { [LABEL_NPM_CACHE]: 'true' },
-  matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
+/** The addresses the cache's policies name (`buildNpmCacheNodePolicyManifests`). */
+interface NpmCacheCidrs {
+  nodes: string[]
+  nodeAddrs: string[]
+  dns: string[]
 }
 
 /**
  * The cache's objects, in apply order; the Service is separate and applied
- * last (see `ensureNpmCache`). Its policies:
- *  - Workspace egress to the cache port, for pods with `LABEL_NPM_CACHE`.
- *  - Ingress from those pods and from the node (kubelet probe).
- *  - Egress to 443 off-cluster (the uplink) and DNS. Pod and node addresses
- *    are excluded, so a compromised cache cannot reach in-cluster services.
- *    netd does not redirect it (not a workspace pod).
+ * last (see `ensureNpmCache`).
  */
 function buildNpmCacheManifests(
   images: { verdaccio: string; nginx: string },
-  cidrs: { nodes: string[]; pods: string[] },
+  cidrs: NpmCacheCidrs,
 ): { workload: Array<Record<string, unknown>>; service: Record<string, unknown> } {
   const workload = [
     {
@@ -351,16 +352,6 @@ function buildNpmCacheManifests(
       },
     },
     ...buildNpmCacheNodePolicyManifests(cidrs),
-    {
-      apiVersion: 'networking.k8s.io/v1',
-      kind: 'NetworkPolicy',
-      metadata: metadata(`${NPM_CACHE_APP_NAME}-workspace-egress`),
-      spec: {
-        podSelector: admitted,
-        policyTypes: ['Egress'],
-        egress: [{ to: [{ podSelector: { matchLabels: npmCacheLabels() } }], ports: [port] }],
-      },
-    },
   ]
   const service = {
     apiVersion: 'v1',
@@ -376,12 +367,14 @@ function buildNpmCacheManifests(
 }
 
 /**
- * The cache's two policies that name node addresses: its ingress admits the
- * node (kubelet probes), and its egress to the world excludes nodes and pods.
+ * The cache's two policies, which name node addresses:
+ *  - Ingress from the proxy, which carries every workspace's fetches, and
+ *    from the node (kubelet probe).
+ *  - Egress to public addresses on 443 (the uplink), the shared floor that
+ *    leaves out every node and non-public address (`wideEgress`), and DNS,
+ *    so a compromised cache cannot reach in-cluster services.
  */
-function buildNpmCacheNodePolicyManifests(
-  cidrs: { nodes: string[]; pods: string[] },
-): Array<Record<string, unknown>> {
+function buildNpmCacheNodePolicyManifests(cidrs: NpmCacheCidrs): Array<Record<string, unknown>> {
   return [
     {
       apiVersion: 'networking.k8s.io/v1',
@@ -391,7 +384,7 @@ function buildNpmCacheNodePolicyManifests(
         podSelector: { matchLabels: npmCacheLabels() },
         policyTypes: ['Ingress'],
         ingress: [
-          { from: [{ podSelector: admitted }], ports: [port] },
+          { from: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }], ports: [port] },
           { from: cidrs.nodes.map((cidr) => ({ ipBlock: { cidr } })), ports: [port] },
         ],
       },
@@ -404,11 +397,8 @@ function buildNpmCacheNodePolicyManifests(
         podSelector: { matchLabels: npmCacheLabels() },
         policyTypes: ['Egress'],
         egress: [
-          {
-            to: [{ ipBlock: { cidr: '0.0.0.0/0', except: [...cidrs.pods, ...cidrs.nodes] } }],
-            ports: [{ protocol: 'TCP', port: 443 }],
-          },
-          { ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] },
+          { ...wideEgress(cidrs.nodeAddrs, cidrs.dns)[0], ports: [{ protocol: 'TCP', port: 443 }] },
+          dnsEgress(cidrs.dns),
         ],
       },
     },
@@ -416,10 +406,8 @@ function buildNpmCacheNodePolicyManifests(
 }
 
 /** Re-render the cache's node-address policies, for `reconcileNodeSet`. */
-export async function syncNpmCacheNodes(nodeCidrs: string[]): Promise<void> {
-  for (const manifest of buildNpmCacheNodePolicyManifests({ nodes: nodeCidrs, pods: await clusterPodCidrs() })) {
-    await applyObject(manifest)
-  }
+export async function syncNpmCacheNodes(cidrs: NpmCacheCidrs): Promise<void> {
+  for (const manifest of buildNpmCacheNodePolicyManifests(cidrs)) await applyObject(manifest)
 }
 
 /** How long a fresh rollout may take, including the claim binding. */
@@ -436,7 +424,7 @@ export async function ensureNpmCache(): Promise<void> {
   await ensureNamespace()
   const { workload, service } = buildNpmCacheManifests(
     { verdaccio, nginx },
-    { nodes: await nodeIpBlocks(), pods: await clusterPodCidrs() },
+    { nodes: await nodeIpBlocks(), nodeAddrs: await nodeAddressBlocks(), dns: await clusterDnsCidrs() },
   )
   for (const manifest of workload) await applyObject(manifest)
   await waitForRollout({

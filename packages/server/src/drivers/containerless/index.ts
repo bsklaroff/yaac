@@ -155,6 +155,7 @@ export function createContainerlessDriver(): WorkspaceDriver {
     removeAsRoot: () => Promise.resolve(false),
     runInStoppedCheckout: (target, script, args, opts) => runInStoppedCheckout(target, script, args, opts),
     // No public sites here: the site routes refuse before reaching these.
+    outdatedWorkspaces: () => Promise.resolve([]),
     syncSites: () => Promise.resolve(),
     siteCloudflareStatus: () => Promise.resolve('absent'),
     siteTailnetStatus: () => Promise.resolve('absent'),

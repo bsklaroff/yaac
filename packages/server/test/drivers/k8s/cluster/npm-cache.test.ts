@@ -1,7 +1,7 @@
 /**
  * The npm cache's barrel functions: deploying Verdaccio behind its caching
- * nginx, and the URL a
- * workspace create reads to decide whether pnpm installs through it.
+ * nginx, the URL a workspace create reads to decide whether pnpm installs
+ * through it, and the `host:port` its registration names for the proxy.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcess from 'node:child_process'
@@ -20,16 +20,18 @@ vi.mock('node:child_process', async (importOriginal) => ({
   },
 }))
 
-// The node-CIDR probe behind the network policies reads the live cluster.
+// The address probes behind the network policies read the live cluster.
 vi.mock('#drivers/k8s/cluster/cluster-cidrs', () => ({
   nodeIpBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32']),
-  clusterPodCidrs: vi.fn().mockResolvedValue(['10.244.0.0/16']),
+  nodeAddressBlocks: vi.fn().mockResolvedValue(['10.89.0.7/32', '5.75.1.7/32']),
+  clusterDnsCidrs: vi.fn().mockResolvedValue(['10.96.0.10/32']),
 }))
 
 import {
   NGINX_MIRROR_TAG,
   VERDACCIO_MIRROR_TAG,
   ensureNpmCache,
+  npmCacheHost,
   registryRef,
   servingNpmCacheUrl,
 } from '#drivers/k8s/cluster'
@@ -63,7 +65,7 @@ afterEach(() => {
 })
 
 describe('ensureNpmCache', () => {
-  it('stands up one read-only Verdaccio on its claim behind nginx, walled to workspaces, and publishes it last', async () => {
+  it('stands up one read-only Verdaccio on its claim behind nginx, walled to the proxy, and publishes it last', async () => {
     await ensureNpmCache()
 
     const config = appliedNamed('ConfigMap', 'yaac-npm-cache-config')?.data?.['config.yaml'] ?? ''
@@ -143,39 +145,31 @@ describe('ensureNpmCache', () => {
       resources: { requests: { storage: '20Gi' } },
     })
 
-    // Only workspace pods labelled for the cache (a project with
-    // `npmCache: false` gets no label), on both ends of the connection.
-    const admitted = {
-      matchLabels: { 'yaac.npm-cache': 'true' },
-      matchExpressions: [{ key: 'yaac.workspace-id', operator: 'Exists' }],
-    }
+    // Workspaces reach it only through the proxy, which their
+    // registrations name it to; the node, for the kubelet's probe.
     expect(appliedNamed('NetworkPolicy', 'yaac-npm-cache-ingress')?.spec).toEqual({
       podSelector: { matchLabels: { app: 'yaac-npm-cache' } },
       policyTypes: ['Ingress'],
       ingress: [
-        { from: [{ podSelector: admitted }], ports: [{ protocol: 'TCP', port: 4873 }] },
+        { from: [{ podSelector: { matchLabels: { app: 'yaac-proxy' } } }], ports: [{ protocol: 'TCP', port: 4873 }] },
         { from: [{ ipBlock: { cidr: '10.89.0.7/32' } }], ports: [{ protocol: 'TCP', port: 4873 }] },
       ],
     })
-    expect(appliedNamed('NetworkPolicy', 'yaac-npm-cache-workspace-egress')?.spec).toEqual({
-      podSelector: admitted,
-      policyTypes: ['Egress'],
-      egress: [{
-        to: [{ podSelector: { matchLabels: { app: 'yaac-npm-cache' } } }],
-        ports: [{ protocol: 'TCP', port: 4873 }],
-      }],
-    })
-    // Egress to npmjs, but never to in-cluster 443 listeners.
-    expect(appliedNamed('NetworkPolicy', 'yaac-npm-cache-egress')?.spec).toMatchObject({
-      policyTypes: ['Egress'],
-      egress: [
-        {
-          to: [{ ipBlock: { cidr: '0.0.0.0/0', except: ['10.244.0.0/16', '10.89.0.7/32'] } }],
-          ports: [{ protocol: 'TCP', port: 443 }],
-        },
-        { ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] },
-      ],
-    })
+    expect(appliedNamed('NetworkPolicy', 'yaac-npm-cache-workspace-egress')).toBeUndefined()
+    // Egress to npmjs on public addresses, never to a node (its public
+    // address included) or any other non-public address, and DNS.
+    const egress = appliedNamed('NetworkPolicy', 'yaac-npm-cache-egress')?.spec as {
+      policyTypes: string[]
+      egress: Array<{ to: Array<{ ipBlock?: { cidr: string; except?: string[] } }>; ports: unknown[] }>
+    }
+    expect(egress.policyTypes).toEqual(['Egress'])
+    const [world, dns] = egress.egress
+    expect(world.ports).toEqual([{ protocol: 'TCP', port: 443 }])
+    const v4 = world.to[0].ipBlock!
+    expect(v4.cidr).toBe('0.0.0.0/0')
+    for (const cidr of ['10.89.0.7/32', '5.75.1.7/32', '10.0.0.0/8', '169.254.0.0/16']) expect(v4.except).toContain(cidr)
+    expect(dns.ports).toEqual([{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }])
+    expect(JSON.stringify(dns.to)).toContain('10.96.0.10/32')
 
     // The Service is applied last, after the rollout, so a cache that
     // never came up has no Service.
@@ -220,5 +214,11 @@ describe('servingNpmCacheUrl', () => {
     await expect(servingNpmCacheUrl()).resolves.toBe(url)
     fakeCluster.seed(slice('cache-a', 'yaac-npm-cache', false))
     await expect(servingNpmCacheUrl()).resolves.toBeNull()
+  })
+})
+
+describe('npmCacheHost', () => {
+  it('names the cache by its Service\'s cluster name and port, which the proxy dials as named', () => {
+    expect(npmCacheHost()).toBe('yaac-npm-cache.test-ns.svc.cluster.local:4873')
   })
 })

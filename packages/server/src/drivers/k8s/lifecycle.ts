@@ -5,7 +5,7 @@ import {
   setActiveClusterCache,
   type WorkspaceDeltaSource,
 } from '#drivers/k8s/substrate'
-import { ensureMainRegistry, ensureMountd, watchMountd } from '#drivers/k8s/cluster'
+import { ensureMainRegistry, ensureMountd, resyncSiteEndpoints, watchMountd } from '#drivers/k8s/cluster'
 import { proxyClient } from '#drivers/k8s/egress'
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
 import {
@@ -111,6 +111,13 @@ export async function startK8sDriver(sinks: DriverSinks): Promise<void> {
     }
     if (source === 'proxy-refreshed') {
       sinks.trigger('proxy-refreshed')
+      return
+    }
+    // A netd pod that restarted has a new address, which its node's sites'
+    // endpoints must follow (docs/public-sites.md "The router").
+    if (source === 'netd-pods') {
+      void resyncSiteEndpoints()
+        .catch((err: unknown) => serverLog(`[sites] re-pointing site endpoints at netd failed: ${String(err)}`))
       return
     }
     if (source === 'workspace-pods') {

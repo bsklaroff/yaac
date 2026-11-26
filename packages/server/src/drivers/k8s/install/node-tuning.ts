@@ -26,8 +26,8 @@ export const NODE_TASKSMAX_LIVE = 'infinity'
 const NODE_MIN_FREE_KBYTES = 262144
 /**
  * inotify limits. On kind all nodes share the host's pool, and the default
- * 128 instances is too few for a multi-node cluster: netd's Envoy then
- * crashes (SIGSEGV on `inotify_fd_ >= 0`) and workspaces lose egress.
+ * 128 instances is too few for a multi-node cluster: Envoy (the site
+ * router, the registry gate) then crashes (SIGSEGV on `inotify_fd_ >= 0`).
  */
 const NODE_INOTIFY_MAX_USER_INSTANCES = 1024
 const NODE_INOTIFY_MAX_USER_WATCHES = 524288

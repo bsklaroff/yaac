@@ -6,10 +6,13 @@ import {
   LABEL_INSTALL_ID,
   PRIORITY_CLASS_WORKSPACE,
   RUNTIME_CLASS_GVISOR,
+  SANDBOX_DNS,
   installSecurityContext,
   k8sWorkspacePaths,
+  netshimContainer,
   nodeMountsNodePath,
   sentryTmpfsAnnotations,
+  socketVolume,
 } from '#drivers/k8s/substrate'
 
 /**
@@ -83,7 +86,8 @@ export interface PodJobParams {
   /** Variables read from a Secret's key of the same name: a project's run
    *  secrets, on a pod made on demand. */
   secretEnv?: { secretName: string; names: string[] }
-  /** The pod's node-mounts directory, under this install's root. */
+  /** The pod's node-mounts directory, under this install's root. Its socket
+   *  directory has the same name under the socket root. */
   nodeMountsDir: string
   /** This server build's helpers folder on the shared tier. */
   helpers: string
@@ -122,8 +126,8 @@ export interface PodJobParams {
   /** Ephemeral-storage limit; kubelet evicts the pod past it. The scratch
    *  volume's sizeLimit is added on top. */
   ephemeralStorageLimitBytes: number
-  /** Pinned proxy Service ClusterIP, used as the pod's DNS resolver. */
-  proxyHost: string
+  /** netshim's image (the mountd image), which carries the pod's traffic. */
+  netshimImage: string
   /** The tree container's image, for a pod whose workspace keeps its files
    *  on its node (every pod but a site release's). */
   treeImage?: string
@@ -217,6 +221,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
     // can hardlink into the others, which share it.
     { name: 'scratch', emptyDir: { sizeLimit: String(p.scratchBytes + SCRATCH_SIZELIMIT_SLACK_BYTES) } },
     ...(p.claimMounts ?? []).map((m, i) => ({ name: `pv-${String(i)}`, persistentVolumeClaim: { claimName: m.claimName } })),
+    socketVolume(p.nodeMountsDir),
   ]
   const volumeMounts: Array<Record<string, unknown>> = [
     nodeMounts,
@@ -234,7 +239,7 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
     [SCRATCH_BYTES_ANNOTATION]: String(p.scratchBytes),
   }
 
-  const initContainers: Array<Record<string, unknown>> = []
+  const initContainers: Array<Record<string, unknown>> = [netshimContainer(p.netshimImage)]
   // A byo volume's claim is a fresh filesystem whose root belongs to root.
   const volumeRoots = (p.claimMounts ?? []).map((_, i) => `pv-${String(i)}`)
   if (volumeRoots.length > 0) {
@@ -299,12 +304,11 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
           // gVisor contains in-container root (the image has passwordless
           // sudo).
           runtimeClassName: RUNTIME_CLASS_GVISOR,
-          // The proxy's DNS stub is the only resolver. It forwards cluster
-          // names to CoreDNS and answers external names with a sinkhole IP,
-          // since netd redirects egress and the proxy routes by SNI/Host.
-          dnsPolicy: 'None',
-          dnsConfig: { nameservers: [p.proxyHost] },
-          ...(initContainers.length > 0 ? { initContainers } : {}),
+          // netshim's stub is the only resolver, and answers every name with
+          // the sinkhole: every dial lands on netshim whatever it names, and
+          // the proxy routes by SNI or Host (docs/workspace-egress.md).
+          ...SANDBOX_DNS,
+          initContainers,
           containers: [
             {
               name: 'workspace',
@@ -313,6 +317,9 @@ export function buildPodJobManifest(p: PodJobParams): Record<string, unknown> {
               imagePullPolicy: 'IfNotPresent',
               workingDir: '/',
               env,
+              // The sandbox keeps whatever raw-socket grant a spec makes,
+              // since netshim needs one; the workspace gets none.
+              securityContext: { capabilities: { drop: ['NET_RAW'] } },
               volumeMounts,
               lifecycle: {
                 // The generic half of in-pod setup; kubelet holds Ready

@@ -24,10 +24,11 @@ vi.mock('#drivers/k8s/cluster/utility-image', () => ({
   ensureUtilityImage: vi.fn().mockResolvedValue('localhost:5000/podman-stable:mirror'),
 }))
 
-// The registry: it answers, and already holds the probe image, so the
-// probe push is a lookup.
+// The registry: it answers, and already holds the probe image and every
+// image yaac builds (netshim's, for the sandbox probes), so each is a lookup.
 vi.mock('#drivers/k8s/cluster/registry', async (importOriginal) => ({
   ...await importOriginal<typeof registryModule>(),
+  prebuiltRef: vi.fn((_what: string, tag: string) => Promise.resolve(`localhost:5000/${tag}`)),
   registryEndpoint: vi.fn().mockResolvedValue('127.0.0.1:41234'),
   registryPodEndpoint: vi.fn().mockResolvedValue('127.0.0.1:41235'),
   registryReachable: vi.fn().mockResolvedValue(true),
@@ -40,7 +41,7 @@ import { execFileAsync } from '#drivers/k8s/substrate/api'
 import { registryReachable, registryTagState } from '#drivers/k8s/cluster/registry'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { _resetK8sClientForTests } from '#drivers/k8s/substrate/client'
-import { GVISOR_NODE_LABEL, WORKSPACE_POOL_KEY, buildPriorityClassManifests } from '#drivers/k8s/substrate'
+import { GVISOR_NODE_LABEL, RUNTIME_CLASS_GVISOR, WORKSPACE_POOL_KEY, buildPriorityClassManifests } from '#drivers/k8s/substrate'
 // Setup values, not units under test.
 import { buildRuntimeClassManifests } from '#drivers/k8s/install/gvisor-runtime'
 import type { NodeTaint } from '#drivers/k8s/substrate'
@@ -236,12 +237,18 @@ let serviceIps: Record<string, string> = {}
 let proxyEgressPolicy = true
 /** Whether the server has its egress NetworkPolicy; a case edits. */
 let serverEgressPolicy = true
-/** `ready/desired` for the two datapath DaemonSets; null for not deployed. */
-let datapathReady: Record<'calico-node' | 'yaac-netd', string | null> = { 'calico-node': '1/1', 'yaac-netd': '1/1' }
-/** Where calico-node runs: a manifest install's kube-system, or the Tigera operator's calico-system. */
-let calicoNamespace = 'kube-system'
+/** `ready/desired` for netd's DaemonSet; null for not deployed. */
+let netdReady: string | null = '1/1'
 /** netd's pods' container statuses; a case edits. */
 let netdContainerStatuses: unknown[] = []
+/** netd's pod address, when a case gives it one. */
+let netdPodIp: string | undefined
+/**
+ * What the sandbox egress probe's requests answer, by marker key, over the
+ * healthy defaults (the allowlisted host 200, every other target the
+ * proxy's 403, no socket); a case edits.
+ */
+let egressAnswers: Record<string, string> = {}
 /** The uid the probe sees owning its peer's directory, when not the peer's own; a case edits. */
 let probeOwner: number | undefined
 /** Pod name -> what its log says, over the healthy defaults; a case edits. */
@@ -265,7 +272,17 @@ function logsFor(name: string): string {
       return `PEER_NODE=yaac-control-plane\nPEER_RTT_MS=7\nPEER_SAW_WRITE=${peerSawWrite ? 'ok' : ''}\n`
     case 'yaac-cluster-check-gvisor': return 'GVISOR_SANDBOXED\n'
     case 'yaac-cluster-check-fsprobe': return FSPROBE_ALL_PASS
-    case 'yaac-cluster-check-egress': return 'NP_BLOCKED\n'
+    case 'yaac-cluster-check-egress': {
+      // One answer per request the script makes.
+      const keys = [...appliedPodCommand(name).matchAll(/^eg (\S+) /gm)].map((m) => m[1])
+      return [
+        ...keys.map((k) => `EG_${k} ${egressAnswers[k] ?? (k === 'ALLOWED' ? '200' : '403')}`),
+        `EG_SOCKETS ${egressAnswers.SOCKETS ?? 'none'}`, 'EG_DONE', '',
+      ].join('\n')
+    }
+    case 'yaac-cluster-check-enforcement':
+      return [...appliedPodCommand(name).matchAll(/echo NP_(\w+)_OPEN/g)].map((m) => `NP_${m[1]}_LOCKED`).join('\n')
+        + '\nNP_DONE\n'
     case 'yaac-cluster-check-server-egress': return 'SRV_API_OPEN\nSRV_KUBELET_LOCKED\nSRV_METADATA_LOCKED\nSRV_DNS_OK\n'
     case 'yaac-cluster-check-npm-cache': return 'NPM_CACHE_OK\n'
     case 'yaac-cluster-check-sites-cloudflare':
@@ -351,13 +368,9 @@ function seedCluster(): void {
       spec: { nodeName: n.metadata.name },
       status: { containerStatuses: [{ ready: !installerNotReady.includes(n.metadata.name) }] },
     })),
-    ...Object.entries(datapathReady).flatMap(([name, ratio]) => {
-      if (ratio === null) return []
-      const [ready, desired] = ratio.split('/').map(Number)
-      return [daemonSet(name, name === 'calico-node' ? calicoNamespace : NS, {
-        numberReady: ready, desiredNumberScheduled: desired,
-      })]
-    }),
+    ...(netdReady === null ? [] : [daemonSet('yaac-netd', NS, {
+      numberReady: Number(netdReady.split('/')[0]), desiredNumberScheduled: Number(netdReady.split('/')[1]),
+    })]),
     // Settled, so a node with no mountd fails at once rather than waiting.
     daemonSet('yaac-mountd', NS, { desiredNumberScheduled: 1, numberReady: 1 }),
     ...extraObjects,
@@ -379,7 +392,7 @@ function seedCluster(): void {
       kind: 'Pod',
       metadata: { name: 'yaac-netd-0', namespace: NS, labels: { app: 'yaac-netd' } },
       spec: { nodeName: 'yaac-control-plane' },
-      status: { phase: 'Running', containerStatuses: netdContainerStatuses },
+      status: { phase: 'Running', containerStatuses: netdContainerStatuses, ...(netdPodIp ? { podIP: netdPodIp } : {}) },
     },
     // Events outlive a probe pod that never ran; selected by its uid.
     ...Object.entries(podEvents).map(([pod, event]) => {
@@ -426,8 +439,8 @@ async function check(): ReturnType<typeof runClusterCheck> {
 }
 
 /**
- * The child processes on the all-pass path: kubectl and podman present,
- * the kind node fixups applied, and netd's routes naming two workload veths.
+ * The child processes on the all-pass path: kubectl and podman present, and
+ * the kind node fixups applied.
  */
 function happyResponses(
   file: string,
@@ -437,14 +450,6 @@ function happyResponses(
 }
 
 function happyResponse(file: string, args: string[]): { stdout: string; stderr: string } {
-  if (file === 'kubectl' && args[0] === 'exec' && args.includes('route')) {
-    // A healthy Calico node: two workload veths under the default prefix.
-    return {
-      stdout: '10.244.169.193 dev calibb6b64b7901 scope link\n'
-        + '10.244.169.197 dev calia132c78e002 scope link\n',
-      stderr: '',
-    }
-  }
   if (file === 'podman' && args[0] === 'inspect') {
     return { stdout: '32768\n', stderr: '' }
   }
@@ -510,7 +515,7 @@ describe('runClusterCheck', () => {
     tmpDir = await createTempDataDir()
     resetClusterCidrCache()
     clusterNodes = [nodeItem('yaac-control-plane')]
-    runtimeClassNames = ['gvisor', 'runc']
+    runtimeClassNames = [RUNTIME_CLASS_GVISOR, 'runc']
     priorityClasses = livePriorityClasses()
     serverSecurityContext = null
     podPhases = {}
@@ -529,12 +534,14 @@ describe('runClusterCheck', () => {
     storageClassProvisioner = null
     npmCacheIp = '10.96.4.2'
     npmCacheReady = true
-    serviceIps = {}
+    // The proxy deploys with the first workspace; most cases have one.
+    serviceIps = { 'yaac-proxy': '10.96.7.2' }
     proxyEgressPolicy = true
     serverEgressPolicy = true
-    datapathReady = { 'calico-node': '1/1', 'yaac-netd': '1/1' }
-    calicoNamespace = 'kube-system'
+    netdReady = '1/1'
     netdContainerStatuses = []
+    netdPodIp = undefined
+    egressAnswers = {}
     podLogs = {}
     extraObjects = []
     mountdRunning = true
@@ -590,12 +597,8 @@ describe('runClusterCheck', () => {
       ['mountd', 'pass'],
       ['egress', 'pass'],
       ['npm-cache', 'pass'],
-      // Nothing deployed to dial (see the sites case).
-      ['sites', 'warn'],
+      ['sites', 'pass'],
       ['datapath', 'pass'],
-      // Checked on every run: netd can be Ready with zero pod-to-veth
-      // mappings, so nothing else would notice a wrong prefix.
-      ['veth-source', 'pass'],
       // Skipped on one node; the checks above cover it.
       ['per-node', 'skip'],
       ['storage-semantics', 'pass'],
@@ -604,7 +607,7 @@ describe('runClusterCheck', () => {
       ['node-local-fs', 'skip'],
     ])
     expect(ok).toBe(true)
-    expect(byName(results, 'datapath')?.detail).toContain('calico-node and yaac-netd ready')
+    expect(byName(results, 'datapath')?.detail).toContain('yaac-netd ready on every node')
 
     expect(deps.registryLookups).toHaveBeenCalledWith('yaac-cluster-probe:busybox-1.36')
     const probePod = applied()
@@ -632,7 +635,7 @@ describe('runClusterCheck', () => {
     // The global claim, as workspace pods mount it.
     expect(podManifest.spec.volumes[0].persistentVolumeClaim?.claimName).toBe('yaac-global')
     // Like a workspace pod: gvisor, no user namespace.
-    expect(podManifest.spec.runtimeClassName).toBe('gvisor')
+    expect(podManifest.spec.runtimeClassName).toBe(RUNTIME_CLASS_GVISOR)
     expect(podManifest.spec.hostUsers).toBeUndefined()
     // Same identity as a workspace pod, with a read-write mount.
     expect(podManifest.spec.securityContext).toEqual({
@@ -685,7 +688,7 @@ describe('runClusterCheck', () => {
     const pod = appliedPod('yaac-cluster-check-mountd') as AppliedPod & {
       spec: { runtimeClassName?: string; volumes: Array<{ name: string; hostPath?: { path: string } }> }
     }
-    expect(pod.spec.runtimeClassName).toBe('gvisor')
+    expect(pod.spec.runtimeClassName).toBe(RUNTIME_CLASS_GVISOR)
     const dir = pod.spec.volumes.find((v) => v.name === 'node-mounts')?.hostPath?.path.split('/').at(-1)
     // With the install's token: a node-local folder read-only, and a
     // folder of the pod's own volume.
@@ -947,7 +950,7 @@ describe('runClusterCheck', () => {
       .filter((m) => /^yaac-cluster-check-node-\d+$/.test(m.metadata?.name ?? ''))
     expect(nodePods.map((p) => p.spec?.nodeName).sort()).toEqual(['yaac-worker', 'yaac-worker2'])
     for (const pod of nodePods) {
-      expect(pod.spec?.runtimeClassName).toBe('gvisor')
+      expect(pod.spec?.runtimeClassName).toBe(RUNTIME_CLASS_GVISOR)
       // Only what the RuntimeClass declares, as for a workspace pod.
       expect(pod.spec?.tolerations).toBeUndefined()
       // Always, so a cached layer cannot hide an unreachable registry.
@@ -1084,7 +1087,7 @@ describe('runClusterCheck', () => {
       expect(byName(results, gate)).toMatchObject({ status: 'skip' })
       expect(byName(results, gate)?.detail).toContain('no Ready node takes workspaces')
     }
-    for (const gate of ['gvisor-installer', 'datapath', 'veth-source', 'vap']) {
+    for (const gate of ['gvisor-installer', 'datapath', 'vap']) {
       expect(byName(results, gate)?.status).not.toBe('skip')
     }
     expect(applied().map((c) => (c[0] as { metadata?: { name?: string } }).metadata?.name)
@@ -1273,46 +1276,125 @@ describe('runClusterCheck', () => {
     })
   })
 
-  it('passes the egress check when a session-labeled pod cannot reach the apiserver', async () => {
+  // The acceptance test (docs/workspace-egress.md): every request but the
+  // allowlisted one completes with the proxy's refusal.
+  it('passes egress when policy is enforced and a sandbox reaches only its allowlist through the socket datapath', async () => {
+    serviceIps['yaac-server'] = '10.96.7.1'
+    serviceIps['yaac-registry'] = '10.96.7.4'
+    extraObjects.push(
+      {
+        apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice',
+        metadata: { name: 'kubernetes', namespace: 'default', labels: { 'kubernetes.io/service-name': 'kubernetes' } },
+        addressType: 'IPv4', endpoints: [{ addresses: ['172.18.0.3'] }], ports: [{ port: 6443 }],
+      },
+      {
+        apiVersion: 'v1', kind: 'Pod',
+        metadata: { name: 'dev', namespace: NS, labels: { 'yaac.workspace-id': 'w', 'yaac.install-id': 'test-install' } },
+        status: { phase: 'Running', podIP: '10.244.0.9' },
+      },
+    )
     stage()
     const { results } = await check()
-    expect(byName(results, 'egress')).toMatchObject({
-      status: 'pass',
-      detail: expect.stringContaining('default-denied at the CNI') as string,
-    })
+    const egress = byName(results, 'egress')
+    expect(egress).toMatchObject({ status: 'pass' })
+    expect(egress?.detail).toContain('NetworkPolicy is enforced (a walled pod cannot dial the image registry, nor the yaac server)')
+    expect(egress?.detail).toContain('a sandbox reaches example.com and is refused the yaac server by address, the yaac server '
+      + 'by name, the apiserver, node 10.89.0.7\'s kubelet, another sandbox, a literal internet address, and sees no node socket')
+
+    // The enforcement probe: a runc pod the world-deny policy covers.
+    const walled = appliedPod('yaac-cluster-check-enforcement') as AppliedPod & {
+      metadata: { labels: Record<string, string> }; spec: { runtimeClassName?: string }
+    }
+    expect(walled.metadata.labels).toEqual({ app: 'yaac-cluster-check-enforcement' })
+    expect(walled.spec.runtimeClassName).toBeUndefined()
+    expect(appliedPodCommand('yaac-cluster-check-enforcement')).toContain('nc -w 4 10.96.7.4 5000 ')
+
+    // The sandbox: a workspace's shape, as root with no raw socket, found
+    // by netd's relay by its label and socket volume, never by a listing.
+    const sandbox = appliedPod('yaac-cluster-check-egress') as AppliedPod & {
+      metadata: { labels: Record<string, string> }
+      spec: {
+        runtimeClassName: string
+        dnsPolicy: string
+        dnsConfig: { nameservers: string[] }
+        initContainers: Array<{ name: string; volumeMounts: Array<{ mountPath: string }> }>
+        volumes: Array<{ name: string; hostPath?: { path: string } }>
+        containers: Array<{ securityContext: Record<string, unknown>; volumeMounts?: unknown[] }>
+      }
+    }
+    const probeId = sandbox.metadata.labels['yaac.workspace-id']
+    expect(Object.keys(sandbox.metadata.labels)).toEqual(['yaac.workspace-id'])
+    expect(sandbox.spec.runtimeClassName).toBe(RUNTIME_CLASS_GVISOR)
+    expect(sandbox.spec.dnsPolicy).toBe('None')
+    expect(sandbox.spec.dnsConfig.nameservers).toEqual(['198.18.0.1'])
+    expect(sandbox.spec.initContainers.map((c) => c.name)).toEqual(['netshim'])
+    const sockets = sandbox.spec.volumes.find((v) => v.name === 'sockets')
+    expect(sockets?.hostPath?.path).toMatch(new RegExp(`^/var/lib/yaac/sockets/[^/]+/${probeId}\\.[0-9a-f]{8}$`))
+    // Only netshim mounts the socket directory.
+    expect(sandbox.spec.containers[0].volumeMounts).toBeUndefined()
+    expect(sandbox.spec.containers[0].securityContext).toEqual({ runAsUser: 0, capabilities: { drop: ['NET_RAW'] } })
+    const script = appliedPodCommand('yaac-cluster-check-egress')
+    for (const line of [
+      'eg ALLOWED http://example.com/',
+      'eg SERVER http://10.96.7.1:8787/api/health',
+      'eg SERVER_NAME http://yaac-server.test-ns.svc.cluster.local:8787/api/health',
+      'eg API http://172.18.0.3:6443/',
+      'eg NODE http://10.89.0.7:10250/',
+      'eg PEER http://10.244.0.9:10300/',
+      'eg WORLD http://1.1.1.1/',
+    ]) expect(script).toContain(line)
+    // Its registration allows the one host, and goes with the probe.
+    const registration = fakeCluster.callsOf('apply', 'ConfigMap')
+      .map((c) => c.body as { metadata: { name: string; labels: Record<string, string> }; data: Record<string, string> })
+      .find((cm) => cm.metadata.labels['yaac.workspace-id'] === probeId)
+    expect(JSON.parse(registration?.data['registration.json'] ?? '{}')).toMatchObject({ allowedHosts: ['example.com'], owner: 'none' })
+    expect(fakeCluster.callsOf('delete', 'ConfigMap').map((c) => c.name)).toContain(registration?.metadata.name)
   })
 
-  it('fails the egress check when the CNI does not enforce NetworkPolicy', async () => {
-    podLogs['yaac-cluster-check-egress'] = 'NP_REACHED\n'
+  it('leaves the sandbox half unverified while the proxy is not deployed, and policy enforcement with nothing to dial', async () => {
+    delete serviceIps['yaac-proxy']
+    stage()
+    const { results } = await check()
+    expect(byName(results, 'egress')).toMatchObject({ status: 'pass' })
+    expect(byName(results, 'egress')?.detail).toContain('no registry or server to dial, so policy enforcement is unverified')
+    expect(byName(results, 'egress')?.detail).toContain('the proxy is not deployed yet')
+    expect(appliedPodCommand('yaac-cluster-check-egress')).toBe('')
+  })
+
+  it('fails egress when the cluster does not enforce NetworkPolicy', async () => {
+    serviceIps['yaac-registry'] = '10.96.7.4'
+    podLogs['yaac-cluster-check-enforcement'] = 'NP_REGISTRY_OPEN\nNP_DONE\n'
     stage()
     const { ok, results } = await check()
     expect(ok).toBe(false)
     const egress = byName(results, 'egress')
     expect(egress).toMatchObject({ status: 'fail' })
-    expect(egress?.detail).toContain('not enforcing NetworkPolicy')
+    expect(egress?.detail).toContain('reached the image registry — the cluster is not enforcing NetworkPolicy')
     expect(egress?.fix).toContain('Calico')
   })
 
   it.each([
-    ['dial a transparent port (forgery lock open)', 'yaac-proxy', 'PROXY', 'forgery lock is open', 'proxy-ingress'],
-    // Either server policy could be the missing one, so the fix names both.
-    ['reach the yaac server', 'yaac-server', 'SERVER', 'reached the yaac server',
-      'yaac-server-ingress and yaac-server-ingress-front'],
-    ['reach the image registry', 'yaac-registry', 'REGISTRY', 'reached the image registry', 'builder'],
-  ])('fails the egress check when a session pod can %s', async (_, svc, key, detail, fix) => {
-    serviceIps[svc] = '10.96.7.7'
-    podLogs['yaac-cluster-check-egress'] = `NP_BLOCKED\nNP_${key}_OPEN\n`
+    ['reaches a target, answered by it', { WORLD: '301' }, 'a sandbox reached a literal internet address (answered 301)'],
+    ['gets no answer from a target the proxy refuses', { NODE: 'none' }, 'node 10.89.0.7\'s kubelet got no answer'],
+    ['is refused its allowlisted host', { ALLOWED: '403' }, 'which its allowlist admits, was answered 403'],
+    ['gets no answer from its allowlisted host', { ALLOWED: 'none' }, 'sandboxes have no egress'],
+    ['sees a unix socket', { SOCKETS: '/run/x.sock ' }, 'sees unix sockets (/run/x.sock)'],
+  ])('fails egress when a sandbox %s', async (_, answers, detail) => {
+    egressAnswers = answers
     stage()
     const { ok, results } = await check()
     expect(ok).toBe(false)
-    const egress = byName(results, 'egress')
-    expect(egress).toMatchObject({ status: 'fail' })
-    expect(egress?.detail).toContain(detail)
-    expect(egress?.fix).toContain(fix)
-    const pod = applied()
-      .map((c) => c[0] as { metadata?: { name?: string }; spec?: { containers?: Array<{ command: string[] }> } })
-      .find((m) => m.metadata?.name === 'yaac-cluster-check-egress')
-    expect(pod?.spec?.containers?.[0].command[2]).toContain('nc -w 4 10.96.7.7 ')
+    expect(byName(results, 'egress')).toMatchObject({ status: 'fail' })
+    expect(byName(results, 'egress')?.detail).toContain(detail)
+  })
+
+  it('warns, not fails, when the proxy reaches no upstream for the allowlisted host', async () => {
+    egressAnswers = { ALLOWED: '502' }
+    stage()
+    const { results } = await check()
+    expect(byName(results, 'egress')).toMatchObject({ status: 'warn' })
+    expect(byName(results, 'egress')?.detail).toContain('the proxy answered 502')
+    expect(byName(results, 'egress')?.detail).toContain('a sandbox reaches the proxy and is refused')
   })
 
   it('fails the egress check when the deployed proxy has no egress policy', async () => {
@@ -1383,29 +1465,19 @@ describe('runClusterCheck', () => {
   })
 
   // Site traffic flows through the tunnels and the router, so pods labelled
-  // as any of them must not reach the server, the proxy's API or a dev
-  // workspace, and one labelled as a Cloudflare pod not the router's
-  // tailnet listener.
-  it('dials the server, the proxy and a dev workspace from pods labelled as the site edge', async () => {
+  // as any of them must not reach the server, the proxy's API or netd's
+  // stream port, and only the router netd's site port; one labelled as a
+  // Cloudflare pod must not reach the router's tailnet listener either.
+  it('dials the server, the proxy and netd from pods labelled as the site edge', async () => {
     serviceIps['yaac-server'] = '10.96.7.1'
-    serviceIps['yaac-proxy'] = '10.96.7.2'
     serviceIps['yaac-site-router'] = '10.96.7.3'
-    const pod = (name: string, ip: string, labels: Record<string, string>): FakeObject => ({
-      apiVersion: 'v1', kind: 'Pod', metadata: { name, namespace: NS, labels }, status: { phase: 'Running', podIP: ip },
-    })
+    netdPodIp = '10.244.0.5'
     stage()
-    // A release, and another probe's workspace-labelled pod, are not what
-    // the wall is about; a running dev workspace is.
-    extraObjects.push(
-      pod('release', '10.244.0.8', { 'yaac.workspace-id': 'r', 'yaac.install-id': 'test-install', 'yaac.site-id': 's' }),
-      pod('egress-probe', '10.244.0.7', { 'yaac.workspace-id': 'cluster-check-egress-probe' }),
-      pod('dev', '10.244.0.9', { 'yaac.workspace-id': 'w', 'yaac.install-id': 'test-install' }),
-    )
     let { results } = await check()
     expect(byName(results, 'sites')).toMatchObject({
       status: 'pass',
       detail: 'the site tunnels and router cannot dial the yaac server, nor the proxy\'s control port, '
-        + 'nor a workspace that is not a release',
+        + 'nor netd\'s stream port, into workspaces, and only the router reaches netd\'s site port',
     })
     for (const [role, app] of [
       ['cloudflare', 'yaac-site-tunnel-cloudflare'], ['tailnet', 'yaac-site-tunnel-tailnet'], ['router', 'yaac-site-router'],
@@ -1419,10 +1491,22 @@ describe('runClusterCheck', () => {
       expect(probe?.spec?.runtimeClassName).toBeUndefined()
       const script = probe?.spec?.containers?.[0].command[2] ?? ''
       expect(script).toContain('nc -w 4 10.96.7.1 8787 ')
-      expect(script).toContain('nc -w 4 10.244.0.9 ')
-      expect(script).not.toMatch(/10\.244\.0\.[78]/)
+      expect(script).toContain('nc -w 4 10.244.0.5 10262 ')
+      expect(script).toContain('nc -w 4 10.244.0.5 10263 ')
       expect(script.includes('nc -w 4 10.96.7.3 8081 '), role).toBe(role === 'cloudflare')
     }
+
+    // The router must reach netd's site port; a tunnel must not.
+    podLogs['yaac-cluster-check-sites-router'] = 'SITE_NETD_SITE_LOCKED\nSITES_DONE\n'
+    ;({ results } = await check())
+    expect(byName(results, 'sites')).toMatchObject({ status: 'fail' })
+    expect(byName(results, 'sites')?.detail).toContain('could not dial netd\'s site port')
+    podLogs['yaac-cluster-check-sites-router'] = 'SITE_NETD_SITE_OPEN\nSITES_DONE\n'
+    podLogs['yaac-cluster-check-sites-tailnet'] = 'SITE_NETD_SITE_OPEN\nSITES_DONE\n'
+    ;({ results } = await check())
+    expect(byName(results, 'sites')?.detail).toContain('a pod labelled as yaac-site-tunnel-tailnet reached netd\'s site port')
+    expect(byName(results, 'sites')?.detail).not.toContain('yaac-site-router reached')
+    delete podLogs['yaac-cluster-check-sites-tailnet']
 
     podLogs['yaac-cluster-check-sites-router'] = 'SITE_SERVER_OPEN\nSITES_DONE\n'
     ;({ results } = await check())
@@ -1501,28 +1585,43 @@ describe('runClusterCheck', () => {
       if (m.metadata?.name?.startsWith('yaac-cluster-check-sites-')) scripts[m.metadata.name] = m.spec?.containers?.[0].command[2] ?? ''
     }
     expect(scripts['yaac-cluster-check-sites-tailnet']).not.toContain('10.96.7.1 8787')
-    expect(scripts['yaac-cluster-check-sites-tailnet']).toContain('nc -w 4 10.244.0.9 ')
+    expect(scripts['yaac-cluster-check-sites-tailnet']).toContain('nc -w 4 10.244.0.5 10262 ')
     expect(scripts['yaac-cluster-check-sites-router']).toContain('10.96.7.1 8787')
     resolve4.mockRestore()
   })
 
-  // A workspace pod fetching through the Service checks the egress rule,
+  // A sandbox fetching by the cache's name checks the proxy's path to it,
   // the cache's ingress policy and its route out at once.
-  it('passes npm-cache when a session pod fetches a package through the Service\'s IP', async () => {
+  it('passes npm-cache when a sandbox fetches a package through the proxy by the cache\'s name', async () => {
     stage()
     const { results } = await check()
 
     expect(byName(results, 'npm-cache')?.status).toBe('pass')
-    const pod = applied().map((c) => c[0] as {
-      kind: string
-      metadata: { name: string; labels: Record<string, string> }
-      spec: { runtimeClassName?: string; containers: Array<{ command: string[] }> }
-    }).find((m) => m.metadata.name === 'yaac-cluster-check-npm-cache')
-    expect(pod?.metadata.labels['yaac.workspace-id']).toBeDefined()
-    expect(pod?.metadata.labels['yaac.npm-cache']).toBe('true')
-    expect(pod?.spec.runtimeClassName).toBe('gvisor')
-    expect(pod?.spec.containers[0].command[2])
-      .toContain('http://10.96.4.2:4873/is-number/-/is-number-7.0.0.tgz')
+    const pod = appliedPod('yaac-cluster-check-npm-cache') as AppliedPod & {
+      metadata: { labels: Record<string, string> }
+      spec: { runtimeClassName?: string; initContainers: Array<{ name: string }> }
+    }
+    const probeId = pod.metadata.labels['yaac.workspace-id']
+    expect(pod.spec.runtimeClassName).toBe(RUNTIME_CLASS_GVISOR)
+    expect(pod.spec.initContainers.map((c) => c.name)).toEqual(['netshim'])
+    expect(appliedPodCommand('yaac-cluster-check-npm-cache'))
+      .toContain('http://yaac-npm-cache.test-ns.svc.cluster.local:4873/is-number/-/is-number-7.0.0.tgz')
+    // Reached only because its registration names the cache.
+    const registration = fakeCluster.callsOf('apply', 'ConfigMap')
+      .map((c) => c.body as { metadata: { labels: Record<string, string> }; data: Record<string, string> })
+      .find((cm) => cm.metadata.labels['yaac.workspace-id'] === probeId)
+    expect(JSON.parse(registration?.data['registration.json'] ?? '{}')).toMatchObject({
+      allowedHosts: [], clusterServices: ['yaac-npm-cache.test-ns.svc.cluster.local:4873'],
+    })
+  })
+
+  it('warns on npm-cache, without probing, while the proxy is not deployed', async () => {
+    delete serviceIps['yaac-proxy']
+    stage()
+    const { results } = await check()
+    expect(byName(results, 'npm-cache')).toMatchObject({ status: 'warn' })
+    expect(byName(results, 'npm-cache')?.detail).toContain('the proxy is not deployed yet')
+    expect(appliedPodCommand('yaac-cluster-check-npm-cache')).toBe('')
   })
 
   it('warns, without failing, on an install with no npm cache', async () => {
@@ -1561,94 +1660,32 @@ describe('runClusterCheck', () => {
     expect(ok).toBe(false)
   })
 
-  it('passes datapath when calico-node and netd are both rolled out', async () => {
+  it('passes datapath when netd is rolled out on every node', async () => {
     stage()
     const { results } = await check()
-    expect(byName(results, 'datapath')).toMatchObject({
-      status: 'pass',
-      detail: expect.stringContaining('policy enforced, egress redirected') as string,
-    })
-
-    // The Tigera operator (AKS) runs calico-node in calico-system.
-    calicoNamespace = 'calico-system'
-    stage()
-    const operator = await check()
-    expect(byName(operator.results, 'datapath')).toMatchObject({ status: 'pass' })
-  })
-
-  it('fails veth-source when the redirect resolves no workload veth, though netd is Ready', async () => {
-    // netd is Ready once Envoy acks its config, even with zero pod-to-veth
-    // mappings, so a wrong prefix leaves every workspace without egress while
-    // the datapath check passes. Checked every run, since a node pool added
-    // later may differ.
-    const run = happyRun()
-    run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'exec' && args.includes('route')) {
-        return { stdout: '10.0.3.41 dev enia7b3c9d1e2f4 scope link\n', stderr: '' }
-      }
-      return happyResponses(file, args)
-    })
-    stage({ run })
-    const { ok, results } = await check()
-
-    expect(ok).toBe(false)
-    // The datapath check still passes, which is why this check exists.
-    expect(byName(results, 'datapath')).toMatchObject({ status: 'pass' })
-    const veth = byName(results, 'veth-source')
-    expect(veth).toMatchObject({ status: 'fail' })
-    expect(veth?.detail).toContain('cali*')
-    expect(veth?.detail).toMatch(/YAAC_CNI_VETH_PREFIX=eni\b/)
-  })
-
-  it('leaves veth-source unverified, not failed, when a netd pod cannot be exec\'d', async () => {
-    // "Could not read the routes" differs from "no workload routes"; only
-    // the second means a broken cluster.
-    const run = happyRun()
-    run.mockImplementation(async (file: string, args: string[]) => {
-      if (file === 'kubectl' && args[0] === 'exec' && args.includes('route')) {
-        throw new Error('unable to upgrade connection: container not found')
-      }
-      return happyResponses(file, args)
-    })
-    stage({ run })
-    const { ok, results } = await check()
-
-    expect(ok).toBe(true)
-    expect(byName(results, 'veth-source')).toMatchObject({ status: 'warn' })
-    expect(byName(results, 'veth-source')?.detail).toContain('unverified on yaac-control-plane')
-  })
-
-  it('fails datapath when calico-node is not ready (policy unenforced)', async () => {
-    datapathReady['calico-node'] = '0/1'
-    stage()
-    const { ok, results } = await check()
-    expect(ok).toBe(false)
-    const datapath = byName(results, 'datapath')
-    expect(datapath).toMatchObject({ status: 'fail' })
-    expect(datapath?.detail).toContain('calico-node is 0/1 ready — NetworkPolicy is not being enforced')
+    expect(byName(results, 'datapath')).toMatchObject({ status: 'pass', detail: 'yaac-netd ready on every node (1/1)' })
   })
 
   it('names the unhealthy netd container when the DaemonSet is not ready', async () => {
-    // netd's readiness is Envoy's config ack, so the DaemonSet counters
-    // cannot tell a broken sidecar from a broken netd.
-    datapathReady['yaac-netd'] = '0/1'
+    // The DaemonSet counters cannot tell a broken relay from a broken netd.
+    netdReady = '0/1'
     netdContainerStatuses = [
       { name: 'netd', ready: false },
-      { name: 'envoy', ready: false, state: { waiting: { reason: 'CrashLoopBackOff' } } },
+      { name: 'relay', ready: false, state: { waiting: { reason: 'CrashLoopBackOff' } } },
     ]
     stage()
     const { results } = await check()
     const datapath = byName(results, 'datapath')
     expect(datapath).toMatchObject({ status: 'fail' })
-    expect(datapath?.detail).toContain('envoy: CrashLoopBackOff')
-    expect(datapath?.fix).toContain('-c envoy')
+    expect(datapath?.detail).toContain('relay: CrashLoopBackOff')
+    expect(datapath?.fix).toContain('-c relay')
   })
 
   it('names each unhealthy netd container once, across pods', async () => {
-    datapathReady['yaac-netd'] = '0/2'
+    netdReady = '0/2'
     // Ready and nameless containers are not faults.
     netdContainerStatuses = [
-      { name: 'envoy', ready: false, state: { waiting: { reason: 'CrashLoopBackOff' } } },
+      { name: 'relay', ready: false, state: { waiting: { reason: 'CrashLoopBackOff' } } },
       { name: 'netd', ready: true },
       { ready: false },
     ]
@@ -1658,17 +1695,15 @@ describe('runClusterCheck', () => {
     const second = fakeCluster.get<FakeObject>('Pod', 'yaac-netd-0', NS)!
     fakeCluster.seed({ ...second, metadata: { ...second.metadata, name: 'yaac-netd-1' } })
     const detail = byName((await runClusterCheck()).results, 'datapath')?.detail ?? ''
-    expect(detail.match(/envoy: CrashLoopBackOff/g)).toHaveLength(1)
+    expect(detail.match(/relay: CrashLoopBackOff/g)).toHaveLength(1)
     expect(detail).not.toContain('netd: ')
 
     netdContainerStatuses = [{ name: 'netd', ready: false }]
     expect(byName((await check()).results, 'datapath')?.detail).toContain('netd: not ready')
   })
 
-  it('fails datapath when netd is absent (session egress has no redirect)', async () => {
-    // Fails closed (workspaces lose egress), unlike a missing Calico, so the
-    // two are reported differently.
-    datapathReady['yaac-netd'] = null
+  it('fails datapath when netd is absent (sandboxes have no traffic)', async () => {
+    netdReady = null
     stage()
     const { ok, results } = await check()
     expect(ok).toBe(false)
@@ -1764,12 +1799,12 @@ describe('runClusterCheck', () => {
     let { results } = await check()
     expect(byName(results, 'storage')).toMatchObject({ status: 'pass' })
     expect(byName(results, 'storage')?.detail).toContain('yaac-global → yaac-global-vol (byo-nfs)')
-    // The egress probe also dials the NFS server, which trusts any uid a
-    // client claims; the fake pod was blocked, so it passes.
+    // The egress probe also asks for the NFS server, which trusts any uid a
+    // client claims; the proxy refused it, so it passes.
     const egressPod = applied()
       .map((c) => c[0] as { metadata?: { name?: string }; spec?: { containers?: Array<{ command: string[] }> } })
       .find((m) => m.metadata?.name === 'yaac-cluster-check-egress')
-    expect(egressPod?.spec?.containers?.[0].command[2]).toContain('nc -w 4 10.96.5.5 2049')
+    expect(egressPod?.spec?.containers?.[0].command[2]).toContain('eg NFS0 http://10.96.5.5:2049/')
     expect(byName(results, 'egress')?.detail).toContain('the NFS server 10.96.5.5')
 
     // A non-NFS provisioner, a lost label and the class's own actimeo are
@@ -1819,14 +1854,15 @@ describe('runClusterCheck', () => {
     expect(byName(results, 'storage')?.detail).toMatch(/yaac-server-local: volume .* does not carry this install's labels/)
   })
 
-  it('fails egress when a session pod reaches the NFS server behind the global claim', async () => {
+  it('fails egress when a sandbox reaches the NFS server behind the global claim', async () => {
     volumes['yaac-global-vol'] = byoGlobalVolume()
     storageClassProvisioner = 'nfs.csi.k8s.io'
-    podLogs['yaac-cluster-check-egress'] = 'NP_BLOCKED\nNP_NFS0_OPEN\n'
+    egressAnswers = { NFS0: '200' }
     stage()
     const { results } = await check()
+    expect(appliedPodCommand('yaac-cluster-check-egress')).toContain('eg NFS0 http://10.96.5.5:2049/')
     expect(byName(results, 'egress')).toMatchObject({ status: 'fail' })
-    expect(byName(results, 'egress')?.detail).toMatch(/reached the NFS server .*10\.96\.5\.5/)
+    expect(byName(results, 'egress')?.detail).toContain('a sandbox reached the NFS server 10.96.5.5 (answered 200)')
   })
 
   it('dials every EFS mount target the nodes use, resolved from inside the cluster', async () => {
@@ -1851,20 +1887,20 @@ describe('runClusterCheck', () => {
     const resolver = appliedPodCommand('yaac-cluster-check-efs-resolve')
     expect(resolver).toContain('nslookup us-east-1a.fs-0abc.efs.us-east-1.amazonaws.com')
     expect(resolver).toContain('nslookup us-east-1b.fs-0abc.efs.us-east-1.amazonaws.com')
-    expect(appliedPodCommand('yaac-cluster-check-egress')).toContain('nc -w 4 10.0.1.5 2049')
+    expect(appliedPodCommand('yaac-cluster-check-egress')).toContain('eg NFS0 http://10.0.1.5:2049/')
     expect(byName(results, 'egress')).toMatchObject({ status: 'pass' })
     expect(byName(results, 'egress')?.detail).toContain('the NFS server us-east-1a.fs-0abc.efs.us-east-1.amazonaws.com')
     expect(byName(results, 'egress')?.detail)
       .toContain('NFS server us-east-1b.fs-0abc.efs.us-east-1.amazonaws.com unresolvable from here')
 
-    podLogs['yaac-cluster-check-egress'] = 'NP_BLOCKED\nNP_NFS0_OPEN\n'
+    egressAnswers = { NFS0: '200' }
     ;({ results } = await check())
     expect(byName(results, 'egress')).toMatchObject({ status: 'fail' })
     expect(byName(results, 'egress')?.detail).toMatch(/reached the NFS server .*us-east-1a\.fs-0abc/)
 
     // A zone label is the node's to set, so one that is not a DNS name is
     // never put in the resolver's script, and that target is unverified.
-    delete podLogs['yaac-cluster-check-egress']
+    egressAnswers = {}
     clusterNodes = [nodeItem('yaac-control-plane', { labels: zone('a;reboot') })]
     ;({ results } = await check())
     expect(appliedPodCommand('yaac-cluster-check-efs-resolve')).not.toContain('reboot')
@@ -1876,7 +1912,7 @@ describe('runClusterCheck', () => {
     }
     podLogs['yaac-cluster-check-efs-resolve'] = 'EFS_IP us-east-1b.fs-0abc.efs.us-east-1.amazonaws.com 10.0.2.7\n'
     ;({ results } = await check())
-    expect(appliedPodCommand('yaac-cluster-check-egress')).toContain('nc -w 4 10.0.2.7 2049')
+    expect(appliedPodCommand('yaac-cluster-check-egress')).toContain('eg NFS0 http://10.0.2.7:2049/')
   })
 
   it('fails a pool that has drifted from what --byo installed on, naming the nodes', async () => {

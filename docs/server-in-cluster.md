@@ -118,7 +118,8 @@ environment must say about that origin.
 ### On kind: a forwarder
 
 A ClusterIP Service plus a *forwarder*: a one-replica `yaac-server-front`
-Deployment running stock Envoy (the same mirrored image netd uses) with
+Deployment running stock Envoy (the same mirrored image the site router
+uses) with
 `hostNetwork` on the control-plane node. It listens on port 30787 and
 TCP-proxies to `yaac-server.<ns>.svc.cluster.local.`. It uses `dnsPolicy:
 ClusterFirstWithHostNet` so a host-networked process can resolve a cluster
@@ -259,8 +260,8 @@ never reads `Host` (docs/remote-hosting.md "Token access"). Every other port
 stays as the other two policies leave it.
 
 No pod in the install namespace and no pod CIDR is admitted to the API. A
-workspace pod dialing the Service or the pod IP presents its own address
-(Calico enforces a workload's source) and matches nothing.
+workspace or builder pod has no network interface to dial it from
+(docs/workspace-egress.md).
 
 The node half has one more rule: the egress proxy may reach the server's
 second listener (`SERVER_MAMA_PORT`, behind the `yaac-server-mama` Service
@@ -274,9 +275,8 @@ The node half has one gap. On kind the forwarder is a hostNetwork listener
 on a node port, which no pod policy covers, and its dial into the server
 comes from the node. A pod that reached `<node>:<that port>` would therefore
 reach the server as the node and, with a loopback `Host`, be its owner.
-Workspace pods cannot: their egress reaches node addresses only on the netd
-listener range, and builder pods, which run `RUN` steps from agent-editable
-Dockerfiles, have the same egress. The egress proxy, whose upstream
+Workspace and builder pods cannot: they have no network interface, and
+everything they send ends at the egress proxy. The proxy, whose upstream
 is whatever a workspace's allowlist names, is the one pod that may dial
 node addresses, and its egress policy allows every node port except that
 one and NFS (docs/workspace-egress.md "Non-public destinations"). It gets
@@ -378,8 +378,9 @@ peers the server dials itself:
   DNAT. On kind and k3s that is a node address on 6443;
 - the main registry's pod port, by selector in its own namespace, for tag
   lookups (docs/image-builds.md "The registry");
-- the proxy's control and relay ports, by selector. The relay carries every
-  stream into a workspace pod, which the server never dials directly;
+- the proxy's control port, by selector;
+- netd's stream port, by selector. netd's relay carries every stream into a
+  workspace pod, which has no address of its own (docs/stream-relay.md);
 - each node's disk pod and mountd, by selector, for free space and for
   binding workspaces (docs/generic-workspace-pods.md "mountd");
 - under `YAAC_USE_TOR`, the host's Tor listener at the address in the pod's
@@ -432,8 +433,8 @@ A containerless server has no such floor. It runs on the host as its owner,
 and so does every workspace, so anyone who can make it dial an address can
 already run code there.
 
-The kind forwarder, being host-networked, is selected by no policy (like
-netd); it only dials one ClusterIP.
+The kind forwarder, being host-networked, is selected by no policy; it only
+dials one ClusterIP.
 
 ## The site edge
 
@@ -448,13 +449,14 @@ through objects that never pass through the server, all in
 | Secret and Deployment `yaac-site-tunnel-tailnet` (tailscaled and tailgate, 1 replica), its account, serve config and state Secret | install, while it has an auth key and a site domain (`TS_SITE_AUTHKEY` and `--site-domain`, kept in the Secret with any `--server-name`) |
 | the tunnels' and router's six NetworkPolicies | install, and the server whenever the node set changes |
 | ConfigMap `yaac-site-routes`, the router's two route tables | install creates it empty; the server writes it |
-| per site, headless Service and NetworkPolicy `yaac-site-<id>` | the server (`syncSites`) |
+| per site, headless Service and EndpointSlice `yaac-site-<id>` | the server (`syncSites`) |
 
 The router's two listeners, public and tailnet, are static and read their
 routes and clusters from the routes ConfigMap's files, so a site change
-never drains another site's connections. Each site's cluster resolves its headless Service, so Envoy
-dials the live release's pod IP and a deploy's selector change moves new
-requests as soon as DNS shows it.
+never drains another site's connections. Each site's cluster resolves its
+headless Service to the netd pod on the live release's node and dials its
+relay, which carries the request into the release (docs/public-sites.md
+"The router").
 
 No edge policy adds a peer to the server's ingress; only install's
 fronting half admits the tailnet tunnel, and only while the install names
@@ -472,22 +474,22 @@ release, or the Cloudflare one reaches the router's tailnet port. The probes car
 the edge's Deployments and the router Service also select a replica label,
 so a probe never receives public traffic.
 
-## In-cluster dials go by Service
+## In-cluster dials go over the pod network
 
-The server talks to three things in the cluster: the image registry, the
-proxy's stream relay and the proxy's control API. It reaches each by its
-Service DNS name over the pod network, with no tunnel, `kubectl
-port-forward` or `kubectl exec` relay.
+The server talks to three things in the cluster: the image registry, netd's
+stream relay and the proxy's control API. It reaches each over the pod
+network, with no tunnel, `kubectl port-forward` or `kubectl exec` relay.
 
 - **The registry** answers at the Service name every image ref already
   carries. Its ingress policy admits the server's pod selector. (The CLI,
   which runs outside the cluster, uses a `kubectl port-forward` for the
   pushes `yaac cluster install` does.)
-- **The stream relay** is the proxy Service's relay port
-  (docs/stream-relay.md).
-- **The proxy control API** is another port on the same Service. The
-  proxy's ingress policy admits both ports from the server's pods and no
-  other pods, so a workspace can reach neither.
+- **The stream relay** is the netd pod on the workspace's node, at the
+  address the server's watch of netd's pods holds (docs/stream-relay.md).
+  netd's ingress policy admits the server's pods on that port.
+- **The proxy control API** is a port of the proxy's Service. The proxy's
+  ingress policy admits it from the server's pods and the node, and no other
+  pods.
 
 The e2e harness drives these modules from the host, where a ClusterIP is
 unreachable. It supplies its own route instead of the driver having a mode

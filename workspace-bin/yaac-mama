@@ -86,9 +86,9 @@
 #     workspace it is with $YAAC_MAMA_TOKEN.
 #   - Containers (no $YAAC_MAMA_URL): the pod cannot dial the server, so it
 #     calls the egress proxy's magic host, which relays the call and names
-#     the workspace by its source pod IP. No token and no config, which is
-#     why nothing is set for this case. Keep the host in sync with
-#     MAMA_MAGIC_HOST in k8s/proxy/main.ts.
+#     the workspace netd's relay identified. No token and no config, which
+#     is why nothing is set for this case. Keep the host in sync with
+#     MAMA_MAGIC_HOST in k8s/proxy/yaac-relay.ts.
 #
 # --max-time bounds a call to a wedged server. It outlasts the proxy's own
 # deadline (MAMA_RELAY_TIMEOUT_MS), so a pod's caller sees that 504's message.

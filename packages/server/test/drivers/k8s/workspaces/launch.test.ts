@@ -29,7 +29,7 @@ vi.mock('#drivers/k8s/substrate/pod-wait', () => ({ waitForJobPodReady: vi.fn().
 import type * as streamRelayModule from '#drivers/k8s/substrate/stream-relay'
 import { awaitWorkspaceReady, launchWorkspace, listSpares, prepareWorkspaceSubstrate, reapSpare, takeSpare } from '#drivers/k8s/workspaces'
 import { PROXY_AUTH_SECRET_NAME, installId, k8sNamespace, nodeMountsNodePath } from '#drivers/k8s/substrate'
-import { resetProxyClusterIpCache } from '#drivers/k8s/cluster'
+import { resolveMountdImageTag } from '#drivers/k8s/cluster'
 import { UTILITY_MIRROR_TAG } from '#drivers/k8s/cluster/utility-image'
 import { proxyClient } from '#drivers/k8s/egress'
 import type { RuntimeHandle, SubstrateIntent, WorkspaceSpec, WorkspaceSubstrate, WorkspaceTree } from '#drivers/contract'
@@ -189,13 +189,13 @@ let ensureRunning: MockInstance
 
 beforeEach(async () => {
   dataDir = await createTempDataDir()
-  resetProxyClusterIpCache()
   mockPodClaim.mockReset().mockResolvedValue(undefined)
   ensureRunning = vi.spyOn(proxyClient, 'ensureRunning').mockResolvedValue(undefined)
   fakeRegistry.install()
   fakeRegistry.mirror(UTILITY_MIRROR_TAG)
+  // netshim's image, which every workspace pod runs.
+  fakeRegistry.tags.add(await resolveMountdImageTag())
   fakeCluster.seed(
-    { apiVersion: 'v1', kind: 'Service', metadata: { name: 'yaac-proxy', namespace: k8sNamespace() }, spec: { clusterIP: '10.96.0.5' } },
     {
       apiVersion: 'v1', kind: 'Secret', metadata: { name: PROXY_AUTH_SECRET_NAME, namespace: k8sNamespace() },
       data: { secret: Buffer.from(AUTH_SECRET).toString('base64') },
@@ -246,6 +246,7 @@ describe('prepareWorkspaceSubstrate', () => {
       app: 'yaac-proxy', 'yaac.proxy-input': 'registration', 'yaac.workspace-id': 's1', 'yaac.project-id': PROJECT_ID,
     })
     expect(reg?.payload).toMatchObject({ projectId: PROJECT_ID, owner: 'o' })
+    expect(reg?.payload).not.toHaveProperty('release')
     // Which repos the workspace may authenticate to comes from its owner's
     // credential grants, never the registration.
     expect(reg?.payload).not.toHaveProperty('repoUrl')
@@ -264,9 +265,9 @@ describe('prepareWorkspaceSubstrate', () => {
       fakeCluster.calls = []
       return claimOf(await launchWorkspace(specOf(await prepareWorkspaceSubstrate(intent))))
     }
-    // Not serving yet: no registry, but the label is set per the project.
+    // Not serving yet: no registry, and nothing for the proxy to dial.
     expect(await launchAndClaim()).not.toHaveProperty('npmRegistry')
-    expect(appliedJob().spec.template.metadata.labels['yaac.npm-cache']).toBe('true')
+    expect(appliedRegistration()?.payload).not.toHaveProperty('clusterServices')
 
     fakeCluster.seed({
       apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice',
@@ -276,8 +277,12 @@ describe('prepareWorkspaceSubstrate', () => {
     const claim = await launchAndClaim()
     expect(claim.npmRegistry).toBe(`http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/`)
     for (const key of ['pnpm_config_registry', 'npm_config_registry']) expect(claim.env).not.toHaveProperty(key)
+    // The proxy reaches the cache for it by that name, past its allowlist;
+    // the pod carries no label, since it has no address to be admitted by.
+    expect(appliedRegistration()?.payload.clusterServices).toEqual([`yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873`])
+    expect(appliedJob().spec.template.metadata.labels).not.toHaveProperty('yaac.npm-cache')
 
-    // Each keeps the workspace off the cache (no registry, no label):
+    // Each keeps the workspace off the cache (no registry, no cluster service):
     //  - the project turned it off;
     //  - the allowlist excludes npmjs (the cache bypasses the proxy);
     //  - a proxied npmjs secret (the cache fetches anonymously).
@@ -287,7 +292,7 @@ describe('prepareWorkspaceSubstrate', () => {
       { ...INTENT, proxySecretRules: { NPM_TOKEN: { hosts: ['registry.npmjs.org'], header: 'Authorization' } } },
     ]) {
       expect(await launchAndClaim(intent)).not.toHaveProperty('npmRegistry')
-      expect(appliedJob().spec.template.metadata.labels).not.toHaveProperty('yaac.npm-cache')
+      expect(appliedRegistration()?.payload).not.toHaveProperty('clusterServices')
     }
   })
 })
@@ -306,7 +311,6 @@ describe('launchWorkspace', () => {
       'yaac.project-id': PROJECT_ID,
       'yaac.workspace-id': 's1',
       'yaac.install-id': installId(),
-      'yaac.npm-cache': 'true',
     })
     expect(nodesOf(job)).toEqual(['n1', 'n2'])
     // The caller's variables go to the claim, never the cluster.
@@ -325,8 +329,13 @@ describe('launchWorkspace', () => {
     expect(pod.containers[0].resources.requests.cpu).toBe('3m')
     expect(pod.priorityClassName).toBe('yaac-workspace')
     expect(pod.volumes.find((v) => v.name === 'node-mounts')?.hostPath?.path).toMatch(new RegExp(`^${nodeMountsNodePath()}/s1\\.[0-9a-f]{8}$`))
-    expect(pod.initContainers?.map((c) => c.name)).toEqual(['tree'])
-    expect(pod.initContainers?.[0].image).toMatch(/-base:[0-9a-f]+$/)
+    // netshim from mountd's image, then the tree container from the base.
+    expect(pod.initContainers?.map((c) => c.name)).toEqual(['netshim', 'tree'])
+    expect(pod.initContainers?.[0].image).toMatch(/\/yaac-mountd:[0-9a-f]+$/)
+    expect(pod.initContainers?.[1].image).toMatch(/-base:[0-9a-f]+$/)
+    // Its socket directory has its node-mounts directory's name.
+    const dir = pod.volumes.find((v) => v.name === 'node-mounts')?.hostPath?.path.split('/').pop()
+    expect(pod.volumes.find((v) => v.name === 'sockets')?.hostPath?.path.split('/').pop()).toBe(dir)
 
     expect(handle).toMatchObject({
       workspaceId: 's1', projectId: PROJECT_ID, jobName: 'yaac-s1', running: false, state: 'pending', terminating: false,
@@ -336,7 +345,7 @@ describe('launchWorkspace', () => {
     // A site release keeps its files on the shared tier: no tree container.
     fakeCluster.calls = []
     await launchWorkspace(specOf(substrate))
-    expect(appliedJob().spec.template.spec.initContainers).toBeUndefined()
+    expect(appliedJob().spec.template.spec.initContainers?.map((c) => c.name)).toEqual(['netshim'])
   })
 
   it('builds the same pod environment twice from one spec, because a retry relaunches it', async () => {
@@ -390,7 +399,7 @@ describe('launchWorkspace', () => {
     expect(writes.map((c) => `${c.verb} ${c.kind}${c.subresource !== undefined ? `/${c.subresource}` : ''}`).sort())
       .toEqual(['apply ConfigMap', 'patch Job', 'patch Pod', 'patch Pod/resize'])
     expect(appliedJobs()).toEqual([])
-    const labels = { 'yaac.project-id': PROJECT_ID, 'yaac.workspace-id': 's1', 'yaac.install-id': installId(), 'yaac.npm-cache': 'true' }
+    const labels = { 'yaac.project-id': PROJECT_ID, 'yaac.workspace-id': 's1', 'yaac.install-id': installId() }
     expect(fakeCluster.get<{ metadata: { labels: Record<string, string> } }>('Pod', 'yaac-s1-x')?.metadata.labels)
       .toEqual({ 'batch.kubernetes.io/job-name': 'yaac-s1', ...labels })
     // The Job loses its spare label, so nothing counts it as one again.
@@ -542,6 +551,7 @@ describe('launchWorkspace', () => {
     await launchWorkspace(specOf(substrate, { siteId: 'site-1', colocateWith: 'old' }))
     let job = appliedJob()
     expect(job.spec.template.metadata.labels).toMatchObject({ 'yaac.site-id': 'site-1' })
+    expect(appliedRegistration()?.payload).toMatchObject({ release: true })
     expect(job.spec.template.spec.priorityClassName).toBe('yaac-release')
     // On kind every volume is in one claim mountd mounts, so the
     // pod may go to any ready node.
@@ -561,7 +571,7 @@ describe('launchWorkspace', () => {
     // The claim kubelet attaches, its root handed over by the utility image.
     expect(job.spec.template.spec.volumes).toContainEqual({ name: 'pv-0', persistentVolumeClaim: { claimName: 'yaac-volume-v1' } })
     expect(job.spec.template.spec.containers[0].volumeMounts).toContainEqual({ name: 'pv-0', mountPath: '/home/yaac/volume' })
-    expect(job.spec.template.spec.initContainers?.[0]).toMatchObject({ name: 'volume-root', image: expect.stringContaining('@sha256:') as unknown })
+    expect(job.spec.template.spec.initContainers?.find((c) => c.name === 'volume-root')).toMatchObject({ image: expect.stringContaining('@sha256:') as unknown })
 
     // A holder not on a node yet could land anywhere, so nothing launches.
     fakeCluster.seed({

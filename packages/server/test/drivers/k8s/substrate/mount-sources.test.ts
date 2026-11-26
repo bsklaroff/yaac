@@ -6,7 +6,7 @@ vi.mock('#drivers/k8s/substrate/api', async (importOriginal) => ({
   ...(await importOriginal<typeof apiModule>()),
 }))
 
-import { resolveMountSource, storageTierOf } from '#drivers/k8s/substrate'
+import { resolveMountSource, socketsNodePath, storageTierOf } from '#drivers/k8s/substrate'
 import type { PodMount } from '#drivers/k8s/substrate'
 import { getDataDir, setDataDir } from '@yaac/shared/paths'
 import {
@@ -148,5 +148,12 @@ describe('storageTierOf', () => {
     expect(() => storageTierOf({ kind: 'emptyDir' })).toThrow('a emptyDir mount is in no storage tier')
     vi.stubEnv('YAAC_VOLUME_STORAGE_CLASS', 'hcloud-volumes')
     expect(() => storageTierOf({ kind: 'volume', volumeId: 'v1' })).toThrow('a byo volume is a claim of its own, not a tier')
+  })
+})
+
+describe('socketsNodePath', () => {
+  it('keys the socket root by install, beside the node-local and node-mounts roots and in neither', () => {
+    expect(socketsNodePath()).toBe('/var/lib/yaac/sockets/test-install')
+    expect(socketsNodePath().startsWith(`${NODE_ROOT}/`)).toBe(false)
   })
 })

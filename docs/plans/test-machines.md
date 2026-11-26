@@ -6,7 +6,7 @@ rootful podman, nested privileged containers. The k8s e2e tiers are the
 first user. The machine never holds a credential, and it has no network of
 its own. While a workspace holds the lease, every connection the machine
 makes goes out through that workspace's pod. The pod's egress is the usual
-netd redirect and proxy, so the machine gets the workspace's allowlist and
+socket path to the proxy (docs/workspace-egress.md), so the machine gets the workspace's allowlist and
 its placeholder-for-real-token swaps.
 
 ```
@@ -15,7 +15,7 @@ workspace pod (gVisor)                         test machine (VM, root for the ho
         │   (lease = allowlist entry + agent grant)   │
         │◀────── reverse SOCKS (ssh -R 1080) ─────────┤ tun2socks: default route
         ▼                                             │ dnsmasq: every name → sinkhole
-  netd redirect → proxy (allowlist, swaps) → internet │ cloud firewall: no outbound
+  netshim → relay → proxy (allowlist, swaps) → internet │ cloud firewall: no outbound
 ```
 
 Scope: k8s installs only. Under `containerless` there is no proxy, so the
@@ -166,9 +166,10 @@ root while the machine still has outbound access:
   default. Inbound connections arriving on the real interface are
   connmarked, and their replies are policy-routed back out that interface,
   so sshd's replies never loop into the tunnel. IPv6 is off.
-- Sets up dnsmasq to answer every name with the proxy DNS stub's sinkhole
-  address. Names never need resolving here: netd redirects by port and the
-  proxy routes by SNI or Host header. Answering locally also rules out DNS
+- Sets up dnsmasq to answer every name with the sinkhole address, as a
+  sandbox's netshim does. Names never need resolving here: the workspace's
+  netshim takes every dial whatever it names, and the proxy routes by SNI or
+  Host header. Answering locally also rules out DNS
   tunnelling.
 - Trusts the install's proxy CA, which `add` prints alongside the keys. The
   proxy decrypts the hosts it swaps credentials on.

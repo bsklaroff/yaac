@@ -87,6 +87,8 @@ export interface PodInfo {
   labels: Record<string, string>
   /** The node it is scheduled on. */
   node?: string
+  /** Its RuntimeClass. */
+  runtimeClass?: string
   /** Set only when the pod carries terminal-state evidence. */
   terminal?: PodTerminalState
 }
@@ -123,7 +125,7 @@ const podItemSchema = z.object({
     creationTimestamp: timestampSchema,
     deletionTimestamp: timestampSchema.optional(),
   }),
-  spec: z.object({ nodeName: z.string().optional() }).optional(),
+  spec: z.object({ nodeName: z.string().optional(), runtimeClassName: z.string().optional() }).optional(),
   status: z.object({
     phase: z.string().min(1),
     // Terminal-state evidence: pod reason/message cover evictions, and
@@ -171,6 +173,7 @@ function mapPodItem({ metadata, spec, status }: PodItem): PodInfo {
     createdAtMs: toEpochMs(metadata.creationTimestamp),
     labels: metadata.labels,
     ...(spec?.nodeName !== undefined ? { node: spec.nodeName } : {}),
+    ...(spec?.runtimeClassName !== undefined ? { runtimeClass: spec.runtimeClassName } : {}),
     ...(terminal ? { terminal } : {}),
   }
 }

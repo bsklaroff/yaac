@@ -1083,6 +1083,15 @@ export interface WorkspaceDriver {
    * "Workspaces from before"). Rejects unless it succeeds.
    */
   importTree(target: { projectId: string; workspaceId: string; sharedDir: string; tree: WorkspaceTree }): Promise<void>
+  /**
+   * The workspaces running on a runtime of a shape this server no longer
+   * drives, which the server stops so a restart brings each back in the
+   * current one: under k8s, pods on the `gvisor` RuntimeClass, which have a
+   * network interface and nothing left to carry their traffic
+   * (docs/legacy-compat-shims.md "Workspaces on the gvisor class"). None
+   * under containerless.
+   */
+  outdatedWorkspaces(): Promise<RuntimeHandle[]>
 
   /**
    * Converge the substrate's objects for the install's public sites

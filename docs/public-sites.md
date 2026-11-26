@@ -37,10 +37,13 @@ tailnet device ─► yaac-site-tunnel-tailnet (tailscaled + tailgate; see "Tail
                           yaac-site-router (Envoy; a listener per edge, routes by Host)
                               │
                               ▼
-                          Service yaac-site-<site id>  (headless, selects the live release)
-                              │
+                          Service yaac-site-<site id>  (headless; EndpointSlice: netd on the live release's node)
+                              │  PROXY v2 header naming the site
                               ▼
-                          release workspace pod :<port>  (gVisor, egress via the proxy)
+                          netd's relay :10263  (reads the Service: which release, which port)
+                              │  ingress.sock
+                              ▼
+                          release workspace pod :<port>  (gVisor, no interface, egress via the proxy)
 ```
 
 The server only reconciles these objects. It is never on the data path.
@@ -94,10 +97,10 @@ with sites is the server's, under the `yaac` field manager
 | Secret `yaac-site-tunnel-tailnet` | install | the tailnet tunnel's auth key, the site domain and any server name |
 | Deployment `yaac-site-tunnel-tailnet`, its ServiceAccount, Role and serve-config ConfigMap; Secret `yaac-site-tunnel-tailnet-state` | install, only while that Secret holds both | tailscaled and tailgate, 1 replica; see "Tailnet sites" |
 | Secret `yaac-site-tunnel-tailnet-tls` | the admin, or cert-manager | the site domain's wildcard certificate |
-| Deployment + Service `yaac-site-router` | install | stock Envoy (the image netd pins), 2 replicas |
+| Deployment + Service `yaac-site-router` | install | stock Envoy (the mirrored, digest-pinned image), 2 replicas |
 | the tunnels' and router's NetworkPolicies | install | see "Network policy"; their node-address halves are re-rendered when nodes change |
 | ConfigMap `yaac-site-routes` | server | the router's route tables |
-| Service and NetworkPolicy `yaac-site-<site id>`, per site | server | the headless Service selecting the live release, and the policy admitting the router to it |
+| Service and EndpointSlice `yaac-site-<site id>`, per site | server | the headless Service naming the live release and its port, and the EndpointSlice pointing it at the netd pod on that release's node |
 
 Every edge Deployment runs at the `yaac-infra` priority. Without a token the
 router is still applied, so the e2e harness and the self-hosted edge use
@@ -114,14 +117,31 @@ cuts another site's WebSockets. A site is a virtual host only in its own
 edge's table, so no `Host` the Cloudflare tunnel could be configured to
 send reaches a tailnet site. Each site is a virtual host
 for its hostname whose cluster is its Service by absolute name, resolved as
-`STRICT_DNS` every second. The Service is headless, so the name resolves to
-the live release's pod IP. A ClusterIP would hide a flip from Envoy: pooled
-keep-alive connections to it stay pinned to the old pod by conntrack. With
-pod IPs, new requests move as soon as DNS changes, and connections to the
-old release finish. Where CoreDNS answers `cluster.local` names without
-its cache (kind and `infra/hetzner-k3s`; docs/cluster-setup.md "Uncached
-cluster DNS"), the router sees a flip within about a second. An unknown
-`Host` gets a 404 and a site with no live release a 503. WebSocket upgrades
+`STRICT_DNS` every second and dialed on netd's site port (`NETD_SITE_PORT`,
+10263). Every connection opens with a PROXY protocol v2 header carrying one
+TLV, `0xE0`, the site id (Envoy's `upstream_proxy_protocol` transport socket
+with `added_tlvs`). The id is fixed for the site, so a deploy changes
+nothing in the router's config.
+
+A release has no address, so netd carries the request
+(docs/workspace-egress.md "The relay, and the rest of netd"). The site's
+Service is headless with no selector: it names the live release in its
+`yaac.live-workspace-id` annotation and the port the release serves on as
+its `targetPort`, and the server writes its EndpointSlice with one address,
+the netd pod on the live release's node. The relay reads the router's
+header, finds the site's Service in its watch, and splices the connection to
+that release's `ingress.sock` with the Service's port. A site whose live
+release is not on that node gets a close.
+
+A flip writes the annotation and, when the new release is on another node,
+the EndpointSlice's address. Across nodes, new requests move as soon as DNS
+changes, and connections to the old node finish; where CoreDNS answers
+`cluster.local` names without its cache (kind and `infra/hetzner-k3s`;
+docs/cluster-setup.md "Uncached cluster DNS"), the router sees it within
+about a second. A netd pod's address changes whenever it restarts, so the
+server watches netd's pods and rewrites the EndpointSlice of every site on
+that node; until it has, and the router has re-resolved, those sites answer
+503. An unknown `Host` gets a 404 and a site with no live release a 503. WebSocket upgrades
 are on and the route timeout is off.
 Envoy trusts the tunnel in front (cloudflared or tailgate) as one hop, and
 hands the app the client address that hop vouches for (see "Headers an app
@@ -132,7 +152,7 @@ minute apart, but at once for a pod that has just changed. So after each
 write of the table the server stamps every router replica with its hash
 (annotation `yaac.site-routes-hash`), and a newly published site routes
 within a second or two. Only publishing, unpublishing and deleting a site
-change the table; a deploy changes the Service's selector.
+change the table; a deploy changes the Service and its EndpointSlice.
 
 ## Tailnet sites
 
@@ -342,15 +362,15 @@ that peer with the server's fronting).
   inside connections tailscaled dialed out.
 - **Router**: ingress from Cloudflare tunnel pods on 8080, from tailnet
   tunnel pods on 8081, and from node addresses on its readiness port.
-  Egress to DNS and to pods labelled `yaac.site-id`.
-- **Per site**: pods labelled `yaac.site-id=<id>` admit router pods on the
-  site's port. Every release of the site carries the label from launch, so
-  the policy does not change across deploys. It is unioned with the
-  workspace ingress lock, which still admits the proxy on streamd's port.
+  Egress to DNS and to netd's site port.
+- **netd**: its site port admits the router alone (`yaac-netd-ingress`).
+  The port takes no secret, so the router's identity checks ("Headers an
+  app may trust") hold only while that policy keeps everything else off it.
 
-A compromised release reaches what any workspace reaches over the network:
-its egress goes through the proxy and its allowlist. It cannot dial the
-router, the tunnel, other releases or the server. Nor can it write where
+A release, like every workspace, has no network interface. A compromised
+release reaches what any workspace reaches: its egress goes through the
+proxy and its allowlist. It cannot dial the router, the tunnel, other
+releases or the server. Nor can it write where
 other workspaces of the project read (see "Sites and releases"), bar its
 own step logs: the project's agents read those with `yaac-mama logs`, so
 whatever a release prints, including what the internet got it to print,
@@ -359,8 +379,8 @@ reaches their context as untrusted text.
 `yaac cluster check`'s `sites` gate holds probe pods carrying each tunnel's
 and the router's labels to the same policies, and requires that they fail
 to dial the server's API (bar the tailnet one while it fronts a server
-name), the proxy's control port and a workspace pod that is not a release,
-and the Cloudflare one the router's 8081. With a
+name) and the proxy's control port, and the Cloudflare one the router's
+8081. With a
 Cloudflare tunnel installed it reports whether it is connected; with a
 tailnet one, whether it has joined and holds a certificate, and, where the
 checking machine is on the tailnet, whether the zone resolves to it.
@@ -432,11 +452,12 @@ these ways:
   poison for the project's dev workspaces.
 - **Cut off from the server.** It may send nothing to `yaac.internal`, which
   carries `yaac-mama` and git to a hosted project's remote, and needs
-  neither, since the server makes its checkout. The proxy answers 403 to a
-  pod labelled `yaac.site-id` (`k8s/proxy/pod-watch.ts`), so a site never
-  opens a connection into the server process, and the server's yaac-mama
+  neither, since the server makes its checkout. Its egress registration says
+  `release`, and the proxy answers 403 to `yaac.internal` for it, so a site
+  never opens a connection into the server process, and the server's yaac-mama
   listener refuses a workspace whose row has `siteId`. Each check is enough
-  alone. streamd is unaffected: the server dials it to drive the release.
+  alone. streamd is unaffected: the server reaches it through netd to drive
+  the release.
 - **No credentials.** Its egress registration names an owner key no user's
   credentials are pushed under (`NO_CREDENTIALS_OWNER_KEY`), so the proxy
   swaps in no tool, git or ssh credential, and the launch hands it no git
@@ -600,9 +621,10 @@ forgotten only once its stop succeeds, so a failed stop is retried.
    names, else the site's deploy timeout (an hour unless set, at most a
    day). A step that fails or a service that exits fails the deploy at
    once; only a release that hangs waits the timeout out.
-5. **Flip.** Write the site Service's selector, in one write. The router
-   sees the new pod at its next DNS refresh, a second later where cluster
-   DNS is uncached.
+5. **Flip.** Point the site's Service at the new release (its annotation,
+   and the EndpointSlice when the new release is on another node; see "The
+   router"). The router follows at its next DNS refresh, a second later
+   where cluster DNS is uncached.
 6. **Drain.** Keep the old release for 30 s, which covers that refresh and
    lets in-flight requests finish, then stop it. Its app gets `SIGTERM`
    first. A flip while an earlier drain is under way stops that release at

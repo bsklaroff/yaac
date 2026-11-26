@@ -221,6 +221,7 @@ function defaultRuntime(): WorkspaceDriver {
     volumeStorage: () => Promise.resolve([]),
     reapNodeLocal: () => Promise.resolve(),
     removeAsRoot: () => Promise.resolve(false),
+    outdatedWorkspaces: () => Promise.resolve([]),
     syncSites: () => Promise.resolve(),
     siteCloudflareStatus: () => Promise.resolve('absent'),
     siteTailnetStatus: () => Promise.resolve('absent'),

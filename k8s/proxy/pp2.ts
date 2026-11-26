@@ -1,11 +1,12 @@
 /**
- * PROXY protocol v2 parsing for the proxy's transparent listeners. netd's
- * Envoy prepends a PP2 header carrying the source pod IP to every redirected
- * connection; the proxy maps that IP to a workspace (see pod-watch.ts).
+ * PROXY protocol v2 parsing for the proxy's socket ingress port. netd's
+ * relay prepends a header to every sandbox connection naming the address
+ * the sandbox dialed, with the sandbox's id and the proxy auth secret as
+ * TLVs (socket-ingress.ts; k8s/mountd/internal/pp2 writes it).
  *
  * Wire format: haproxy PROXY protocol spec §2.2. Accepts the AF_INET shape
- * Envoy sends, and AF_UNSPEC (TLVs only). Anything malformed is `invalid`,
- * so the listener fails closed.
+ * the relay sends, and AF_UNSPEC (TLVs only). Anything malformed is
+ * `invalid`, so the listener fails closed.
  */
 
 /** 12-byte v2 signature. */

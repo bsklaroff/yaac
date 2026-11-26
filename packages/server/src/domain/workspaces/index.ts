@@ -35,6 +35,7 @@ export {
   saveDraftWorkspace,
 } from './drafts'
 export { removeProject } from './project-teardown'
+export { reconcileOutdatedWorkspaces } from './outdated'
 export {
   collectDeletedRepos,
   deleteRepo,

@@ -10,7 +10,6 @@ import { reconcileNodeSet } from '#drivers/k8s/cluster'
 import { _nodeSyncSettledForTests, _resetNodeSyncForTests } from '#drivers/k8s/cluster/node-sync'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
-import { NETD_LISTENER_PORT_BASE } from '#drivers/k8s/substrate/proxy-constants'
 
 interface Applied {
   kind: string
@@ -144,7 +143,7 @@ describe('reconcileNodeSet', () => {
       expect(admittedNodes(policy), policy).toEqual(['10.0.1.5/32'])
     }
     expect(applied().map((m) => m.metadata.name)).toEqual(expect.arrayContaining([
-      'yaac-workspace-egress', 'yaac-proxy-egress', 'yaac-npm-cache-egress', 'yaac-site-tunnel-cloudflare-egress',
+      'yaac-netd-egress', 'yaac-proxy-egress', 'yaac-npm-cache-egress', 'yaac-site-tunnel-cloudflare-egress',
       'yaac-site-tunnel-tailnet-egress',
     ]))
     expect(hostsWrites()).toEqual(['node-a yaac-registry.yaac.svc.cluster.local:5000'])
@@ -162,13 +161,14 @@ describe('reconcileNodeSet', () => {
     expect(applied()).toEqual([])
 
     // An autoscaled node registers: the policies admit it straight away, but
-    // its writer pods wait until it is Ready. A builder scheduled there
-    // reaches netd's redirect on it as a workspace does.
+    // its writer pods wait until it is Ready. The npm cache's uplink is cut
+    // from its public address at once, as the proxy's is.
     nodes['node-b'] = { ip: '10.0.2.9', externalIp: '5.75.1.9', uid: 'u-b', ready: false }
     await pass()
     expect(admittedNodes('yaac-registry-ingress')).toEqual(['10.0.1.5/32', '10.0.2.9/32'])
     expect(admittedNodes('yaac-server-ingress')).toEqual(['10.0.1.5/32', '10.0.2.9/32'])
-    expect(egressPeers(NETD_LISTENER_PORT_BASE, 'yaac-builder-egress')).toEqual(['10.0.1.5/32', '10.0.2.9/32'])
+    const cacheEgress = applied().filter((m) => m.metadata.name === 'yaac-npm-cache-egress').pop()
+    expect(cacheEgress?.spec?.egress?.[0].to?.[0].ipBlock?.except).toContain('5.75.1.9/32')
     expect(hostsWrites()).toEqual([])
 
     // Ready: only the new node gets a writer pod.
@@ -184,6 +184,8 @@ describe('reconcileNodeSet', () => {
     await pass()
     expect(egressPeers(443)).toEqual(['172.20.0.11/32'])
     expect(egressPeers(443, 'yaac-server-egress')).toEqual(['172.20.0.11/32'])
+    // So do netd's relay's pod and Service watches.
+    expect(egressPeers(443, 'yaac-netd-egress')).toEqual(['172.20.0.11/32'])
   })
 
   // A single apiserver drops its own endpoint while it restarts. The server's

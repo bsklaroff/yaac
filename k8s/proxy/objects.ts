@@ -18,11 +18,11 @@ export const LABEL_PROXY_INPUT = 'yaac.proxy-input'
 /** Label naming which output an object is: `refreshed`, `ca` or `state`.
  *  The server pre-creates these, since RBAC cannot scope `create` by name. */
 export const LABEL_PROXY_OUTPUT = 'yaac.proxy-output'
-/** The workspace a registration ConfigMap belongs to (same key as
- *  pod-watch.ts). */
+/** The workspace a registration ConfigMap belongs to (the server's
+ *  LABEL_WORKSPACE_ID). */
 export const LABEL_WORKSPACE_ID = 'yaac.workspace-id'
-/** The image build a registration ConfigMap belongs to instead (same key
- *  as pod-watch.ts). */
+/** The image build a registration ConfigMap belongs to instead (the
+ *  server's LABEL_BUILD_ID). */
 export const LABEL_BUILD_ID = 'yaac.build-id'
 
 export const CREDENTIALS_SECRET_NAME = 'yaac-proxy-credentials'
@@ -154,6 +154,20 @@ export type ProxyRegistration = {
   /** The owner key whose credentials this workspace spends. */
   owner: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
+  /** An image build's: its ConfigMap carries the build-id label. It gets the
+   *  project's allowlist and nothing else: no credentials, no MITM, no
+   *  `yaac.internal`. */
+  build?: boolean
+  /** A public site's release, which may not call `yaac.internal`. */
+  release?: boolean
+  /**
+   * `host:port` pairs of the install's own Services the server lets this
+   * sandbox reach by name: the npm cache for a workspace that may use it,
+   * the main registry's pod port for a build. A plain-HTTP request to one
+   * is forwarded as named, before the allowlist and past the non-public
+   * guard, like every destination the server names.
+   */
+  clusterServices?: string[]
 }
 
 // ── Output shapes ──────────────────────────────────────────────────────
@@ -431,7 +445,8 @@ function decodeRedirects(raw: unknown): Record<string, UpstreamRedirect> | undef
 export function decodeRegistration(
   cm: RawObject,
 ): { workspaceId: string; registration: ProxyRegistration } | null {
-  const workspaceId = cm.metadata?.labels?.[LABEL_WORKSPACE_ID] ?? cm.metadata?.labels?.[LABEL_BUILD_ID]
+  const buildId = cm.metadata?.labels?.[LABEL_BUILD_ID]
+  const workspaceId = cm.metadata?.labels?.[LABEL_WORKSPACE_ID] ?? buildId
   if (!workspaceId) return null
   const o = parseJson(cm.data?.['registration.json'])
   if (!o) return null
@@ -447,6 +462,11 @@ export function decodeRegistration(
       projectId: o.projectId,
       owner: o.owner,
       upstreamRedirects: decodeRedirects(o.upstreamRedirects),
+      ...(buildId !== undefined ? { build: true } : {}),
+      ...(o.release === true ? { release: true } : {}),
+      ...(Array.isArray(o.clusterServices)
+        ? { clusterServices: o.clusterServices.filter((h): h is string => typeof h === 'string') }
+        : {}),
     },
   }
 }

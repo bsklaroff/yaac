@@ -1,15 +1,12 @@
 /**
- * netd's barrel functions: applying the redirect DaemonSet, the two image
- * lookups it does first, and the veth prefix its rules match on.
- *
- * The DaemonSet's manifest shape is asserted in proxy-apply.test.ts, through
- * `ensureProxyResources`, which is what applies it in production.
+ * netd's barrel functions: applying the DaemonSet (the Go relay and the
+ * memory guard) and the image lookups it does first.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
 import type * as childProcess from 'node:child_process'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { fakeRegistry } from '#test/support/fake-registry'
-import { NETD_DIR } from '@yaac/shared/project-paths'
+import { MOUNTD_DIR, NETD_DIR } from '@yaac/shared/project-paths'
 
 // `kubectl rollout status` is the one child process; it records its argv.
 const mockExecFile = vi.hoisted(() => vi.fn())
@@ -21,23 +18,24 @@ vi.mock('node:child_process', async (importOriginal) => ({
   },
 }))
 
-import { cniVethPrefix, contextHash, ensureNetd, registryRef, resolveNetdImageTag } from '#drivers/k8s/cluster'
-// Setup values, not units under test.
-import { DEFAULT_VETH_PREFIX, ENVOY_MIRROR_TAG } from '#drivers/k8s/cluster/netd'
+import { contextHash, ensureNetd, registryRef, resolveNetdImageTag } from '#drivers/k8s/cluster'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster'
+import { socketsNodePath } from '#drivers/k8s/substrate'
 
 const applied = (kind: string): Record<string, unknown> | undefined => fakeCluster.get(kind, 'yaac-netd')
 
-/** The netd image's tag, from the real build context. */
+/** The netd and mountd images' tags, from the real build contexts. */
 let netdTag: string
+let mountdTag: string
 
 beforeEach(async () => {
   vi.clearAllMocks()
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   resetClusterCidrCache()
   netdTag = `yaac-netd:${await contextHash(NETD_DIR)}`
+  mountdTag = `yaac-mountd:${await contextHash(MOUNTD_DIR)}`
   fakeRegistry.install()
-  fakeRegistry.tags.add(netdTag).add(ENVOY_MIRROR_TAG)
+  fakeRegistry.tags.add(netdTag).add(mountdTag)
   fakeCluster.seed({ apiVersion: 'v1', kind: 'Node', metadata: { name: 'n1' }, spec: { podCIDR: '10.244.0.0/24' } })
 })
 
@@ -57,21 +55,17 @@ describe('resolveNetdImageTag', () => {
   })
 })
 
-describe('cniVethPrefix', () => {
-  it('defaults to Calico\'s, and honors the operator\'s override', () => {
-    expect(cniVethPrefix()).toBe(DEFAULT_VETH_PREFIX)
-    vi.stubEnv('YAAC_CNI_VETH_PREFIX', 'eni')
-    expect(cniVethPrefix()).toBe('eni')
-  })
-})
-
 describe('ensureNetd', () => {
-  it('applies namespaced RBAC and the DaemonSet, waits for the rollout, then drops the old cluster RBAC', async () => {
+  it('applies namespaced RBAC and the DaemonSet, and waits for the rollout', async () => {
     await ensureNetd()
 
-    // RBAC before the DaemonSet that uses it. netd reads only its own
-    // namespace, so nothing it is granted is cluster-wide.
-    expect(fakeCluster.callsOf('apply').map((c) => c.kind)).toEqual(['ServiceAccount', 'Role', 'RoleBinding', 'DaemonSet'])
+    // RBAC and its policies before the DaemonSet: netd reads only its own
+    // namespace, so nothing it is granted is cluster-wide, and the
+    // namespace's world-deny would otherwise start it cut off.
+    expect(fakeCluster.callsOf('apply').map((c) => `${c.kind}/${c.name ?? ''}`)).toEqual([
+      'ServiceAccount/yaac-netd', 'Role/yaac-netd', 'RoleBinding/yaac-netd',
+      'NetworkPolicy/yaac-netd-ingress', 'NetworkPolicy/yaac-netd-egress', 'DaemonSet/yaac-netd',
+    ])
     const role = applied('Role') as { metadata: { namespace: string }; rules: Array<{ resources: string[]; verbs: string[] }> }
     expect(role.metadata.namespace).toBe('test-ns')
     expect(role.rules).toEqual([
@@ -83,17 +77,50 @@ describe('ensureNetd', () => {
     )
   })
 
-  it('resolves both images from the registry and never builds one', async () => {
+  it('runs the relay off the host network with no capability, on this install\'s socket root and the proxy\'s secret', async () => {
     await ensureNetd()
 
-    const ds = applied('DaemonSet') as {
-      spec: { template: { spec: { containers: Array<{ name: string; image: string }> } } }
+    type Container = {
+      name: string
+      image: string
+      command?: string[]
+      securityContext: { runAsUser: number; capabilities: { drop?: string[]; add?: string[] } }
+      readinessProbe?: { exec: { command: string[] } }
+      volumeMounts: Array<{ name: string; mountPath: string }>
     }
-    const images = Object.fromEntries(
-      ds.spec.template.spec.containers.map((c) => [c.name, c.image]),
-    )
-    expect(images.netd).toBe(registryRef(netdTag))
-    expect(images.envoy).toBe(registryRef(ENVOY_MIRROR_TAG))
+    const ds = applied('DaemonSet') as {
+      spec: { template: { spec: {
+        hostNetwork?: boolean
+        containers: Container[]
+        volumes: Array<{ name: string; hostPath?: { path: string }; secret?: { secretName: string } }>
+      } } }
+    }
+    const spec = ds.spec.template.spec
+    expect(spec.hostNetwork).toBeUndefined()
+    const byName = Object.fromEntries(spec.containers.map((c) => [c.name, c]))
+    // The images: netd's own, and the relay in mountd's, both looked up.
+    expect(byName.netd.image).toBe(registryRef(netdTag))
+    expect(byName.relay.image).toBe(registryRef(mountdTag))
+    for (const c of spec.containers) {
+      expect(c.securityContext).toEqual({ runAsUser: 0, capabilities: { drop: ['ALL'] } })
+    }
+
+    // The node root, mounted at a short path for the 107-byte socket cap.
+    const relay = byName.relay
+    const arg = (flag: string): string | undefined => relay.command?.[relay.command.indexOf(flag) + 1]
+    expect(arg('-root')).toBe('/s')
+    expect(arg('-node-root')).toBe(socketsNodePath())
+    expect(arg('-proxy')).toBe('yaac-proxy.test-ns.svc.cluster.local:10261')
+    expect(arg('-stream-listen')).toBe(':10262')
+    expect(arg('-site-listen')).toBe(':10263')
+    expect(arg('-stream-port')).toBe('10300')
+    expect(relay.volumeMounts.find((m) => m.mountPath === '/s')?.name).toBe('sockets')
+    expect(spec.volumes.find((v) => v.name === 'sockets')?.hostPath?.path).toBe(socketsNodePath())
+    expect(spec.volumes.find((v) => v.name === 'secret')?.secret?.secretName).toBe('yaac-proxy-auth')
+    // Ready once its listeners are bound.
+    expect(relay.readinessProbe?.exec.command).toEqual(['test', '-f', arg('-ready-file')])
+    // netd keeps the cgroup tree for the swap bound and the pressure kill.
+    expect(spec.volumes.find((v) => v.name === 'cgroup')?.hostPath?.path).toBe('/sys/fs/cgroup')
   })
 
   it('refuses with the command that produces it when an image is missing', async () => {
@@ -102,20 +129,7 @@ describe('ensureNetd', () => {
     fakeRegistry.tags.delete(netdTag)
     await expect(ensureNetd()).rejects.toThrow(/netd image .* is missing.*yaac cluster install/s)
 
-    fakeRegistry.tags.add(netdTag).delete(ENVOY_MIRROR_TAG)
-    await expect(ensureNetd()).rejects.toThrow(/Envoy image .* is missing.*yaac cluster install/s)
-  })
-
-  it('carries the veth prefix into the DaemonSet, so an override reaches the rules', async () => {
-    // A prefix that matches no veth yields no per-pod redirect rules, which
-    // looks healthy until a workspace tries to reach the internet.
-    vi.stubEnv('YAAC_CNI_VETH_PREFIX', 'eni')
-    await ensureNetd()
-
-    const ds = applied('DaemonSet') as {
-      spec: { template: { spec: { containers: Array<{ env?: Array<{ name: string; value: string }> }> } } }
-    }
-    const env = ds.spec.template.spec.containers.flatMap((c) => c.env ?? [])
-    expect(env.find((e) => e.name === 'NETD_VETH_PREFIX')?.value).toBe('eni')
+    fakeRegistry.tags.add(netdTag).delete(mountdTag)
+    await expect(ensureNetd()).rejects.toThrow(/mountd image .* is missing.*yaac cluster install/s)
   })
 })

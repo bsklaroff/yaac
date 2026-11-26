@@ -2,8 +2,9 @@
  * Pod Security Standard labels for the namespaces yaac creates. PSS applies
  * per namespace, so the level must admit the most privileged pod in it:
  *
- *  - the install namespace runs netd (`hostNetwork`, `NET_ADMIN`/`NET_RAW`)
- *    and workspace pods with capabilities `baseline` forbids;
+ *  - the install namespace runs mountd (privileged, host pid), netd
+ *    (hostPath mounts as root) and sandbox pods whose netshim and tree
+ *    containers hold capabilities `baseline` forbids;
  *  - the registry namespace runs pods that hostPath-mount a node's
  *    `certs.d`.
  *

@@ -11,7 +11,7 @@
  */
 
 import { PatchStrategy, setHeaderOptions, type KubernetesObject } from '@kubernetes/client-node'
-import { inClusterClient, makeInformer, superviseInformer } from './pod-watch'
+import { inClusterClient, makeInformer, superviseInformer } from './k8s-client'
 import {
   CA_SECRET_NAME,
   CREDENTIALS_SECRET_NAME,

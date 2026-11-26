@@ -137,7 +137,8 @@ Pod spec (`drivers/k8s/images/builder-pod.ts`):
   layer through an overlay of every layer below it, several times slower
   under gVisor (a cold `tools` parent took 234s instead of 75s). The patch
   reads `uid_map`, which is accurate in the sandbox.
-- `runtimeClassName: gvisor`, the engine capabilities (which grant nothing
+- `runtimeClassName: gvisor-nonet` with a netshim container and its socket
+  directory ("Build egress"), the engine capabilities (which grant nothing
   on the host), no service account token, seccomp `RuntimeDefault`, an 8Gi
   memory limit and `activeDeadlineSeconds`. Labels `yaac.role: builder`,
   `yaac.project-id` and `yaac.build-id`.
@@ -196,11 +197,12 @@ gate (below), and its ingress policy hands them to different callers:
 | Port | Admitted by policy | Reads |
 |---|---|---|
 | node port, 5000 | node addresses: containerd, the kubelet probe, a host `port-forward` | anonymous |
-| pod port, 5002 | builder pods and the server, in any namespace | a project, user or build-cache repo needs a grant naming it; the catalog is refused; the trusted chain and mirrors stay anonymous |
+| pod port, 5002 | the proxy, which carries builds' traffic, and the server, in any namespace | a project, user or build-cache repo needs a grant naming it; the catalog is refused; the trusted chain and mirrors stay anonymous |
 
-Workspace pods are admitted to neither, and their images are pulled by the
-node without credentials. Image refs name the node port; builders and the
-server address the same repos on the pod port, and blobs are stored by
+No sandbox has an address to dial either from, and workspace images are
+pulled by the node without credentials. Image refs name the node port;
+builds (through the proxy) and the server address the same repos on the pod
+port, and blobs are stored by
 repository path, so it is the same image. Host processes (install, `cluster
 check`, the e2e setup) push through a `kubectl port-forward`.
 
@@ -273,20 +275,27 @@ containerd checks the bytes.
 
 ## Build egress
 
-A builder pod is redirected and policed like a workspace pod
-(docs/workspace-egress.md), with its own identity:
+A builder pod has a workspace pod's network shape (docs/workspace-egress.md):
+the `gvisor-nonet` runtime, no interface but loopback, and a netshim
+container carrying every connection through its socket directory, named
+`<build id>.<random>`. So every fetch a build makes, and its traffic to the
+main registry, crosses netshim, netd's relay and the proxy.
 
-- **Policy.** `yaac-builder-egress` allows what a workspace's does (the node
-  on netd's listener range, DNS to the proxy's stub) plus the registry's pod
-  port. A builder whose redirect is missing has no egress.
-- **Redirect.** netd redirects pods labelled `yaac.workspace-id` and those
-  labelled `yaac.build-id`.
 - **Identity.** The server writes a registration (`yaac-proxy-reg-<build
-  id>`, labelled by build id) before the pod and deletes it with the pod;
-  the proxy's pod watch maps the builder's address to it. It carries the
-  project's allowlist and nothing more. The proxy's DNS stub resolves the
-  registry's name for it and sinkholes the rest.
-- **A build only tunnels.** The proxy knows a builder by its label and
+  id>`, labelled by build id) before the pod and deletes it with the pod.
+  It carries the project's allowlist and, in `clusterServices`, the main
+  registry's pod port, and nothing more.
+- **The registry, through the proxy.** Parent pulls and layer pushes name
+  the registry's pod port as before; the proxy forwards those plain-HTTP
+  requests as named, past the allowlist, since the server named the
+  destination. The registry's ingress policy admits the proxy in any
+  namespace (e2e runs use per-run namespaces) in place of builders, and the
+  gate still decides what each request may read and write by the grant in
+  its `Authorization` header. The proxy re-serializes each request: on a
+  kind node a build of the stock tools image pulled its 3.3 GB parent at
+  about 210 MB/s and pushed 1.2 GB of layers at about 100 MB/s this way,
+  within a few percent of a direct dial's whole build time.
+- **A build only tunnels.** The proxy knows a build by its registration and
   tunnels every allowed host, injecting nothing and terminating no TLS, so
   no CA is needed inside `RUN` steps and no credential can end up in a
   cached layer. It refuses `yaac.internal` to a build. A parent comes from
@@ -294,6 +303,9 @@ A builder pod is redirected and policed like a workspace pod
   does (a standalone `FROM`, a `COPY --from=<image>`) needs that registry's
   hosts in the project's allowlist (`ghcr.io` is a default; Docker Hub and
   quay are not).
+- **No policy of its own.** The namespace's world-deny covers builders, and
+  they have no interface to send from. The builder container keeps
+  `NET_ADMIN` (BuildKit gives a `RUN` step none) and has no `NET_RAW`.
 - **Blocked hosts** a build hits are read from the proxy before its
   registration goes and recorded on the build. Its page offers "allow for
   this project", which allows the host together with the rest of its

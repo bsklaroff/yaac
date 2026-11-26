@@ -61,6 +61,32 @@ export function isInternalUpstream(host: string): boolean {
     || name.endsWith('.svc') || name.endsWith('.cluster.local')
 }
 
+/**
+ * True for a name the proxy's resolver would answer with a Service of one
+ * of `namespaces` (the install's own and the main registry's): a single
+ * label, which resolves only through the proxy's search path, or a name
+ * ending in `.<namespace>`, `.<namespace>.svc` or
+ * `.<namespace>.svc.cluster.local`. The proxy's egress policy admits it to
+ * the npm cache and the main registry, so without this refusal any
+ * allowlist entry naming them would reach them. A registration's
+ * `clusterServices` is the only way in (docs/workspace-egress.md "The npm
+ * cache and the main registry").
+ */
+export function isInstallServiceName(host: string, namespaces: string[]): boolean {
+  if (net.isIPv4(host)) return false
+  const name = host.toLowerCase().replace(/\.$/, '')
+  if (!name.includes('.')) return true
+  return namespaces.some((ns) => name.endsWith(`.${ns}`) || name.endsWith(`.${ns}.svc`)
+    || name.endsWith(`.${ns}.svc.cluster.local`))
+}
+
+/**
+ * The main registry's namespace, where every install's builds push and
+ * pull. Must match REGISTRY_NAMESPACE in
+ * packages/server/src/drivers/k8s/cluster/registry.ts.
+ */
+export const MAIN_REGISTRY_NAMESPACE = 'yaac'
+
 /** A destination the guard will not dial; the message says why. */
 export class UpstreamRefused extends Error {}
 

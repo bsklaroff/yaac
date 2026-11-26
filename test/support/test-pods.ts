@@ -1,15 +1,23 @@
 /**
- * Bare pods the k8s e2e tiers start to probe the egress datapath without a
- * full workspace: the workspace label the proxy and netd select on, the
- * proxy CA for `curl --cacert`, and DNS pointed at the proxy.
+ * Bare pods the k8s e2e tiers start to probe the socket datapath without a
+ * full workspace: the workspace label netd's relay finds a sandbox by,
+ * netshim and the socket directory it carries traffic through, the proxy
+ * CA for `curl --cacert`, and DNS pointed at the sinkhole.
  */
+import crypto from 'node:crypto'
 import { execFile } from 'node:child_process'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { applyObject, k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
-import { CA_CONFIGMAP_NAME, RUNTIME_CLASS_GVISOR } from '@yaac/server/drivers/k8s/substrate/pod-spec'
+import {
+  CA_CONFIGMAP_NAME,
+  RUNTIME_CLASS_GVISOR,
+  SANDBOX_DNS,
+  netshimContainer,
+  socketVolume,
+} from '@yaac/server/drivers/k8s/substrate/pod-spec'
+import { mountdImage } from '@yaac/server/drivers/k8s/cluster/mountd'
 import { workspaceIdLabels } from '@yaac/server/drivers/k8s/substrate/pods'
-import { REGISTRY_UPSTREAM_IMAGE } from '@yaac/server/drivers/k8s/cluster/main-registry'
 import { baseImageHash } from '@yaac/server/drivers/k8s/cluster/image-tags'
 import { registryRef, registryTagState } from '@yaac/server/drivers/k8s/cluster/registry'
 import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
@@ -80,19 +88,16 @@ export async function waitForPod(
 }
 
 /**
- * Start a bare workspace pod on the default runtime tier, as real session
- * pods run, and wait for it to be Running. `netAdmin` adds a `net-admin`
- * container running as root with NET_ADMIN, which no real workspace holds,
- * on an image with busybox `ip`: the containers of a gVisor pod share one
- * network stack, so an address it adds is the session's too. `env` and
- * `emptyDirs` (volume name to mount path) add to the session container.
+ * Start a bare workspace pod in the shape real session pods run in (the
+ * no-interface runtime, netshim, a socket directory of its own) and wait
+ * for it to be Running. The session container drops NET_RAW as a
+ * workspace's does. `env` and `emptyDirs` (volume name to mount path) add
+ * to the session container.
  */
 export async function startWorkspacePod(
   name: string,
   workspaceId: string,
-  proxyHost: string,
   opts: {
-    netAdmin?: boolean
     env?: Array<{ name: string; value: string }>
     emptyDirs?: Record<string, string>
   } = {},
@@ -112,29 +117,23 @@ export async function startWorkspacePod(
       automountServiceAccountToken: false,
       enableServiceLinks: false,
       runtimeClassName: RUNTIME_CLASS_GVISOR,
-      dnsPolicy: 'None',
-      dnsConfig: { nameservers: [proxyHost] },
+      ...SANDBOX_DNS,
+      initContainers: [netshimContainer(await mountdImage())],
       containers: [{
         name: 'session',
         image: await resolveTestBaseImageRef(),
         imagePullPolicy: 'IfNotPresent',
         // The base image's ENTRYPOINT keeps the pod alive.
         env: opts.env ?? [],
+        securityContext: { capabilities: { drop: ['NET_RAW'] } },
         volumeMounts: [
           { name: 'proxy-ca', mountPath: '/etc/yaac/certs', readOnly: true },
           ...emptyDirs.map(([volume, mountPath]) => ({ name: volume, mountPath })),
         ],
-      },
-      // The node already holds the main registry's image.
-      ...(opts.netAdmin ? [{
-        name: 'net-admin',
-        image: REGISTRY_UPSTREAM_IMAGE,
-        imagePullPolicy: 'IfNotPresent',
-        command: ['sh', '-c', 'while true; do sleep 3600; done'],
-        securityContext: { runAsUser: 0, capabilities: { add: ['NET_ADMIN'] } },
-      }] : [])],
+      }],
       volumes: [
         { name: 'proxy-ca', configMap: { name: CA_CONFIGMAP_NAME } },
+        socketVolume(`${workspaceId}.${crypto.randomBytes(4).toString('hex')}`),
         ...emptyDirs.map(([volume]) => ({ name: volume, emptyDir: {} })),
       ],
     },
