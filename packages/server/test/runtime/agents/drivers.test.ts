@@ -2453,6 +2453,52 @@ describe('agentDriver', () => {
       .prompt[0].text).toBe('then commit')
   })
 
+  it('delivers a message once a connection finishes its handshake, and refuses it when none does', async () => {
+    await record('acp-d', [lifeLine])
+    const streams: FakeStream[] = []
+    tmuxWindows = 'claude\n'
+    const prompted = (stream: FakeStream): boolean => stream.sent().some((m) => m.method === 'session/prompt')
+    const running = { tool: 'claude' as const, conversationId: 'acp-d' }
+    vi.useFakeTimers()
+    try {
+      connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
+        heartbeatIntervalMs: 600_000,
+        log: () => {},
+        recordedSessions: () => Promise.resolve([{ handle: 'claude', conversationId: 'acp-d' }]),
+        dial: acpDial(() => {
+          const stream = new FakeStream()
+          streams.push(stream)
+          return stream
+        }),
+      })))
+
+      // The first connection drops before its handshake ends; the message
+      // waits for the re-dial's.
+      const sent = agentDriver('acp').deliverPrompt(session, 'claude', 'hello', running)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(streams).toHaveLength(1)
+      streams[0].emitExit()
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(streams).toHaveLength(2)
+      streams[1].feed(helloLine(false))
+      await sent
+      await vi.waitFor(() => expect(prompted(streams[1])).toBe(true))
+      expect(prompted(streams[0])).toBe(false)
+
+      // That one drops too, and its re-dial never finishes a handshake: the
+      // send is refused rather than reported delivered.
+      streams[1].emitExit()
+      const refused = expect(agentDriver('acp').deliverPrompt(session, 'claude', 'anyone?', running))
+        .rejects.toThrow(/^its chat connection did not come up within 60s \(timed out waiting for the ACP session\)$/)
+      await vi.advanceTimersByTimeAsync(61_000)
+      await refused
+      expect(streams).toHaveLength(3)
+      expect(prompted(streams[2])).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the queue across the whole connection going down, for the reconnect to send', async () => {
     // A dropped tmux client takes the connection down and the watcher
     // reconnects; acpd kept every agent meanwhile. (A stop is the watcher's

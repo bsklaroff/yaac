@@ -92,7 +92,7 @@ const ATTACH_RETRY_MS = 1_000
 export const MAX_FAST_ATTACH_ATTEMPTS = 10
 
 /** How long `deliverPrompt` waits for a conversation to finish its handshake
- *  before giving up. Generous: it covers an adapter's cold start. */
+ *  before refusing the message. Generous: it covers an adapter's cold start. */
 const PROMPT_ATTACH_TIMEOUT_MS = 60_000
 
 /**
@@ -544,20 +544,35 @@ export const acpDriver: AgentDriver = {
   },
 
   /**
-   * Deliver a user message. Resolves once dispatched, not when the agent
-   * answers, so session create does not block for a turn. Waits for the
-   * conversation's handshake, since session create runs before the
-   * connection has found the new window.
+   * Deliver a user message. Resolves once a conversation on `handle` has
+   * finished its handshake and been handed the message, not when the agent
+   * answers, so a send does not block for a turn. A connection that drops
+   * before its handshake ends is replaced by a re-dial, so its replacement
+   * is waited for too. Rejects if none is ready within
+   * `PROMPT_ATTACH_TIMEOUT_MS`: such a message would never be taken.
    */
   async deliverPrompt(session: DrivenWorkspace, handle: string, text: string): Promise<void> {
-    const conversation = await whenAcpConversation(
-      session.projectId, session.workspaceId, handle, PROMPT_ATTACH_TIMEOUT_MS,
-    )
-    if (conversation === undefined) {
-      throw new Error(`no ACP conversation attached on ${handle} after ${String(PROMPT_ATTACH_TIMEOUT_MS)}ms`)
+    const deadline = Date.now() + PROMPT_ATTACH_TIMEOUT_MS
+    let failed: AcpConversation | undefined
+    let why = 'no chat connection attached'
+    for (;;) {
+      const conversation = await whenAcpConversation(
+        session.projectId, session.workspaceId, handle, Math.max(deadline - Date.now(), 0),
+      )
+      if (conversation === undefined || conversation === failed) {
+        throw new Error(`its chat connection did not come up within ${String(PROMPT_ATTACH_TIMEOUT_MS / 1000)}s (${why})`)
+      }
+      try {
+        await conversation.whenReady(Math.max(deadline - Date.now(), 0))
+      } catch (err) {
+        failed = conversation
+        why = err instanceof Error ? err.message : String(err)
+        continue
+      }
+      void conversation.prompt(text).catch((err: unknown) => {
+        serverLog(`[server] acp-driver ${session.workspaceId}/${handle}: prompt failed: ${String(err)}`)
+      })
+      return
     }
-    void conversation.prompt(text).catch((err: unknown) => {
-      serverLog(`[server] acp-driver ${session.workspaceId}/${handle}: prompt failed: ${String(err)}`)
-    })
   },
 }

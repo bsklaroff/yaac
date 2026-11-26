@@ -419,6 +419,10 @@ pass — the server resolves who is calling and answers for that project only.
     (Ctrl+Y). Mention that to the user if you know they were typing.
   - The reply says the message was handed over, not that it was answered.
     Read the answer with `yaac-mama history <workspace> <conversation>`.
+    A chat-pane agent whose chat connection is not up (still starting, or
+    dropped and not reattaching) cannot be handed it: the send waits about
+    a minute, then fails with "not delivered". Nothing was handed over, so
+    trying again later is safe; if it keeps failing, tell the user.
   - The agent may run in **at most your own permission mode**: messaging
     a more permissive one is refused, as is messaging yourself. A
     terminal agent reports a mode its user changes only with its next

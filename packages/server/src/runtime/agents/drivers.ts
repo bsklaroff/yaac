@@ -218,10 +218,11 @@ export interface AgentDriver {
   ): AgentConnection
   /**
    * Deliver a message from someone other than its user to a running agent,
-   * addressed by handle, in the conversation `running` names. `acp` sends
-   * `session/prompt`; `tui` pastes it into the pane, refuses while the agent
-   * shows a dialog the text could answer (`agentAtInputTest`), submits with
-   * one Enter, and rejects when nothing was submitted.
+   * addressed by handle, in the conversation `running` names. `acp` hands it
+   * to the conversation once its handshake is done, and rejects when none
+   * finishes one in time; `tui` pastes it into the pane, refuses while the
+   * agent shows a dialog the text could answer (`agentAtInputTest`), submits
+   * with one Enter, and rejects when nothing was submitted.
    */
   deliverPrompt(
     session: DrivenWorkspace,
