@@ -215,7 +215,9 @@ all there. The second scales further and needs every machine to be
 reachable. Start with the first.
 
 **Where yaac's own node programs live.** netd's relay becomes Pamir's
-socket carrying, so it leaves yaac. What stays yaac's on every node is the
+socket carrying, so it leaves yaac. Its core is written for that: a Go
+package that imports nothing of yaac or Kubernetes
+(docs/plans/socket-egress.md "The relay, and what is left of netd"). What stays yaac's on every node is the
 mountd, the arborist, the swap bound and the pressure kill.
 They can run as units Pamir starts on every node, as DaemonSets do today,
 or be compiled into yaac's own build of the node program through the

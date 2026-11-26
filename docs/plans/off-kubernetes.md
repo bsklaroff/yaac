@@ -73,7 +73,7 @@ What it costs is larger than what it does:
 ```
 client ── origin ──► server ──► Pamir ──► containerd ──► generic sandboxes
                       │ │         ▲                        (runsc, no network)
-                      │ │         │ carries /run/yaac/egress.sock, stream.sock
+                      │ │         │ carries /run/yaac/egress.sock, ingress.sock
                       │ └──► mountd: binds, trees
                       └──── feed ──► proxy ──► internet
 ```
@@ -105,7 +105,7 @@ inside a Linux VM, which is how a Mac runs workspaces today, with kind
 removed from the middle. Apple's `container` is a follow-up ("Follow-up:
 an Apple `container` backend"), because it cannot keep the generic shape.
 
-**Pamir carries the sockets.** A sandbox's `egress.sock` and `stream.sock`
+**Pamir carries the sockets.** A sandbox's `egress.sock` and `ingress.sock`
 are sockets of its unit, which Pamir delivers to the proxy and opens for
 the server, naming the unit each time. That is netd's relay, which this
 driver does not use. netd's other two duties, the swap bound and the
@@ -325,9 +325,9 @@ Each item removes a `NOT_SUPPORTED` or a difference from k8s:
   (docs/image-gc.md).
 - **Volumes.** A directory of the data dir, as on kind
   (docs/workspace-volumes.md), bound by mountd.
-- **Sites.** The router and the tunnels run as units. A release is a
-  workspace with a `site.sock`, which the router reaches through Pamir
-  where today it dials a pod IP. The flip of a deploy becomes the server's
+- **Sites.** The router and the tunnels run as units. The router reaches
+  a release through Pamir and the release's `ingress.sock`, where today it
+  dials a pod IP. The flip of a deploy becomes the server's
   write of the router's upstream.
 - **npm cache.** Packages come through the proxy. A shared cache is added
   only if installs measure slower than under k8s.
@@ -508,11 +508,12 @@ cross the boundary differs:
 |---|---|---|
 | No network | `network=none` (loopback only) | `--network none` (no NIC) |
 | `egress.sock`, host to guest | `host-uds`, on a bind-mounted socket | a socket given as a `-v` source is relayed in |
-| `stream.sock`, guest to host | `host-uds`, in the bind-mounted dir | `--publish-socket` |
+| `ingress.sock`, guest to host | `host-uds`, in the bind-mounted dir | `--publish-socket` |
 
 The two sockets are mounted and published one by one, under a short path,
 because `sun_path` is about 104 bytes on macOS. The guest is a real Linux
-kernel, so netshim's loopback addresses are ordinary `ip` commands.
+kernel, so netshim's loopback route and NAT rule are ordinary `ip` and
+`iptables` commands.
 
 Spikes that decide whether to build it:
 
