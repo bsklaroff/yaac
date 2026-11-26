@@ -60,14 +60,12 @@ export const MOUNTD_DIR = path.join(PACKAGE_ROOT, 'k8s', 'mountd')
 export const BUILDKIT_DIR = path.join(PACKAGE_ROOT, 'k8s', 'buildkit')
 /** Build context of the tailnet site tunnel's gateway (see k8s/tailgate/main.ts). */
 export const TAILGATE_DIR = path.join(PACKAGE_ROOT, 'k8s', 'tailgate')
-/** Pin for the Calico install manifest: version and checksum only. */
-export const CALICO_DIR = path.join(PACKAGE_ROOT, 'k8s', 'calico')
 /** Pin for the Tailscale operator's static manifest: checksum only. */
 export const TAILSCALE_OPERATOR_DIR = path.join(PACKAGE_ROOT, 'k8s', 'tailscale-operator')
 
 /**
- * CLIENT-LOCAL. Cache of a verified upstream manifest (Calico, the
- * Tailscale operator), named with its version. Only the CLI (`yaac
+ * CLIENT-LOCAL. Cache of a verified upstream manifest (the Tailscale
+ * operator), named with its version. Only the CLI (`yaac
  * cluster install`) reads it.
  */
 export function pinnedManifestCachePath(fileName: string): string {

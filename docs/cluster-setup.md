@@ -15,8 +15,9 @@ Install is idempotent and safe to re-run at any time. In order, it:
 1. On macOS, sets up the podman machine. On Linux, it expects a reachable
    rootful podman (see below).
 2. Creates a kind cluster from the bundled `k8s/kind-config.yaml` if there
-   is none, installs pinned Calico (the CNI and NetworkPolicy engine), and
-   applies the kind node fixups to every node. An existing cluster is
+   is none, on kind's own CNI, kindnet, which also enforces NetworkPolicy
+   (see "NetworkPolicy enforcement"), and applies the kind node fixups to
+   every node. An existing cluster is
    converged instead: stopped nodes are started and the fixups re-applied.
 3. Applies the PriorityClasses and the in-cluster image registry.
 4. Builds and pushes every image yaac ships (see "Images are built here").
@@ -150,14 +151,10 @@ machine created under podman 5.x lacks that guest setup; re-create it with
 ## Linux: rootful podman
 
 On Linux yaac uses the **rootful** podman engine, for the same reason as on
-macOS. kind's node runs as a container on this engine, and the calico-node
-agent needs privileges that only exist in the initial user namespace. Under
-rootless podman the kernel denies the agent's `mount-bpf-fs` init container
-(`mount: /sys/fs/bpf: permission denied`), so the pod never leaves Pending
-and install times out at `1 pods of DaemonSet calico-node are not ready`.
-Kernels >= 6.9 allow that mount in a user namespace, but loading Calico's
-BPF programs still needs CAP_BPF in the initial namespace, so rootful is
-required either way.
+macOS. kind's node runs as a container on this engine, and the gVisor
+installer sets host-wide kernel settings from it (`vm.min_free_kbytes` and
+the others in "What it wires up"), which a node in a rootless engine's user
+namespace cannot write. Rootful is the only engine yaac is run on.
 
 `ensureRootfulPodmanHost` (`#drivers/k8s/install`, podman.ts) sets
 `CONTAINER_HOST=unix:///run/podman/podman.sock` at the start of every
@@ -252,9 +249,9 @@ These host settings make a container look up but unresponsive:
 - **Host `arp_ignore=2` makes pods unreachable from their node.** A new pod
   network namespace copies its IPv4 `conf/all` settings from the host's
   root namespace (kernel default `net.core.devconf_inherit_init_net=0`),
-  not from the kind node. Calico gives each pod a `/32`, so with
-  `arp_ignore=2` the pod ignores ARP from the node: containers run but every
-  kubelet probe times out. VPN clients set this (Mullvad is a suspect).
+  not from the kind node. A pod whose address is a `/32` (Calico's shape,
+  on a cluster created before kindnet) then ignores ARP from the node under
+  `arp_ignore=2`: containers run but every kubelet probe times out. VPN clients set this (Mullvad is a suspect).
   Install detects it when the registry stalls and tells you to run `sudo
   sysctl -w net.core.devconf_inherit_init_net=3` (new namespaces copy from
   their creator, the node), persist it in `/etc/sysctl.d`, and re-create the
@@ -388,7 +385,7 @@ docs/server-in-cluster.md "The token endpoint".
    cluster").
 
    Every pod running untrusted code (workspaces and builder pods) names
-   the `gvisor` RuntimeClass. Trusted yaac infra (the proxy, the registry,
+   the `gvisor-nonet` RuntimeClass. Trusted yaac infra (the proxy, the registry,
    node-write pods) runs on runc, since a sandbox per infra pod costs CPU
    for no containment gain.
 5. **PriorityClasses**: `yaac-infra` (1000000) > `yaac-builder` (100000) >
@@ -402,14 +399,7 @@ docs/server-in-cluster.md "The token endpoint".
    `preemptionPolicy: Never`. A preempted workspace Job (`backoffLimit: 0`)
    never comes back, so a build waits for room rather than evicting a
    workspace. netd stays on `system-node-critical`, like kube-proxy.
-6. **Calico**: upstream's KDD/iptables manifest for the pinned version,
-   verified against the checksum committed in `k8s/calico/` and cached at
-   `<dataDir>-client/cache/calico-<version>.yaml` so a cluster re-create does
-   not re-download it. A checksum mismatch fails install. Calico's images
-   (~235 MB) are pulled to the host engine and side-loaded onto the nodes,
-   so they download once rather than on every re-create.
-   `k8s/calico/README.md` has the steps for changing the pin.
-7. **The npm cache**: one Verdaccio (`yaac-npm-cache`) in the install
+6. **The npm cache**: one Verdaccio (`yaac-npm-cache`) in the install
    namespace, which every workspace's `pnpm install` goes through
    (docs/workspace-storage.md "Package installs"), behind an nginx
    sidecar that caches package metadata. A one-replica Deployment over an
@@ -472,14 +462,14 @@ the data dir and node-local mounts to it and copies the entry into `N-1`
 worker entries, so every node has both mounts. Because all kind
 nodes share this host's filesystem, the claims' volumes resolve to the same
 bytes whichever node a workspace lands on, and the "node-local" tier is one
-host folder. The rest of the config (the containerd `config_path` patch,
-the kubelet memory patch, `disableDefaultCNI`) is cluster-wide.
+host folder. The rest of the config (the containerd `config_path` patch
+and the kubelet memory patch) is cluster-wide.
 
 Host-side loops over the node list apply the kind node fixups and write
 the main registry's `hosts.toml`. A node added later gets its `hosts.toml`
 and is admitted by the node-address policies through the server's
 node-sync (see "Bring your own cluster"); DaemonSets (the gVisor
-installer, Calico, netd, mountd) cover it on their own.
+installer, kindnet, netd, mountd) cover it on their own.
 
 The registry stores blobs on an RWO PVC. Under kind's default `standard`
 class (rancher local-path, `WaitForFirstConsumer`) the directory is on one
@@ -694,10 +684,19 @@ rolled back. On a cluster that fails the enforcement probe, the walls
 around yaac's own pods are advisory. **Do not start workspaces until a
 re-run passes.**
 
+On kind the engine is kindnet's, kind's own CNI, and on `infra/hetzner-k3s`
+it is k3s's own controller beside flannel. Both let a new pod's first
+packets through before they have programmed it, and kindnet passes
+everything while its daemon is down. On a cluster yaac owns that opens
+nothing to a sandbox, since no pod that can send runs untrusted code, and
+the checks that matter most rest on no policy; what does rest on policy
+alone is listed in docs/workspace-egress.md "Policies".
+
 A cluster shared with other workloads is the one place enforcement at a
 pod's birth still matters: a foreign pod could dial one of yaac's in the
-moment before its engine programs it. Every yaac policy selects only yaac's
-own pods, and policy for anyone else's workloads is out of scope.
+moment before its engine programs it, and the `egress` gate's pass says so
+on a byo install. Every yaac policy selects only yaac's own pods, and
+policy for anyone else's workloads is out of scope.
 
 The install and registry namespaces are labelled for the `privileged` Pod
 Security Standard. This does nothing on kind, but matters on a byo cluster
@@ -731,7 +730,7 @@ podman-restart.service`). A podman too old for `podman update --restart`
 gets a note instead. Where the nodes stay stopped, the check reports an
 unreachable API server. Run `yaac cluster install`: it starts every stopped
 node, applies the fixups, waits for the API server, and converges as usual. Until
-calico-node is back, pod statuses still show their pre-reboot values, so
+the CNI is back on a node, pod statuses still show their pre-reboot values, so
 the registry step waits on a real connection rather than on the rollout
 status.
 
@@ -919,8 +918,9 @@ order:
   request to the server by address and by name, the apiserver, a node's
   kubelet, a running workspace, a literal internet address and, on byo,
   the global volume's NFS server (on EFS, the mount target of each zone
-  the nodes are in), while the allowed host answers, and its container
-  sees no unix socket. A dial there always connects, so each is judged on
+  the nodes are in), while the allowed host answers, its container sees
+  no unix socket, and `/proc/net/dev` lists no interface but loopback,
+  which is what shows the runtime gave it none. A dial there always connects, so each is judged on
   the completed request. The allowed host answering the proxy's 5xx (a
   cluster with no internet) is a warning, since the targets' 403s already
   show the request crossed the datapath; no answer at all is a failure. The server's own egress reaches the apiserver and
@@ -987,7 +987,7 @@ yaac cluster delete        # prompts first; -y / --yes skips the prompt
 ```
 
 This runs `kind delete`, and that is all it needs to do: everything yaac
-deploys lives in the cluster, including Calico, netd, the main
+deploys lives in the cluster, including netd, the main
 registry with every pushed image, and the storage claims and
 their volumes. Running workspace pods stop, but nothing under the yaac
 data dir is removed. The volumes are `Retain` and their bytes are the data

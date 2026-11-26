@@ -10,18 +10,41 @@ import { listObjects, readObject } from '#drivers/k8s/substrate'
 
 interface RawNode {
   metadata?: { annotations?: Record<string, string> }
+  spec?: { podCIDRs?: string[] }
   status?: { addresses?: Array<{ type?: string; address?: string }> }
 }
 
 /**
- * Node annotations holding Calico's tunnel address. Host traffic to a pod on
- * another node is sourced from it, not the InternalIP.
+ * Node annotations holding Calico's tunnel address, on clusters running
+ * Calico (a byo one, or a kind cluster created before kindnet). Host
+ * traffic to a pod on another node is sourced from it, not the InternalIP.
  */
 const CALICO_TUNNEL_ANNOTATIONS = [
   'projectcalico.org/IPv4IPIPTunnelAddr',
   'projectcalico.org/IPv4VXLANTunnelAddr',
   'projectcalico.org/IPv4WireguardInterfaceAddr',
 ] as const
+
+/**
+ * Set on a node whose pods flannel carries over VXLAN (k3s's default CNI).
+ * Its `flannel.1` device holds the network address of the node's pod CIDR,
+ * and host traffic to a pod on another node, such as a NodePort pull
+ * masqueraded on its way to the registry, is sourced from it. The network
+ * address is never a pod's.
+ */
+const FLANNEL_BACKEND_ANNOTATION = 'flannel.alpha.coreos.com/backend-type'
+
+/** The host addresses a node's own CNI sends cross-node host traffic from. */
+function tunnelAddresses(node: RawNode): string[] {
+  const annotations = node.metadata?.annotations ?? {}
+  const calico = CALICO_TUNNEL_ANNOTATIONS
+    .map((key) => annotations[key])
+    .filter((addr): addr is string => !!addr)
+  const flannel = annotations[FLANNEL_BACKEND_ANNOTATION] === 'vxlan'
+    ? (node.spec?.podCIDRs ?? []).map((cidr) => cidr.split('/')[0])
+    : []
+  return [...calico, ...flannel]
+}
 
 /**
  * Cached. Node addresses change when nodes join or leave; node-sync re-reads
@@ -50,11 +73,7 @@ async function readNodeAddresses(): Promise<void> {
     .filter((a) => a.type === type && a.address)
     .map((a) => hostCidr(a.address!))
   // Tunnel addresses matter only on multi-node clusters.
-  const tunnels = items.flatMap((n) =>
-    CALICO_TUNNEL_ANNOTATIONS
-      .map((key) => n.metadata?.annotations?.[key])
-      .filter((addr): addr is string => !!addr)
-      .map(hostCidr))
+  const tunnels = items.flatMap((n) => tunnelAddresses(n).map(hostCidr))
   const sources = [...new Set([...ofType('InternalIP'), ...tunnels])].sort()
   if (sources.length === 0) {
     throw new Error(
@@ -67,7 +86,7 @@ async function readNodeAddresses(): Promise<void> {
 }
 
 /**
- * Every node's InternalIP (and Calico tunnel address) as a host CIDR: how
+ * Every node's InternalIP (and CNI tunnel address) as a host CIDR: how
  * the policies admit traffic from the host netns (kubelet probes,
  * containerd pulls). Throws if none resolve, since an empty set would
  * silently cut off the probes. Cached; `fresh` re-reads the

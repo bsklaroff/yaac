@@ -59,7 +59,7 @@ Debian 12 is best effort: its tmux (3.3a) clears the containerless driver's
 3.3 floor, but `yaac cluster install` has never run on its podman (4.3). A
 release counts as supported for clusters only once the k8s e2e tier passes
 on its stock podman ("Verification"). The cluster is supported on amd64. On
-arm64, gVisor, Calico and kind all publish builds, but yaac's image builds
+arm64, gVisor and kind all publish builds, but yaac's image builds
 have never run there, so arm64 is listed once the e2e tier passes on an
 arm64 host.
 
@@ -268,8 +268,7 @@ platforms, the way `ensureLlamaCpp` fetches llama.cpp:
   missing tool as one that the next install fetches, rather than as a
   failure to fix.
 - Without network access, the first install fails at the download and names
-  the URL. It needs the network anyway, to pull the kind node image and
-  Calico.
+  the URL. It needs the network anyway, to pull the kind node image.
 
 This makes Debian vendoring and `update-alternatives` unnecessary, so a
 distro `kubectl` can never conflict with ours. It also works on every install

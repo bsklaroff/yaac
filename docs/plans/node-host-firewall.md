@@ -47,8 +47,8 @@ returns on any interface other than the public one.
 
 Two choices in that shape matter:
 
-- **Filter by interface, not by address.** The private network, Calico's
-  VXLAN device, the `cali*` pod interfaces and `tailscale0` are never
+- **Filter by interface, not by address.** The private network, flannel's
+  VXLAN device and bridge, the pod interfaces and `tailscale0` are never
   touched, so node-to-node, pod-to-node (DNS, the kubelet) and tailnet
   traffic need no allow rules, and none can be forgotten. On a dedicated
   server the vSwitch link to the Cloud network is a VLAN interface, so it
@@ -60,10 +60,10 @@ Two choices in that shape matter:
   nodes publishes one today, but a `prerouting` chain closes that path
   regardless.
 
-The table coexists with the iptables-nft tables kube-proxy and Calico
-write: nftables runs every base chain on a hook, and a drop in any of them
-is final, so these rules can only remove traffic, never admit something
-Calico would refuse.
+The table coexists with the iptables-nft tables kube-proxy, flannel and
+k3s's policy controller write: nftables runs every base chain on a hook,
+and a drop in any of them is final, so these rules can only remove
+traffic, never admit something a policy would refuse.
 
 ### Which interface is public
 
@@ -82,8 +82,8 @@ in place before any interface comes up. The file opens with
 it replaces only this table.
 
 Do not use Ubuntu's `nftables.service` and `/etc/nftables.conf`. Its
-stock file opens with `flush ruleset`, which would wipe kube-proxy's and
-Calico's tables whenever the unit restarts.
+stock file opens with `flush ruleset`, which would wipe kube-proxy's,
+flannel's and the policy controller's tables whenever the unit restarts.
 
 On first boot the rules go on as the script's first step, before apt or
 containerd. Nothing listens on the public interface before k3s starts
@@ -97,25 +97,14 @@ in separate sets, so `main.tf` passes the template the two lists split on
 `strcontains(c, ":")`. An empty set must still declare its type, so the
 template emits the `elements` line only when the list is non-empty.
 
-## Why not Calico host policy
+## Why not a CNI's host policy
 
-Calico can create a HostEndpoint per node automatically
-(`KubeControllersConfiguration` with `autoCreate: Enabled`), so one set of
-`GlobalNetworkPolicy` objects would cover every node as Kubernetes objects.
-It loses to nftables here:
-
-- A node is protected only once calico-node has started and programmed its
-  rules. Until then the kubelet's port (10250) and anything else listening
-  is open on the public address, on every autoscaled node.
-- Calico's default failsafe ports include 6443, so the control node's API
-  stays publicly reachable unless `failsafeInboundHostPorts` in
-  `FelixConfiguration` is cut down to ssh.
-- Host policy also governs pods talking to their own node, so the pod range
-  needs an explicit allow or DNS and other node-local traffic breaks.
-- If Calico breaks, the nodes lose their firewall with it.
-
-Calico is the better fit only for host policy that varies per node or
-changes over time, and this cluster has neither.
+The stack's CNI, flannel with k3s's policy controller, has no host policy:
+NetworkPolicy selects pods only. An engine with one (Calico's
+HostEndpoints) protects a node only once its agent has started and
+programmed it, so the kubelet's port would be open on the public address of
+every new node until then, and the nodes would lose their firewall whenever
+the agent broke.
 
 ## Out of scope
 

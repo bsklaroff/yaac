@@ -47,13 +47,15 @@ export interface DispatchContext extends MitmContext {
  * one Tor carries: Tor resolves at the exit, off the cluster's network,
  * and resolving here would leak the name to the local resolver.
  */
-function directUpstream(ctx: DispatchContext, workspaceId: string, hostname: string): Promise<DirectUpstream | null> {
+function directUpstream(
+  ctx: DispatchContext, workspaceId: string, hostname: string, port: number,
+): Promise<DirectUpstream | null> {
   if (isInstallServiceName(hostname, ctx.installNamespaces)) {
     return Promise.reject(new UpstreamRefused(`${hostname} names one of the install's own services, `
       + 'which a workspace reaches only where the server hands it one'))
   }
   if (ctx.torAgent !== null && !isInternalUpstream(hostname)) return Promise.resolve(null)
-  return resolveUpstream(hostname, isHostNamedExactly(ctx.objects, workspaceId, hostname), ctx.lookup)
+  return resolveUpstream(hostname, port, isHostNamedExactly(ctx.objects, workspaceId, hostname), ctx.lookup)
 }
 
 const STATUS_TEXT: Record<number, string> = { 403: 'Forbidden', 502: 'Bad Gateway' }
@@ -149,7 +151,7 @@ export async function dispatchToUpstream(
   let direct: DirectUpstream | null = null
   if (redirect === null) {
     try {
-      direct = await directUpstream(ctx, workspaceId, hostname)
+      direct = await directUpstream(ctx, workspaceId, hostname, destPort)
     } catch (err) {
       const reason = (err as Error).message
       console.log(`[proxy] REFUSED ${label} to ${hostname}:${port ?? '443'}: ${reason}`)
@@ -236,7 +238,7 @@ export async function forwardPlainHttp(
 
   let direct: DirectUpstream | null
   try {
-    direct = await directUpstream(ctx, workspaceId, hostname)
+    direct = await directUpstream(ctx, workspaceId, hostname, target.port)
   } catch (err) {
     refuse(err instanceof UpstreamRefused ? 403 : 502, (err as Error).message)
     return

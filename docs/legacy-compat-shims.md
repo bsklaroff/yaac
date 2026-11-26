@@ -987,6 +987,32 @@ sync's prune deletes every NetworkPolicy labelled `app=yaac-site`.
   the gvisor class"; on a given cluster, once `kubectl get networkpolicy -A`
   lists none of those names and nothing labelled `app=yaac-site`.
 
+## Calico on a Hetzner stack
+
+An `infra/hetzner-k3s` stack created before it ran k3s's own flannel and
+policy controller runs Calico from the Tigera operator, with a
+`FelixConfiguration` in its own manifest file, `yaac-felix.yaml`. k3s keeps
+what a removed manifest file created, so the control node's provisioning
+script (`control.sh.tftpl`) removes Calico itself when that file is still
+there: it refuses to start while any pod still runs on the old `gvisor`
+class (one with a network interface), then deletes the operator's `Installation`, the two Calico HelmCharts,
+the namespaces the operator left and the file's AddOn, points the node's
+containerd at flannel's CNI directories, and deletes the file only once no
+calico-node DaemonSet is left. The stack's README ("Upgrading", "Off
+Calico") has the steps around it, which must run in order: yaac upgraded
+first, so no workspace with a network interface is left, then the apply,
+then each worker's containerd and the reboots.
+
+- **What it reads.** Whether `yaac-felix.yaml` is in the control node's
+  manifests directory.
+- **What breaks silently if it goes too early.** A stack still on Calico
+  is switched with Calico left running: calico-node keeps programming
+  every node beside flannel, the control node's containerd keeps reading
+  Calico's CNI config, and pods come up with addresses from both.
+- **When it is safe to remove.** Once no stack created on Calico is left;
+  on a given stack, once `ls /var/lib/rancher/k3s/server/manifests` on the
+  control node shows no `yaac-felix.yaml`.
+
 ## The yaac-nestable image
 
 The retired `nestable` layer left its last generations in the main

@@ -313,6 +313,28 @@ The relay's site port takes no secret, so the router's identity checks
 admits no one by position alone: the relay presents the proxy auth secret on
 every connection.
 
+**What enforces them.** kindnet on kind, k3s's own controller on
+`infra/hetzner-k3s`, and whatever engine a byo cluster runs. kindnet and
+k3s's controller let a new pod's first packets through before they have
+programmed it, and kindnet passes all traffic while its daemon is down. On a
+cluster yaac owns, no pod that can send runs untrusted code (a sandbox has a
+CNI address but no interface to use it), so neither opens anything to a
+sandbox, but what rests on policy alone is defense in depth there:
+
+- the relay's site port, which takes no secret;
+- the site edge (the router and the tunnels), which faces the internet and
+  is kept to its few peers by policy alone;
+- the server's ingress, where a loopback `Host` makes the caller the owner
+  (docs/server-in-cluster.md "The ingress policy is the wall");
+- the floor under an exact allowlist entry for a non-public address the
+  operator did not open, which the proxy dials. The proxy itself refuses
+  NFS and the kind fronting's port on such an address ("Non-public
+  destinations").
+
+The checks that matter most rest on no policy: the proxy's non-public
+guard, and the secret the relay, mountd and the proxy each ask their caller
+for.
+
 **Probe egress with real requests, not connects.** Every connect from a
 sandbox succeeds, to any address and port, since netshim takes it. Assert on
 a completed request: the proxy refuses a host no allowlist admits with a 403,
@@ -687,6 +709,13 @@ A dial admitted this way:
 - gets a connection of its own, outside the proxy's shared keep-alive pool,
   which is keyed by host and port, not by workspace.
 
+No entry admits a non-public address on two ports: NFS (2049), whose server
+on a node trusts the uid a client claims, and the kind fronting's node port,
+which delivers to the server as its owner (docs/server-in-cluster.md "The
+ingress policy is the wall"). The floor below leaves both out as well; the
+proxy refuses them itself because a cluster's policy engine may not be
+enforcing at the moment of the dial ("Policies").
+
 Destinations the server names, not a workspace, are not checked: an e2e
 upstream redirect's target, the mama relay, a registration's
 `clusterServices`, and the proxy's own apiserver and DNS traffic. Under `USE_TOR`, a
@@ -703,11 +732,11 @@ addresses only: 0.0.0.0/0 less the same special-purpose ranges and
 blocks. That leaves out ULA, where AWS (fd00:ec2::254) and GCE
 (fd20:ce::254) serve IPv6 metadata and the EKS Pod Identity agent answers
 at fd00:ec2::23, and link-local. Every address a node answers on is cut as
-well, each from its own family's block: its InternalIP, Calico tunnel
-address and ExternalIPs (`nodeAddressBlocks`). A cloud node's ExternalIP is
-public, and a pod dialing its own node's is delivered locally, past any
-cloud firewall. The policies are re-rendered as nodes join (node-sync). The
-floor allows back only what yaac needs:
+well, each from its own family's block: its InternalIP, CNI tunnel
+address (Calico's, or flannel's) and ExternalIPs (`nodeAddressBlocks`). A
+cloud node's ExternalIP is public, and a pod dialing its own node's is
+delivered locally, past any cloud firewall. The policies are re-rendered
+as nodes join (node-sync). The floor allows back only what yaac needs:
 
 - DNS on port 53: the cluster resolver by selector (`k8s-app: kube-dns` in
   `kube-system`), that Service's own ClusterIP, and 169.254.0.0/16. The last
@@ -725,9 +754,8 @@ floor allows back only what yaac needs:
   checks it makes.
 
 Selector rules also match a dial to a Service address, because policy sees
-the destination after kube-proxy's DNAT. The gateway Calico gives every pod
-(169.254.1.1, and an fe80:: address on IPv6) is a next hop, not a
-destination, so the floor does not affect it.
+the destination after kube-proxy's DNAT. A pod's default gateway is a next
+hop, not a destination, so the floor does not affect it.
 
 The proxy's allowances above are where "takes both" does not hold. An exact
 allowlist entry naming the *address* of the npm cache or of the registry's
@@ -911,17 +939,6 @@ k3s re-applies its packaged CoreDNS on restart; put the block in the
 `coredns-custom` ConfigMap there instead, under a key like `tailnet.server`.
 With `infra/hetzner-k3s`, list the zone in its `tailnet_dns_zones`
 variable, which writes that key into the ConfigMap its `cluster.tf` owns.
-
-Where `tailscaled` runs on the node itself rather than outside it (as it
-does for kind, through the machine hosting it), Calico's iptables mark bits
-must stay off `0xff0000`, which tailscaled claims. With Felix's default mask
-(`0xffff0000`), a scratch bit Calico leaves on a pod's packet matches
-Tailscale's bypass rule (`fwmark 0x80000/0xff0000 lookup main`), and the
-pod's traffic to the tailnet leaves by the public interface and times out.
-Set `iptablesMarkMask` on the `default` FelixConfiguration to bits nothing
-else on the node uses and that clear bit 31, which the CRD's int32
-validation rejects: `infra/hetzner-k3s` sets `0x7f000f00`
-(`felix_manifest` in its `cluster.tf`).
 
 The e2e suites open their mock pods to the proxy the same way
 (`openToProxy` in `test/support/cluster.ts`).

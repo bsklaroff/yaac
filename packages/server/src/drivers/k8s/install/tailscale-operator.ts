@@ -3,8 +3,8 @@
  * or `--byo` server (server-fronting.ts, docs/remote-hosting.md).
  *
  * On kind yaac owns the cluster, so install puts the operator there itself
- * from Tailscale's static manifest, pinned by version and checksum like
- * Calico (pinned-manifest.ts), with images pinned by digest. It labels what
+ * from Tailscale's static manifest, pinned by version and checksum
+ * (pinned-manifest.ts), with images pinned by digest. It labels what
  * it applies and converges only an operator carrying that label. One
  * installed some other way (helm) is left to whoever installed it, and so
  * are its cluster-wide objects (the CRDs and the `tailscale` IngressClass):

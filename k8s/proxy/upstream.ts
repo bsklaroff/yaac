@@ -100,13 +100,25 @@ export interface DirectUpstream {
 }
 
 /**
+ * Ports a non-public destination is never dialed on, whatever the allowlist
+ * says: NFS, whose server on a node trusts the uid a client claims, and the
+ * kind fronting's node port, which delivers to the server as its owner
+ * (docs/server-in-cluster.md). The proxy's egress policy leaves both out
+ * too, but a cluster's policy engine may let a new pod's first packets
+ * through or stop enforcing while its daemon is down. Mirrors `NFS_PORT`
+ * and `SERVER_FRONT_PORT` in the server's proxy-constants.ts.
+ */
+const NON_PUBLIC_REFUSED_PORTS: ReadonlySet<number> = new Set([2049, 30787])
+
+/**
  * Resolve `host` (an `upstreamHost`) once through `lookup` for a direct
- * dial, keeping its IPv4 addresses. Throws UpstreamRefused when
+ * dial to `port`, keeping its IPv4 addresses. Throws UpstreamRefused when
  * any is non-public and `admitNonPublic` (an exact allowlist entry for the
- * host) is false.
+ * host) is false, or `port` is one no non-public address is dialed on.
  */
 export async function resolveUpstream(
   host: string,
+  port: number,
   admitNonPublic: boolean,
   lookup: (hostname: string) => Promise<LookupAddress[]>,
 ): Promise<DirectUpstream> {
@@ -118,6 +130,10 @@ export async function resolveUpstream(
   if (nonPublic !== null && !admitNonPublic) {
     throw new UpstreamRefused(`${named(host, nonPublic)} is a non-public address, which only an `
       + 'exact allowlist entry for it admits, not * or a wildcard')
+  }
+  if (nonPublic !== null && NON_PUBLIC_REFUSED_PORTS.has(port)) {
+    throw new UpstreamRefused(`${named(host, nonPublic)} is a non-public address, and port `
+      + `${String(port)} is never dialed on one`)
   }
   return { addrs, nonPublic }
 }

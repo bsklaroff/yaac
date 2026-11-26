@@ -26,7 +26,6 @@ import {
   DOCKERFILES_DIR,
   PROXY_DIR,
   NETD_DIR,
-  CALICO_DIR,
   TAILSCALE_OPERATOR_DIR,
   pinnedManifestCachePath,
   globalRoot,
@@ -168,13 +167,10 @@ describe('paths', () => {
     expect(stat.isFile()).toBe(true)
   })
 
-  it.each([
-    ['CALICO_DIR', CALICO_DIR, 'calico.yaml'],
-    ['TAILSCALE_OPERATOR_DIR', TAILSCALE_OPERATOR_DIR, 'operator.yaml'],
-  ])('%s holds the checksum pin, not the manifest itself', async (_name, dir, manifest) => {
-    const pin = await fs.readFile(path.join(dir, `${manifest}.sha256`), 'utf8')
+  it('TAILSCALE_OPERATOR_DIR holds the checksum pin, not the manifest itself', async () => {
+    const pin = await fs.readFile(path.join(TAILSCALE_OPERATOR_DIR, 'operator.yaml.sha256'), 'utf8')
     expect(pin.trim()).toMatch(/^[0-9a-f]{64}\b/)
-    await expect(fs.stat(path.join(dir, manifest))).rejects.toThrow()
+    await expect(fs.stat(path.join(TAILSCALE_OPERATOR_DIR, 'operator.yaml'))).rejects.toThrow()
   })
 })
 
@@ -258,7 +254,7 @@ describe('pinnedManifestCachePath', () => {
   it('keeps the cached manifest in the client-local root', () => {
     // Only `yaac cluster install` reads it; no server installs a manifest.
     setDataDir('/tmp/yaac-test')
-    expect(pinnedManifestCachePath('calico-3.32.1.yaml')).toBe('/tmp/yaac-test-client/cache/calico-3.32.1.yaml')
+    expect(pinnedManifestCachePath('tailscale-operator-1.2.3.yaml')).toBe('/tmp/yaac-test-client/cache/tailscale-operator-1.2.3.yaml')
   })
 })
 

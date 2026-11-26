@@ -24,7 +24,7 @@
 # off the control plane (all kind node containers share the one host
 # filesystem). The `nodes:` list must therefore hold exactly one entry. Everything else is
 # cluster-scoped and kind applies it to every node already: the containerd
-# registry patch, the kubelet memory patch, and disableDefaultCNI.
+# registry patch and the kubelet memory patch.
 #
 # Anything added to the node entry is therefore copied to every worker too,
 # so it must be a per-node property. A HOST-scoped one — extraPortMappings
@@ -43,16 +43,6 @@
 # multi-node scheduling.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
-networking:
-  # No kindnet: its NetworkPolicy engine (kube-network-policies) fails
-  # OPEN — a new pod's first packets flow before its IP reaches the
-  # engine's nftables set, so sessions would start with a brief window of
-  # unrestricted egress. `yaac cluster install` installs Calico instead,
-  # which fails CLOSED: until Felix has programmed a workload's endpoint,
-  # traffic on its veth hits the dispatch chain's "unknown interface"
-  # DROP. Calico allocates pod IPs from the cluster CIDR (kind's default
-  # podSubnet — nothing in yaac depends on its value).
-  disableDefaultCNI: true
 containerdConfigPatches:
 - |-
   [plugins."io.containerd.grpc.v1.cri".registry]

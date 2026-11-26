@@ -22,7 +22,7 @@ $apt install containerd curl git jq acl podman nfs-kernel-server libgomp1 build-
 $apt install containerd curl
 %{ endif ~}
 
-# The private network's address, which k3s and Calico use. cloud-init
+# The private network's address, which k3s and flannel use. cloud-init
 # configures only the public interface, and Hetzner's hot-plug rule misses
 # a private one attached while the server boots, so the interface is
 # brought up from the metadata service's record of it. On a server the
@@ -41,7 +41,7 @@ umask 022
 netplan generate
 networkctl reload
 for _ in $(seq 60); do
-  node_ip=$(ip -4 -o addr show scope global | awk -v net='${subnet_prefix}.' 'index($4, net) == 1 { sub(/\/.*/, "", $4); print $4; exit }')
+  read -r node_iface node_ip < <(ip -4 -o addr show scope global | awk -v net='${subnet_prefix}.' 'index($4, net) == 1 { sub(/\/.*/, "", $4); print $2, $4; exit }') || true
   [ -n "$node_ip" ] && break
   sleep 5
 done
@@ -62,6 +62,12 @@ else
 fi
 grep -qE '^[[:space:]]*SystemdCgroup[[:space:]]*=[[:space:]]*true' "$cfg"
 grep -qF "'/etc/containerd/certs.d'" "$cfg"
+# k3s writes flannel's CNI config and plugins into its own directories, not
+# the ones containerd reads by default.
+sed -i -e 's#/etc/cni/net.d#/var/lib/rancher/k3s/agent/etc/cni/net.d#' \
+  -e 's#/opt/cni/bin#/var/lib/rancher/k3s/data/cni#' "$cfg"
+grep -qF /var/lib/rancher/k3s/agent/etc/cni/net.d "$cfg"
+grep -qF /var/lib/rancher/k3s/data/cni "$cfg"
 systemctl enable containerd
 systemctl restart containerd
 
@@ -112,11 +118,9 @@ systemctl enable podman.socket
 systemctl restart podman.socket
 
 # k3s's kubectl reads its root-only config unless KUBECONFIG says
-# otherwise. k3s runs kube-proxy inside its own process, where the CNI
-# gate cannot see it (docs/cluster-setup.md "The CNI gate").
+# otherwise.
 cat > /home/yaac/.yaac-hetzner.env <<'EOF'
 export KUBECONFIG=$HOME/.kube/config
-export YAAC_KUBE_PROXY_EXTERNAL=1
 EOF
 echo '. ~/.yaac-hetzner.env' >> /home/yaac/.bashrc
 chown yaac:yaac /home/yaac/.yaac-hetzner.env
@@ -148,7 +152,8 @@ umask 077
 cat > /etc/rancher/k3s/config.yaml <<'EOF'
 ${k3s_config}
 EOF
-echo "node-ip: $node_ip" >> /etc/rancher/k3s/config.yaml
+# flannel would otherwise take the default route's interface, the public one.
+printf 'node-ip: %s\nflannel-iface: %s\n' "$node_ip" "$node_iface" >> /etc/rancher/k3s/config.yaml
 umask 022
 %{ if node_local_percent > 0 ~}
 # Workspace trees get a filesystem of their own at the node-local root

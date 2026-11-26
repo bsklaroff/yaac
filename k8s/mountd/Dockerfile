@@ -1,5 +1,5 @@
 # mountd, the arborist and sandbox-bind (docs/generic-workspace-pods.md
-# "mountd"), netshim and netd's relay (docs/plans/socket-egress.md), static
+# "mountd"), netshim and netd's relay (docs/workspace-egress.md), static
 # binaries: CGO off, so they load nothing at run time, and sandbox-bind runs
 # when handed to a sandbox by descriptor, where /proc/self/exe is not a
 # path. git is for the arborist's native builds. netshim programs a

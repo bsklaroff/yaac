@@ -246,7 +246,7 @@ beforeEach(() => {
 import { ClusterInstallError, runClusterInstall } from '#drivers/k8s/install'
 import { ensureSiteEdge } from '#drivers/k8s/cluster'
 // Setup value and the deps type runClusterInstall takes.
-import { CALICO_VERSION, type ClusterInstallDeps } from '#drivers/k8s/install/install'
+import type { ClusterInstallDeps } from '#drivers/k8s/install/install'
 import { nodeIpBlocks, resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import { apiError, fakeCluster, type ApiException, type FakeCall, type FakeObject } from '@yaac/test-utils/k8s-stub'
 // Setup values: the installer DaemonSet's name, the server's names and
@@ -356,11 +356,6 @@ function freshRun(): RunMock {
   })
 }
 
-/** Stand-in Calico manifest and its real checksum, so the pin verifies. */
-const FAKE_CALICO_MANIFEST = 'kind: DaemonSet\nmetadata:\n  name: calico-node\n'
-const FAKE_CALICO_SHA256 = crypto.createHash('sha256')
-  .update(FAKE_CALICO_MANIFEST, 'utf8').digest('hex')
-
 /**
  * Stand-in kind config in the shape the renderer needs: cluster-wide
  * settings first, then a final `nodes:` list with one control-plane entry
@@ -377,10 +372,8 @@ const FAKE_KIND_CONFIG = [
   '',
 ].join('\n')
 
-/** readTextFile for the Calico checksum pin, the cached manifest and the kind config. */
-function fakeCalicoReadTextFile(p: string): Promise<string | null> {
-  if (p.endsWith('.sha256')) return Promise.resolve(`${FAKE_CALICO_SHA256}  calico.yaml\n`)
-  if (p.includes('calico')) return Promise.resolve(FAKE_CALICO_MANIFEST)
+/** readTextFile serving the kind config for every path. */
+function fakeReadTextFile(): Promise<string | null> {
   return Promise.resolve(FAKE_KIND_CONFIG)
 }
 
@@ -402,11 +395,9 @@ function makeDeps(
     homedir: overrides.homedir ?? ((): string => '/home/tester'),
     totalmem: overrides.totalmem ?? ((): number => 64 * 1024 ** 3),
     cpuCount: overrides.cpuCount ?? ((): number => 10),
-    // The kind config, the Calico checksum pin and a matching cached
-    // manifest, so no download is attempted.
-    readTextFile: overrides.readTextFile ?? vi.fn(fakeCalicoReadTextFile),
+    readTextFile: overrides.readTextFile ?? vi.fn(fakeReadTextFile),
     writeTextFile: overrides.writeTextFile ?? vi.fn().mockResolvedValue(undefined),
-    fetchText: overrides.fetchText ?? vi.fn().mockResolvedValue(FAKE_CALICO_MANIFEST),
+    fetchText: overrides.fetchText ?? vi.fn().mockRejectedValue(new Error('no download expected')),
     listDir: overrides.listDir ?? vi.fn().mockResolvedValue([]),
   } as ClusterInstallDeps & { run: RunMock; runStreaming: StreamMock }
 }
@@ -547,11 +538,15 @@ const FAKE_OPERATOR_MANIFEST = [
 ].join('\n')
 const FAKE_OPERATOR_SHA256 = crypto.createHash('sha256').update(FAKE_OPERATOR_MANIFEST, 'utf8').digest('hex')
 
-/** readTextFile serving the operator pin, with no cached copy, over the Calico reads. */
-function operatorReads(sha = FAKE_OPERATOR_SHA256) {
+/**
+ * readTextFile serving the operator pin (null: missing) and its cached copy
+ * (none by default) over the kind config.
+ */
+function operatorReads(opts: { sha?: string | null; cached?: string } = {}) {
+  const sha = opts.sha === undefined ? FAKE_OPERATOR_SHA256 : opts.sha
   return vi.fn((p: string) => p.endsWith('operator.yaml.sha256')
-    ? Promise.resolve(`${sha}  operator.yaml\n`)
-    : p.includes('tailscale-operator-') ? Promise.resolve(null) : fakeCalicoReadTextFile(p))
+    ? Promise.resolve(sha === null ? null : `${sha}  operator.yaml\n`)
+    : p.includes('tailscale-operator-') ? Promise.resolve(opts.cached ?? null) : fakeReadTextFile())
 }
 
 /** An object as a yaac install applied it. */
@@ -560,25 +555,12 @@ function yaacManaged(o: FakeObject): FakeObject {
 }
 
 function operatorFetch() {
-  return vi.fn((url: string) => Promise.resolve(
-    url.includes('k8s-operator') ? FAKE_OPERATOR_MANIFEST : FAKE_CALICO_MANIFEST,
-  ))
+  return vi.fn().mockResolvedValue(FAKE_OPERATOR_MANIFEST)
 }
 
 /** Everything install logged, joined. */
 function logged(deps: { log: unknown }): string {
   return vi.mocked(deps.log as (m: string) => void).mock.calls.map(([m]) => m).join('\n')
-}
-
-/** readTextFile serving the committed pin, plus whatever else a case wants. */
-function calicoReads(rest: (p: string) => string | null) {
-  return vi.fn((p: string) => Promise.resolve(
-    p.endsWith('.sha256')
-      ? `${FAKE_CALICO_SHA256}  calico.yaml\n`
-      : p.includes('calico')
-        ? rest(p)
-        : FAKE_KIND_CONFIG,
-  ))
 }
 
 describe('runClusterInstall', () => {
@@ -789,13 +771,9 @@ describe('runClusterInstall', () => {
     expect(order('ensureNpmCache'))
       .toBeLessThan(order('deployServerWorkload'))
 
-    // Calico is applied from the verified manifest, then the node must go
-    // Ready (it cannot before the CNI is up).
-    const calicoApply = deps.runStreaming.mock.calls
-      .find(([f, a]) => f === 'kubectl' && a.includes('apply') && a.includes('-f'))
-    expect(calicoApply?.[2]?.input).toContain('calico-node')
-    expect(runCalls.some(([f, a]) =>
-      f === 'kubectl' && a.includes('rollout') && a.includes('daemonset/calico-node'))).toBe(true)
+    // kind's own CNI is left in place: nothing is applied to the new
+    // cluster by hand, and install waits for its nodes to go Ready.
+    expect(deps.runStreaming.mock.calls.some(([f]) => f === 'kubectl')).toBe(false)
     expect(runCalls.some(([f, a]) => f === 'kubectl' && a.includes('--for=condition=Ready'))).toBe(true)
 
     // The kind node fixup is the node container's pids limit. Sysctls and
@@ -1085,7 +1063,7 @@ describe('runClusterInstall', () => {
           for (const [dir, files] of Object.entries(dropIns)) {
             for (const [name, body] of files) if (p === `${dir}/${name}`) return Promise.resolve(body)
           }
-          return fakeCalicoReadTextFile(p)
+          return fakeReadTextFile()
         }),
       })
       const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
@@ -1185,7 +1163,7 @@ describe('runClusterInstall', () => {
     expect(ran('ensurePriorityClasses')).toBe(1)
     expect(ran('ensureGvisorRuntime')).toBe(1)
     expect(ran('buildBuiltinImages')).toBe(1)
-    // No delete, create or Calico, so re-running install on a cluster with
+    // No delete or create, so re-running install on a cluster with
     // live workspaces is safe.
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     expect(deps.runStreaming).not.toHaveBeenCalled()
@@ -1476,7 +1454,7 @@ describe('runClusterInstall', () => {
     const deps = darwinDeps({
       run,
       listDir: vi.fn().mockResolvedValue(['50-more.conf', '99-yaac-machine-provider.conf']),
-      readTextFile: vi.fn((p: string) => Promise.resolve(conf[p] ?? fakeCalicoReadTextFile(p))) as unknown as
+      readTextFile: vi.fn((p: string) => (p in conf ? Promise.resolve(conf[p]) : fakeReadTextFile())) as unknown as
         ClusterInstallDeps['readTextFile'],
     })
     await runClusterInstall({}, deps)
@@ -1604,58 +1582,6 @@ describe('runClusterInstall', () => {
     expect(deps.confirm).not.toHaveBeenCalled()
   })
 
-  it('uses the cached Calico manifest when it matches the pin, without downloading', async () => {
-    // Calico is installed only when creating the cluster.
-    const deps = makeDeps({ run: freshRun() })
-    await runClusterInstall({}, deps)
-    expect(deps.fetchText).not.toHaveBeenCalled()
-    expect(vi.mocked(deps.writeTextFile).mock.calls.some(([p]) => String(p).includes('calico')))
-      .toBe(false)
-    const apply = deps.runStreaming.mock.calls
-      .find(([f, a]) => f === 'kubectl' && a.includes('apply'))
-    expect((apply?.[2] as { input?: string })?.input).toBe(FAKE_CALICO_MANIFEST)
-  })
-
-  it('downloads the pinned Calico manifest by tag, verifies it, and caches it', async () => {
-    const deps = makeDeps({ run: freshRun(), readTextFile: calicoReads(() => null) })
-    await runClusterInstall({}, deps)
-    expect(deps.fetchText).toHaveBeenCalledWith(
-      `https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml`,
-    )
-    const written = vi.mocked(deps.writeTextFile).mock.calls
-      .find(([p]) => String(p).includes(`calico-${CALICO_VERSION}.yaml`))
-    expect(written?.[1]).toBe(FAKE_CALICO_MANIFEST)
-  })
-
-  it('re-downloads when the cached Calico copy no longer matches the pin', async () => {
-    // A cached manifest is checked against the pin on every use, so a
-    // tampered or truncated cache is rejected.
-    const deps = makeDeps({
-      run: freshRun(),
-      readTextFile: calicoReads(() => 'kind: DaemonSet # tampered\n'),
-    })
-    await runClusterInstall({}, deps)
-    expect(deps.fetchText).toHaveBeenCalledOnce()
-  })
-
-  it.each([
-    ['a download that fails the checksum', { fetchText: vi.fn().mockResolvedValue('kind: Evil\n') },
-      /does not match the pinned checksum/],
-    ['a failed download', { fetchText: vi.fn().mockRejectedValue(new Error('HTTP 503 Service Unavailable')) },
-      /Could not download the Calico manifest.*HTTP 503/s],
-    // A broken install: the committed pin itself is missing.
-    ['a missing checksum pin', { readTextFile: vi.fn((p: string) => Promise.resolve(
-      p.includes('calico') || p.endsWith('.sha256') ? null : FAKE_KIND_CONFIG,
-    )) }, /checksum not found/],
-  ] as const)('refuses Calico on %s, and caches nothing', async (_case, overrides, message) => {
-    const deps = makeDeps({ run: freshRun(), readTextFile: calicoReads(() => null), ...overrides })
-    const err = await runClusterInstall({}, deps).catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(ClusterInstallError)
-    expect((err as Error).message).toMatch(message)
-    expect(vi.mocked(deps.writeTextFile).mock.calls.some(([p]) => String(p).includes('calico')))
-      .toBe(false)
-  })
-
   // -------------------------------------------------------------------
   // --tailnet: fronting the server on the tailnet through the operator
   // -------------------------------------------------------------------
@@ -1709,6 +1635,53 @@ describe('runClusterInstall', () => {
     expect(appliedOf('Ingress')).toHaveLength(1)
   })
 
+  it('--tailnet installs the operator from a cached copy that matches the pin, without downloading', async () => {
+    vi.stubEnv('TS_OAUTH_CLIENT_ID', 'client-id')
+    vi.stubEnv('TS_OAUTH_CLIENT_SECRET', 'client-secret')
+    const deps = makeDeps({ run: tailnetRun('absent'), readTextFile: operatorReads({ cached: FAKE_OPERATOR_MANIFEST }) })
+    await expect(runClusterInstall({ tailnet: true }, deps)).resolves.toBeUndefined()
+    expect(deps.fetchText).not.toHaveBeenCalled()
+    expect(vi.mocked(deps.writeTextFile).mock.calls.some(([p]) => String(p).includes('tailscale-operator-')))
+      .toBe(false)
+    expect(appliedOf('Deployment', 'operator')).toHaveLength(1)
+  })
+
+  it('--tailnet re-downloads a cached operator manifest that no longer matches the pin, and caches it', async () => {
+    // A cached manifest is checked against the pin on every use, so a
+    // tampered or truncated cache is rejected.
+    vi.stubEnv('TS_OAUTH_CLIENT_ID', 'client-id')
+    vi.stubEnv('TS_OAUTH_CLIENT_SECRET', 'client-secret')
+    const deps = makeDeps({
+      run: tailnetRun('absent'),
+      readTextFile: operatorReads({ cached: 'kind: Deployment # tampered\n' }),
+      fetchText: operatorFetch(),
+    })
+    await expect(runClusterInstall({ tailnet: true }, deps)).resolves.toBeUndefined()
+    expect(deps.fetchText).toHaveBeenCalledOnce()
+    const written = vi.mocked(deps.writeTextFile).mock.calls
+      .find(([p]) => String(p).includes('tailscale-operator-'))
+    expect(written?.[1]).toBe(FAKE_OPERATOR_MANIFEST)
+  })
+
+  it.each([
+    ['a download that fails the checksum', { fetchText: vi.fn().mockResolvedValue('kind: Evil\n') },
+      /does not match the pinned checksum/],
+    ['a failed download', { fetchText: vi.fn().mockRejectedValue(new Error('HTTP 503 Service Unavailable')) },
+      /Could not download the Tailscale operator manifest.*HTTP 503/s],
+    // A broken install: the committed pin itself is missing.
+    ['a missing checksum pin', { readTextFile: operatorReads({ sha: null }) }, /checksum not found/],
+  ] as const)('--tailnet refuses the operator on %s, and caches nothing', async (_case, overrides, message) => {
+    vi.stubEnv('TS_OAUTH_CLIENT_ID', 'client-id')
+    vi.stubEnv('TS_OAUTH_CLIENT_SECRET', 'client-secret')
+    const deps = makeDeps({ run: tailnetRun('absent'), readTextFile: operatorReads(), ...overrides })
+    const err = await runClusterInstall({ tailnet: true }, deps).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ClusterInstallError)
+    expect((err as Error).message).toMatch(message)
+    expect(vi.mocked(deps.writeTextFile).mock.calls.some(([p]) => String(p).includes('tailscale-operator-')))
+      .toBe(false)
+    expect(cluster.applied).toEqual([])
+  })
+
   it('--tailnet converges the operator an earlier install put there, keeping its Secret', async () => {
     fakeCluster.seed(...OPERATOR.map(yaacManaged))
     const deps = makeDeps({ readTextFile: operatorReads(), fetchText: operatorFetch() })
@@ -1745,7 +1718,7 @@ describe('runClusterInstall', () => {
     )
     const sha = crypto.createHash('sha256').update(manifest, 'utf8').digest('hex')
     const deps = makeDeps({
-      readTextFile: operatorReads(sha),
+      readTextFile: operatorReads({ sha }),
       fetchText: vi.fn().mockResolvedValue(manifest),
     })
     const err = await runClusterInstall({ tailnet: true }, deps).catch((e: unknown) => e)
@@ -1808,8 +1781,6 @@ describe('runClusterInstall', () => {
     expect(deps.run.mock.calls.some(([f, a]) => f === 'kind' && a[0] === 'delete')).toBe(false)
     expect(deps.runStreaming).not.toHaveBeenCalled()
     expect(deps.fetchText).not.toHaveBeenCalled()
-    expect(deps.run.mock.calls.some(([f, a]) =>
-      f === 'kubectl' && a.includes('daemonset/calico-node'))).toBe(false)
 
     // Every in-cluster layer is still installed.
     expect(ran('ensurePriorityClasses')).toBe(1)
@@ -2085,40 +2056,6 @@ describe('runClusterInstall', () => {
     expect((err as Error).message).toMatch(/could not be evaluated/)
     expect((err as Error).message).toMatch(/403: .*forbidden/)
     expect(ran('ensureMainRegistry')).toBe(0)
-  })
-
-  it('mirrors the deduped image set the Calico manifest names, and nothing else', async () => {
-    const manifest = [
-      '        - name: upgrade-ipam',
-      '          image: quay.io/calico/cni:v3.32.1',
-      '        - name: install-cni',
-      '          image: quay.io/calico/cni:v3.32.1',
-      '          image: quay.io/calico/node:v3.32.1',
-      '  # image: not-a-ref',
-      '  imagePullPolicy: IfNotPresent',
-    ].join('\n')
-    const sha = crypto.createHash('sha256').update(manifest, 'utf8').digest('hex')
-    const deps = makeDeps({
-      run: freshRun(),
-      readTextFile: vi.fn((p: string) => Promise.resolve(
-        p.endsWith('.sha256')
-          ? `${sha}  calico.yaml\n`
-          : p.includes('calico')
-            ? manifest
-            : FAKE_KIND_CONFIG,
-      )),
-    })
-    await runClusterInstall({}, deps)
-
-    const pulled = deps.run.mock.calls
-      .filter(([f, a]) => f === 'podman' && a[0] === 'image' && a[1] === 'exists')
-      .map(([, a]) => a[2])
-    // Deduped and sorted; prose and non-image keys are skipped.
-    expect(pulled.filter((r) => r.includes('calico'))).toEqual([
-      'quay.io/calico/cni:v3.32.1',
-      'quay.io/calico/node:v3.32.1',
-    ])
-    expect(pulled).not.toContain('not-a-ref')
   })
 
   // -------------------------------------------------------------------

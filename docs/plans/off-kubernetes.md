@@ -30,8 +30,8 @@ follow-up, described last.
 - **Socket egress has shipped** (docs/workspace-egress.md). A workspace or
   builder pod has no network interface. Its egress and its streams cross
   two sockets in a directory on its node, which netd relays to the proxy
-  and from the server. kind running its default CNI is
-  docs/plans/socket-egress.md, which is not built yet.
+  and from the server. kind and the Hetzner stack run their default CNIs
+  (docs/cluster-setup.md "NetworkPolicy enforcement").
 - **BuildKit builds have shipped** (docs/image-builds.md). An untrusted layer
   is built by a BuildKit daemon in a sandbox of its own, behind the proxy.
 - **Pamir runs one node** (docs/plans/pamir.md "Milestones"): it starts,

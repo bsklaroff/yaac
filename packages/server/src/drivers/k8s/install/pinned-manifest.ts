@@ -1,5 +1,5 @@
 /**
- * Upstream manifests install applies without vendoring them (Calico, the
+ * Upstream manifests install applies without vendoring them (the
  * Tailscale operator). The repo holds only each one's checksum; install
  * downloads the manifest once, checks it against the pin, and caches it
  * client-local. Both the cached and downloaded copies are checked on every
@@ -11,7 +11,7 @@ import { ClusterInstallError } from './arg-guards'
 import type { ClusterInstallDeps } from './install'
 
 export interface PinnedManifest {
-  /** What the manifest installs, for messages ("Calico"). */
+  /** What the manifest installs, for messages ("Tailscale operator"). */
   what: string
   url: string
   /** The committed `<sha256>  <file>` pin. */

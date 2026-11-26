@@ -138,14 +138,15 @@ mapping is refused with the fix: `yaac cluster delete`, then `yaac cluster
 install`. That loses running workspaces and nothing else, because the data
 dir is on the host and the pod mounts it at the same absolute path.
 
-Why a forwarder and not a NodePort: Calico evaluates policy before
-kube-proxy's masquerade, so a NodePort connection would reach the pod with
-its original source address. For a kind port mapping that is the podman
-bridge gateway on Linux, or gvproxy's address inside the VM on macOS, and
-neither is a node address. The forwarder dials the ClusterIP from the node's
-own network namespace, so the pod sees the node's InternalIP (or its Calico
-tunnel address, from a worker). That is exactly the set the ingress policy
-admits, on every platform, and the API is published on no node address.
+Why a forwarder and not a NodePort: kindnet's policy engine, like Calico's,
+evaluates a connection before kube-proxy's masquerade, so a NodePort
+connection would be judged by its original source address. For a kind port
+mapping that is the podman bridge gateway on Linux, or gvproxy's address
+inside the VM on macOS, and neither is a node address. The forwarder dials
+the ClusterIP from the node's own network namespace, so its connection
+leaves from the node's InternalIP (or, under Calico, a tunnel address from
+a worker). That is exactly the set the ingress policy admits, on every
+platform, and the API is published on no node address.
 
 ### Under `--tailnet`: the Tailscale operator's Ingress
 
@@ -232,8 +233,8 @@ The server pod's ingress is an explicit allow in two NetworkPolicies (which
 Kubernetes unions):
 
 - `yaac-server-ingress`, the **node half**: one `ipBlock` per node address,
-  meaning every node's InternalIP plus its Calico tunnel address
-  (`nodeIpBlocks()`, which the proxy's ingress policy uses too). Two flows
+  meaning every node's InternalIP plus its CNI tunnel address, Calico's or
+  flannel's (`nodeIpBlocks()`, which the proxy's ingress policy uses too). Two flows
   arrive this way: the kubelet's readiness probe, and on kind the
   forwarder. Install applies it, and **the server re-applies it whenever
   the node set changes** (and once after every start), along with the
@@ -340,7 +341,7 @@ pod free to move. A NodePort would answer on every address of every node
 unless the cluster's kube-proxy were reconfigured, a `hostPort` would pin
 the server to one node, and a host-network forwarder would pin a
 Deployment. An address that moves with a load balancer is not supported.
-It runs on kind (the e2e tier) and on k3s with Calico; some managed
+It runs on kind (the e2e tier) and on k3s; some managed
 clusters reject `externalIPs`, and Kubernetes 1.37 warns on every such
 Service that the field is deprecated and may not be implemented
 everywhere, though kube-proxy still honors it. Where it is refused, the
@@ -834,7 +835,7 @@ the stored credentials, in the database, are readable only by the server.
 The pod mounts the tiers, so anything inside them is visible to the pod and
 owned by its uid. Some files belong to the user's machine, not the server:
 `server.json` (the origin this machine's clients dial) and the installer's
-caches (the Calico manifest,
+caches (the Tailscale operator's manifest,
 the podman-pid file). Only processes on the user's machine
 read and write them: the CLI, the desktop app and its auth daemon, and
 `yaac cluster install`.

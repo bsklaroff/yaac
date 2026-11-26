@@ -105,7 +105,7 @@ const KIND_SETUP_FIX = [
   'left stopped — by running:',
   '  yaac cluster install',
   'It provisions the podman machine (macOS), the kind cluster (data dir and',
-  'node-local extraMounts), Calico, the kind node fixups, every built-in',
+  'node-local extraMounts), the kind node fixups, every built-in',
   'image, the in-cluster registry, and the storage claims.',
 ].join('\n')
 
@@ -467,8 +467,8 @@ function nodeInventoryResult(nodes: ClusterNode[], idlePool: boolean): CheckResu
     return {
       name: 'nodes', status: 'warn',
       detail: `${nodes.length} node(s), NotReady: ${notReady.join(', ')}`,
-      fix: 'A NotReady node runs nothing. Check the CNI on it '
-        + '(`kubectl get pods -A -o wide -l k8s-app=calico-node`).',
+      fix: 'A NotReady node runs nothing. Check the CNI\'s pods on it '
+        + `(\`kubectl -n kube-system get pods -o wide --field-selector spec.nodeName=${notReady[0]}\`).`,
     }
   }
   const eligible = nodes.filter((n) => n.schedulable)
@@ -1617,6 +1617,12 @@ async function runNetworkPolicyProbe(): Promise<CheckResult> {
  * answer policy gives, so this half asserts on connects. The policies
  * around yaac's own pods rest on this; no sandbox does, having no
  * interface.
+ *
+ * Many engines (kindnet's and k3s's among them) let a new pod's first
+ * packets through before they have programmed it, which no probe can see.
+ * That exposes a starting yaac pod only to other pods with an address, so
+ * it matters only on a cluster shared with other workloads, and a byo
+ * install's pass says so.
  */
 async function runEnforcementProbe(): Promise<ProbeHalf> {
   const targets = [
@@ -1642,11 +1648,16 @@ async function runEnforcementProbe(): Promise<ProbeHalf> {
       detail: `a pod the ${EGRESS_WORLD_DENY_NAME} policy covers reached ${open.map((t) => t.what).join(' and ')} `
         + '— the cluster is not enforcing NetworkPolicy',
       fix: 'yaac\'s own pods are walled by plain networking.k8s.io/v1 NetworkPolicy, which some engine '
-        + 'must enforce. Re-run `yaac cluster install`, which installs Calico on kind. On a byo '
-        + 'cluster, turn on the network policy engine its provider offers (any engine, Cilium included).',
+        + 'must enforce. On kind, kindnet enforces it; check its pods (`kubectl -n kube-system get pods '
+        + '-l app=kindnet`). On a byo cluster, turn on the network policy engine its provider offers '
+        + '(any engine, Cilium included).',
     } }
   }
-  return { pass: `NetworkPolicy is enforced (a walled pod cannot dial ${targets.map((t) => t.what).join(', nor ')})` }
+  const pass = `NetworkPolicy is enforced (a walled pod cannot dial ${targets.map((t) => t.what).join(', nor ')})`
+  return (await readInstallRecord())?.byo === true
+    ? { pass: `${pass}; if other workloads share this cluster, a pod of theirs may reach a starting `
+      + 'yaac pod before its policy applies, unless the engine holds a new pod\'s traffic until then' }
+    : { pass }
 }
 
 /**
@@ -1761,6 +1772,8 @@ async function runSandboxEgressProbe(): Promise<ProbeHalf> {
     `eg ALLOWED http://${PROBE_ALLOWED_HOST}/`,
     ...targets.map((t) => `eg ${t.key} ${t.url}`),
     's=$(find / -type s ! -path "/proc/*" ! -path "/sys/*" 2>/dev/null | head -3 | tr "\\n" " "); echo "EG_SOCKETS ${s:-none}"',
+    `n=$(awk -F: 'NR > 2 { gsub(/ /, "", $1); if ($1 != "lo") printf "%s ", $1 }' /proc/net/dev 2>/dev/null || echo '?'); `
+      + 'echo "EG_IFACES ${n:-none}"',
     'echo EG_DONE',
   ].join('\n')
   const { phase, logs } = await runSandboxProbe(SANDBOX_PROBE_POD_NAME, {
@@ -1798,6 +1811,17 @@ async function runSandboxEgressProbe(): Promise<ProbeHalf> {
       fix,
     } }
   }
+  // Every dial connecting is what netshim makes of any sandbox, so only
+  // this shows the runtime gave it no interface to send from.
+  const ifaces = /^EG_IFACES (.*)$/m.exec(logs)?.[1]?.trim()
+  if (ifaces !== 'none') {
+    return { open: {
+      detail: `a sandbox has a network interface besides loopback (${ifaces ?? '?'}) — it can send past netshim, `
+        + 'walled only by whatever policy the cluster enforces',
+      fix: 'Sandboxes run on the gvisor-nonet RuntimeClass, whose handler sets network = "none". Re-run `yaac cluster '
+        + 'install`, which re-applies the gVisor installer, and check /etc/containerd/runsc-nonet.toml on the node.',
+    } }
+  }
   const sockets = /^EG_SOCKETS (.*)$/m.exec(logs)?.[1]?.trim()
   if (sockets !== 'none') {
     return { open: {
@@ -1812,7 +1836,8 @@ async function runSandboxEgressProbe(): Promise<ProbeHalf> {
   ]
   return {
     pass: `a sandbox ${noUpstream ? 'reaches the proxy' : `reaches ${PROBE_ALLOWED_HOST}`} and is refused `
-      + `${targets.map((t) => t.what).join(', ')}${unverified.length ? ` (${unverified.join('; ')})` : ''}, and sees no node socket`,
+      + `${targets.map((t) => t.what).join(', ')}${unverified.length ? ` (${unverified.join('; ')})` : ''}, `
+      + 'has no interface but loopback, and sees no node socket',
     ...(noUpstream
       ? { warn: `the proxy answered ${allowed} to a sandbox's request for ${PROBE_ALLOWED_HOST}: it reaches no upstream, `
         + 'so allowlisted hosts were not shown to answer (a cluster with no internet)' }

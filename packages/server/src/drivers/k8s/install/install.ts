@@ -59,7 +59,6 @@ import {
   siteDomainArg,
   tailnetServeHost,
 } from './arg-guards'
-import { ensurePinnedManifest } from './pinned-manifest'
 import { readInstallRecord, recordInstall, type InstallRecord } from '@yaac/shared/install-record'
 import {
   hostNodeArchitecture,
@@ -90,7 +89,6 @@ import { ensureTailnetOperator, verifyTailnetOperator } from './tailscale-operat
 // The data dir identifies the install.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
 import { PACKAGE_ROOT, getDataDir, nodeLocalRoot } from '@yaac/shared/paths'
-import { CALICO_DIR } from '@yaac/shared/project-paths'
 import { DEFAULT_CLUSTER_SERVER_PORT } from '@yaac/shared/server-port'
 import { confirmDefault } from '@yaac/shared/confirm'
 import { env } from '@yaac/shared/env'
@@ -98,8 +96,8 @@ import { env } from '@yaac/shared/env'
 /**
  * `yaac cluster install`: one idempotent command that brings this machine
  * and its cluster up to the installed yaac version. It sets up the rootful
- * libkrun podman machine (macOS), the kind cluster, Calico, the kind node
- * fixups, every built-in image and the in-cluster layers.
+ * libkrun podman machine (macOS), the kind cluster, the kind node fixups,
+ * every built-in image and the in-cluster layers.
  *
  * Safe to run at any time; an upgrade is `npm update` then this. An
  * existing cluster is updated in place, never recreated. The only
@@ -111,10 +109,10 @@ import { env } from '@yaac/shared/env'
  * with a note.
  *
  * `--byo` installs into the cluster the kubeconfig points at instead of
- * creating one. It installs no CNI, checks up front everything that would
- * otherwise fail silently (node pool, CNI, Tailscale operator, storage
- * classes, install identity), then applies the same in-cluster layers and
- * deploys the server behind the tailnet, without exec'ing into a node.
+ * creating one. It checks up front everything that would otherwise fail
+ * silently (node pool, Tailscale operator, storage classes, install
+ * identity), then applies the same in-cluster layers and deploys the
+ * server behind the tailnet, without exec'ing into a node.
  *
  * Every run re-applies the kind node fixups (the node container's pids
  * limit and restart policy, which no in-cluster agent can set) and the in-cluster layers
@@ -122,18 +120,6 @@ import { env } from '@yaac/shared/env'
  * cluster picks up an upgrade. Node sysctls are applied by the gVisor installer DaemonSet
  * instead (node-tuning.ts).
  */
-
-/**
- * Calico version installed as the CNI and policy engine. The manifest is
- * not vendored: k8s/calico/ holds its SHA-256, and install downloads it and
- * refuses a mismatch. A version bump changes this and the checksum.
- */
-export const CALICO_VERSION = '3.32.1'
-
-/** Upstream release manifest (the KDD/iptables install). */
-function calicoManifestUrl(): string {
-  return `https://raw.githubusercontent.com/projectcalico/calico/v${CALICO_VERSION}/manifests/calico.yaml`
-}
 
 export interface ClusterInstallOptions {
   /**
@@ -190,8 +176,8 @@ export interface ClusterInstallDeps {
   /** execFile-style runner, injectable for tests. */
   run: typeof execFileAsync
   /**
-   * Runner for long subprocesses (kind create, calico apply, podman machine
-   * init) that shows their output live; optionally pipes `input` to stdin.
+   * Runner for long subprocesses (kind create, podman machine init) that
+   * shows their output live; optionally pipes `input` to stdin.
    */
   runStreaming: (
     file: string,
@@ -208,7 +194,7 @@ export interface ClusterInstallDeps {
   readTextFile: (p: string) => Promise<string | null>
   /** Creates the file with `mode` when one is given. */
   writeTextFile: (p: string, content: string, mode?: number) => Promise<void>
-  /** HTTP GET of a text asset (the Calico manifest), injectable for tests. */
+  /** HTTP GET of a text asset (a pinned manifest), injectable for tests. */
   fetchText: (url: string) => Promise<string>
   listDir: (p: string) => Promise<string[]>
 }
@@ -327,7 +313,7 @@ export async function runClusterInstall(
       // saw before. Stale pod CIDRs would make netd treat pod-to-pod
       // traffic as internet egress.
       resetClusterCidrCache()
-      await installCalico(deps, cluster)
+      await waitForNodesReady(deps, cluster)
       await applyKindNodeFixups(deps, await kindNodes(deps, cluster))
     } else {
       if (opts.nodes !== undefined) {
@@ -546,10 +532,9 @@ const ROOTFUL_PODMAN_STEPS = [
 
 /**
  * Linux counterpart to `ensurePodmanMachineSetup`: point at the rootful
- * podman socket (calico-node needs host netfilter and routing access; see
- * docs/cluster-setup.md "Linux: rootful podman") and check that it answers.
- * yaac cannot enable the root-owned socket itself, so it only instructs.
- * Returns `podman info`'s JSON.
+ * podman socket (docs/cluster-setup.md "Linux: rootful podman" says why)
+ * and check that it answers. yaac cannot enable the root-owned socket
+ * itself, so it only instructs. Returns `podman info`'s JSON.
  */
 async function ensureRootfulPodmanReachable(deps: ClusterInstallDeps): Promise<string> {
   ensureRootfulPodmanHost()
@@ -558,8 +543,8 @@ async function ensureRootfulPodmanReachable(deps: ClusterInstallDeps): Promise<s
   } catch {
     throw new ClusterInstallError(
       'Rootful podman is not reachable. yaac runs kind on the rootful podman '
-      + 'engine on Linux (the calico-node DaemonSet needs the host netfilter '
-      + 'and routing access that rootless podman does not delegate). Enable the '
+      + 'engine on Linux (its nodes set host-wide kernel settings, such as '
+      + 'vm.min_free_kbytes, which a rootless engine\'s user namespace cannot). Enable the '
       + 'socket and grant your user access through a podman.socket drop-in, '
       + 'which re-applies it whenever the socket is re-created. Run these as '
       + 'your own user, not in a root shell (docs/cluster-setup.md "Linux: '
@@ -704,8 +689,8 @@ const API_SERVER_TIMEOUT_MS = 120_000
 
 /**
  * Wait until the API server answers /readyz. After a node start it takes a
- * few seconds to come up. This and the Calico steps run kubectl against the
- * kind context by name, since install has not yet checked that it is the
+ * few seconds to come up. This and the node-Ready wait run kubectl against
+ * the kind context by name, since install has not yet checked that it is the
  * current context the API client uses (`verifyKindContext`).
  */
 async function waitForApiServer(deps: ClusterInstallDeps, cluster: string): Promise<void> {
@@ -730,8 +715,7 @@ async function waitForApiServer(deps: ClusterInstallDeps, cluster: string): Prom
 
 /**
  * Create the kind cluster from k8s/kind-config.yaml (see renderKindConfig).
- * No `--wait`: the default CNI is disabled, so nodes cannot go Ready until
- * Calico is installed.
+ * No `--wait`, whose output is a spinner; `waitForNodesReady` follows.
  */
 async function createKindCluster(
   deps: ClusterInstallDeps,
@@ -773,43 +757,24 @@ async function createKindCluster(
 }
 
 /**
- * Install Calico as the CNI and policy engine. kindnet's NetworkPolicy
- * fails open (a new pod's first packets flow before policy applies);
- * Calico drops traffic on a veth until it has programmed the endpoint.
- *
- * Uses the plain release manifest rather than the Tigera operator, and yaac
- * uses only standard NetworkPolicy (no Calico CRs), so provider-managed
- * Calico installs work too.
+ * Wait for every node of a new cluster to go Ready, which they do once
+ * kindnet, kind's own CNI, is up on them. The NetworkPolicy around yaac's
+ * pods is enforced by kindnet too (docs/workspace-egress.md "Policies").
  */
-async function installCalico(deps: ClusterInstallDeps, cluster: string): Promise<void> {
-  const raw = await ensurePinnedManifest(deps, {
-    what: 'Calico',
-    url: calicoManifestUrl(),
-    pinFile: path.join(CALICO_DIR, 'calico.yaml.sha256'),
-    cacheName: `calico-${CALICO_VERSION}.yaml`,
-  })
-  await sideloadCalicoImages(deps, cluster, raw)
+async function waitForNodesReady(deps: ClusterInstallDeps, cluster: string): Promise<void> {
   const context = `kind-${cluster}`
-  deps.log(`Installing Calico ${CALICO_VERSION} (CNI + NetworkPolicy)...`)
   try {
-    // Calico's release manifest is upstream multi-document YAML (CRDs and
-    // all), applied as published, which is what `kubectl apply` is for.
-    await deps.runStreaming('kubectl', ['--context', context, 'apply', '-f', '-'], { input: raw })
-    // Nodes go Ready only once calico-node has started, so wait on it first.
     await deps.run('kubectl', [
       '--context', context,
-      'rollout', 'status', 'daemonset/calico-node', '-n', 'kube-system', '--timeout=300s',
+      'wait', '--for=condition=Ready', 'node', '--all', '--timeout=300s',
     ], { timeout: 310_000 })
   } catch (err) {
     throw new ClusterInstallError(
-      `Calico install did not complete (${err instanceof Error ? err.message : String(err)}). `
-      + `Re-run \`yaac cluster install\`, or inspect with \`kubectl --context ${context} -n kube-system get pods -l k8s-app=calico-node\`.`,
+      `The nodes of kind cluster "${cluster}" did not go Ready `
+      + `(${err instanceof Error ? err.message : String(err)}). Re-run \`yaac cluster install\`, `
+      + `or inspect with \`kubectl --context ${context} -n kube-system get pods -l app=kindnet\`.`,
     )
   }
-  await deps.run('kubectl', [
-    '--context', context,
-    'wait', '--for=condition=Ready', 'node', '--all', '--timeout=120s',
-  ])
 }
 
 /**
@@ -1115,60 +1080,6 @@ async function verifyKindContext(deps: ClusterInstallDeps, cluster: string): Pro
     )
   }
   return current
-}
-
-/** Image references in the Calico manifest. */
-function calicoImageRefs(manifestYaml: string): string[] {
-  const refs = manifestYaml.match(/^\s*image:\s*(\S+)\s*$/gm) ?? []
-  return [...new Set(refs.map((line) => line.replace(/^\s*image:\s*/, '').trim()))].sort()
-}
-
-/**
- * Load Calico's images (~235 MB) onto the node from the host podman store
- * before applying the manifest. The host store survives cluster recreation,
- * so the download happens once. On any error the node pulls the images
- * itself, which is slower.
- */
-async function sideloadCalicoImages(
-  deps: ClusterInstallDeps,
-  cluster: string,
-  manifestYaml: string,
-): Promise<void> {
-  const refs = calicoImageRefs(manifestYaml)
-  if (refs.length === 0) return
-  try {
-    const missing: string[] = []
-    for (const ref of refs) {
-      try {
-        await deps.run('podman', ['image', 'exists', ref])
-      } catch {
-        missing.push(ref)
-      }
-    }
-    if (missing.length > 0) {
-      deps.log(`Fetching Calico images (${missing.length}, one-time — cached for later setups)...`)
-      for (const ref of missing) {
-        await deps.run('podman', ['pull', ref], { timeout: 600_000 })
-      }
-    }
-    // `kind load docker-image` does not work with podman; an archive does.
-    const archive = path.join(os.tmpdir(), `yaac-calico-${process.pid}.tar`)
-    try {
-      deps.log('Loading Calico images onto the node...')
-      await deps.run('podman', ['save', '-o', archive, ...refs], { timeout: 300_000 })
-      await deps.run('kind', ['load', 'image-archive', archive, '--name', cluster], {
-        env: kindEnv(), timeout: 300_000,
-      })
-    } finally {
-      await fs.rm(archive, { force: true }).catch(() => { /* best-effort */ })
-    }
-  } catch (err) {
-    deps.log(
-      'note: could not preload Calico images '
-      + `(${err instanceof Error ? err.message.split('\n')[0] : String(err)}) — `
-      + 'the node will pull them itself, which is slower.',
-    )
-  }
 }
 
 /**

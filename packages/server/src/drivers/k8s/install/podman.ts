@@ -9,8 +9,8 @@ export const ROOTFUL_PODMAN_SOCKET = '/run/podman/podman.sock'
 
 /**
  * Whether yaac uses rootful podman (everywhere but macOS, where the podman
- * machine serves). kind's node runs on this engine, and calico-node needs
- * the cgroup2 and BPF access only a rootful engine delegates.
+ * machine serves). kind's node runs on this engine, and sets host-wide
+ * kernel settings (node-tuning.ts) that a rootless engine cannot.
  */
 export function usesRootfulPodman(): boolean {
   return process.platform !== 'darwin'

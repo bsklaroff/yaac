@@ -1,58 +1,22 @@
 # What `yaac cluster install --byo` expects to find already in the cluster
 # (docs/cluster-setup.md "Bring your own cluster"), as manifests k3s
-# applies from the control node's manifests directory: Calico enforcing
-# NetworkPolicy, the Hetzner cloud controller and volume driver, an
-# NFS-family RWX class, the Tailscale operator and the cluster autoscaler.
+# applies from the control node's manifests directory: the Hetzner cloud
+# controller and volume driver, an NFS-family RWX class, the Tailscale
+# operator and the cluster autoscaler. k3s's own flannel and policy
+# controller carry pod traffic and enforce NetworkPolicy (main.tf).
 # Charts are k3s HelmChart objects, so tofu needs no access to the
 # Kubernetes API. `bootstrap` charts run before the node is Ready, on the
 # host network.
 
 locals {
-  # k3s's default pod range, which Calico's pool reuses so the CNI gate
-  # discovers one consistent set.
+  # k3s's default pod range, which flannel carries.
   pod_cidr = "10.42.0.0/16"
 
   charts = merge(
     {
-      # Calico's version matches CALICO_VERSION, the Calico a kind install
-      # applies. The crd.projectcalico.org CRD flavor is the API yaac's CNI
-      # gate reads.
-      calico-crds = {
-        chart     = "https://github.com/projectcalico/calico/releases/download/v3.32.1/crd.projectcalico.org.v1-v3.32.1.tgz"
-        namespace = "kube-system"
-        bootstrap = true
-        values    = {}
-      }
-      # VXLAN, because Hetzner's network routes only the addresses it
-      # assigned; 1400 is its 1450 MTU less VXLAN's overhead. Pods leaving
-      # the pool are SNATed to their node's address. The iptables dataplane
-      # is the one netd's redirect works with (docs/workspace-egress.md).
-      calico = {
-        chart     = "https://github.com/projectcalico/calico/releases/download/v3.32.1/tigera-operator-v3.32.1.tgz"
-        namespace = "tigera-operator"
-        bootstrap = true
-        values = {
-          installation = {
-            calicoNetwork = {
-              bgp                        = "Disabled"
-              mtu                        = 1400
-              linuxDataplane             = "Iptables"
-              nodeAddressAutodetectionV4 = { cidrs = [local.node_subnet] }
-              ipPools = [{
-                cidr          = local.pod_cidr
-                encapsulation = "VXLAN"
-                natOutgoing   = "Enabled"
-                blockSize     = 26
-              }]
-            }
-          }
-          goldmane = { enabled = false }
-          whisker  = { enabled = false }
-        }
-      }
       # Sets each node's addresses and provider ID (which the autoscaler
       # matches servers by), and deletes the Node of a deleted server.
-      # Hetzner network routes are off: Calico's VXLAN carries pod traffic.
+      # Hetzner network routes are off: flannel's VXLAN carries pod traffic.
       # `networking` also puts it on the host network, so it can start
       # before cluster DNS.
       hcloud-ccm = {
@@ -245,18 +209,4 @@ locals {
   )
 
   manifests = join("---\n", [for m in local.manifest_objects : yamlencode(m)])
-
-  # Moves Felix's iptables mark bits off 0xff0000, which tailscaled claims:
-  # a Calico scratch bit left on a pod's packet matches Tailscale's bypass
-  # rule (`fwmark 0x80000/0xff0000 lookup main`), so pod traffic to the
-  # tailnet leaves by the public interface. 0x7f000f00 also avoids
-  # kube-proxy's 0x4000 and 0x8000, and leaves bit 31 clear because the
-  # CRD validates the field as int32. Its own manifest file, since its CRD
-  # comes from a chart in `manifests` and k3s retries a failed file whole.
-  felix_manifest = yamlencode({
-    apiVersion = "crd.projectcalico.org/v1"
-    kind       = "FelixConfiguration"
-    metadata   = { name = "default" }
-    spec       = { iptablesMarkMask = 2130710272 }
-  })
 }

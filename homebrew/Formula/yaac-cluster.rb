@@ -34,7 +34,7 @@ class YaacCluster < Formula
   def caveats
     <<~EOS
       Converge the local cluster yaac runs sessions on (podman machine on
-      macOS, kind cluster, Calico, node fixups, local registry, and every
+      macOS, kind cluster, node fixups, local registry, and every
       image yaac ships):
 
         yaac cluster install

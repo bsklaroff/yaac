@@ -248,6 +248,14 @@ describe('dispatchToUpstream and forwardPlainHttp', () => {
     const wild = await plainGet('named', 'wild.corp.test', httpPort)
     expect(wild.status).toBe(403)
     expect(wild.body).toContain('only an exact allowlist entry')
+
+    // Not even an exact entry reaches NFS or the kind fronting's port on a
+    // non-public address, whether its policy is enforced or not.
+    for (const port of [2049, 30787]) {
+      expect(await exchange('named', '0x7f.1', port, true), String(port))
+        .toMatch(new RegExp(`^HTTP/1\\.1 403 Forbidden\r\n[^]*port ${String(port)} is never dialed`))
+      expect((await plainGet('named', '0x7f.1', port)).body).toContain(`port ${String(port)} is never dialed`)
+    }
   }, 60_000)
 
   it('refuse a non-public destination the `*` beside exact entries admits', async () => {

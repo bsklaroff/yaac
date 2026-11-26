@@ -45,15 +45,15 @@ locals {
 
   # Every node runs k3s against the host's containerd (node.sh.tftpl), with
   # the cloud controller (cluster.tf) owning node addresses and provider
-  # IDs. netd's rules sit beside kube-proxy's iptables chains.
+  # IDs. k3s's own CNI and policy controller stay on: flannel's VXLAN
+  # carries pod traffic over the private network, whose interface each
+  # node's script names as `flannel-iface`, and takes its MTU from it.
   k3s_node_config = {
     container-runtime-endpoint = "unix:///run/containerd/containerd.sock"
     kubelet-arg                = ["cloud-provider=external", "cgroup-driver=systemd"]
-    kube-proxy-arg             = ["proxy-mode=iptables"]
   }
 
-  # Flannel and k3s's own policy controller are off because Calico is the
-  # CNI (cluster.tf). servicelb and traefik would publish ports nothing
+  # servicelb and traefik would publish ports nothing
   # here needs, and the default class is Hetzner volumes, not local-path.
   # system-reserved holds back room for what runs on this node outside any
   # pod (the k3s server and its datastore, the NFS server, containerd), so
@@ -67,8 +67,6 @@ locals {
     tls-san                  = [local.control_ip, "${var.name}-control"]
     token                    = random_password.server_token.result
     agent-token              = random_password.agent_token.result
-    flannel-backend          = "none"
-    disable-network-policy   = true
     disable-cloud-controller = true
     disable                  = ["traefik", "servicelb", "local-storage"]
     write-kubeconfig-mode    = "0600"
@@ -77,10 +75,11 @@ locals {
   k3s_install_url = "https://raw.githubusercontent.com/k3s-io/k3s/${urlencode(var.k3s_version)}/install.sh"
 
   # User data for every worker, manual or autoscaled. It carries the agent
-  # token, which only lets a machine join as a worker. Pods cannot read it
-  # from the metadata service: yaac's builder and proxy egress denies every
-  # non-public address, and the proxy refuses one unless an exact allowlist
-  # entry names it (docs/workspace-egress.md "Non-public destinations").
+  # token, which only lets a machine join as a worker. Workspaces and builds
+  # cannot read it from the metadata service: they have no network
+  # interface, and the proxy that dials for them refuses a non-public
+  # address unless an exact allowlist entry names it, and its egress policy
+  # denies the address (docs/workspace-egress.md "Non-public destinations").
   worker_user_data = templatefile("${path.module}/node.sh.tftpl", {
     role            = "agent"
     subnet_prefix   = local.subnet_prefix
@@ -115,7 +114,7 @@ resource "random_password" "agent_token" {
   special = false
 }
 
-# Node-to-node traffic, Calico's VXLAN included, stays on this network.
+# Node-to-node traffic, flannel's VXLAN included, stays on this network.
 resource "hcloud_network" "main" {
   name     = var.name
   ip_range = local.network_cidr
@@ -247,7 +246,7 @@ locals {
     k3s_install_url    = local.k3s_install_url
     k3s_config         = yamlencode(local.k3s_server_config)
     manifests          = local.manifests
-    felix_manifest     = local.felix_manifest
+    node_ip            = local.control_ip
     tailscale_auth_key = var.tailscale_auth_key
     host_name          = "${var.name}-control"
     node_memory        = local.node_memory

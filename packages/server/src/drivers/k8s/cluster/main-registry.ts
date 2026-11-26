@@ -312,10 +312,10 @@ const REACHABLE_TIMEOUT_MS = 90_000
 
 /**
  * Throw an actionable error if the registry pod's netns has `arp_ignore` 2
- * or 8. Calico gives pods a /32, so the node could never resolve the pod
- * and every probe times out. New netns copy this from the host's root netns
- * (a VPN client may set it); `devconf_inherit_init_net=3` makes them copy
- * the kind node's instead. Does nothing if the pod cannot be exec'd into.
+ * or 8. A pod whose address is a /32 (Calico's shape) then never answers
+ * the node's ARP, and every probe times out. New netns copy this from the
+ * host's root netns (a VPN client may set it); `devconf_inherit_init_net=3`
+ * makes them copy the kind node's instead. Does nothing if the pod cannot be exec'd into.
  */
 async function refuseArpIgnoringPodNetns(): Promise<void> {
   let out: string

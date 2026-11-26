@@ -277,7 +277,7 @@ function logsFor(name: string): string {
       const keys = [...appliedPodCommand(name).matchAll(/^eg (\S+) /gm)].map((m) => m[1])
       return [
         ...keys.map((k) => `EG_${k} ${egressAnswers[k] ?? (k === 'ALLOWED' ? '200' : '403')}`),
-        `EG_SOCKETS ${egressAnswers.SOCKETS ?? 'none'}`, 'EG_DONE', '',
+        `EG_SOCKETS ${egressAnswers.SOCKETS ?? 'none'}`, `EG_IFACES ${egressAnswers.IFACES ?? 'none'}`, 'EG_DONE', '',
       ].join('\n')
     }
     case 'yaac-cluster-check-enforcement':
@@ -1299,7 +1299,8 @@ describe('runClusterCheck', () => {
     expect(egress).toMatchObject({ status: 'pass' })
     expect(egress?.detail).toContain('NetworkPolicy is enforced (a walled pod cannot dial the image registry, nor the yaac server)')
     expect(egress?.detail).toContain('a sandbox reaches example.com and is refused the yaac server by address, the yaac server '
-      + 'by name, the apiserver, node 10.89.0.7\'s kubelet, another sandbox, a literal internet address, and sees no node socket')
+      + 'by name, the apiserver, node 10.89.0.7\'s kubelet, another sandbox, a literal internet address, has no interface '
+      + 'but loopback, and sees no node socket')
 
     // The enforcement probe: a runc pod the world-deny policy covers.
     const walled = appliedPod('yaac-cluster-check-enforcement') as AppliedPod & {
@@ -1349,6 +1350,13 @@ describe('runClusterCheck', () => {
       .find((cm) => cm.metadata.labels['yaac.workspace-id'] === probeId)
     expect(JSON.parse(registration?.data['registration.json'] ?? '{}')).toMatchObject({ allowedHosts: ['example.com'], owner: 'none' })
     expect(fakeCluster.callsOf('delete', 'ConfigMap').map((c) => c.name)).toContain(registration?.metadata.name)
+
+    // A pod's first packets matter only where other workloads share the
+    // cluster, which only a byo install can.
+    expect(egress?.detail).not.toContain('other workloads')
+    await recordInstall({ driver: 'k8s', installId: 'test-install', byo: true })
+    expect(byName((await check()).results, 'egress')?.detail)
+      .toContain('if other workloads share this cluster, a pod of theirs may reach a starting yaac pod')
   })
 
   it('leaves the sandbox half unverified while the proxy is not deployed, and policy enforcement with nothing to dial', async () => {
@@ -1370,7 +1378,7 @@ describe('runClusterCheck', () => {
     const egress = byName(results, 'egress')
     expect(egress).toMatchObject({ status: 'fail' })
     expect(egress?.detail).toContain('reached the image registry — the cluster is not enforcing NetworkPolicy')
-    expect(egress?.fix).toContain('Calico')
+    expect(egress?.fix).toContain('kindnet')
   })
 
   it.each([
@@ -1379,6 +1387,7 @@ describe('runClusterCheck', () => {
     ['is refused its allowlisted host', { ALLOWED: '403' }, 'which its allowlist admits, was answered 403'],
     ['gets no answer from its allowlisted host', { ALLOWED: 'none' }, 'sandboxes have no egress'],
     ['sees a unix socket', { SOCKETS: '/run/x.sock ' }, 'sees unix sockets (/run/x.sock)'],
+    ['has a network interface', { IFACES: 'eth0 ' }, 'has a network interface besides loopback (eth0)'],
   ])('fails egress when a sandbox %s', async (_, answers, detail) => {
     egressAnswers = answers
     stage()

@@ -89,11 +89,11 @@ function serverServiceManifest(): Record<string, unknown> {
  * The kind fronting: a hostNetwork Envoy on the control-plane node forwards
  * the kind `extraPortMapping` port to the server's ClusterIP Service.
  *
- * Not a NodePort: Calico applies policy before kube-proxy's masquerade, so
- * a NodePort connection would arrive from the host's address (the podman
- * gateway or gvproxy), which the server's ingress policy cannot predict.
- * The forwarder's connections come from the node itself, which the policy
- * already admits.
+ * Not a NodePort: kindnet's policy engine, like Calico's, judges a
+ * connection before kube-proxy's masquerade, so a NodePort connection would
+ * arrive from the host's address (the podman gateway or gvproxy), which the
+ * server's ingress policy cannot predict. The forwarder's connections come
+ * from the node itself, which the policy already admits.
  */
 export function kindFronting(): ServerFronting {
   return {

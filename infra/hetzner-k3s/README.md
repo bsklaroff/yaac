@@ -16,11 +16,10 @@ yaac cluster install --byo --rwx-storage-class yaac-nfs
 |---|---|
 | A private network (`10.0.0.0/16`, nodes in `10.0.1.0/24`) and a firewall that admits only ICMP and ssh from `ssh_source_cidrs` | Node and pod traffic stays on the private network. Nodes reach the internet through their own public addresses. The Kubernetes API and the yaac server are reached over the tailnet, never publicly. |
 | A control node (`control_server_type`, default cx43) running the k3s server | It also runs yaac's server and infrastructure and the first few workspaces, and it is where install runs: yaac builds its images with rootful podman on the machine running install, for that machine's architecture. |
-| k3s on Ubuntu, against the host's containerd from apt rather than k3s's embedded one | The gVisor installer writes `/etc/containerd/config.toml` and restarts containerd through systemd. k3s's embedded containerd regenerates its config on every start and is refused by install. |
-| The iptables kube-proxy | The kube-proxy mode netd's redirect sits beside (docs/workspace-egress.md). |
+| k3s on Ubuntu, against the host's containerd from apt rather than k3s's embedded one | The gVisor installer writes `/etc/containerd/config.toml` and restarts containerd through systemd. k3s's embedded containerd regenerates its config on every start and is refused by install. containerd is pointed at the directories k3s writes flannel's CNI config and plugins to. |
+| k3s's own flannel (VXLAN over the private network, its MTU taken from it) and network policy controller | Workspaces and builds have no network interface (docs/workspace-egress.md), so the CNI carries only yaac's own pods and enforces the policies around them. Hetzner's network routes only the addresses it assigned, so pod traffic is encapsulated. |
 | kubelet `system-reserved` on every node (`control_system_reserved`, default 1 cpu and 2Gi; `worker_system_reserved`, default 500m and 1Gi) | The k3s server or agent, containerd and, on the control node, the datastore and the NFS server are host processes, outside the reach of yaac's PriorityClasses. The reservation keeps workspaces from being scheduled into their room, and caps what all pods together may hold. |
 | On every node (node-memory.sh): an encrypted swap file the size of RAM behind zswap, `system.slice` kept off swap, and a kubelet drop-in with `LimitedSwap` and the `PodAndContainerStatsFromCRI` gate | Workspaces request a quarter of their limit, so a node is overcommitted on purpose. Swap takes idle workspaces' cold pages, netd bounds each pod's share of it, and when the node starts thrashing netd kills the workspace furthest over its request (docs/cluster-setup.md "Memory pressure"). |
-| Calico from the Tigera operator: VXLAN, the iptables dataplane, MTU 1400 | yaac's egress wall is Calico NetworkPolicy plus netd's iptables redirect. Hetzner's network routes only the addresses it assigned, so pod traffic is encapsulated. |
 | The Hetzner cloud controller | Sets node addresses and provider IDs (the autoscaler finds servers by them) and removes the Node of a deleted server. Its network routes are off. |
 | The Hetzner volume driver; `hcloud-volumes` is the default class | `yaac-server-local`, the registries and the npm cache. |
 | A volume on the control node, exported over NFSv4 with delegations off (`fs.leases-enable = 0`), and csi-driver-nfs with a `yaac-nfs` class | `yaac-global`, the RWX claim every workspace mounts. Hetzner has no managed NFS. The volume outlives the server and has deletion protection. Without delegations, a file one node writes is visible to another within about a second (the claim mounts with `actimeo=1`). With directory delegations, a directory created on one node could stay invisible to another indefinitely, and `mkdir` could fail with `EEXIST` after creating its directory. |
@@ -121,15 +120,11 @@ cloud-init status --wait        # the bootstrap; its log is /var/log/yaac-node.l
 tailscale up --ssh --hostname yaac-control   # only without tailscale_auth_key
 sudo -iu yaac
 kubectl get nodes               # the control node, Ready
-kubectl -n calico-system rollout status ds/calico-node
 yaac cluster install --byo --rwx-storage-class yaac-nfs
 ```
 
 `~/.yaac-hetzner.env`, sourced from `.bashrc`, sets `KUBECONFIG` (k3s's
-`kubectl` otherwise reads its root-only config) and
-`YAAC_KUBE_PROXY_EXTERNAL=1`: k3s runs kube-proxy inside its own process,
-where the CNI gate cannot see a pod for it (docs/cluster-setup.md "The CNI
-gate"). Install records it on the server Deployment.
+`kubectl` otherwise reads its root-only config).
 
 Install checks the cluster before changing anything, then builds every
 image on the control node. It ends with `yaac cluster check`, and **no gate
@@ -270,6 +265,43 @@ file again with the install id the refusal names:
   ssh root@<node> 'bash -s' < node-memory.sh
   ```
 
+- **Off Calico**: a stack created before it ran k3s's own flannel and
+  policy controller has Calico. Switch it in place; its servers, their
+  disks and the k3s datastore stay as they are.
+
+  1. Upgrade yaac and re-run install, as above, first. The upgraded server
+     stops every workspace from before the socket datapath (they have a
+     network interface), and nothing left on the cluster may have one when
+     a policy engine that lets a new pod's first packets through takes
+     over.
+  2. `tofu apply`. It rewrites the k3s config with flannel and the policy
+     controller on and removes Calico (control.sh.tftpl), and fails, to be
+     re-run, if calico-node is still deployed.
+  3. On each worker, point containerd at flannel's CNI directories and pin
+     flannel to the private interface, as a new worker's user data does:
+
+     ```sh
+     ssh root@<worker> 'bash -s' <<'EOF'
+     sed -i -e 's#/etc/cni/net.d#/var/lib/rancher/k3s/agent/etc/cni/net.d#' \
+       -e 's#/opt/cni/bin#/var/lib/rancher/k3s/data/cni#' /etc/containerd/config.toml
+     ip=$(awk '/^node-ip:/ { print $2 }' /etc/rancher/k3s/config.yaml)
+     iface=$(ip -4 -o addr show | awk -v ip="$ip" 'index($4, ip "/") == 1 { print $2; exit }')
+     echo "flannel-iface: $iface" >> /etc/rancher/k3s/config.yaml
+     EOF
+     ```
+
+  4. Reboot each node, workers first and the control node last, and wait
+     for it to go Ready before the next. A reboot is what clears Calico's
+     rules, routes and interfaces and brings every pod back with an
+     address from flannel; a pod that kept its Calico address beside
+     flannel's would collide with them, since both allocate from the same
+     range. Autoscaled workers can be deleted instead; the autoscaler
+     replaces them as workspaces need room.
+
+  A reboot stops the workspaces on that node, which restart from their
+  checkpoints, and the control node's takes the server down while it lasts.
+  Then run `yaac cluster check`.
+
 - **Shared claim size**: raise `nfs_volume_gb` (volumes only grow) and
   apply. Hetzner grows the disk in place; then grow its ext4 online on the
   control node, which needs no unmount or restart:
@@ -296,23 +328,26 @@ file again with the install id the refusal names:
 ## Security notes
 
 - **User data is readable from the node's metadata service**, and a
-  worker's holds the k3s agent token. Pods cannot reach it: builder and
-  proxy egress deny every non-public address, the metadata service's
-  included. Workspaces reach the internet only through yaac's proxy, which
-  refuses a non-public address unless the project's allowlist has an exact
-  entry for it, and even then its egress policy drops the dial unless an
-  operator opens it (docs/workspace-egress.md "Non-public destinations").
-  Never open 169.254.169.254 to the proxy or builders here. The control
-  node's user data holds no secret.
+  worker's holds the k3s agent token. Workspaces and builds cannot reach
+  it: they have no network interface, and reach the internet only through
+  yaac's proxy, which refuses a non-public address unless the project's
+  allowlist has an exact entry for it, and even then its egress policy
+  drops the dial unless an operator opens it (docs/workspace-egress.md
+  "Non-public destinations"). Never open 169.254.169.254 to the proxy here.
+  k3s's policy controller programs a new pod's rules shortly after it
+  starts, so for a new proxy pod's first moments only the proxy's own
+  refusal stands, and an exact entry would reach the address. The proxy
+  takes no workspace traffic until it is ready, which shortens that
+  window without closing it. The control node's user data holds no secret.
 - **The token endpoint opens one port to any source**, behind the token
   (README "Token access from the private network"). Never bind a node's
   service account to a token binding: a workspace whose proxy were opened
   to the metadata service could mint that identity.
 - **The NFS export trusts client-claimed uids** (`no_root_squash`) and is
   open to the node subnet. A pod on another node reaches it SNATed to that
-  node's address, so the export list cannot keep pods out. NetworkPolicy
-  does: workspace egress is default-deny, and builder and proxy egress
-  exclude NFS on node addresses. `yaac cluster check`'s `egress` gate
+  node's address, so the export list cannot keep pods out. Workspaces and
+  builds have no network interface, and the proxy's egress policy
+  excludes NFS on node addresses. `yaac cluster check`'s `egress` gate
   verifies the workspace half against this server.
 - The Hetzner API token sits in two Secrets in `kube-system`, read by the
   cloud controller, the volume driver and the autoscaler. The yaac server
@@ -323,15 +358,16 @@ file again with the install id the refusal names:
 ## What has been tried, and what has not
 
 Verified on Hetzner: `tofu apply` with the state in Hetzner Object
-Storage, the bootstrap of every in-cluster piece (the Calico operator and
-the cloud controller each retry once on ordering, then settle), and
+Storage, the bootstrap of every in-cluster piece (the cloud controller
+retries once on ordering, then settles), and
 `yaac cluster install --byo` ending with every `yaac cluster check` gate
 passing on a control node and a manual worker, and an autoscaled pool
 scaling up from zero (a pending pod to a running one on the new node in
 about three minutes) and back down once the node held nothing (about
 sixteen minutes, the autoscaler's default delays). That was before
 workers carried the `yaac.workspaces` taint, which has not been applied
-there yet.
+there yet. All of this ran on Calico; the stack on k3s's own flannel and
+policy controller, and the in-place switch to it, have not been run.
 
 ## Tear down
 

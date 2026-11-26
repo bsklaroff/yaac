@@ -246,7 +246,7 @@ cluster
   .command('install')
   .description('Converge this machine and its cluster to the installed yaac version: the kind cluster and CNI if there is none, the kind node fixups, every built-in image, and the in-cluster layers. Safe to re-run; never destructive.')
   .option('--nodes <count>', 'Number of kind nodes to create (default 1; workspaces run on the workers, so 3 is the smallest real multi-node rehearsal). Ignored when the cluster already exists')
-  .option('--byo', 'Bring your own cluster: install into the cluster your kubeconfig points at instead of creating one — gated on its nodes, its Calico, the Tailscale operator and its storage classes; the server is published on the tailnet')
+  .option('--byo', 'Bring your own cluster: install into the cluster your kubeconfig points at instead of creating one — gated on its nodes, the Tailscale operator and its storage classes; the server is published on the tailnet')
   .option('--rwx-storage-class <name>', 'With --byo (required): the NFS-family StorageClass the shared yaac-global claim is provisioned from')
   .option('--rwo-storage-class <name>', 'With --byo: the StorageClass the server\'s own yaac-server-local claim is provisioned from (default: the cluster\'s default class)')
   .option('--tailnet [host]', 'Publish the server on your Tailscale tailnet instead of at 127.0.0.1, at an https origin whose callers are identified by their tailnet user. With <host> (this machine\'s MagicDNS name), through this machine\'s own `tailscale serve`; without, through the Tailscale Kubernetes operator, which install sets up from TS_OAUTH_CLIENT_ID / TS_OAUTH_CLIENT_SECRET when the cluster lacks it')

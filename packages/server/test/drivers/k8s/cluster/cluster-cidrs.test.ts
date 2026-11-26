@@ -11,10 +11,11 @@ import {
   apiserverEndpoints, nodeAddressBlocks, nodeIpBlocks, resetClusterCidrCache,
 } from '#drivers/k8s/cluster'
 
-const node = (ip: string, annotations?: Record<string, string>) => ({
+const node = (ip: string, annotations?: Record<string, string>, podCIDRs?: string[]) => ({
   apiVersion: 'v1',
   kind: 'Node',
   metadata: { name: `node-${ip}`, ...(annotations ? { annotations } : {}) },
+  ...(podCIDRs ? { spec: { podCIDRs } } : {}),
   status: { addresses: [{ type: 'InternalIP', address: ip }] },
 })
 
@@ -28,19 +29,21 @@ afterEach(() => {
 
 describe('nodeIpBlocks', () => {
   it('names every node by InternalIP and by overlay tunnel address', async () => {
-    // Calico sends host traffic to a pod on another node from the tunnel
-    // address, not the InternalIP. Without it, netd's Envoy is dropped on
-    // cross-node hops, which never shows on a single node.
+    // Calico and flannel send host traffic to a pod on another node from a
+    // tunnel address, not the InternalIP. Without it, a worker's pull from
+    // the registry on another node is dropped, which never shows on a
+    // single node. kindnet routes plainly, so its nodes add nothing.
     fakeCluster.seed(
       node('10.89.0.21', { 'projectcalico.org/IPv4IPIPTunnelAddr': '10.244.93.192' }),
       node('10.89.0.20', { 'projectcalico.org/IPv4VXLANTunnelAddr': '10.244.86.128' }),
-      // A node without a tunnel annotation yet still contributes its
-      // InternalIP.
-      node('10.89.0.19'),
+      // flannel's flannel.1 holds the network address of the pod CIDR.
+      node('10.0.1.3', { 'flannel.alpha.coreos.com/backend-type': 'vxlan' }, ['10.42.1.0/24']),
+      // A pod CIDR alone, as kindnet leaves a node, adds nothing.
+      node('10.89.0.19', undefined, ['10.244.1.0/24']),
     )
 
     await expect(nodeIpBlocks()).resolves.toEqual([
-      '10.244.86.128/32', '10.244.93.192/32',
+      '10.0.1.3/32', '10.244.86.128/32', '10.244.93.192/32', '10.42.1.0/32',
       '10.89.0.19/32', '10.89.0.20/32', '10.89.0.21/32',
     ])
   })

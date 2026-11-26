@@ -11,6 +11,20 @@ set -euo pipefail
 for _ in $(seq 180); do [ -f /var/lib/yaac/containerd.ready ] && break; sleep 5; done
 [ -f /var/lib/yaac/containerd.ready ] || { echo "the node bootstrap never finished; see /var/log/yaac-node.log" >&2; exit 1; }
 
+# A stack created on Calico has this file; it is switched once, below
+# (docs/legacy-compat-shims.md "Calico on a Hetzner stack"). Not before
+# yaac's upgrade has stopped every workspace on the old `gvisor` class,
+# which has a network interface, and k3s restarts into flannel and its
+# policy controller as soon as config.yaml changes.
+felix=/var/lib/rancher/k3s/server/manifests/yaac-felix.yaml
+if [ -e "$felix" ]; then
+  classes=$(k3s kubectl get pods -A -o jsonpath='{.items[*].spec.runtimeClassName}')
+  case " $classes " in *" gvisor "*)
+    echo "yaac: pods still run on the gvisor class; upgrade yaac and re-run install first" >&2
+    exit 1
+  esac
+fi
+
 umask 077
 mkdir -p /etc/rancher/k3s /var/lib/rancher/k3s/server/manifests
 config=/etc/rancher/k3s/config.yaml
@@ -18,12 +32,13 @@ before=$(cat "$config" 2>/dev/null || true)
 cat > "$config" <<'EOF'
 ${k3s_config}
 EOF
+# flannel would otherwise take the default route's interface, the public one.
+iface=$(ip -4 -o addr show | awk -v ip='${node_ip}' 'index($4, ip "/") == 1 { print $2; exit }')
+[ -n "$iface" ] || { echo "no interface holds ${node_ip}" >&2; exit 1; }
+echo "flannel-iface: $iface" >> "$config"
 # k3s applies every file in this directory, and re-applies one that changes.
 cat > /var/lib/rancher/k3s/server/manifests/yaac-prereqs.yaml <<'EOF'
 ${manifests}
-EOF
-cat > /var/lib/rancher/k3s/server/manifests/yaac-felix.yaml <<'EOF'
-${felix_manifest}
 EOF
 umask 022
 
@@ -44,6 +59,30 @@ curl -fsSL '${k3s_install_url}' \
 
 for _ in $(seq 60); do [ -f /etc/rancher/k3s/k3s.yaml ] && break; sleep 2; done
 install -D -o yaac -g yaac -m 600 /etc/rancher/k3s/k3s.yaml /home/yaac/.kube/config
+
+# The switch off Calico. k3s keeps what a removed manifest file created,
+# so Calico is deleted here: the Installation first, which the operator
+# tears calico-node down for, then its charts and whatever the operator
+# left. The marker file goes only once calico-node is gone, so a failed
+# pass runs again on the next apply. This node's containerd is pointed at
+# flannel's CNI directories as node.sh.tftpl does for a new node, and the
+# reboots in the stack's README finish the switch.
+if [ -e "$felix" ]; then
+  kc="k3s kubectl"
+  $kc delete installation.operator.tigera.io default --ignore-not-found --wait --timeout=5m || true
+  $kc -n kube-system delete helmchart calico calico-crds --ignore-not-found --wait --timeout=5m || true
+  $kc delete namespace calico-system tigera-operator --ignore-not-found --wait --timeout=5m || true
+  left=$($kc get daemonset -A -l k8s-app=calico-node -o name)
+  if [ -n "$left" ]; then
+    echo "yaac: calico-node is still deployed; re-run tofu apply, or delete it by hand" >&2
+    exit 1
+  fi
+  sed -i -e 's#/etc/cni/net.d#/var/lib/rancher/k3s/agent/etc/cni/net.d#' \
+    -e 's#/opt/cni/bin#/var/lib/rancher/k3s/data/cni#' /etc/containerd/config.toml
+  systemctl restart containerd
+  rm "$felix"
+  $kc -n kube-system delete addon yaac-felix --ignore-not-found
+fi
 
 %{ if tailscale_auth_key != "" ~}
 # A spent or expired key leaves the node off the tailnet; `tailscale up`
