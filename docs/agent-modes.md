@@ -26,6 +26,14 @@ docs/permission-modes.md) all read that one table:
 | pi | `pi-acp` | drives `pi --mode rpc`, so the CLI must be installed too; yaac's patch adds `--approve`, so pi trusts the project and loads its `.pi/` and `.agents/skills` as the TUI does |
 | omp | `omp acp` | a subcommand of the CLI (a bun script), taking the TUI's flags: the posture's approval mode and the model |
 
+Each file a Node program opens is slow under gVisor, so the workspace image
+starts the Node adapters from one file: `dockerfiles/Dockerfile.tools`
+bundles claude-agent-acp and pi-acp with esbuild after patching them, behind
+a stub that keeps Node's compile cache for later launches in the pod, and
+links `codex` to its native binary rather than npm's Node shim. Host installs
+run the adapters as npm lays them out, since bundling would need esbuild on
+the host.
+
 How the adapters differ is described by per-tool profiles in
 `#runtime/agents/acp-adapters.ts`: the argv, the environment that carries a
 posture or model, the session mode ids for yaac's postures, whether the

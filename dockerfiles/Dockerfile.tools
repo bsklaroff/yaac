@@ -143,7 +143,7 @@ RUN case "$(dpkg --print-architecture)" in \
 #
 # claude-agent-acp and pi-acp are patched after install
 # (dockerfiles/agent-patches/ says what each patch changes and when it can
-# go); a patch fails the build if the release no longer matches it. The last
+# go); a patch fails the build if the release no longer matches it. pi-acp's
 # RUN also puts omp's wrapper in place (agent-patches/omp-homes.js). The
 # patches are copied as yaac (this stage's user) so that RUN can delete them.
 COPY --chown=yaac agent-patches /tmp/agent-patches
@@ -158,6 +158,34 @@ RUN npm install -g --ignore-scripts pi-acp@0.0.34 && \
     node /tmp/agent-patches/pi-acp.js "$(npm root -g)/pi-acp/dist/index.js" && \
     node /tmp/agent-patches/omp-homes.js "$(npm root -g)/@oh-my-pi/pi-coding-agent/dist/cli.js" && \
     rm -rf /tmp/agent-patches
+# Under gVisor each file a Node program opens is slow: loading its
+# node_modules is about half of claude-agent-acp's start. So the patched
+# adapters are bundled into one file each, written beside their entry so
+# what the bundle still looks up at run time (claude's CLI, through the SDK
+# package) resolves from the adapter's own node_modules. Their bin links go
+# to a stub that turns on Node's compile cache for the bundle alone (a
+# variable would reach every node the agent runs) and flushes it once
+# loaded, so the next launch in the pod reads it. codex-acp is published
+# bundled already.
+#
+# `codex` links straight to the native binary rather than npm's Node shim,
+# which costs a node start on every codex-acp launch (`CODEX_PATH=codex`)
+# and only tells codex how npm updates it, which matters to no one with
+# update checks off (/etc/codex/config.toml below).
+RUN npm install -g --ignore-scripts esbuild@0.28.2 && \
+    for pkg in @agentclientprotocol/claude-agent-acp pi-acp; do \
+      dist="$(npm root -g)/$pkg/dist" && \
+      esbuild "$dist/index.js" --bundle --platform=node --format=esm --log-level=warning \
+        --outfile="$dist/yaac-bundle.mjs" \
+        --banner:js="import{createRequire as yaacCreateRequire}from'module';const require=yaacCreateRequire(import.meta.url);" && \
+      printf '%s\n' '#!/usr/bin/env node' "import m from 'node:module'" 'm.enableCompileCache()' \
+        "await import('./yaac-bundle.mjs')" 'm.flushCompileCache()' > "$dist/yaac-entry.mjs" && \
+      chmod 775 "$dist/yaac-entry.mjs" && \
+      ln -sf "$dist/yaac-entry.mjs" "$(npm prefix -g)/bin/${pkg##*/}" || exit 1; \
+    done && \
+    npm uninstall -g esbuild && \
+    codex="$(echo "$(npm root -g)"/@openai/codex/node_modules/@openai/codex-linux-*/vendor/*/bin/codex)" && \
+    test -x "$codex" && ln -sf "$codex" "$(npm prefix -g)/bin/codex"
 
 # codex system config. The session discovery hook is written to each codex
 # home's hooks.json (`ensureAgentReporters`). requirements.toml keeps the
