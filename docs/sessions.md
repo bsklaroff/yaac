@@ -110,7 +110,7 @@ session opened in a running workspace, a queued workspace or a routine
 takes them as `agentOptions`, from the composer's settings pill or
 `--agent-option <name>=<on|off>`; one the tool lacks is refused. An unnamed
 option is the project's last choice for that tool (`project_tool_defaults`,
-as model and effort are), else off.
+as the model is), else off.
 
 Every agent reads its options from its tmux window, as the window options
 `@yaac-idle-compaction` and `@yaac-idle-cache-warming` (`on` or `off`). The
@@ -202,8 +202,11 @@ Every session's launch exports `YAAC_SESSION_ID`, and `yaac-mama` sends it
 with each request. The server takes it only as one of the calling
 workspace's open sessions (`callingWorkspace`). The ceiling of the delegate
 it acts as (what it may start or message, docs/permission-modes.md) is then
-that session's posture, and what it starts without naming a tool, model or
-agent mode takes that session's. A call from outside any session, such as a user's shell, gets the
+that session's posture. Where what it starts names none of them, it takes
+that session's tool and agent mode; on the same tool, its model and agent
+options; and on the same model, its effort. Where it names no repos, it
+takes the calling workspace's repos and layout and the session's cwd
+(docs/project-repos.md "Remembered create settings"). A call from outside any session, such as a user's shell, gets the
 strictest posture among the workspace's open sessions; with none open,
 among those closed during its current life, since an agent's detached
 child can outlive its session; and with neither, what a create would

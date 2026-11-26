@@ -662,11 +662,16 @@ export interface CreateSetup {
  * lacks is refused; a remembered one it lacks falls back to the default. Restart skips this
  * and calls `createWorkspace` directly.
  *
+ * The effort is the one last picked for the model it runs, else the
+ * model's default (docs/effort-levels.md).
+ *
  * For a delegate (`actor`), what it names nothing for takes after its
- * calling session's tool, model (on the same tool) and agent mode ahead of
- * the project's, its posture is held to its ceiling and is the ceiling
- * where it names none (never the remembered one, which could leave an
- * agent at a prompt nobody answers).
+ * calling session's tool, agent mode and, on the same tool, model and agent
+ * options ahead of the project's, and its effort when it runs the caller's
+ * model. Its
+ * posture is held to its ceiling and is the ceiling where it names none
+ * (never the remembered one, which could leave an agent at a prompt nobody
+ * answers).
  */
 export async function resolveCreate(
   projectId: string,
@@ -693,7 +698,8 @@ export async function resolveCreate(
     if (!posture.ok) throw new ServerError('VALIDATION', posture.error)
     requestedMode = posture.permissionMode
   }
-  const namedModel = request.model ?? (calling?.tool === tool ? calling.model : undefined)
+  const inherited = calling?.tool === tool ? calling : undefined
+  const namedModel = request.model ?? inherited?.model
   const provider = authEntryProvider(auth)
   const endpoint = authEntryEndpoint(auth)
   const fallback = resolveToolCreateDefaults({
@@ -702,15 +708,11 @@ export async function resolveCreate(
     remembered,
     ...(provider !== undefined ? { provider } : {}),
     defaultModel: defaultModelFor(tool, provider, endpoint),
-    effortsFor: (model) => modelEfforts(tool, model, endpoint),
   })
   const model = namedModel ?? fallback.model
   const effort = request.effort !== undefined
     ? namedEffort(tool, model, request.effort, endpoint)
-    // A named model re-resolves the remembered effort against itself.
-    : namedModel !== undefined
-      ? rememberedEffort(tool, model, remembered?.effort, endpoint)
-      : fallback.effort
+    : fittingEffort(tool, model, [inherited?.model === model ? inherited.effort : undefined, remembered?.efforts?.[model]], endpoint)
   return {
     tool,
     ...(model !== '' ? { model } : {}),
@@ -719,7 +721,8 @@ export async function resolveCreate(
       : fallback.permissionMode,
     ...(effort !== undefined ? { effort } : {}),
     mode,
-    agentOptions: resolveAgentOptions(tool, namedAgentOptions(tool, request.agentOptions), remembered?.agentOptions),
+    agentOptions: resolveAgentOptions(tool, namedAgentOptions(tool, request.agentOptions),
+      { ...remembered?.agentOptions, ...inherited?.agentOptions }),
   }
 }
 
@@ -743,16 +746,18 @@ function namedAgentOptions(tool: AgentTool, options: AgentOptions | undefined): 
   return options
 }
 
-/** A remembered effort where `model` has it, else its default; none for a
- *  model without effort levels. */
-function rememberedEffort(
+/** The first of `candidates` that `model` has, else its default; none for
+ *  a model without effort levels. */
+function fittingEffort(
   tool: AgentTool,
   model: string,
-  remembered: string | undefined,
+  candidates: Array<string | undefined>,
   endpoint: CustomEndpoint | undefined,
 ): string | undefined {
   const efforts = modelEfforts(tool, model, endpoint)
-  return efforts !== undefined ? effortFor(efforts, remembered) : undefined
+  return efforts !== undefined
+    ? effortFor(efforts, candidates.find((c) => c !== undefined && efforts.levels.includes(c)))
+    : undefined
 }
 
 /**

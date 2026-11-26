@@ -102,6 +102,22 @@ export function resolveStart(project: ProjectRow, request: StartRequest): Worksp
   return { repos, nested, cwd: startCwd(project, repos, request.cwd) }
 }
 
+/**
+ * A start request with the repos, layout and cwd it leaves out taken from
+ * `base` while it names no repos. A `branch` or `commit` on its own
+ * replaces the start of `base`'s one repo.
+ */
+export function withBaseSelection(base: RepoSelection | undefined, request: StartRequest): StartRequest {
+  if (base === undefined || request.repos !== undefined) return request
+  const restarted = request.branch !== undefined || request.commit !== undefined
+  return {
+    ...request,
+    repos: restarted && base.repos.length === 1 ? [{ repo: base.repos[0].repo }] : base.repos,
+    nested: request.nested ?? base.nested,
+    cwd: request.cwd ?? base.cwd,
+  }
+}
+
 function startCwd(project: ProjectRow, repos: StartRepo[], requested: string | undefined): string {
   const at = (ref: string): StartRepo | undefined =>
     repos.find((r) => r.link.dir === ref) ?? repos.find((r) => r.link.repo.id === ref)

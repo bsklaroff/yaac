@@ -367,9 +367,10 @@ describe('NewWorkspacePane', () => {
     expect(modelShown()).toBe('Claude Opus 4.8')
   })
 
-  // docs/effort-levels.md. Levels are the model's own; a pick or the
-  // remembered level stands where the model has it, else its default.
-  it("offers the model's own effort levels, keeps a level the next model has, and sends it", async () => {
+  // docs/effort-levels.md. Levels are the model's own; a pick, else the
+  // level last picked for that model, stands where the model has it, else
+  // its default.
+  it("offers the model's own effort levels at the one last picked for it, keeps a pick the next model has, and sends it", async () => {
     const efforts = {
       ...CLAUDE,
       models: [
@@ -379,21 +380,27 @@ describe('NewWorkspacePane', () => {
       ],
     }
     server.route(AUTH_LIST, { gitCredentials: [], toolAuth: [efforts], customEndpoints: [] })
-    setSnapshot(project({ createDefaults: { claude: { effort: 'max' } } }))
+    setSnapshot(project({ createDefaults: { claude: { efforts: { 'claude-opus-5-5': 'max', 'claude-sonnet-5': 'low' } } } }))
     await openReady()
     expect(effortShown()).toBe('Max')
     expect(await effortLevels()).toEqual(['Low', 'Medium', 'High', 'Max'])
 
-    // Sonnet has no max: its default instead. A pick it has then stays.
+    // Sonnet's own last pick. A pick in the form then stays across models
+    // that have it; on one that lacks it, that model's own last pick shows.
     await pickModel('claude-sonnet')
-    expect(effortShown()).toBe('High')
-    await effortLevels()
-    pickEffort('Low')
-    await pickModel('claude-opus')
     expect(effortShown()).toBe('Low')
+    await pickModel('claude-opus')
+    await effortLevels()
+    pickEffort('Max')
+    await pickModel('claude-sonnet')
+    expect(effortShown()).toBe('Low')
+    await effortLevels()
+    pickEffort('High')
+    await pickModel('claude-opus')
+    expect(effortShown()).toBe('High')
     typePrompt('go')
     fireEvent.click(sendButton())
-    expect(sent(CREATE).at(-1)).toMatchObject({ model: 'claude-opus-5-5', effort: 'low' })
+    expect(sent(CREATE).at(-1)).toMatchObject({ model: 'claude-opus-5-5', effort: 'high' })
 
     // A model with no levels has no effort to send.
     forget()

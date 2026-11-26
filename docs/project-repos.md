@@ -126,6 +126,12 @@ the next create starts from it.
 - One that names no layout or cwd takes `projects.lastNested` and
   `lastCwd` (a repo id, or `.` for the root).
 - A queued child takes its parent's.
+- A `yaac-mama` create, queue with no parent, or routine that names no
+  repos takes its calling workspace's (those still linked), each at its
+  default branch, with that workspace's layout and its calling session's
+  cwd (`callerSelection`), not the project's. A caller with no repos hands
+  on none; one whose every repo has since been unlinked hands on nothing,
+  so the start takes the project's.
 
 ## The agent's cwd
 

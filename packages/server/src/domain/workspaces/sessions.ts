@@ -112,7 +112,7 @@ export async function openSession(
     await recordProjectCreate(projectId, setup.tool, {
       ...(request.model !== undefined ? { model: request.model } : {}),
       ...(request.permissionMode !== undefined ? { permissionMode: request.permissionMode } : {}),
-      ...(request.effort !== undefined ? { effort: request.effort } : {}),
+      ...(request.effort !== undefined && setup.model !== undefined ? { efforts: { [setup.model]: request.effort } } : {}),
       ...(request.mode !== undefined ? { mode: request.mode } : {}),
       ...(request.agentOptions !== undefined ? { agentOptions: request.agentOptions } : {}),
     })

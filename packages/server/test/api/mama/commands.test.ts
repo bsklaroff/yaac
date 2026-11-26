@@ -211,7 +211,7 @@ describe('runMamaCommand', () => {
     expect(proto.ok).toBe(false)
 
     // Options a command does take still pass.
-    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace' })
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', repos: [{ repoId: PROJ, path: '' }] })
     expect((await run('create', P, {
       tool: 'claude', model: 'opus', 'permission-mode': 'plan', 'ui-mode': 'acp', branch: 'b', group: 'g', title: 't',
     })).ok).toBe(true)
@@ -280,7 +280,7 @@ describe('runMamaCommand', () => {
     it('shows deadlines in the owner\'s zone, scheduled workspaces under their time, and timeouts', async () => {
       await setTimeZone(BUILT_IN_USER_ID, 'Asia/Tokyo', true)
       const soon = new Date(Date.now() + 38 * 60_000 + 30_000)
-      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', deadline: soon })
+      await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'caller-workspace', repos: [{ repoId: PROJ, path: '' }], deadline: soon })
       await created({ projectId: PROJ, workspaceId: 'timed-out', deadline: new Date(Date.now() - 60_000) }, { permissionMode: 'bypass' })
       await recordWorkspaceStopped(PROJ, 'timed-out')
       running = [podFor('caller-workspace')]
@@ -488,7 +488,7 @@ describe('runMamaCommand', () => {
    */
   describe('create', () => {
     beforeEach(async () => {
-      await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { tool: 'codex', permissionMode: 'auto', mode: 'tui' })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { tool: 'codex', permissionMode: 'auto', mode: 'tui' })
     })
 
     /** What the detached creates were asked for, once `n` of them have been. */
@@ -671,12 +671,12 @@ describe('runMamaCommand', () => {
       const [session] = await listWorkspaceSessions('caller-workspace')
       await applyWorkspaceEvent({
         type: 'session-reported', projectId: PROJ, workspaceId: 'caller-workspace', sessionId: session.id,
-        model: 'claude-opus-4-7[1m]',
+        model: 'claude-opus-4-7[1m]', effort: 'max',
       })
       const caller = await callerFor({ sessionId: session.id })
 
       const claimed = { sessionId: session.id }
-      expect(await spawn({}, claimed)).toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]' })
+      expect(await spawn({}, claimed)).toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]', effort: 'max' })
       expect(await spawn({ model: 'opus' }, claimed)).toMatchObject({ model: 'opus' })
       // Another tool takes its own default, not a claude model.
       expect(await spawn({ tool: 'codex' }, claimed)).toMatchObject({ tool: 'codex', model: FALLBACK_MODELS.codex })
@@ -695,10 +695,10 @@ describe('runMamaCommand', () => {
       await setWorkspaceGroupLimit(PROJ, workers.groupId, 1)
       const queued = await as('queue', { group: 'Workers', branch: 'main' })
       expect((await listQueuedWorkspaceRows(PROJ)).find((r) => r.id === queued))
-        .toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]' })
+        .toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]', effort: 'max' })
       const routine = (await as('routine-create', { name: 'nightly', cron: '0 3 * * *', branch: 'main' })).split('\n')[0]
       expect((await listRoutines()).find((r) => r.id === routine))
-        .toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]' })
+        .toMatchObject({ tool: 'claude', model: 'claude-opus-4-7[1m]', effort: 'max' })
     })
 
     it('grants a named posture up to the caller\'s own, and refuses anything else loudly', async () => {
@@ -1549,7 +1549,7 @@ describe('runMamaCommand', () => {
     const STEPS = JSON.stringify({ test: { run: ['pnpm test'] } })
 
     it('starts a non-interactive workspace on its own steps at a commit, only for a caller at bypass', async () => {
-      await created({ projectId: PROJ, workspaceId: 'caller-workspace' }, { permissionMode: 'accept-edits' })
+      await created({ projectId: PROJ, workspaceId: 'caller-workspace', baseBranch: 'main' }, { permissionMode: 'accept-edits' })
       expect(await run('create', '', { 'non-interactive': '1', steps: STEPS })).toEqual({
         ok: false, error: expect.stringContaining("run commands as the workspace does: permission mode 'bypass' is more permissive") as string,
       })

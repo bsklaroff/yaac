@@ -10,6 +10,10 @@ import type {
   ToolCreateDefaults,
 } from '@yaac/shared/types'
 
+/** The form's model, mode, posture, effort and agent option picks for one
+ *  agent: one effort, for whichever model it runs. */
+export type AgentPicks = Omit<ToolCreateDefaults, 'efforts'> & { effort?: string }
+
 /** Start values that are not a parent: a time, a delay, or a routine's
  *  schedule (docs/routines.md). */
 export const START_AT = '\u0000at'
@@ -58,7 +62,7 @@ export interface NewWorkspaceForm {
   tool?: AgentTool
   /** Model, mode, posture, effort and agent option picks, which apply only
    *  to the agent they were made for. */
-  picked?: { tool: AgentTool; picks: ToolCreateDefaults }
+  picked?: { tool: AgentTool; picks: AgentPicks }
   /** What the workspace starts with, where the form was touched
    *  (docs/project-repos.md): per repo id, whether it is included and its
    *  base branch or full commit id; whether a lone repo sits in a folder of

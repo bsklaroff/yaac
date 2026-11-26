@@ -19,8 +19,8 @@ import {
 export interface AgentSetup {
   model: string
   permissionMode: PermissionMode
-  /** Absent when the model has no effort setting. */
-  effort?: string
+  /** The effort last picked for each model, by model id. */
+  efforts: Record<string, string>
   mode: AgentMode
   /** Every option the agent has. */
   agentOptions: AgentOptions
@@ -70,9 +70,8 @@ export function useCreateDefaults(projectId: string | null): CreateDefaults {
         remembered,
         ...(provider !== undefined ? { provider } : {}),
         defaultModel,
-        effortsFor: (model) => models.find((m) => m.id === model)?.efforts,
       })
-      return { ...resolved, mode, models, defaultModel }
+      return { ...resolved, efforts: remembered?.efforts ?? {}, mode, models, defaultModel }
     },
   }
 }

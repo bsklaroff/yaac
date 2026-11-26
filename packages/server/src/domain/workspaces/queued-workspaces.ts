@@ -27,8 +27,8 @@ import {
 import { resolveWorkspace } from './resolve'
 import { workspaceDriver } from '#drivers/driver'
 import { takeSpareFor } from './prewarm'
-import { bringsSteps, checkStartCommits, checkStartSteps, prepareStart, startOf } from './start'
-import { resolveStart, storedSelection, type StartRequest } from './checkouts'
+import { bringsSteps, callerSelection, checkStartCommits, checkStartSteps, prepareStart, startOf } from './start'
+import { resolveStart, storedSelection, withBaseSelection, type StartRequest } from './checkouts'
 import { toStoppedEntries } from './stopped-list'
 import { customEndpointFor, modelDisplayName, modelEfforts } from '#domain/auth'
 import { authorizeProject, isPerson, isProjectHeld, requireWithinCeiling, systemPrincipal, type Actor } from '#domain/access'
@@ -761,30 +761,18 @@ function selectionOf(entry: QueuedWorkspaceRow): RepoSelection {
 /**
  * What a queued entry or a routine's runs start with, resolved now so the
  * sidebar shows what will launch: the request's repos, layout and cwd,
- * with those it leaves out taken from `base` (its parent's, or on an edit
- * its own) while it names no repos, else from the project's last create
- * (`resolveStart`). A `branch` or `commit` on its own replaces the start of
- * `base`'s one repo. A repo with no start named takes its remote's default
- * branch.
+ * with those it leaves out taken from `base` (its parent's, on an edit its
+ * own, or with neither a delegate's calling workspace's) while it names no
+ * repos, else from the project's last create (`resolveStart`). A `branch`
+ * or `commit` on its own replaces the start of `base`'s one repo. A repo
+ * with no start named takes its remote's default branch.
  */
 export async function queuedSelection(
   project: ProjectRow,
   base: RepoSelection | undefined,
   request: StartRequest,
 ): Promise<RepoSelection> {
-  const inherited = request.repos === undefined ? base : undefined
-  const restarted = request.branch !== undefined || request.commit !== undefined
-  const nested = request.nested ?? inherited?.nested
-  const cwd = request.cwd ?? inherited?.cwd
-  const start = resolveStart(project, {
-    ...(request.repos !== undefined ? { repos: request.repos }
-      : inherited === undefined ? {}
-      : { repos: restarted && inherited.repos.length === 1 ? [{ repo: inherited.repos[0].repo }] : inherited.repos }),
-    ...(nested !== undefined ? { nested } : {}),
-    ...(cwd !== undefined ? { cwd } : {}),
-    ...(request.branch !== undefined ? { branch: request.branch } : {}),
-    ...(request.commit !== undefined ? { commit: request.commit } : {}),
-  })
+  const start = resolveStart(project, withBaseSelection(base, request))
   checkStartCommits(start)
   const selection = storedSelection(start)
   for (const repo of selection.repos) {
@@ -806,8 +794,9 @@ function settingsOf(entry: QueuedWorkspaceRow): Omit<ParentInfo, 'pointer'> {
 
 /**
  * Resolve every setting: the request's, else the parent's (tool-specific ones
- * only for the same tool), else the project's create defaults. The group is
- * fixed now, so moving the parent later does not move it. On an edit, `own`
+ * only for the same tool), else with no parent a delegate's calling
+ * session's, else the project's create defaults. The group is fixed now, so moving the parent
+ * later does not move it. On an edit, `own`
  * is what the entry starts with now, which it keeps where the edit names
  * nothing else, and `kept` the workflow and start it was saved with.
  *
@@ -827,9 +816,12 @@ async function resolveSettings(
 ): Promise<QueuedWorkspaceSettings> {
   const project = await getProjectRow(projectId)
   if (!project) throw new ServerError('NOT_FOUND', `project ${projectId} not found`)
-  // With no parent to take after, a delegate's entry takes after its
-  // calling session, as its creates do (`resolveCreate`).
-  const tool = request.tool ?? parent.tool ?? (await delegateSession(principal))?.tool ?? project.lastTool ?? 'claude'
+  // An entry with a parent takes after it, even where it knows no tool; with
+  // none, a delegate's entry takes after its calling session, as its creates
+  // do (`resolveCreate`).
+  const parented = parent.pointer !== null && !('startAt' in parent.pointer)
+  const caller = parented ? undefined : await delegateSession(principal)
+  const tool = request.tool ?? parent.tool ?? caller?.tool ?? project.lastTool ?? 'claude'
   const sameTool = tool === parent.tool
   // The UI mode is not tool-specific, so it is borrowed whatever the tool.
   // With the parent's tool unknown, borrow the permission mode (checked
@@ -857,6 +849,7 @@ async function resolveSettings(
     permissionMode = inherited
   }
 
+  // The delegate's posture is already capped above.
   const setup = await resolveCreate(projectId, {
     tool,
     ...(mode !== undefined ? { mode } : {}),
@@ -866,7 +859,7 @@ async function resolveSettings(
     ...(request.model !== undefined
       ? { model: request.model }
       : sameTool && parent.model !== undefined ? { model: parent.model } : {}),
-  }, principal)
+  }, parented ? undefined : principal)
   if (setup.model === undefined) {
     throw new ServerError('VALIDATION', `no model is known for ${setup.tool}; pick one`)
   }
@@ -881,7 +874,8 @@ async function resolveSettings(
     ...(named !== undefined ? { steps: named.workflow.steps } : {}),
     noSession: request.prompt === undefined,
   })
-  const selection = await queuedSelection(project, own ?? parent.selection, request)
+  const base = own ?? parent.selection ?? (parented ? undefined : await callerSelection(principal, project))
+  const selection = await queuedSelection(project, base, request)
   // What it starts with is known now, so a workflow it cannot run is
   // refused at save rather than at launch.
   if (named !== undefined) {
@@ -932,8 +926,8 @@ export interface SavedStart {
 
 /**
  * Settings for an entry with no parent to inherit from (a routine's runs):
- * the request's, else the project's create defaults. A delegate's posture
- * defaults to its ceiling.
+ * the request's, else a delegate's calling session's, else the project's
+ * create defaults. A delegate's posture defaults to its ceiling.
  */
 export async function resolveParentlessSettings(
   principal: Actor,
