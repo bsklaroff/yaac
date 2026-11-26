@@ -21,12 +21,22 @@ refilling) creates the same pod on demand and binds it as soon as it is up.
 | `/yaac-local` | an `emptyDir` | folders bound where a workspace asks for an `emptyDir` (codex's `tmp`) |
 | the tmux socket dir, the tree trigger dir | `emptyDir` | |
 | the proxy CA | ConfigMap | |
+| `/run/yaac`, in the netshim container only | `<socket root>/<workspace id>.<random>`, a hostPath named like the node-mounts directory | the sandbox's `egress.sock` and `ingress.sock` (docs/workspace-egress.md "The contract") |
 
 The pod's environment holds only what any workspace of that id gets: the
 stream token, CA trust, ssh's route to the proxy and `YAAC_WORKSPACE_ID`. A
 spare is created with an id, and the workspace that takes it has that id, so
 the Job's name, the workspace-id label and the stream token are right from
 creation.
+
+The pod runs on the `gvisor-nonet` runtime, with no network interface but
+loopback. Its first init container is netshim (`restartPolicy: Always`,
+root with only `NET_ADMIN` and `NET_RAW`, a startup probe that waits for
+`ingress.sock`, and limits of one CPU and 128Mi like every container in the
+pod), which carries every connection in and out through the socket
+directory (docs/workspace-egress.md "netshim"). DNS names the sinkhole, which
+netshim answers. A spare has no egress registration until its claim, and
+the proxy refuses an id with none, so a spare is offline until then.
 
 The workspace container's `postStart` hook (`yaac-workspace-init`) does only
 the generic setup: the passwd entry, a tmux server with no session

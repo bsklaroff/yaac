@@ -12,9 +12,9 @@
  *  - Writes need a signed grant, checked by the write gate in front of it
  *    (registry-gate.ts). Builder pods run untrusted `RUN` steps yet must
  *    push, so the gate scopes each write to allowed repositories.
- *  - Its ingress policy admits the node, builder pods in any namespace, and
- *    the in-cluster server. Workspace pods cannot reach it (their egress
- *    policy only allows netd).
+ *  - Its ingress policy admits the node, the proxy in any namespace (which
+ *    carries builds' traffic), and the in-cluster server. No sandbox has an
+ *    address to dial it from.
  *
  * Host processes reach it through a `kubectl port-forward`; see
  * registry.ts, its client.
@@ -33,10 +33,9 @@ import {
   execFileAsync,
   readObject,
   runOnEachNode,
-  LABEL_ROLE,
   PRIORITY_CLASS_INFRA,
   PRIVILEGED_PSS_LABELS,
-  ROLE_BUILDER,
+  PROXY_APP_NAME,
   SERVER_APP_NAME,
   waitForRollout,
 } from '#drivers/k8s/substrate'
@@ -51,7 +50,7 @@ import {
   registryReachable,
 } from './registry'
 import { registryGrantPublicKey } from './registry-grant'
-import { ENVOY_UPSTREAM_IMAGE } from './netd'
+import { ENVOY_UPSTREAM_IMAGE } from './envoy-image'
 import {
   REGISTRY_BACKEND_PORT,
   REGISTRY_GATE_CONFIG_DIR,
@@ -258,12 +257,12 @@ function buildMainRegistryServiceManifest(): Record<string, unknown> {
  * two ports:
  *  - The node port, for the node by `ipBlock` (containerd pulls, the
  *    kubelet probe, and `kubectl port-forward`).
- *  - The pod port, for builder pods in any namespace (e2e runs use per-run
- *    namespaces; the role label cannot be forged, the builder-role
- *    admission policy blocks it) and the in-cluster server in any namespace
+ *  - The pod port, for the proxy in any namespace, which carries builds'
+ *    pulls and pushes (e2e runs use per-run namespaces; docs/image-builds.md
+ *    "Build egress"), and the in-cluster server in any namespace
  *    (docs/server-in-cluster.md).
- * Workspace pods are not allowed. What a pod may read and write is decided
- * by the gate, not this policy.
+ * What a caller may read and write is decided by the gate, from the grant
+ * its request carries, not by this policy.
  *
  * Node addresses are rendered at ensure time and again by
  * `applyMainRegistryIngress` whenever the node set changes.
@@ -291,7 +290,7 @@ function buildMainRegistryIngressNetworkPolicyManifest(
         },
         {
           from: [
-            { namespaceSelector: {}, podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } } },
+            { namespaceSelector: {}, podSelector: { matchLabels: { app: PROXY_APP_NAME } } },
             { namespaceSelector: {}, podSelector: { matchLabels: { app: SERVER_APP_NAME } } },
           ],
           ports: [podPort],

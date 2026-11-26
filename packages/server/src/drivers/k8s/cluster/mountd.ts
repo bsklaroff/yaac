@@ -265,8 +265,11 @@ async function mountdToken(): Promise<string> {
   return cachedToken
 }
 
-/** Image lookup only; `yaac cluster install` builds it. */
-async function mountdImage(): Promise<string> {
+/**
+ * Image lookup only; `yaac cluster install` builds it. The same image
+ * carries netshim, which every sandboxed pod runs, and netd's relay.
+ */
+export async function mountdImage(): Promise<string> {
   return prebuiltRef('mountd', await resolveMountdImageTag())
 }
 

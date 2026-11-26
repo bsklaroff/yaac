@@ -5,7 +5,6 @@ import {
   ensureProxyAuthSecret,
   ensureProxyImage as lookupProxyImage,
   ensureProxyResources,
-  resetProxyClusterIpCache,
   resolveProxyImageTag,
 } from '#drivers/k8s/cluster'
 import {
@@ -235,8 +234,6 @@ export class ProxyClient {
     }
     this.running = false
     this.deployVerifiedCurrent = false
-    // A recreated Service may get a new ClusterIP.
-    resetProxyClusterIpCache()
   }
 }
 

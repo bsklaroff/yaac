@@ -118,7 +118,7 @@ export function mamaApp(dispatch: MamaDispatch) {
 /**
  * The endpoint as the egress proxy relays it for a k8s workspace pod, on the
  * driver's own listener (`WorkspaceDriver.mamaRelay`). The proxy names the
- * caller it resolved from the pod's source IP in `x-yaac-workspace-id` and
+ * caller netd's relay identified it as in `x-yaac-workspace-id` and
  * proves it is the proxy with `authenticate`.
  */
 export function mamaRelayApp(authenticate: (bearer: string) => Promise<boolean>, dispatch: MamaDispatch) {

@@ -498,8 +498,9 @@ yaac cluster install --byo --rwx-storage-class <nfs-class> [--rwo-storage-class 
 Installs into the cluster the current kubeconfig points at: a self-managed
 pool, or a managed one on a mutable node OS. It applies the same
 in-cluster layers and server Deployment as a kind install. It creates no
-cluster, needs no `kind`, installs no CNI (it uses the cluster's existing
-Calico), and is re-runnable like every other mode. `infra/hetzner-k3s` has
+cluster, needs no `kind`, installs no CNI (it uses the cluster's own, and
+asks only that some engine enforces NetworkPolicy), and is re-runnable like
+every other mode. `infra/hetzner-k3s` has
 OpenTofu for one such cluster, k3s on Hetzner Cloud, with a README that
 walks through the install.
 What differs:
@@ -548,7 +549,6 @@ before the podman setup, so a refusal changes nothing:
 |---|---|
 | Architecture | a node pool that mixes architectures, or whose architecture is not this machine's (install builds every image here, with no cross-build) |
 | Node OS and containerd | a runtime other than containerd; an immutable OS (Bottlerocket, Container-Optimized OS, Talos, Flatcar); EKS Fargate and GKE Autopilot; k3s or RKE2 on its embedded containerd, which regenerates its config from a template on every start. Either passes when run against the host's containerd (`--container-runtime-endpoint`), as `infra/hetzner-k3s` does |
-| CNI | everything in "The CNI gate" below |
 | Operator | no Tailscale operator or no `tailscale` IngressClass (an unanswered query is reported separately from "absent") |
 | Storage | an RWX class that is missing or not NFS-family, a missing RWO class, or no default class (the registry and npm cache use it) |
 | Identity | a live `yaac-server` Deployment of another install (its `yaac.install-id` label differs; installing over it would take over its storage), or a data dir recorded as containerless |
@@ -677,93 +677,34 @@ run a sandboxed pod (`gvisor`, `probe`, `mountd`, `egress`,
 fail.
 Re-run the check while a workspace node is up to cover them.
 
-### The CNI gate
+### NetworkPolicy enforcement
 
-A byo cluster's Calico may be self-managed or provider-managed (GKE
-Dataplane V1, AKS `--network-policy calico`, Calico policy-only over the AWS
-VPC CNI). The netd redirect (docs/workspace-egress.md) works on any
-CNI whose pod egress passes through host netfilter and that leaves
-ClusterIP translation to kube-proxy. On a kind cluster yaac installs, those
-properties hold by construction; on byo they are checked. Each check is a
-refusal, not a warning, because each fails silently when wrong:
-
-| Checked | Why it matters |
-|---|---|
-| calico-node present and fully rolled out | Calico enforces NetworkPolicy; a node without Felix has no egress lockdown. A Cilium cluster also shows up as "no Calico", and no Cilium setup works with the redirect |
-| **not** the eBPF dataplane: `spec.bpfEnabled` on any FelixConfiguration, or `FELIX_BPFENABLED` on the container | eBPF routing bypasses host netfilter: the redirect chain exists, sees no packets, and every workspace silently loses the internet |
-| kube-proxy running and not replaced (`bpfKubeProxyIptablesCleanupEnabled`) | netd's Envoy dials the yaac proxy by ClusterIP from the host network, and netd's rules sit below `KUBE-SERVICES` to keep ClusterIP traffic out of the redirect |
-| a non-empty, fully parseable pod-CIDR set | netd skips pod CIDRs before redirecting. With none, it would send pod-to-pod 443/80 into the proxy. kind falls back to its default; `--byo` refuses |
-| `system-node-critical` exists | netd uses it, and a pod naming a missing class is rejected, so netd would run on no node |
-| every check actually ran | a read that failed (RBAC denied, timeout) is unknown, not "absent". Absence is meaningful here (no FelixConfiguration means iptables defaults), so a failed read must not wave an eBPF cluster through |
-
-Two things are recorded but not enforced. `chainInsertMode`: netd appends
-its own `nat PREROUTING` jump and does not compete with Felix for position,
-so `Append` only warns. And per-node kube-proxy coverage: a node without
-kube-proxy loses egress while the rest work, which looks intermittent, so
-those nodes are named.
-
-The kube-proxy check runs **per node**. On a mixed fleet (several node
-pools or OS images) one node says nothing about another.
-
-Over the AWS VPC CNI, enforce policy with Calico rather than AWS's own
-network-policy agent: that agent enforces in TC eBPF before netfilter,
-which would force allowing 443/80 to the internet in the workspace policy,
-and its default mode allows all traffic at pod birth, which the `egress`
-gate cannot see because it is a race at pod start.
-
-**NetworkPolicy enforcement is tested, not assumed.** Policy-only Calico
-over a foreign IPAM is a supported setup, and a misconfigured one looks the
-same until a workspace escapes. The check's `egress` gate (see "Verifying")
-tests enforcement directly, and its failure makes install exit non-zero.
+Workspace and builder sandboxes have no network interface, so nothing about
+a cluster's CNI decides what they reach (docs/workspace-egress.md). What a
+byo cluster must give is NetworkPolicy enforced by some engine, Cilium
+included, since plain `networking.k8s.io/v1` policies wall yaac's own pods
+(the server, the proxy, the registries, the npm cache, netd, mountd, the
+site edge). Install's closing check proves it: the `egress` gate's first
+half has a pod the world-deny policy covers fail to dial the registry and
+the server (see "Verifying"), and its failure makes install exit non-zero.
 
 **A failed check leaves the install in place.** Install applies everything
 before it verifies, so the only sign of failure is the exit code; nothing is
-rolled back. This matters most for the `egress` gate: on a cluster that
-fails it, workspace egress lockdown is advisory (policy applied but not
-enforced), and the proxy allowlist covers only the ports the redirect steers
-(443, 80 and the ssh port). Install says so when that gate fails. **Do not
-start workspaces until a re-run passes.**
+rolled back. On a cluster that fails the enforcement probe, the walls
+around yaac's own pods are advisory. **Do not start workspaces until a
+re-run passes.**
 
-Whether workload routes match the veth prefix on every node is the check's
-`veth-source` gate, which install's closing check runs: netd finds each
-pod's veth from host routes, and a prefix that matches nothing gives a chain
-with no per-pod rules, which looks like a healthy netd. Running it on every
-`yaac cluster check` also catches a node pool added after install.
+A cluster shared with other workloads is the one place enforcement at a
+pod's birth still matters: a foreign pod could dial one of yaac's in the
+moment before its engine programs it. Every yaac policy selects only yaac's
+own pods, and policy for anyone else's workloads is out of scope.
 
 The install and registry namespaces are labelled for the `privileged` Pod
 Security Standard. This does nothing on kind, but matters on a byo cluster
-whose default is `baseline` or `restricted`: netd is `hostNetwork` with
-`NET_ADMIN`/`NET_RAW`, mountd is privileged in the host pid
+whose default is `baseline` or `restricted`: netd's relay runs as root on a
+hostPath of sandbox sockets, mountd is privileged in the host pid
 namespace, and the node-write pods hostPath-mount `certs.d`. PSS
 is per namespace, so nothing outside them is relaxed.
-
-Three environment variables cover what a foreign cluster does not expose:
-
-- `YAAC_CNI_VETH_PREFIX`: the name prefix of workload veths (default
-  `cali`; policy-only Calico over the AWS VPC CNI uses `eni`). An empty or
-  invalid value falls back to `cali` rather than matching every device,
-  because the prefix is what keeps netd from redirecting non-workload
-  traffic. When the prefix matches nothing, the refusal names the prefix
-  the node's routes actually use.
-- `YAAC_POD_CIDRS`: extra pod CIDRs, comma-separated, added to the
-  discovered ones (never replacing them). Too narrow a set is the dangerous
-  direction, since a pod IP outside it is treated as the internet. An entry
-  that is not a valid IPv4 CIDR is refused, not dropped.
-- `YAAC_KUBE_PROXY_EXTERNAL=1`: kube-proxy runs where no pod shows it.
-  **k3s** runs kube-proxy inside the kubelet, so there is nothing to detect.
-  Getting this wrong loses egress rather than opening it: netd's Envoy
-  cannot reach the proxy, and the workspace NetworkPolicy still blocks the
-  internet. It is recorded in the audit trail, as the one check an operator
-  can override.
-
-All three are read at apply time, so changing one on a live cluster needs a
-re-run. calico-node is found in `kube-system` (a manifest install) or
-`calico-system` (the Tigera operator, the usual install on AKS).
-kube-proxy pods are found by `k8s-app=kube-proxy` (kubeadm, kind) or
-`component=kube-proxy` (GKE, AKS).
-
-Out of scope: Cilium in any configuration, and policy for anyone else's
-workloads. Every yaac policy selects only yaac's own pods.
 
 ## After a restart
 
@@ -967,28 +908,38 @@ order:
   by its node's mountd: a node-local folder mounted read-only under its
   node-mounts directory and a folder of a pod-local volume, both bound
   inside the sandbox, must show up there read-only and writable
-  (docs/generic-workspace-pods.md "Platforms").
-- `egress`: a workspace-labelled pod cannot reach the API server and cannot
-  dial the proxy's transparent ports directly, nor on byo the global
-  volume's NFS server (on EFS, the mount target of each zone the nodes are
-  in). This is the NetworkPolicy enforcement test.
-- `npm-cache`: a workspace-labelled pod fetches a package through the
-  cache. Warns when there is no ready cache pod; fails when a ready one
-  does not serve.
+  (docs/generic-workspace-pods.md "Platforms"). It runs on the
+  no-interface RuntimeClass, so it also shows a bind and a claim need no
+  network.
+- `egress`, in three halves. Enforcement: a runc pod the world-deny policy
+  covers cannot dial the registry or the server (the only half that rests
+  on NetworkPolicy, and so the one `--byo` asks of a cluster). The
+  sandbox: a pod in a workspace's shape (no interface, netshim, its own
+  registration allowing one host), as root, gets the proxy's 403 for a
+  request to the server by address and by name, the apiserver, a node's
+  kubelet, a running workspace, a literal internet address and, on byo,
+  the global volume's NFS server (on EFS, the mount target of each zone
+  the nodes are in), while the allowed host answers, and its container
+  sees no unix socket. A dial there always connects, so each is judged on
+  the completed request. The allowed host answering the proxy's 5xx (a
+  cluster with no internet) is a warning, since the targets' 403s already
+  show the request crossed the datapath; no answer at all is a failure. The server's own egress reaches the apiserver and
+  DNS and not a node's kubelet. While the proxy is not yet deployed (it
+  deploys with the first workspace) the sandbox half is reported
+  unverified.
+- `npm-cache`: a sandbox whose registration names the cache fetches a
+  package by the cache's name, through the proxy. Warns when there is no
+  ready cache pod or no proxy yet; fails when a ready cache does not serve.
 - `sites`: pods labelled as each site tunnel and the router cannot dial the
-  server, the proxy's control port or a running workspace that is not a
-  release, and one labelled as a Cloudflare pod not the router's tailnet
-  listener (docs/server-in-cluster.md "The site edge"). Warns when none of
-  those is running to dial, when an installed Cloudflare tunnel holds no
-  connection, when an installed tailnet tunnel has not joined or has no
-  certificate, and, on a machine on the tailnet, when the site domain does
-  not resolve to the tailnet tunnel.
-- `datapath`: calico-node and netd are Ready, meaning policy is enforced
-  and a redirect exists.
-- `veth-source`: runs in each netd pod against that node's routing table
-  and checks that workload routes match the configured veth prefix. A
-  Ready netd does not imply this: netd is Ready once Envoy accepts its
-  config, even with no pod-to-veth mappings.
+  server, the proxy's control port or netd's stream port, the tunnels'
+  cannot dial netd's site port while the router's can, and one labelled as
+  a Cloudflare pod cannot dial the router's tailnet listener
+  (docs/server-in-cluster.md "The site edge"). Warns when none of those is
+  running to dial, when an installed Cloudflare tunnel holds no connection,
+  when an installed tailnet tunnel has not joined or has no certificate,
+  and, on a machine on the tailnet, when the site domain does not resolve
+  to the tailnet tunnel.
+- `datapath`: netd is Ready on every node, its relay's listeners bound.
 - `per-node` (multi-node only, warn; below).
 - `storage-semantics`: runs `k8s/probes/fsprobe.py` (ownership, O_EXCL,
   atomic rename, hardlinks, locks, fsync, mmap, append, xattrs) against the
@@ -999,8 +950,8 @@ order:
 
 ### Which nodes count as workspace-eligible
 
-The node count, the per-node sweep and byo's per-node kube-proxy check all
-consider only the nodes a workspace could land on: Ready, not cordoned, and
+The node count and the per-node sweep consider only the nodes a workspace
+could land on: Ready, not cordoned, and
 with no taint the workspace pod does not tolerate. A workspace pod's
 tolerations are whatever the `gvisor` RuntimeClass declares in
 `scheduling.tolerations`, which Kubernetes merges into every pod naming the

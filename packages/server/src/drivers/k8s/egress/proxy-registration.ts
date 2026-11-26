@@ -72,6 +72,14 @@ export interface ProxyRegistration {
   projectId: string
   owner: string
   upstreamRedirects?: Record<string, UpstreamRedirect>
+  /** A public site's release, which the proxy refuses `yaac.internal`. */
+  release?: boolean
+  /**
+   * `host:port` of the install's own Services this workspace may reach by
+   * name through the proxy, past its allowlist (docs/workspace-egress.md
+   * "The npm cache and the main registry").
+   */
+  clusterServices?: string[]
 }
 
 /** The key a rule's `secretRef` names, scoped to its project. */

@@ -8,6 +8,7 @@ import {
   GLOBAL_CLAIM_NAME,
   NODE_LOCAL_NODE_ROOT,
   NODE_MOUNTS_NODE_ROOT,
+  SOCKETS_NODE_ROOT,
   VOLUMES_CLAIM_NAME,
   volumeClaimName,
 } from './storage-constants'
@@ -27,6 +28,12 @@ export function nodeLocalNodePath(): string {
 /** This install's node-mounts root on a node, beside its node-local one. */
 export function nodeMountsNodePath(): string {
   return `${NODE_MOUNTS_NODE_ROOT}/${installNameKey()}`
+}
+
+/** This install's socket root on a node: one directory per sandbox, named
+ *  as its node-mounts directory is (docs/workspace-egress.md). */
+export function socketsNodePath(): string {
+  return `${SOCKETS_NODE_ROOT}/${installNameKey()}`
 }
 
 /**

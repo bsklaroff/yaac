@@ -264,13 +264,15 @@ describe('yaac-mama from inside a workspace (real CLI + server + cluster)', () =
     expect(listed.output).toMatch(/\(you\)[^\n]*forged caller|forged caller[^\n]*\(you\)/)
     expect(listed.output.match(/forged caller/g)).toHaveLength(1)
 
-    // And the server's mama listener is out of a pod's reach.
+    // And the server's mama listener is out of a pod's reach: the dial
+    // connects, as every dial does, and the proxy refuses the install's own
+    // Service by name.
     const direct = await execInJob(jobA, ['sh', '-c',
-      `curl -sS --connect-timeout 2 --max-time 10 -o /dev/null -w 'HTTP:%{http_code}' `
+      `curl -sS --max-time 10 -o /dev/null -w 'HTTP:%{http_code}' `
         + `http://${SERVER_MAMA_SERVICE_NAME}.${k8sNamespace()}.svc.cluster.local:${SERVER_MAMA_PORT}`
-        + '/api/workspace/mama 2>&1; echo "EXIT:$?"',
+        + '/api/workspace/mama 2>&1',
     ], { timeout: 120_000 })
-    expect(direct.stdout).not.toContain('EXIT:0')
+    expect(direct.stdout).toContain('HTTP:403')
   }, 240_000)
 
   it('relays a pod\'s git to its hosted remote, and refuses another project\'s pod', async () => {

@@ -1,8 +1,9 @@
 # Stream relay: workspace streams off the apiserver
 
 Under the `k8s` driver, every steady-state byte between the server and a
-workspace pod travels over plain TCP through the proxy pod to a daemon
-inside the workspace pod (streamd). That covers terminal PTYs, the status
+workspace pod travels over plain TCP to netd's relay on the workspace's
+node, and from there through the pod's `ingress.sock` to a daemon inside the
+workspace pod (streamd). That covers terminal PTYs, the status
 watcher's tmux control stream, forwarded TCP ports, and one-shot pod
 commands. None of it goes through the Kubernetes apiserver.
 
@@ -25,11 +26,12 @@ workspaces.
 ## Architecture
 
 ```
-browser ── WS ── server ──(A)── proxy pod ──(B)── workspace pod
-                             relay listener :10260   streamd :10300
-                             (auth + splice)         (pty/ctrl/exec/tcp)
+browser ── WS ── server ──(A)── netd pod on the ──(B)── workspace pod
+                                workspace's node        netshim ── streamd :10300
+                                relay :10262            (ingress.sock)  (pty/ctrl/exec/tcp)
+                                (auth + splice)
 
-server = a pod of the install namespace, dialing the proxy's Service
+server = a pod of the install namespace, dialing the netd pod's address
 ```
 
 ### streamd (`dockerfiles/streamd/`)
@@ -40,13 +42,15 @@ script starts it last, so a successful relay exec also proves the earlier
 setup (the passwd entry, the tmux server) is done. Its source is part of the
 base image's content hash, so editing it changes the image tag.
 
-It listens on `0.0.0.0:10300`, reachable at the pod IP. Each connection
+It listens on `0.0.0.0:10300`, which in a sandbox with no interface is
+reachable from its loopback alone: netshim dials it for each connection the
+relay hands through `ingress.sock` (docs/workspace-egress.md "netshim"). Each connection
 starts with one JSON handshake line (`{token, kind, …params}`) and gets one
 `{ok}` reply line. The kinds are:
 
 - `tcp {port}`: raw splice to `localhost:<port>` inside the pod. Dialing
   from inside the pod is what lets a dev server bound only to localhost be
-  forwarded; dialing `podIP:port` from the proxy could not reach it.
+  forwarded.
 - `ctrl {cmd}`: run a command with piped stdio and splice stdin/stdout raw
   (tmux control mode is a line protocol). Closing the socket kills the
   process.
@@ -95,36 +99,35 @@ coalescing.
 
 The handshake token is per workspace: `HMAC-SHA256(proxyAuthSecret,
 workspaceId)`, derived rather than stored, and passed to the pod as
-`YAAC_STREAM_TOKEN`. It backs up the ingress NetworkPolicies: a workspace
-that leaks its own token gains nothing, because only its own streamd accepts
-it and only the proxy can reach any streamd.
+`YAAC_STREAM_TOKEN`. A workspace that leaks its own token gains nothing,
+because only its own streamd accepts it and only netd's relay can reach any
+streamd.
 
-### Proxy relay listener (`k8s/proxy/main.ts`)
+### netd's relay (`k8s/mountd/cmd/relay`)
 
-A minimal authenticated CONNECT on `:10260`, present in every proxy. For
-each connection it reads one JSON auth line (`{token: proxyAuthSecret,
-workspaceId}`, compared in constant time), looks up the workspace's pod IP
-(from its pod watch, falling back to a label-selector list), dials
-`podIP:10300` and splices. Everything after the auth line passes through
-untouched, so the protocol is end-to-end between server and streamd.
+A minimal authenticated splice on `NETD_STREAM_PORT` (10262), in every netd
+pod. For each connection it reads one JSON auth line (`{token:
+proxyAuthSecret, workspaceId}`, compared in constant time), finds that
+workspace's socket directory among the pods on its node, opens its
+`ingress.sock` by descriptor, writes streamd's port as two bytes and
+splices. Everything after the auth line passes through untouched, so the
+protocol is end-to-end between server and streamd.
 
-Errors for a single stream (unknown workspace, pod dial failed) get an
+Errors for a single stream (unknown workspace, ingress dial failed) get an
 `{ok:false}` line before the close. The server treats a silent close as a
 dead peer, so a probe of a stale workspace must not look like one. Only a
-bad auth line closes silently.
-
-Everything before the splice has a deadline (auth line, IP lookup, pod
-dial). A pod whose ingress policy does not yet admit the proxy drops the
-SYN, and without the deadline the dial would wait out the OS retry series
-while the server learned nothing.
+bad auth line closes silently. Everything before the splice has a
+deadline.
 
 ### Server transport (`drivers/k8s/substrate/stream-relay.ts`)
 
 `relayDial` opens the TCP connection and sends both handshake lines in one
-write. The address is the proxy's Service,
-`yaac-proxy.<namespace>.svc.cluster.local:10260`, dialed directly: the
-server is a pod in that namespace (docs/server-in-cluster.md), and the
-proxy's ingress policy admits the server's pods on the relay port.
+write. The address is the netd pod on the node of the workspace's pod, both
+read from the server's informers (the workspace pod cache and a watch of
+netd's pods), so a dial lists nothing. The server is a pod in the install
+namespace (docs/server-in-cluster.md), and netd's ingress policy admits the
+server's pods on the stream port. A workspace whose pod has no node yet, or
+whose node has no running netd, fails with `RelayDialError`.
 
 Streams share nothing. Each dial is its own TCP connection, so a failure
 affects only its own caller, not other terminals, status streams or
@@ -154,7 +157,7 @@ browser↔server WebSocket is the whole WAN path. Three things keep it cheap:
   `WSContext`, because the context passes `compress: undefined`, which
   overrides ws's default and would leave the largest payload uncompressed.
 - **No Nagle.** Every relay socket sets `setNoDelay`: the server's dial,
-  both sides of the proxy splice, and streamd's accepted and target
+  the relay's TCP side (Go's default), and streamd's accepted and target
   sockets. The batchers already coalesce; Nagle on top would only add
   delay.
 - **Keystroke batching.** The browser batches input with the same shared
@@ -164,23 +167,23 @@ browser↔server WebSocket is the whole WAN path. Three things keep it cheap:
 
 ## Failure model
 
-When the relay is unreachable (proxy pod restarting, streamd dead), streams
-fail and are retried by the existing layers: the status watcher's backoff
+When the relay is unreachable (the node's netd pod restarting, streamd
+dead), streams fail and are retried by the existing layers: the status watcher's backoff
 respawn, the frontend's WebSocket reconnect, and per-connection forward
 errors.
 
 Probe results are classified conservatively. Only a stream that reached the
 pod and saw the command exit nonzero (`WorkspaceExecError`) counts as a real
 answer. Any transport failure (`RelayDialError`) is `unknown`, and the
-stale reaper treats `unknown` as "do not reap". A proxy outage therefore
-degrades terminals but never ends workspaces.
+stale reaper treats `unknown` as "do not reap". A netd outage therefore
+degrades terminals but never ends workspaces. A restart of one node's netd
+pod drops that node's streams alone, which reconnect.
 
 A stream can also die without either end seeing a close. An ACP
 conversation's stream can sit idle for days, and the
-cluster's connection tracking forgets an idle flow (kube-proxy keeps an
-established one 24h), after which one end's close never reaches the other.
-So every relay socket (the server's dial and both sides of the proxy
-splice) turns on TCP keepalive after a minute idle, which keeps the flow
+cluster's connection tracking forgets an idle flow, after which one end's close never reaches the other.
+So every relay socket (the server's dial and the relay's TCP side) turns on
+TCP keepalive after a minute idle, which keeps the flow
 known and closes a stream whose peer is gone. The ACP driver also drops a
 conversation whose tmux window's process changed, without waiting for its
 stream to close (docs/agent-modes.md).
@@ -191,13 +194,7 @@ stream failure it re-runs the boot command through `kubectl exec`
 
 ## Network policy
 
-Because the proxy dials workspace pods, pod ingress is locked down:
-
-- Proxy ingress (`buildProxyIngressNpManifest`): the relay port is admitted
-  from the node addresses (netd's Envoy, the kubelet probe) and from the
-  server's pod selector. Workspace pods match neither.
-- Workspace ingress lock (`buildWorkspaceIngressLockNpManifest`): workspace
-  pods accept only `app=yaac-proxy` on 10300 and deny all other ingress.
-
-The proxy's control API is a separate port on the same Service, admitted by
-the same rule from the server's pods.
+A workspace pod has no network interface, so it needs no ingress lock:
+nothing can dial it, and the only way in is `ingress.sock`, which only the
+relay reaches. netd's ingress policy (`buildNetdIngressNpManifest`) admits
+the server's pods on the stream port.

@@ -133,8 +133,8 @@ All container images used by e2e tests are pre-built in `test/global-setup.ts` b
 The global setup also mirrors digest-pinned upstream images into the local
 registry (no content hash — the digest IS the pin): `quay.io/podman/stable` for the
 root utility pods (`packages/server/src/drivers/k8s/cluster/utility-image.ts`),
-`envoyproxy/envoy` for netd's redirect sidecar
-(`packages/server/src/drivers/k8s/cluster/netd.ts`), `curlimages/curl` for
+`envoyproxy/envoy` for the site router, the registry gate and the kind
+fronting (`packages/server/src/drivers/k8s/cluster/envoy-image.ts`), `curlimages/curl` for
 the gVisor installer (`packages/server/src/drivers/k8s/install/gvisor-installer.ts`),
 `verdaccio/verdaccio` plus `nginxinc/nginx-unprivileged` for the npm cache
 (`packages/server/src/drivers/k8s/cluster/npm-cache.ts`), and

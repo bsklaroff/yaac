@@ -5,9 +5,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type * as childProcess from 'node:child_process'
-import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
+import { apiError, fakeCluster, type FakeObject } from '@yaac/test-utils/k8s-stub'
 import { fakeRegistry } from '#test/support/fake-registry'
-import { SERVER_POD_PORT } from '#drivers/k8s/substrate'
+import { SERVER_POD_PORT, installId } from '#drivers/k8s/substrate'
 
 // The cluster and `kubectl rollout status` are the boundaries.
 const rollouts = vi.hoisted((): string[] => [])
@@ -34,6 +34,7 @@ import {
   installedTailnetNames,
   registryRef,
   resolveTailgateImageTag,
+  resyncSiteEndpoints,
   siteCloudflareStatus,
   siteTailnetStatus,
   syncSiteObjects,
@@ -89,6 +90,36 @@ function peerSelectors(np: Manifest | undefined): unknown[] {
   return rules.flatMap((r) => [...r.from ?? [], ...r.to ?? []]).flatMap((p) => (p.podSelector ? [p.podSelector] : []))
 }
 
+/** A running workspace pod on `node`. */
+function workspacePod(workspaceId: string, node: string): FakeObject {
+  return {
+    apiVersion: 'v1', kind: 'Pod',
+    metadata: {
+      name: `yaac-${workspaceId}-x`, namespace: 'test-ns', creationTimestamp: '2026-01-01T00:00:00Z',
+      labels: {
+        'batch.kubernetes.io/job-name': `yaac-${workspaceId}`, 'yaac.workspace-id': workspaceId,
+        'yaac.project-id': 'p1', 'yaac.install-id': installId(),
+      },
+    },
+    spec: { nodeName: node },
+    status: { phase: 'Running' },
+  }
+}
+
+/** netd's running pod on `node`, at `ip`. */
+function netdPod(node: string, ip: string): FakeObject {
+  return {
+    apiVersion: 'v1', kind: 'Pod',
+    metadata: { name: `yaac-netd-${node}`, namespace: 'test-ns', labels: { app: 'yaac-netd' } },
+    spec: { nodeName: node },
+    status: { phase: 'Running', podIP: ip },
+  }
+}
+
+/** The one address a site's EndpointSlice points at, if any. */
+const endpointOf = (site: string): string[] => (fakeCluster.get<{ endpoints: Array<{ addresses: string[] }> }>(
+  'EndpointSlice', `yaac-site-${site}`, 'test-ns')?.endpoints ?? []).flatMap((e) => e.addresses)
+
 beforeEach(() => {
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   rollouts.length = 0
@@ -102,11 +133,14 @@ afterEach(() => {
 })
 
 describe('syncSiteObjects', () => {
-  it('routes each hostname to its live release, answers the rest, and prunes what it no longer lists', async () => {
-    // Left by a deleted site, and an object of someone else's.
+  it('routes each hostname to netd on its live release\'s node, answers the rest, and prunes what it no longer lists', async () => {
+    // Left by a deleted site and by the redirect datapath, and an object of
+    // someone else's.
     fakeCluster.seed(
       { apiVersion: 'v1', kind: 'Service', metadata: { name: 'yaac-site-gone', namespace: 'test-ns', labels: { app: 'yaac-site' } } },
+      { apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice', metadata: { name: 'yaac-site-gone', namespace: 'test-ns', labels: { app: 'yaac-site' } } },
       { apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name: 'yaac-site-gone', namespace: 'test-ns', labels: { app: 'yaac-site' } } },
+      { apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name: 'yaac-site-blog', namespace: 'test-ns', labels: { app: 'yaac-site' } } },
       { apiVersion: 'v1', kind: 'Service', metadata: { name: 'yaac-proxy', namespace: 'test-ns', labels: { app: 'yaac-proxy' } } },
       // Two router replicas, and a `cluster check` probe that only shares
       // their policies' label.
@@ -115,6 +149,10 @@ describe('syncSiteObjects', () => {
         metadata: { name, namespace: 'test-ns', labels: { app: 'yaac-site-router', 'yaac.site-edge-replica': 'true' } },
       })),
       { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'yaac-site-router-probe', namespace: 'test-ns', labels: { app: 'yaac-site-router' } } },
+      // The releases, on two nodes, and each node's netd; ws-2's node has
+      // none running.
+      workspacePod('ws-1', 'n1'), workspacePod('ws-2', 'n2'), workspacePod('ws-3', 'n1'),
+      netdPod('n1', '10.244.1.7'),
     )
     const routesHash = (pod: string): string | undefined =>
       fakeCluster.get<{ metadata: { annotations?: Record<string, string> } }>('Pod', pod, 'test-ns')
@@ -125,24 +163,24 @@ describe('syncSiteObjects', () => {
       { siteId: 'kanban', hostname: 'kanban.apps.example.com', edge: 'tailnet', port: 3000, liveWorkspaceId: 'ws-3' },
     ])
 
-    // Headless, so the router dials the release's pod and a deploy's flip
-    // moves new requests at once. A site with no live release selects
-    // nothing, and no selector can pick a pod of another site.
+    // Headless with no selector: it names the live release for netd's
+    // relay, with the port the release serves on as its target, and its
+    // EndpointSlice is netd on that release's node.
     expect(stored('Service', 'yaac-site-blog')?.spec).toEqual({
       clusterIP: 'None',
-      selector: { 'yaac.site-id': 'blog', 'yaac.workspace-id': 'ws-1' },
-      ports: [{ name: 'http', port: 3000, targetPort: 3000, protocol: 'TCP' }],
+      ports: [{ name: 'site', port: 10263, targetPort: 3000, protocol: 'TCP' }],
     })
-    expect(stored('Service', 'yaac-site-shop')?.spec.selector).toEqual({ 'yaac.site-id': 'shop', 'yaac.workspace-id': '' })
-    // Only the router reaches a release, and only on the site's port.
-    expect(stored('NetworkPolicy', 'yaac-site-blog')?.spec).toEqual({
-      podSelector: { matchLabels: { 'yaac.site-id': 'blog' } },
-      policyTypes: ['Ingress'],
-      ingress: [{
-        from: [{ podSelector: { matchLabels: { app: 'yaac-site-router' } } }],
-        ports: [{ protocol: 'TCP', port: 3000 }],
-      }],
+    expect(stored('Service', 'yaac-site-blog')?.metadata).toMatchObject({ annotations: { 'yaac.live-workspace-id': 'ws-1' } })
+    expect(fakeCluster.get('EndpointSlice', 'yaac-site-blog', 'test-ns')).toMatchObject({
+      metadata: { labels: { 'kubernetes.io/service-name': 'yaac-site-blog', 'endpointslice.kubernetes.io/managed-by': 'yaac' } },
+      addressType: 'IPv4',
+      endpoints: [{ addresses: ['10.244.1.7'], conditions: { ready: true } }],
+      ports: [{ name: 'site', port: 10263, protocol: 'TCP' }],
     })
+    expect(endpointOf('kanban')).toEqual(['10.244.1.7'])
+    // No live release: no address, so the router answers 503.
+    expect(stored('Service', 'yaac-site-shop')?.metadata).toMatchObject({ annotations: { 'yaac.live-workspace-id': '' } })
+    expect(endpointOf('shop')).toEqual([])
 
     const { hosts, clusters } = routes()
     // Each listener's table names only its own edge's sites, so no Host the
@@ -178,17 +216,26 @@ describe('syncSiteObjects', () => {
     // No route timeout, which would cut SSE and long responses.
     expect(hosts[0].routes).toEqual([{ match: { prefix: '/' }, route: { cluster: 'yaac-site-blog', timeout: '0s' } }])
     expect(hosts[2].routes).toEqual([{ match: { prefix: '/' }, direct_response: { status: 404 } }])
+    // Each cluster dials netd's site port at the Service's name, and names
+    // its site in the PROXY protocol header the relay routes by.
     expect(clusters[2]).toMatchObject({
       name: 'yaac-site-shop',
       type: 'STRICT_DNS',
       dns_refresh_rate: '1s',
       load_assignment: { endpoints: [{ lb_endpoints: [{ endpoint: { address: { socket_address: {
-        address: 'yaac-site-shop.test-ns.svc.cluster.local.', port_value: 8000,
+        address: 'yaac-site-shop.test-ns.svc.cluster.local.', port_value: 10263,
       } } } }] }] },
+      transport_socket: {
+        name: 'envoy.transport_sockets.upstream_proxy_protocol',
+        typed_config: { config: { version: 'V2', added_tlvs: [{ type: 0xe0, value: Buffer.from('shop').toString('base64') }] } },
+      },
     })
 
     expect(stored('Service', 'yaac-site-gone')).toBeUndefined()
-    expect(stored('NetworkPolicy', 'yaac-site-gone')).toBeUndefined()
+    expect(fakeCluster.get('EndpointSlice', 'yaac-site-gone', 'test-ns')).toBeUndefined()
+    // Per-site policies go, a listed site's included: nothing admits the
+    // router to a release, which has no address.
+    expect(fakeCluster.objects('NetworkPolicy')).toEqual([])
     expect(stored('Service', 'yaac-proxy')).toBeDefined()
 
     // Each replica is stamped with the table, which makes its kubelet
@@ -199,8 +246,9 @@ describe('syncSiteObjects', () => {
     expect(routesHash('yaac-site-router-probe')).toBeUndefined()
     const podPatches = (): number => fakeCluster.callsOf('patch', 'Pod').length
 
-    // A deploy's flip changes the selector and nothing in the route table,
-    // so no replica is touched.
+    // A deploy's flip changes the Service and the endpoint, and nothing in
+    // the route table, so no replica is touched. ws-2's node runs no netd
+    // yet, so its site has no address until one does.
     const before = stored('ConfigMap', 'yaac-site-routes')?.data
     const patchesBefore = podPatches()
     await syncSiteObjects([
@@ -208,7 +256,8 @@ describe('syncSiteObjects', () => {
       { siteId: 'shop', hostname: 'shop.example.com', edge: 'public', port: 8000 },
       { siteId: 'kanban', hostname: 'kanban.apps.example.com', edge: 'tailnet', port: 3000, liveWorkspaceId: 'ws-3' },
     ])
-    expect(stored('Service', 'yaac-site-blog')?.spec.selector).toEqual({ 'yaac.site-id': 'blog', 'yaac.workspace-id': 'ws-2' })
+    expect(stored('Service', 'yaac-site-blog')?.metadata).toMatchObject({ annotations: { 'yaac.live-workspace-id': 'ws-2' } })
+    expect(endpointOf('blog')).toEqual([])
     expect(stored('ConfigMap', 'yaac-site-routes')?.data).toEqual(before)
     expect(podPatches()).toBe(patchesBefore)
 
@@ -222,7 +271,42 @@ describe('syncSiteObjects', () => {
     expect(routes()).toEqual({ hosts: [expect.objectContaining({ domains: ['*'] })], clusters: [] })
     expect(routesHash('yaac-site-router-a')).not.toBe(stamped)
     expect(fakeCluster.objects<Manifest>('Service').map((s) => s.metadata.name)).toEqual(['yaac-proxy'])
-    expect(fakeCluster.objects('NetworkPolicy')).toEqual([])
+    expect(fakeCluster.objects('EndpointSlice')).toEqual([])
+  })
+})
+
+describe('resyncSiteEndpoints', () => {
+  it('points each synced site at netd again once a netd pod moves or comes up', async () => {
+    fakeCluster.seed(workspacePod('ws-1', 'n1'), workspacePod('ws-2', 'n2'), netdPod('n1', '10.244.1.7'))
+    await syncSiteObjects([
+      { siteId: 'blog', hostname: 'blog.example.com', edge: 'public', port: 3000, liveWorkspaceId: 'ws-1' },
+      { siteId: 'shop', hostname: 'shop.example.com', edge: 'public', port: 8000, liveWorkspaceId: 'ws-2' },
+    ])
+    expect(endpointOf('blog')).toEqual(['10.244.1.7'])
+    expect(endpointOf('shop')).toEqual([])
+
+    // n1's netd restarts on a new address, and n2's comes up.
+    fakeCluster.seed(netdPod('n1', '10.244.1.9'), netdPod('n2', '10.244.2.4'))
+    const routesBefore = stored('ConfigMap', 'yaac-site-routes')?.data
+    fakeCluster.calls = []
+    await resyncSiteEndpoints()
+    expect(endpointOf('blog')).toEqual(['10.244.1.9'])
+    expect(endpointOf('shop')).toEqual(['10.244.2.4'])
+    // Only the sites' own objects: the route table is untouched.
+    expect(fakeCluster.callsOf('apply', 'ConfigMap')).toEqual([])
+    expect(stored('ConfigMap', 'yaac-site-routes')?.data).toEqual(routesBefore)
+  })
+
+  it('waits for a sync in flight, so a flip is never put back', async () => {
+    fakeCluster.seed(workspacePod('ws-1', 'n1'), workspacePod('ws-2', 'n1'), netdPod('n1', '10.244.1.7'))
+    const site = { siteId: 'blog', hostname: 'blog.example.com', edge: 'public' as const, port: 3000 }
+    await syncSiteObjects([{ ...site, liveWorkspaceId: 'ws-1' }])
+    // A netd change starts a resync of the sites as they were, and the flip
+    // to ws-2 is asked for before it has written: the flip lands last.
+    const resync = resyncSiteEndpoints()
+    const flip = syncSiteObjects([{ ...site, liveWorkspaceId: 'ws-2' }])
+    await Promise.all([resync, flip])
+    expect(stored('Service', 'yaac-site-blog')?.metadata).toMatchObject({ annotations: { 'yaac.live-workspace-id': 'ws-2' } })
   })
 })
 
@@ -238,7 +322,7 @@ describe('tailnetSiteHostnames', () => {
 })
 
 describe('ensureSiteEdge', () => {
-  it('stands up the router, walled off from everything but the tunnel and releases, with no tunnel', async () => {
+  it('stands up the router, walled off from everything but the tunnel and netd\'s site port, with no tunnel', async () => {
     await ensureSiteEdge({})
 
     const router = stored('Deployment', 'yaac-site-router')
@@ -327,7 +411,8 @@ describe('ensureSiteEdge', () => {
     ])
     expect(stored('NetworkPolicy', 'yaac-site-router-egress')?.spec.egress).toEqual([
       expect.objectContaining({ ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }] }),
-      { to: [{ podSelector: { matchExpressions: [{ key: 'yaac.site-id', operator: 'Exists' }] } }] },
+      // netd's relay carries each request into its site's live release.
+      { to: [{ podSelector: { matchLabels: { app: 'yaac-netd' } } }], ports: [{ protocol: 'TCP', port: 10263 }] },
     ])
     // No edge policy names the proxy or workspaces at large, and only the
     // tailnet tunnel's egress names the server, which admits it only for a

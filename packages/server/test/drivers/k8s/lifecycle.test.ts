@@ -28,6 +28,7 @@ vi.mock('#drivers/k8s/substrate', async (importOriginal) => ({
 vi.mock('#drivers/k8s/cluster', () => ({
   ensureMainRegistry: vi.fn().mockResolvedValue(undefined),
   ensureMountd: vi.fn(() => { order.push('agent.ensure'); return Promise.resolve() }),
+  resyncSiteEndpoints: vi.fn().mockResolvedValue(undefined),
   watchMountd: vi.fn(() => {
     order.push('agent.watch')
     return () => { order.push('agent.unwatch') }
@@ -50,7 +51,7 @@ vi.mock('#drivers/k8s/workspaces', () => ({
 
 import { startK8sDriver, stopK8sDriver, releaseK8sDriver, triggerFor } from '#drivers/k8s/lifecycle'
 import { deleteLeakedBuilderPods } from '#drivers/k8s/images'
-import { ensureMainRegistry, ensureMountd } from '#drivers/k8s/cluster'
+import { ensureMainRegistry, ensureMountd, resyncSiteEndpoints } from '#drivers/k8s/cluster'
 import { _resetWorkspaceListChangedForTests, onWorkspaceListChanged } from '#lib/notify'
 import { installId, k8sNamespace } from '#drivers/k8s/substrate'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
@@ -128,6 +129,17 @@ describe('startK8sDriver', () => {
     expect(reported.triggers).toContain('proxy-refreshed')
     expect(notified).toBe(1)
     _resetWorkspaceListChangedForTests()
+  })
+
+  it('re-points the sites at netd when a netd pod changes, raising no reconcile work', async () => {
+    await startK8sDriver(sinks())
+    onDeltaHandlers.forEach((fn) => fn('netd-pods'))
+    expect(resyncSiteEndpoints).toHaveBeenCalledTimes(1)
+    expect(reported.triggers).toEqual([])
+    // A failed rewrite is logged, never thrown out of the watch.
+    vi.mocked(resyncSiteEndpoints).mockRejectedValueOnce(new Error('apiserver down'))
+    onDeltaHandlers.forEach((fn) => fn('netd-pods'))
+    await vi.waitFor(() => { expect(resyncSiteEndpoints).toHaveBeenCalledTimes(2) })
   })
 
   it('attaches even when the cluster bootstrap fails', async () => {

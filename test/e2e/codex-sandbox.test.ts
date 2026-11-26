@@ -5,6 +5,7 @@ import { requirePodman } from '#support/cluster'
 import { resolveTrustedLayers } from '@yaac/server/drivers/k8s/cluster/image-tags'
 import { ensureNamespace } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { registryRef, registryTagState } from '@yaac/server/drivers/k8s/cluster/registry'
+import { resolveMountdImageTag } from '@yaac/server/drivers/k8s/cluster/mountd'
 import { k8sWorkspacePaths, type PodMount } from '@yaac/server/drivers/k8s/substrate'
 import { buildPodJobManifest } from '@yaac/server/drivers/k8s/workspaces'
 import { CODEX_CONTAINER_HOME, codexHomeMounts } from '@yaac/server/domain/workspaces/codex-home'
@@ -108,7 +109,7 @@ async function workspacePod(pod: string): Promise<Record<string, unknown>> {
     cpuLimitMillis: 2000,
     ephemeralStorageRequestBytes: 1024 ** 3,
     ephemeralStorageLimitBytes: 4 * 1024 ** 3,
-    proxyHost: '10.96.0.10',
+    netshimImage: registryRef(await resolveMountdImageTag()),
     nodeNames: [],
   }) as unknown as { spec: { template: Template } }
   const { metadata, spec } = job.spec.template

@@ -158,7 +158,7 @@ export async function runMountdProbe(imageRef: string, identity: InstallIdentity
       const out = (err as { stdout?: string }).stdout?.trim()
       return { name, status: 'fail', detail: `the probe pod's binds are wrong: ${out || String(err)}`, fix: fix() }
     }
-    return { name, status: 'pass', detail: 'mountd binds into a gVisor sandbox and enters it' }
+    return { name, status: 'pass', detail: 'mountd binds into a gVisor sandbox with no network interface and enters it' }
   } catch (err) {
     return { name, status: 'fail', detail: `could not probe mountd: ${k8sErrorSummary(err)}`, fix: fix() }
   } finally {

@@ -1,7 +1,6 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
-  LABEL_NPM_CACHE,
   LABEL_PREWARMED,
   LABEL_INSTALL_ID,
   LABEL_PROJECT_ID,
@@ -40,7 +39,7 @@ import { genericPodParams, newNodeMountsDir, startNodes, taken } from './spares'
 import {
   ensureUtilityImage,
   mountdBind,
-  proxyServiceClusterIp,
+  npmCacheHost,
   runSecretsName,
   servingNpmCacheUrl,
 } from '#drivers/k8s/cluster'
@@ -79,14 +78,10 @@ import type {
  * Opaque to callers: it travels on the spec and is narrowed here.
  */
 interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
-  /** Proxy Service ClusterIP: the pod's DNS resolver and egress target. */
-  proxyHost: string
   /** The per-workspace token streamd's handshake requires. */
   streamToken: string
-  /** The pod is labelled for npm-cache access, whether or not the cache is
-   *  serving right now. */
-  npmCacheAllowed: boolean
-  /** The install's npm cache, when this workspace installs through it. */
+  /** The install's npm cache, when this workspace installs through it; its
+   *  registration then names the cache in `clusterServices`. */
   npmRegistry: string | null
   /** The workspace's proxy registration. Applied by `launch` just before the
    *  Job, so a prepare overlapping a long image build never leaves a
@@ -95,11 +90,11 @@ interface K8sWorkspaceSubstrate extends WorkspaceSubstrate {
 }
 
 function narrow(substrate: WorkspaceSubstrate): K8sWorkspaceSubstrate {
-  // Check `proxyHost` rather than `kind`: a foreign stub also carries
-  // `kind`, and a missing proxyHost would otherwise produce a pod that
-  // cannot resolve anything instead of an error here.
+  // Check `registration` rather than `kind`: a foreign stub also carries
+  // `kind`, and a missing registration would otherwise produce a pod that
+  // reaches nothing instead of an error here.
   const k8s = substrate as Partial<K8sWorkspaceSubstrate>
-  if (typeof k8s.proxyHost !== 'string') {
+  if (typeof k8s.registration !== 'object') {
     throw new Error(
       'launchWorkspace was handed a workspace receipt the k8s runtime did not '
       + 'prepare — the spec must carry the one its own prepareSubstrate returned',
@@ -121,15 +116,9 @@ export async function prepareWorkspaceSubstrate(
   emit('Ensuring proxy deployment...')
   await proxyClient.ensureRunning()
 
-  // netd's per-pod DNAT rules (k8s/netd) redirect the pod's outbound 443/80
-  // to the proxy, which identifies the workspace by source pod IP. The pod
-  // also uses the proxy as its DNS resolver and SSH tunnel endpoint. The
-  // ClusterIP is allocator-assigned, so read it live; the Service is never
-  // recreated.
-  const proxyHost = await proxyServiceClusterIp()
-
-  // Derived from the install's proxy secret, so nothing is stored. Only the
-  // proxy can reach streamd, and the token opens only this pod's daemon.
+  // Derived from the install's proxy secret, so nothing is stored. Only
+  // netd's relay can reach streamd, and the token opens only this pod's
+  // daemon.
   const streamToken = await podStreamToken(workspaceId)
 
   // Secret-injection rules and allowlist; written by `launch`. Git, GitHub,
@@ -145,16 +134,17 @@ export async function prepareWorkspaceSubstrate(
   })
 
   // A failed lookup just skips the cache; npmjs serves the same packages.
-  const npmCacheAllowed = npmCacheApplies(config, registration.allowedHosts, intent.proxySecretRules)
-  const npmRegistry = npmCacheAllowed ? await servingNpmCacheUrl().catch(() => null) : null
+  // The proxy carries the workspace's fetches to the cache only when its
+  // registration names it.
+  const npmRegistry = npmCacheApplies(config, registration.allowedHosts, intent.proxySecretRules)
+    ? await servingNpmCacheUrl().catch(() => null)
+    : null
 
   const receipt: K8sWorkspaceSubstrate = {
     kind: 'workspace-substrate',
-    proxyHost,
     streamToken,
-    npmCacheAllowed,
     npmRegistry,
-    registration,
+    registration: npmRegistry !== null ? { ...registration, clusterServices: [npmCacheHost()] } : registration,
   }
   return receipt
 }
@@ -290,12 +280,11 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     [LABEL_PROJECT_ID]: spec.projectId,
     ...workspaceIdLabels(spec.workspaceId),
     [LABEL_INSTALL_ID]: installId(),
-    // Both of the npm cache's workspace policies select on this.
-    ...(substrate.npmCacheAllowed ? { [LABEL_NPM_CACHE]: 'true' } : {}),
-    // A site's release: its ingress policy admits the router, the router
-    // may dial it, and the proxy refuses its calls to the server.
+    // A site's release, whose Service the server points at it.
     ...(spec.siteId !== undefined ? { [LABEL_SITE_ID]: spec.siteId } : {}),
   }
+  // A release's registration says so, and the proxy refuses it the server.
+  const registration = spec.siteId !== undefined ? { ...substrate.registration, release: true } : substrate.registration
   const claimMounts = claimMountsOf(spec)
   let spare = taken.get(jobName)
   // Run secrets, a byo volume's claim and a release's priority live in the
@@ -325,7 +314,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // mountd's bind, which needs only the workspace-id label the spare was
     // made with: `awaitWorkspaceReady` waits for it before the claim call.
     applied = Promise.all([
-      applyProxyRegistration(spec.workspaceId, substrate.registration),
+      applyProxyRegistration(spec.workspaceId, registration),
       patchObject(pod, { metadata: { labels } }),
       // The take removed the pod's spare label; the Job's goes here.
       patchObject({ apiVersion: 'batch/v1', kind: 'Job', name: jobName, namespace: k8sNamespace() }, { metadata: { labels: { ...labels, [LABEL_PREWARMED]: null } } }),
@@ -340,7 +329,7 @@ export async function launchWorkspace(spec: WorkspaceSpec): Promise<RuntimeHandl
     // label, and reap it mid-claim.
     applied.finally(() => taken.delete(jobName)).catch(() => { /* awaited before the claim call */ })
   } else {
-    await applyProxyRegistration(spec.workspaceId, substrate.registration)
+    await applyProxyRegistration(spec.workspaceId, registration)
     nodeMountsDir = newNodeMountsDir(spec.workspaceId)
     // A claim (byo) may attach on one node only, and during a deploy's
     // handoff both releases mount it (docs/public-sites.md). A holder not

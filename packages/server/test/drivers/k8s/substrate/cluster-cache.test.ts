@@ -48,6 +48,7 @@ import {
   LABEL_PROJECT_ID,
   getActiveClusterCache,
   k8sNamespace,
+  readNetdPods,
   readWorkspaceJobs,
   readWorkspacePods,
   setActiveClusterCache,
@@ -126,6 +127,10 @@ function rawPod(name: string, project = 'proj'): unknown {
 const listOf = (...items: unknown[]): Promise<KubernetesListObject<KubernetesObject>> =>
   Promise.resolve({ items } as unknown as KubernetesListObject<KubernetesObject>)
 
+/** The key a test finds an informer by: its path, or `netd` for netd's
+ *  pods, which share the workspace pods' path. */
+const informerKey = (p: string, labelSelector?: string): string => (labelSelector === 'app=yaac-netd' ? 'netd' : p)
+
 function makeCache(deps: { relistIntervalMs?: number; restartDelayMs?: number } = {}): {
   cache: ClusterCache
   informers: Map<string, { informer: FakeInformer; selector?: string }>
@@ -137,7 +142,7 @@ function makeCache(deps: { relistIntervalMs?: number; restartDelayMs?: number } 
   const cache = new ClusterCache({
     makeInformerFn: (p, _listFn, labelSelector) => {
       const informer = new FakeInformer()
-      informers.set(p, { informer, ...(labelSelector !== undefined ? { selector: labelSelector } : {}) })
+      informers.set(informerKey(p, labelSelector), { informer, ...(labelSelector !== undefined ? { selector: labelSelector } : {}) })
       return informer
     },
     relistIntervalMs: deps.relistIntervalMs ?? 3_600_000,
@@ -274,6 +279,41 @@ describe('ClusterCache', () => {
     cache.stop()
   })
 
+  it('watches this install\'s netd pods, answering each node\'s address only while healthy', async () => {
+    const { cache, informers, deltas } = makeCache()
+    cache.start()
+    await flush()
+    const netd = informers.get('netd')
+    expect(netd?.selector).toBe('app=yaac-netd')
+    expect(listNamespacedPodMock).toHaveBeenCalledWith({ namespace: ns, labelSelector: 'app=yaac-netd' })
+    const pod = (node: string, ip: string | undefined, phase = 'Running'): unknown => ({
+      metadata: { name: `yaac-netd-${node}` }, spec: { nodeName: node }, status: { phase, ...(ip ? { podIP: ip } : {}) },
+    })
+    netd!.informer.emit('add', pod('n1', '10.244.1.7'))
+    // A pod not yet running, or with no address yet, serves no node.
+    netd!.informer.emit('add', pod('n2', undefined))
+    netd!.informer.emit('add', pod('n3', '10.244.3.2', 'Pending'))
+    expect(deltas).toContain('netd-pods')
+    // Until the watch is up, the cache does not answer for it.
+    expect(cache.netdPods()).toBeNull()
+    netd!.informer.emit('connect')
+    expect(cache.netdPods()).toEqual(new Map([['n1', '10.244.1.7']]))
+    // A restarted pod moves its node to its new address.
+    netd!.informer.emit('update', pod('n1', '10.244.1.9'))
+    expect(cache.netdPods()).toEqual(new Map([['n1', '10.244.1.9']]))
+    // A replacement overlaps the pod it replaces: once the old one is being
+    // deleted only the new one answers, and the old one's late deletion
+    // leaves the node with the new one.
+    const old = pod('n1', '10.244.1.9') as { metadata: Record<string, unknown> }
+    const next = { ...(pod('n1', '10.244.1.20') as object), metadata: { name: 'yaac-netd-n1-next' } }
+    netd!.informer.emit('add', next)
+    netd!.informer.emit('update', { ...old, metadata: { ...old.metadata, deletionTimestamp: '2026-11-26T00:00:00Z' } })
+    expect(cache.netdPods()).toEqual(new Map([['n1', '10.244.1.20']]))
+    netd!.informer.emit('delete', old)
+    expect(cache.netdPods()).toEqual(new Map([['n1', '10.244.1.20']]))
+    cache.stop()
+  })
+
   it('skips Job objects it cannot map', async () => {
     const { cache, informers, deltas } = makeCache()
     cache.start()
@@ -371,10 +411,10 @@ describe('ClusterCache', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
     const informers = new Map<string, FakeInformer>()
     const cache = new ClusterCache({
-      makeInformerFn: (p) => {
+      makeInformerFn: (p, _listFn, labelSelector) => {
         const informer = new FakeInformer()
         informer.startImpl = () => Promise.reject(new Error('no cluster'))
-        informers.set(p, informer)
+        informers.set(informerKey(p, labelSelector), informer)
         return informer
       },
       relistIntervalMs: 3_600_000,
@@ -481,5 +521,22 @@ describe('readWorkspaceJobs', () => {
     setActiveClusterCache(stubCache(false))
     await expect(readWorkspaceJobs()).resolves.toEqual([])
     expect(fakeCluster.calls).toEqual([expect.objectContaining({ verb: 'list', kind: 'Job' })])
+  })
+})
+
+describe('readNetdPods', () => {
+  it('answers from a healthy cache, and lists live, keeping only running pods with an address, past none', async () => {
+    setActiveClusterCache({ netdPods: () => new Map([['n1', '10.244.1.7']]) } as unknown as ClusterCache)
+    expect(await readNetdPods()).toEqual(new Map([['n1', '10.244.1.7']]))
+    expect(fakeCluster.calls).toEqual([])
+
+    setActiveClusterCache({ netdPods: () => null } as unknown as ClusterCache)
+    fakeCluster.seed(
+      { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'yaac-netd-a', namespace: k8sNamespace(), labels: { app: 'yaac-netd' } }, spec: { nodeName: 'n2' }, status: { phase: 'Running', podIP: '10.244.2.4' } },
+      { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'yaac-netd-b', namespace: k8sNamespace(), labels: { app: 'yaac-netd' } }, spec: { nodeName: 'n3' }, status: { phase: 'Pending' } },
+      { apiVersion: 'v1', kind: 'Pod', metadata: { name: 'other', namespace: k8sNamespace(), labels: { app: 'yaac-proxy' } }, spec: { nodeName: 'n4' }, status: { phase: 'Running', podIP: '10.244.4.4' } },
+    )
+    expect(await readNetdPods()).toEqual(new Map([['n2', '10.244.2.4']]))
+    expect(fakeCluster.calls).toEqual([expect.objectContaining({ verb: 'list', kind: 'Pod', labelSelector: 'app=yaac-netd' })])
   })
 })

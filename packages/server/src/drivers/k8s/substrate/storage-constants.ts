@@ -50,6 +50,12 @@ export const NODE_LOCAL_NODE_ROOT = '/var/lib/yaac/node'
  * node-mounts directory (docs/generic-workspace-pods.md "The pod").
  */
 export const NODE_MOUNTS_NODE_ROOT = '/var/lib/yaac/node-mounts'
+/**
+ * Parent of every install's socket root on a node (`socketsNodePath`): one
+ * directory per sandbox, holding the `egress.sock` netd's relay binds and
+ * the `ingress.sock` the sandbox's netshim binds (docs/workspace-egress.md).
+ */
+export const SOCKETS_NODE_ROOT = '/var/lib/yaac/sockets'
 
 /**
  * Label naming the install namespace on a cluster-scoped object (a

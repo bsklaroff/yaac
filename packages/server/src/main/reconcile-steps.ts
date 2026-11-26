@@ -1,4 +1,4 @@
-import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileReadyTrees, reconcileRevokedShares, collectDeletedRepos, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileDiskGuard, reconcileTreeSalvage, collectCheckpointBundles, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
+import { gcOrphanScratchDirs, reapOrphanNodeLocal, reconcileConversations, reconcileIgnoredFileCleans, reconcilePrewarmPool, reconcileReadyTrees, reconcileRevokedShares, reconcileOutdatedWorkspaces, collectDeletedRepos, reconcileSessions, reconcileSteps, reconcileStoppedConversations, reconcileStaleWorkspaces, reconcileGeneratedTitles, reconcileRoutines, reconcileWorkspaceRetention, reconcileWorkspaceTimeouts, reconcileDiskGuard, reconcileTreeSalvage, collectCheckpointBundles, reconcileVolumeLeases, collectDeletedVolumes, startScheduledWorkspaces } from '#domain/workspaces'
 import { refreshRepoOrigins } from '#domain/repos'
 import { reconcileSites } from '#domain/sites'
 import { pruneImageBlobs, reconcileImageSweep } from '#domain/images'
@@ -82,6 +82,11 @@ export function defaultReconcileSteps(): ReconcileStep[] {
     // running.
     { name: 'revoked-shares', triggers: ['workspaces'],
       run: (ctx) => reconcileRevokedShares(ctx.snapshot()) },
+    // A workspace on a runtime of an older yaac (under k8s, a pod with a
+    // network interface and nothing left to carry its traffic) is stopped,
+    // and restarts in the current shape (docs/legacy-compat-shims.md
+    // "Workspaces on the gvisor class").
+    { name: 'outdated-workspaces', triggers: ['workspaces'], run: () => reconcileOutdatedWorkspaces() },
     // A deleted repo's main clone goes with the last workspace that held a
     // checkout of it (docs/hosted-projects.md "Deleting a repo").
     { name: 'deleted-repos', triggers: [], every: 10 * 60_000, run: () => collectDeletedRepos() },

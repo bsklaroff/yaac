@@ -63,7 +63,7 @@ describe('buildBuilderRoleGuardPolicyManifest', () => {
     )
     // The label is allowed only on a gVisor-sandboxed pod.
     expect(exprs).toContain(
-      "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor'",
+      "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor-nonet'",
     )
   })
 
@@ -127,8 +127,9 @@ describe('buildRegistrationConfigMapManifest', () => {
 })
 
 describe('buildBuildRegistrationConfigMapManifest', () => {
-  it('registers a build by its id with only the project’s allowed hosts', () => {
-    const cm = buildBuildRegistrationConfigMapManifest('b1', 'demo', ['registry.npmjs.org']) as {
+  it('registers a build by its id with only the project’s allowed hosts and the cluster services it names', () => {
+    const registry = 'yaac-registry.yaac.svc.cluster.local:5002'
+    const cm = buildBuildRegistrationConfigMapManifest('b1', 'demo', ['registry.npmjs.org'], [registry]) as {
       kind: string
       metadata: { name: string; namespace: string; labels: Record<string, string> }
       data: Record<string, string>
@@ -147,12 +148,14 @@ describe('buildBuildRegistrationConfigMapManifest', () => {
       },
     })
     // No injection rules and no credential owner: a build reaches its hosts
-    // with nothing swapped in.
+    // with nothing swapped in, and the main registry by name, through the
+    // proxy.
     expect(JSON.parse(cm.data['registration.json'])).toEqual({
       rules: [],
       allowedHosts: ['registry.npmjs.org'],
       projectId: 'demo',
       owner: 'none',
+      clusterServices: [registry],
     })
   })
 })

@@ -13,7 +13,6 @@
 // and ports (`#drivers/k8s/substrate`).
 
 export {
-  buildBuilderEgressNpManifest,
   buildEgressWorldDenyNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
@@ -21,14 +20,12 @@ export {
   buildServerFrontIngressNpManifest,
   buildServerTokenIngressNpManifest,
   buildServerIngressNpManifest,
-  buildWorkspaceEgressNpManifest,
 } from './policy-manifests'
 export {
   apiserverEndpoints,
   clusterDnsCidrs,
   nodeAddressBlocks,
   nodeIpBlocks,
-  podCidrSources,
   resetClusterCidrCache,
 } from './cluster-cidrs'
 export { reconcileNodeSet } from './node-sync'
@@ -39,9 +36,7 @@ export {
   ensureNamespace,
   ensureProxyAuthSecret,
   ensureProxyResources,
-  proxyServiceClusterIp,
   removeProjectSecrets,
-  resetProxyClusterIpCache,
   syncProjectSecrets,
   syncProxyCredentials,
   vapAvailable,
@@ -56,18 +51,13 @@ export {
 } from './builder-image'
 export { NORMALIZE_STEP } from './normalize-step'
 export { ensureProxyImage, resolveProxyImageTag } from './proxy-image'
-export {
-  ENVOY_MIRROR_TAG,
-  ENVOY_UPSTREAM_IMAGE,
-  DEFAULT_VETH_PREFIX,
-  cniVethPrefix,
-  ensureNetd,
-  resolveNetdImageTag,
-} from './netd'
+export { ENVOY_MIRROR_TAG, ENVOY_UPSTREAM_IMAGE } from './envoy-image'
+export { ensureNetd, resolveNetdImageTag } from './netd'
 export { buildDiskDaemonSetManifest, buildDiskIngressNpManifest } from './disk-pod'
 export {
   ensureMountd,
   mountdBind,
+  mountdImage,
   mountdKeepReady,
   mountdReports,
   nodeUnreadyReason,
@@ -129,6 +119,7 @@ export {
   VERDACCIO_MIRROR_TAG,
   VERDACCIO_UPSTREAM_IMAGE,
   ensureNpmCache,
+  npmCacheHost,
   servingNpmCacheUrl,
 } from './npm-cache'
 export {
@@ -143,5 +134,6 @@ export {
   siteTailnetStatus,
   ensureSiteEdge,
   siteCloudflareStatus,
+  resyncSiteEndpoints,
   syncSiteObjects,
 } from './site-edge'

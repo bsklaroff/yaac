@@ -1,141 +1,322 @@
 # Workspace egress
 
-Every workspace pod is denied network access by default and reaches the
-internet only through the yaac MITM proxy, which enforces a per-workspace
-allowlist. The one exception is the install's npm cache (below), which serves
-public npm packages directly.
+Every workspace and builder pod runs in a gVisor sandbox with no network
+interface but loopback. Everything that crosses its boundary goes through
+unix sockets in one directory its node mounts into it, and every outbound
+connection ends at the yaac MITM proxy, which enforces a per-workspace
+allowlist and injects credentials. The two exceptions the proxy itself
+dials for a sandbox, the install's npm cache and the main registry, are
+below.
 
-Two components share the work:
+This is the security argument: nothing in a sandbox is routable, so deny by
+default needs no policy, a connection's identity cannot be forged, and
+nothing in the cluster (the server, the apiserver, the node, other
+sandboxes) has an address a sandbox can dial. It asks nothing of the
+cluster's CNI.
 
-- **Calico** (pinned by checksum in `k8s/calico/`, installed by
-  `yaac cluster install`) is the CNI and the policy engine. It enforces every
-  allow and deny, written as plain `networking.k8s.io/v1` NetworkPolicy.
-- **netd** (`k8s/netd/`, a DaemonSet) only *redirects*: it steers a
-  workspace's outbound 443, 80, SSH-sentinel and DNS-sinkhole traffic into
-  the proxy. It
-  decides nothing about what is allowed. (It also writes each pod's swap
-  bound, a job unrelated to egress: docs/cluster-setup.md "Memory
-  pressure".)
+## The contract
 
-This split is the security argument. netd's rules can only add a path toward
-the proxy, so if netd is down, late or wrong, workspaces lose egress rather than
-gain it. Denies come from Felix (Calico's node agent) and kernel netfilter,
-audited upstream code.
+Each sandbox has one directory on its node, under the install's socket
+root: `/var/lib/yaac/sockets/<install key>/<pod dir>`, beside the
+node-mounts root. A workspace pod's directory has its node-mounts
+directory's name (`<workspace id>.<random>`); a builder's is
+`<build id>.<random>`. It is a fixed part of the pod's shape (the
+`sockets` hostPath volume, `socketVolume` in `#drivers/k8s/substrate`), and
+only the pod's netshim container mounts it, at `/run/yaac`:
 
-## The datapath
+| Socket | Bound by | Carries |
+|---|---|---|
+| `egress.sock` | netd's relay, on the node | every outbound connection the sandbox makes |
+| `ingress.sock` | netshim, inside the sandbox | every connection into it: the server's streams to streamd (docs/stream-relay.md) and the site router's requests to a release (docs/public-sites.md "The router") |
 
-For a workspace pod whose host-side veth is `caliXXXX`, netd programs one chain
-in the node's root network namespace:
+Three properties follow from there being no interface:
+
+- **Deny by default needs no policy.** Nothing is routable, so there is no
+  NetworkPolicy to apply late and no firewall rule to lose.
+- **Identity cannot be forged.** A connection belongs to the sandbox whose
+  directory it arrived in, and nothing inside one can reach another's
+  directory. Code a project wrote never sees `egress.sock`, since only
+  netshim's container mounts it, so it cannot plant a link there either.
+- **Nothing in the cluster is reachable.** With no listener on
+  `egress.sock`, a dial to the internet, the server, the apiserver, the
+  kubelet and another sandbox all fail.
+
+Any new kind of pod that runs code yaac did not write must take this shape.
+The policies around yaac's own pods assume every pod with an interface is
+one yaac wrote.
+
+## What a sandbox sees
+
+Egress is transparent. No proxy variables are set, and a process dials
+`github.com:443` as usual.
+
+- **DNS.** netshim answers every A query with the sinkhole address
+  (`DNS_SINKHOLE`, 198.18.0.1, in the benchmark range, so it names
+  nothing) and every other query with an empty answer, whichever resolver
+  address the query was sent to. The pod's `dnsConfig` names the sinkhole.
+  No name resolves to a real address, the install's own Services included,
+  and nothing real is learned through DNS, which keeps it from carrying
+  data out.
+- **Every address is local.** Loopback carries a default route, and one NAT
+  rule sends every TCP connection that is not to `127.0.0.0/8` to netshim,
+  which reads the address the client dialed. A dial to a name, a literal
+  internet address or a cluster address all arrive at netshim, on any port.
+  A connect always succeeds; what happens next is the proxy's answer.
+- **Routing by name.** The proxy routes by TLS SNI on port 443, by the SSH
+  sentinel for git's `CONNECT`, and by the Host header on every other port.
+  Plain HTTP to an allowlisted name or literal address works on any port.
+  HTTPS on a port other than 443, and HTTPS to a bare address, fail (below).
+- **UDP.** Port 53 reaches netshim's stub. Anything else goes nowhere.
+- **IPv6.** Only `::1` has a route, so an IPv6 dial fails at once, as the
+  proxy would refuse it ("IPv4 only").
+- **`ip addr` shows only `lo`**, carrying `127.0.0.1` and the pod's own
+  address. kubelet writes the pod's address into `/etc/hosts` beside the
+  hostname, so netshim puts it on loopback: a program that binds or dials
+  its own hostname (a JVM's `getLocalHost`, an Erlang node) works, and dev
+  servers list it as their network address. The pod's address carries no
+  traffic off the sandbox. `lo` also carries a link-local IPv6 address,
+  `fe80::1`: getaddrinfo's `AI_ADDRCONFIG`, which Node's `net.connect`
+  passes, answers `localhost` with `::1` only while some IPv6 address other
+  than `::1` is configured, so without it a server bound to `::1` (a dev
+  server listening on `localhost`) is unreachable by that name, a
+  forward included.
+- **Nothing of netshim is visible** but its listening ports on loopback. It
+  runs in a container of its own, so the workspace's processes cannot see or
+  signal it, and root in the workspace cannot change addresses, routes or
+  NAT rules (it lacks `CAP_NET_ADMIN`) or open a raw socket (the workspace
+  container drops `CAP_NET_RAW`).
+- **A client that waits for the server to speak first** (ssh to a port other
+  than the sentinel's, MySQL, SMTP) hangs on any address until it gives up:
+  the connect succeeds, and the proxy waits for a TLS ClientHello or an HTTP
+  request head that never comes.
+
+## The runtime
+
+Every sandboxed pod uses the `gvisor-nonet` RuntimeClass, whose containerd
+handler `runsc-nonet` the gVisor installer registers with its own flag file
+(`install/gvisor-runtime.ts`). Beside the flags every sandbox gets, it sets:
+
+- `network = "none"`: a netstack with loopback only.
+- `net-raw = "true"`: netshim's `iptables` writes its rules through a raw
+  socket, and without the flag runsc takes `CAP_NET_RAW` from every
+  container. With no interface a raw socket reaches nothing but the
+  sandbox's own loopback.
+
+`net-raw` applies to the whole sandbox, so every container keeps whatever
+`CAP_NET_RAW` its spec grants. The workspace container drops it and the
+builder container does not ask for it, which leaves both with no raw
+sockets. The builder keeps `NET_ADMIN`: BuildKit gives a `RUN` step none,
+and a step that had it could only cut its own network.
+
+The handler is its own, not changed flags on another, because a handler is
+node-wide and installs on other releases share nodes. Salvage and import
+pods and the check's file probes need no network and get no netshim. A pod
+still has a CNI address, which nothing uses: every probe and hook of these
+pods is an exec.
+
+## netshim
+
+`k8s/mountd/cmd/netshim`, a static Go program in the mountd image, which
+every sandboxed pod runs as its first init container with `restartPolicy:
+Always`, so it is up before anything else in the pod starts and kubelet
+restarts it if it exits (`netshimContainer` in `#drivers/k8s/substrate`).
+It ships in yaac's image, not the workspace's, so a project's own
+Dockerfile gets it too. It runs as root with only `NET_ADMIN` and `NET_RAW`,
+and its root filesystem stays writable, since `iptables` takes a lock under
+`/run`. Its startup probe waits for `ingress.sock`, the last thing it binds.
+
+At start it runs:
 
 ```
-nat YAAC_RDR_<install>:
-  -d <podCIDR>                               -j RETURN     (once per CIDR)
-  ...
-  -i caliXXXX -p tcp --dport 443             -j DNAT --to <node>:<H>
-  -i caliXXXX -p tcp --dport 80              -j DNAT --to <node>:<T>
-  -i caliXXXX -p tcp -d 198.18.0.2 --dport 10259
-                                             -j DNAT --to <node>:<S>
-  -i caliXXXX -p tcp -d 198.18.0.1           -j DNAT --to <node>:<T>
+ip route replace 0.0.0.0/0 dev lo
+ip -6 addr replace fe80::1/64 dev lo
+ip addr replace $POD_IP/32 dev lo
+iptables-legacy -t nat -F OUTPUT
+iptables-legacy -t nat -A OUTPUT -d $POD_IP/32 -j RETURN
+iptables-legacy -t nat -A OUTPUT -p tcp ! -d 127.0.0.0/8 -j REDIRECT --to-ports 10301
+iptables-legacy -t nat -A OUTPUT -p udp ! -d 127.0.0.0/8 --dport 53 -j REDIRECT --to-ports 10302
 ```
 
-The pod-CIDR RETURNs come first, so in-cluster traffic leaves the chain before
-any DNAT rule matches. They are separate RETURN rules rather than `! -d` on each
-rule because iptables allows one destination per rule and a cluster can have
-several pod CIDRs.
+The route and rules live in the sandbox's netstack, not the container, so
+they survive a netshim restart, and every command is safe to repeat. The
+route is written as `0.0.0.0/0` because netstack rejects the `default`
+keyword, and gVisor has no nftables, so the legacy backend is the only one.
+Then it listens:
 
-`H`, `T` and `S` are the node-local **listener trio**: three ports, one trio per
-install, shared by every pod it redirects. A co-located Envoy recovers the
-original destination with the `original_dst` listener filter (`SO_ORIGINAL_DST`,
-from conntrack) and forwards to the proxy's transparent port, prefixed with a
-PROXY protocol v2 header carrying the pod's real source IP. The proxy maps that
-IP to a workspace through its pod watch, then routes by TLS SNI or Host header.
+- **Out, TCP** (`127.0.0.1:10301`). For each connection it reads the dialed
+  destination with `getsockopt(SOL_IP, SO_ORIGINAL_DST)`, connects to
+  `/run/yaac/egress.sock`, writes a PROXY protocol v2 header naming that
+  destination ("Wire formats") and splices. A failed connect closes the
+  client's connection.
+- **Out, DNS** (`127.0.0.1:10302` UDP). One question per query: an A query
+  gets the sinkhole with a 5 second TTL, anything else an empty NOERROR.
+- **In** (`/run/yaac/ingress.sock`). For each connection it reads a two-byte
+  port, connects to `127.0.0.1:<port>` and splices.
 
-The last rule is for plain HTTP on other ports (`http://box:8080`). The
-proxy's DNS stub answers every name but the install's own Services
-("In-cluster names" below) with the sinkhole `198.18.0.1` (`DNS_SINKHOLE`),
-a benchmark-range address nothing lives at, so a pod dials a name on any
-port as a connection to the sinkhole. The rule sends that to the plain-HTTP
-listener, which takes its destination, port included, from
-the Host header, exactly as for port 80. It adds no reach: a request on port
-80 with `Host: box:8080` already gets there, and the allowlist and the
-non-public guard apply unchanged. It comes after the 443 and 80 rules, so
-those ports still reach their own listeners. A connection to a real address
-on another port matches nothing and is dropped as before. Anything other
-than HTTP sent to the sinkhole fails at the listener when the client speaks
-first. A client that waits for the server to speak first, as ssh, MySQL and
-SMTP do, hangs until it gives up: the listener sets no headers timeout, and
-netd's Envoy closes an idle connection only after an hour.
+It is untrusted by position, though it is yaac's code: whatever header it
+writes only chooses how the proxy reads the connection, and the relay
+stamps the identity of the directory it arrived in. When netshim is down,
+dials fail at once with a refused connection and nothing else becomes
+reachable. A workspace process that takes port 10301 while netshim is down
+keeps it down, which costs that workspace its own network and nothing else.
+The server's port detector hides netshim's ports with yaac's other infra
+ports (docs/auto-forward-ports.md).
 
-Identity comes from **which veth the packet arrived on**, not its source IP,
-because a sandboxed workload cannot forge the interface. A gVisor guest cannot
-emit raw frames at all, and under runc Felix's per-endpoint anti-spoofing and
-`rp_filter` cover it.
+## The relay, and the rest of netd
 
-netd finds a pod's veth from the host route Calico installs for each workload
-(`<podIP> dev caliXXXX scope link`); the `WorkloadEndpoint` resource needs the
-optional Calico apiserver, which yaac does not install.
+`yaac-netd` is a DaemonSet with two containers, off the host network
+(`cluster/netd.ts`):
 
-The `cali` prefix is configurable (`NETD_VETH_PREFIX`, set by the server from
-`YAAC_CNI_VETH_PREFIX`), because policy-only Calico over the AWS VPC CNI uses
-`eni*`. An empty or unusable value falls back to `cali`, never to "any device":
-a prefix that matches nothing only costs egress, while a wildcard could let a
-malformed routing table redirect a node interface.
+- **relay** (`k8s/mountd/cmd/relay`, on the mountd image) carries every
+  sandbox connection on its node. Its core, `internal/sockets`, imports
+  nothing of yaac or Kubernetes: given a root and the units that exist (a
+  directory and an id each), it binds each unit's `egress.sock`, rebinds one
+  that goes missing, opens a unit's `ingress.sock` by descriptor, and
+  removes the directory of a unit that is gone. `cmd/relay` is the glue: the
+  pod and Service watches, the dial to the proxy and the two listeners.
+- **netd** (`k8s/netd`, TypeScript) bounds each pod's swap and kills the
+  workspace thrashing the node (docs/cluster-setup.md "Memory pressure").
 
-## Why DNAT and not TPROXY
+The relay runs as root with every capability dropped, sees this install's
+socket root at `/s`, and reads the proxy auth secret from `yaac-proxy-auth`.
+The mount point is short on purpose: a unix socket's path is capped at 107
+bytes, measured in the binder's own mount namespace, and the node path with
+a UUID install key runs past that.
 
-**netd must never compete with Felix for iptables chain position.** Felix
-re-inserts its jumps at the top of each base chain it manages on every
-reprogram, so a yaac rule that must run before `cali-*` is pushed down at the
-next resync. (After a `calico-node` restart, a mangle PREROUTING TPROXY rule and
-a filter INPUT accept both ended up below the Calico jumps, and every workspace
-lost egress.) A TPROXY'd flow is delivered locally, so it takes the
-workload-to-host INPUT path (`cali-INPUT -i cali+ -g cali-wl-to-host →
-cali-from-wl-dispatch → cali-fw-<iface>`), where the pod's *egress* policy drops
-it unless an accept sits above `cali-INPUT`, which is that same fight.
+Its units are the pods on its node labelled `yaac.workspace-id` (or
+`yaac.build-id`), whose `sockets` volume lies directly beneath its socket
+root. It reads them fresh from the API on each change of its node's pods
+and every 30 seconds, as mountd does, so an informer that fell behind never
+makes a live pod's directory look unowned. A directory is removed only when
+it was seen before a list that holds no pod for it.
 
-`nat PREROUTING` has no such conflict. Calico's `cali-PREROUTING` there is an
-empty floating-IP DNAT chain that terminates nothing, so netd simply
-**appends** its jump. NAT also applies only to a flow's first packet; conntrack
-replays the translation and reverses it on replies. That removes all the TPROXY
-plumbing (fwmark, `-m socket`, policy route, `accept_local`, `src_valid_mark`).
+- **Out.** It binds `egress.sock` in each unit's directory (mode `0600`,
+  in a `0700` directory; netshim connects as root). For each connection it
+  reads netshim's header within 10 seconds, keeping the destination and
+  dropping every TLV, and opens a connection to the proxy's Service on
+  `SOCKET_EGRESS_PORT` with a header of its own: the same destination, the
+  unit's id and the proxy auth secret. A header that does not parse, or
+  arrives late, closes the connection. A running sandbox connects to a
+  rebound socket with no restart.
+- **In, streams** (`NETD_STREAM_PORT`): docs/stream-relay.md.
+- **In, sites** (`NETD_SITE_PORT`): docs/public-sites.md "The router".
 
-Appending also places the jump after kube-proxy's `KUBE-SERVICES`, whose DNAT
-terminates, so ClusterIP traffic never reaches the redirect. With the pod-CIDR
-RETURNs, that limits the redirect to traffic bound outside the cluster.
+`ingress.sock` is opened with `O_PATH | O_NOFOLLOW`, checked to be a socket
+with `fstat`, and connected through `/proc/self/fd/<n>`, since a connect by
+path follows a link to any socket on the node. The relay is ready once the
+socket root is mounted and both listeners are bound.
 
-## Fail-closed
+The DaemonSet rolls one node at a time. A restart of a node's netd pod drops
+that node's terminals, forwards and in-flight egress, which reconnect, and
+takes that node's sites down until the server has pointed their endpoints at
+the new pod (docs/public-sites.md "The router").
 
-A workspace's NetworkPolicy has exactly one rule toward the outside: the node,
-on netd's reserved listener port range. There is no rule for 443 or 80 to the
-internet. A pod whose redirect netd has not yet programmed keeps its original
-destination, takes the FORWARD path, matches no allow, and is dropped.
+## The proxy's ingress
 
-At pod birth Felix blocks traffic on its own: until it has programmed a
-workload's endpoint, traffic on that veth hits the `"Unknown interface" -j DROP`
-in `cali-from-wl-dispatch`.
+The proxy has one port for sandbox traffic, `SOCKET_EGRESS_PORT`
+(`k8s/proxy/socket-ingress.ts`). It reads the relay's header, accepts it only
+when the secret TLV matches the proxy auth secret, takes the sandbox's id
+from its TLV, and hands the connection to the handler the destination
+selects: port 443 to the SNI peek, the SSH sentinel's address and port
+(198.18.0.2:10259) to git's `CONNECT` reader, anything else to the
+plain-HTTP server.
 
-Allowing the listener range opens no hole. Those ports reach Envoy, which stamps
-the connection's real peer address however it arrived, so a pod dialing a
-listener directly gets exactly what its redirected traffic would get and cannot
-impersonate another workspace. The proxy's transparent ports accept only the
-**node CIDRs**, so pods cannot reach them and only Envoy can send PROXY protocol
-headers.
+**Identity is the registration.** A connection whose id has no registration
+(fetched once if the watch has not delivered it) is refused, which is also
+what keeps a prewarmed spare offline until its claim. Whether an id is a
+build or a site release comes from its registration: a build's ConfigMap
+carries the `yaac.build-id` label, and a release's says `release: true`.
 
-**Probe egress with real requests, not connects.** Because 443 and 80 are
-DNAT'd, a bare TCP connect to any address on those ports succeeds (against the
-node's Envoy), as does one to any name on any port, since names resolve to
-the sinkhole. `nc -z 1.1.1.1 443` therefore reports a false "reachable".
-Assert on a completed request (the proxy refuses a host no allowlist admits).
-To test the NetworkPolicy layer, use a real address on a port that is not
-redirected, where the default-deny answers.
+## The npm cache and the main registry
 
-## The direct pod→proxy dial
+A registration can name `clusterServices`, a list of `host:port` of the
+install's own Services the server lets that sandbox reach by name: the npm
+cache for a workspace that may use it, the main registry's pod port for a
+build (docs/image-builds.md "Build egress"). A plain-HTTP request to an
+exact match is forwarded as named, before the allowlist and past the
+non-public guard, like every destination the server names. `~/.npmrc`,
+`buildkitd.toml` and the registry auth file name the same hosts as any
+pod would.
 
-One flow addresses the proxy pod directly instead of being redirected: **DNS**,
-udp/53. The proxy's split-horizon stub is the pod's only resolver
-(`dnsPolicy: None`), and the workspace policy allows the dial by selector
-(`podSelector: app=yaac-proxy`), not through the node's listener range. It
-does not reach outside the cluster or bypass the allowlist.
+So that this adds no reach, the proxy refuses any destination named as one
+of the install's Services, or the main registry's, unless the registration
+holds it (`isInstallServiceName` in `k8s/proxy/upstream.ts`): a single label,
+which resolves only through the proxy's search path, and any name ending in
+`.<ns>`, `.<ns>.svc` or `.<ns>.svc.cluster.local` for the install's
+namespace and the registry's (`yaac`). That holds on every path, TLS and
+`CONNECT` included, and nothing is looked up first.
+
+### The npm cache: an exception to the allowlist
+
+The cache (`drivers/k8s/cluster/npm-cache.ts`, docs/workspace-storage.md
+"Package installs") fetches from `registry.npmjs.org` itself, not through
+the proxy, so what it serves reaches a workspace outside that workspace's
+allowlist.
+
+That is acceptable because it only brings npm content **in**. What goes out
+is package names (and `npm audit` bodies, and requests for npm's signing
+keys and attestations) sent to npmjs. Verdaccio serves a tarball only from a
+URL its upstream's own metadata named, forwards no credentials upstream, and
+accepts no publishes.
+
+Access is per project. The server names the cache in a workspace's
+registration unless its project sets `npmCache: false`, its allowlist leaves
+out `registry.npmjs.org`, or its project authenticates to npmjs through a
+proxied secret, and only then configures the workspace's pnpm to use it.
+Otherwise its pnpm uses npmjs through the proxy like any other host. A
+prewarmed spare has no registration until a launch takes it, so it is
+decided at the launch like any pod (docs/generic-workspace-pods.md).
+
+## Wire formats
+
+Every header is PROXY protocol v2 (`0D 0A 0D 0A 00 0D 0A 51 55 49 54 0A`,
+version and command `0x21`). The relay and netshim share one reader and
+writer (`k8s/mountd/internal/pp2`); the proxy parses with `k8s/proxy/pp2.ts`.
+
+| Hop | Family | Addresses | TLVs |
+|---|---|---|---|
+| netshim to the relay | `0x11` (TCP over IPv4) | source: the client's loopback address and port; destination: the address and port dialed | none; the relay drops any |
+| the relay to the proxy | `0x11` | copied | `0xE0`: the workspace or build id; `0xE1`: the proxy auth secret |
+| the router to the relay | as Envoy writes it | unused | `0xE0`: the site id |
+
+`ingress.sock` takes a two-byte big-endian port before the stream.
+
+| Constant | Value |
+|---|---|
+| `SOCKET_EGRESS_PORT` (proxy) | 10261 |
+| `NETD_STREAM_PORT` (relay) | 10262 |
+| `NETD_SITE_PORT` (relay) | 10263 |
+| `NETSHIM_TCP_PORT` | 10301 |
+| `NETSHIM_DNS_PORT` | 10302 |
+| socket root | `/var/lib/yaac/sockets` (`SOCKETS_NODE_ROOT`) |
+
+## Policies
+
+Workspace and builder pods have no policy of their own:
+`yaac-egress-world-deny` covers every pod of the namespace but the proxy and
+the server, sandboxes included, and they have no interface to send from
+anyway. The policies that matter surround yaac's own pods
+(`cluster/policy-manifests.ts`):
+
+| Policy | Admits |
+|---|---|
+| `yaac-proxy-ingress` | netd's pods on `SOCKET_EGRESS_PORT`; the server's pods and the node (the kubelet's probe) on the control port |
+| `yaac-proxy-egress` | the floor (`wideEgress`, "Non-public destinations"), the nodes, the server's mama listener, the apiserver, the npm cache and the main registry's pod port |
+| `yaac-netd-ingress` | the server's pods on `NETD_STREAM_PORT`, the site router on `NETD_SITE_PORT` |
+| `yaac-netd-egress` | the proxy on `SOCKET_EGRESS_PORT`, the apiserver, DNS |
+| `yaac-npm-cache-ingress` | the proxy and the node (kubelet probe) on the cache port |
+| `yaac-registry-ingress` | the node on the node port; the proxy and the server, in any namespace, on the pod port |
+
+The relay's site port takes no secret, so the router's identity checks
+(docs/public-sites.md "Headers an app may trust") hold only while
+`yaac-netd-ingress` keeps everything but the router off it. The proxy's port
+admits no one by position alone: the relay presents the proxy auth secret on
+every connection.
+
+**Probe egress with real requests, not connects.** Every connect from a
+sandbox succeeds, to any address and port, since netshim takes it. Assert on
+a completed request: the proxy refuses a host no allowlist admits with a 403,
+or drops TLS it cannot route.
 
 ## Git credentials
 
@@ -203,8 +384,9 @@ the same host under another name the allowlist admits.
 
 The proxy ends ssh sessions to a project's git hosts itself
 (`k8s/proxy/ssh-session.ts`). A workspace with an ssh repo gets a
-`GIT_SSH_COMMAND` that reaches the proxy's tunnel listener through the
-sentinel, as before, offers no identity, and trusts one host key under one
+`GIT_SSH_COMMAND` whose `ncat` proxy command dials the sentinel
+(198.18.0.2:10259), which the proxy reads as git's `CONNECT`, offers no
+identity, and trusts one host key under one
 name (`HostKeyAlias=yaac-proxy`): the proxy's, which it mints once, keeps in
 the `yaac-proxy-ca` Secret and the server publishes as `ssh_known_hosts` in
 the ConfigMap every pod mounts beside the CA. The workspace holds no key and
@@ -214,7 +396,7 @@ whose ssh trusts the git host").
 
 For a `CONNECT` to port 22 of a host the workspace's project has an ssh grant
 on, after the allowlist and the non-public guard, the proxy answers as the
-ssh server. The workspace is already identified by its source address, so
+ssh server. The workspace is already identified by the relay's header, so
 any login is accepted. Then:
 
 - Only an `exec` of a git command passes: `git-upload-pack`,
@@ -235,33 +417,6 @@ So a key reaches its own repo and nothing else, and a session on that host
 carries only git. A `CONNECT` to port 22 of any other host is a plain tunnel
 under the allowlist, with whatever the workspace itself brings.
 
-## The npm cache: an exception to the allowlist
-
-One more pod can be dialed directly: the install's npm cache
-(`drivers/k8s/cluster/npm-cache.ts`, docs/workspace-storage.md "Package
-installs"), on tcp/4873, which netd does not redirect. The cache fetches from
-`registry.npmjs.org` itself, not through the proxy, so what it serves reaches a
-workspace outside that workspace's allowlist.
-
-Why that is acceptable: it only brings npm content **in**. What goes out is
-package names (and `npm audit` bodies, and requests for npm's signing keys and
-attestations) sent to npmjs. Verdaccio serves a tarball
-only from a URL its upstream's own metadata named, forwards no credentials
-upstream, and accepts no publishes.
-
-Access is per project, so it is not in the install-wide workspace policy. The
-cache's own policies (egress on the workspace side, ingress on the cache) allow
-only workspace pods labelled `yaac.npm-cache`, which the server sets at launch.
-A workspace pod holds no API credential, so it cannot add the label itself. A
-pod gets the label unless its project sets `npmCache: false`, its allowlist
-leaves out `registry.npmjs.org`, or its project authenticates to npmjs through
-a proxied secret. Without the label, the pod can neither reach the cache nor is
-configured to use it; its pnpm uses npmjs through the proxy like any other host.
-
-A prewarmed spare has neither the label nor a registration until a launch
-takes it, so it is decided at the launch like any pod
-(docs/generic-workspace-pods.md).
-
 ## What the proxy is told, and how
 
 The proxy pod mounts nothing from the host and keeps no state of its own. It
@@ -273,7 +428,7 @@ objects the server watches. All live in the install namespace, are labelled
 |---|---|---|---|---|
 | `yaac-proxy-credentials` | Secret | server | proxy informer | per owner, keys prefixed `<owner>.`: `claude.json`, `codex.json`, `opencode.json`, `pi.json`, `omp.json` (each tool's host-store file verbatim, plus `apiHost` for opencode, pi and omp: the provider host the key is swapped in on; a signed-out tool has no key), `git-tokens.json` (`[{token, grants}]`) and `ssh-keys.json` (`[{privateKey, publicKey, grants}]`, the private key OpenSSH-encoded from the sealed seed). Each grant is `{projectId, repoId, host, path, readOnly, ghToken}`, an ssh key's with its `knownHostsEntry` (see "Git credentials") |
 | `yaac-proxy-secrets-<project id>` | Secret, one per project | server | proxy informer | `values.json`: `{ "<project id>/<NAME>": value }`, the secret values behind that project's `secretRef` rules |
-| `yaac-proxy-reg-<workspaceId>` | ConfigMap, one per workspace | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, project, owner, test redirects |
+| `yaac-proxy-reg-<id>` | ConfigMap, one per workspace or build | server | proxy informer | `registration.json`: rules with `secretRef`s (never values), allowed hosts, project, owner, test redirects, `release` for a site's release, and `clusterServices`; a build's carries the `yaac.build-id` label |
 | `yaac-proxy-refreshed` | Secret | proxy | server informer | `<owner>.claude.json`, `<owner>.codex.json`: OAuth bundles the proxy captured from a workspace's token refresh, in the credentials-file shape |
 | `yaac-proxy-ca` | Secret | proxy | server (one get) | `ca.key`, `ca.pem`, `ca-bundle.pem`, and the proxy's ssh host key, `ssh-host-key` and `ssh-host-key.pub`. The server copies the public parts into the `yaac-proxy-ca` ConfigMap pods mount |
 | `yaac-proxy-state` | ConfigMap | proxy | server informer | `blocked-hosts.json`, `git-auth-failures.json` |
@@ -390,14 +545,14 @@ bundled lists; under containerless they go out. Refusing them does not hold
 up a launch or a turn. yaac's launches turn off omp's update check,
 marketplace updates and issue reports (`ensureOmpSettings`).
 
-Which endpoints a cluster workspace can reach follows from the datapath:
+Which endpoints a cluster workspace can reach follows from routing by name:
 
-- `http://<name>:<any port>` and `https://<name>` on 443 work, given the
-  allowlist entry (and, for a non-public address, the opening below).
-- `https://<name>` on another port does not: the name resolves to the
-  sinkhole, whose rule sends the TLS handshake to the plain-HTTP listener.
-- An IP-literal URL never touches the sinkhole, so only ports 80 and 443
-  are redirected, and HTTPS to an IP fails as described below. Use a name.
+- `http://<name or address>:<any port>` and `https://<name>` on 443 work,
+  given the allowlist entry (and, for a non-public address, the opening
+  below).
+- `https://<name>` on another port does not: the proxy reads a connection
+  to any port but 443 as plain HTTP, so the TLS handshake fails.
+- HTTPS to an IP address fails as described below. Use a name.
 
 **RBAC.** RBAC cannot scope `create` by name, so the server pre-creates the
 three outputs empty and the proxy's Role grants `update`/`patch` on exactly
@@ -408,10 +563,10 @@ objects. The HTTP control API on the proxy's port is only `/healthz`.
 ## yaac-mama
 
 A workspace pod's `yaac-mama` calls POST to `http://yaac.internal/api/workspace/mama`
-over its transparent HTTP egress. The proxy routes on the Host header before
+as plain HTTP, like any egress. The proxy routes on the Host header before
 the allowlist check, so the call always works, and relays it to the server's
 mama listener (`MAMA_RELAY_URL`, the `yaac-server-mama` Service). It names
-the caller in `x-yaac-workspace-id`, from the source pod IP as for any
+the caller in `x-yaac-workspace-id`, from the relay's header as for any
 egress, and authenticates with its auth secret, which the server compares
 against the `yaac-proxy-auth` Secret. That listener serves nothing else, so
 the server's ingress policy can admit the proxy to it without admitting the
@@ -426,10 +581,11 @@ hosts, at `http://yaac.internal/api/workspace/git/<project id>.git`
 with the headers git needs (`yaac-relay.ts`). The server checks that the
 named workspace belongs to that project.
 
-A public site's release reaches neither. The proxy answers 403 to any
-`yaac.internal` request from a pod labelled `yaac.site-id`, and the server
-refuses a relayed call naming a release, so code facing the internet never
-acts on yaac (docs/public-sites.md).
+A public site's release reaches neither, nor does an image build. The proxy
+answers 403 to any `yaac.internal` request whose registration says
+`release` or is a build's, and the server refuses a relayed call naming a
+release, so code facing the internet never acts on yaac
+(docs/public-sites.md).
 
 ## Tailnet sites
 
@@ -502,8 +658,8 @@ takes both: an exact entry for it in the project's allowlist, and the network
 operator opening it. The two exceptions are below.
 
 **The proxy refuses** (`k8s/proxy/upstream.ts`). Before every upstream dial a
-workspace can steer (transparent HTTPS, tunneled or MITM'd; plain HTTP; the
-SSH tunnel's CONNECT), the proxy resolves the destination once and refuses it
+workspace can steer (TLS, tunneled or MITM'd; plain HTTP; the SSH tunnel's
+CONNECT), the proxy resolves the destination once and refuses it
 if any address is not publicly routable. That is anything in the IANA IPv4
 special-purpose registry (private, CGNAT, loopback, link-local,
 documentation, benchmarking, multicast and the rest), plus Azure's
@@ -512,7 +668,7 @@ dial then goes to exactly the addresses checked, so a name that answers
 differently the second time (DNS rebinding) cannot slip past.
 
 A refused CONNECT or plain-HTTP request gets a 403 with the reason, and
-transparent TLS, which has nowhere to put one, is dropped. Both are logged.
+TLS, which has nowhere to put one, is dropped. Both are logged.
 A refusal is not recorded as a blocked host, since the allowlist did admit
 it.
 
@@ -532,17 +688,16 @@ A dial admitted this way:
   which is keyed by host and port, not by workspace.
 
 Destinations the server names, not a workspace, are not checked: an e2e
-upstream redirect's target, the mama relay, the stream relay into a workspace
-pod, and the proxy's own apiserver and DNS traffic. Under `USE_TOR`, a
+upstream redirect's target, the mama relay, a registration's
+`clusterServices`, and the proxy's own apiserver and DNS traffic. Under `USE_TOR`, a
 destination Tor carries is not resolved locally, since that would leak the
 name, and Tor dials from its exit, off the cluster's network. Internal names
 and non-public addresses skip Tor and are checked like any direct dial.
 
 **The network floor** (`wideEgress` in
 `drivers/k8s/cluster/policy-manifests.ts`) is shared by the proxy's and
-the server's egress policies (builder pods have a workspace's egress
-instead, docs/image-builds.md "Build egress") (the server's peers are in
-docs/server-in-cluster.md "The server's own egress"). It allows public
+the server's egress policies, and the npm cache's on port 443 (the server's
+peers are in docs/server-in-cluster.md "The server's own egress"). It allows public
 addresses only: 0.0.0.0/0 less the same special-purpose ranges and
 168.63.129.16, and IPv6 global unicast (2000::/3) less its special-purpose
 blocks. That leaves out ULA, where AWS (fd00:ec2::254) and GCE
@@ -562,10 +717,10 @@ floor allows back only what yaac needs:
 - for the proxy, the nodes, on every port but NFS and the kind fronting's
   (docs/server-in-cluster.md "The ingress policy is the wall"), so that an
   allowlist entry may name one;
-- for the proxy, the server's mama listener and workspace pods' streamd by
-  selector, and the apiserver its watches read, at the real endpoints the
-  `kubernetes` Service's EndpointSlices list (re-read by node-sync, so a
-  moved control plane is followed);
+- for the proxy, the server's mama listener, the npm cache and the main
+  registry's pod port by selector, and the apiserver its watches read, at
+  the real endpoints the `kubernetes` Service's EndpointSlices list (re-read
+  by node-sync, so a moved control plane is followed);
 - for the server, the main registry's pod port by selector, for the tag
   checks it makes.
 
@@ -574,10 +729,15 @@ the destination after kube-proxy's DNAT. The gateway Calico gives every pod
 (169.254.1.1, and an fe80:: address on IPv6) is a next hop, not a
 destination, so the floor does not affect it.
 
-The proxy's three allowances above that are not selectors are where
-"takes both" does not hold. An exact allowlist entry naming a node address
-reaches it, on any port but NFS and the fronting's, with no operator
-opening; a CONNECT on the SSH tunnel listener chooses its port, so that
+The proxy's allowances above are where "takes both" does not hold. An exact
+allowlist entry naming the *address* of the npm cache or of the registry's
+pod port reaches it, since the proxy's policy admits both and the guard's
+exact-entry exception applies (by name, `isInstallServiceName` refuses
+them). That exposes the cache, which serves public packages, and the
+registry's pod port, which serves a protected repo only to a grant. The
+three that are not selectors are the others. An exact allowlist entry naming
+a node address reaches it, on any port but NFS and the fronting's, with no
+operator opening; a CONNECT through the SSH sentinel chooses its port, so that
 includes the kubelet and, on kind and k3s, the apiserver. An exact entry
 naming the apiserver reaches it on its port wherever it runs, off the nodes
 too (as on a managed control plane): its Service name
@@ -600,15 +760,15 @@ The proxy dials IPv4 only. It refuses an IPv6 destination outright, so
 `http://[fd00::5]/` or a CONNECT to `[2606:4700::1111]:22` gets a 403. A
 name is resolved to its IPv4 addresses only. An allowlist cannot name an IPv6
 address either: an entry may hold only letters, digits, `.`, `-`, `_` and
-`*`. The datapath could not deliver IPv6 anyway: netd redirects IPv4 only,
-and the proxy's DNS stub answers A queries only, so a workspace never
-learns an IPv6 address to dial.
+`*`. A sandbox could not send IPv6 anyway: only `::1` has a route, and
+netshim's stub answers A queries only, so a workspace never learns an IPv6
+address to dial.
 
 ### HTTPS to an IP address
 
 A request to `https://10.20.0.5/` does not work, whatever the allowlist
-says. TLS clients send no SNI for an IP address, and the transparent HTTPS
-listener routes by SNI alone, so it drops a ClientHello without one. Plain
+says. TLS clients send no SNI for an IP address, and the proxy routes TLS
+by SNI alone, so it drops a ClientHello without one. Plain
 HTTP (routed by the Host header) and SSH (by the CONNECT target) reach an
 allowlisted address. For HTTPS, allowlist a hostname that resolves to it, in
 the proxy's DNS, and use that name.
@@ -619,32 +779,27 @@ destination is read as a URL parser reads it, so `0x0a.20.0.5` or
 
 ### In-cluster names
 
-The proxy's DNS stub resolves a real address for one set of names: Services
-in the install's own namespace (`<name>.<namespace>.svc.cluster.local`).
-The server hands workspaces one of them, the npm cache, which a workspace
-dials directly under its own label-scoped policies. Every Service there is
-yaac's, and a dial to one no such policy admits is dropped.
-
-Every other name gets the sinkhole, in-cluster names included. So
-`http://internal-web.other.svc.cluster.local/` goes through the proxy like
-`git.corp.example`: refused and recorded as a blocked host when no entry
-covers it, refused as non-public under `*` or a wildcard, and dialed under
-an exact entry, reaching the Service once the operator opens it to the
-proxy (below). A real ClusterIP would be dialed past the proxy instead:
-kube-proxy rewrites it to a pod address, which netd does not redirect, and
-the workspace's egress policy drops it, a timeout no allowlist entry could
-fix. As for any name, only HTTP on any port, HTTPS on 443 and SSH through
-the tunnel listener get through; a database on its own protocol does not.
+Every name resolves to the sinkhole inside a sandbox, in-cluster names
+included, so every in-cluster name goes through the proxy. The install's own
+Services, and the main registry's, are refused by name unless a
+registration's `clusterServices` holds them ("The npm cache and the main
+registry"). Any other, such as `http://internal-web.other.svc.cluster.local/`,
+is treated like `git.corp.example`: refused and recorded as a blocked host
+when no entry covers it, refused as non-public under `*` or a wildcard, and
+dialed under an exact entry, reaching the Service once the operator opens it
+to the proxy (below). As for any name, only HTTP on any port, HTTPS on 443
+and SSH through the sentinel get through; a database on its own protocol
+does not.
 
 ### Opening an internal destination
 
 Only the network operator can open one, by applying a NetworkPolicy of their
 own in yaac's namespace. NetworkPolicy allows add up across every policy that
-selects a pod, so a separate policy selecting the proxy (`app: yaac-proxy`),
-builders (`yaac.role: builder`) or the server (`app: yaac-server`) widens
-their egress without touching yaac's. Builders go through the proxy like
-workspaces, so an internal mirror a build needs is opened for the proxy and
-named in the project's allowlist, exactly as for a workspace. yaac never writes, prunes or deletes a policy it does not own, so the
+selects a pod, so a separate policy selecting the proxy (`app: yaac-proxy`)
+or the server (`app: yaac-server`) widens their egress without touching
+yaac's. Builds go through the proxy like workspaces, so an internal mirror a
+build needs is opened for the proxy and named in the project's allowlist,
+exactly as for a workspace. yaac never writes, prunes or deletes a policy it does not own, so the
 opening survives server restarts and reinstalls (`yaac cluster delete`
 removes it with the namespace). Creating one takes kubectl access to the
 namespace, which no workspace has.
@@ -749,7 +904,8 @@ tail1234.ts.net:53 {
 ```
 
 This needs `tailscaled` on the host, so the node can route to tailnet
-addresses. Port 8080 needs nothing more, by the sinkhole rule above. yaac
+addresses. Port 8080 needs nothing more, since plain HTTP is routed by its
+Host header on any port. yaac
 never writes CoreDNS, so on kind the edit survives `yaac cluster install`.
 k3s re-applies its packaged CoreDNS on restart; put the block in the
 `coredns-custom` ConfigMap there instead, under a key like `tailnet.server`.
@@ -770,140 +926,32 @@ validation rejects: `infra/hetzner-k3s` sets `0x7f000f00`
 The e2e suites open their mock pods to the proxy the same way
 (`openToProxy` in `test/support/cluster.ts`).
 
-## Which pods are redirected
-
-netd has exactly **one** rule, recomputed on every relevant watch event: a
-workspace pod (label `yaac.workspace-id`, never the proxy itself) or an image
-builder pod (label `yaac.build-id`) in **this install's own namespace** is
-redirected to this install's proxy. Nothing else on the node is redirected.
-A label selector cannot OR two labels, so each kind is its own watch.
-
-netd watches only its own namespace, by label selector, so installs that share
-a node stay out of each other's traffic and netd needs no cluster-wide access:
-a namespaced Role grants it `get`/`list`/`watch` on pods and Services there,
-where every object is created by yaac and no workspace can write one.
-
-The redirect target is the proxy **Service's ClusterIP**, read from that same
-namespace. Until the Service exists netd redirects nothing.
-
-Envoy admits a connection by matching its source pod IP against the listener's
-filter chain (`filter_chain_match.source_prefix_ranges`). All three listeners
-are shared by every redirected pod, so pods come and go without moving a port.
-That matters because conntrack pins a flow's DNAT destination on its first
-packet, and moving a port under a live flow would strand it. A source netd has
-not programmed matches no filter chain, and Envoy closes the connection, the
-same result as a missing DNAT rule.
-
-netd chooses its trio once per netd pod. It probes ports in a hash-derived order
-over the reserved range, takes the first trio nothing else on the node holds,
-and saves the choice next to the Envoy config, so a restarted netd container
-cannot move to a different trio while its Envoy still holds the old one.
-
-## What this datapath requires of a CNI
-
-The redirect is netfilter, so the CNI must let pod egress **reach host
-netfilter at the veth peer**, and kube-proxy must still handle ClusterIP
-translation (netd's Envoy dials the proxy's ClusterIP from the host network
-namespace). So:
-
-- **Cilium is incompatible.** Its eBPF host routing (`bpf_redirect_peer`) skips
-  the host stack, so packets never reach host netfilter and netd's rule never
-  sees them, with no error. `bpf.hostLegacyRouting` restores netfilter, but
-  Cilium's tc-ingress `from-container` program still runs before PREROUTING and
-  may consume the packet, and `kubeProxyReplacement` breaks the ClusterIP dial.
-  No supported configuration guarantees the redirect sees all pod egress.
-- **kindnet is unusable** for a different reason: its NetworkPolicy engine
-  allows all traffic at pod birth until policy is applied, so a workspace would
-  start with a window of unrestricted egress.
-- **Calico's own eBPF dataplane** (`FelixConfiguration.bpfEnabled`, or
-  `FELIX_BPFENABLED` on the calico-node container) bypasses iptables for pod
-  traffic just as Cilium does, and can be enabled on a Calico install that
-  otherwise looks usable.
-
-The **policy** half has no such constraint: plain NetworkPolicy is enforced
-natively by every engine, including Cilium. Only the redirect depends on the
-CNI.
-
-`yaac cluster install --byo` (installing into a cluster whose CNI yaac did not
-install) refuses eBPF mode outright, along with a replaced kube-proxy, an empty
-pod-CIDR set, and a veth prefix that matches no workload route. Each is a
-refusal rather than a warning because each fails *silently*, as "workspaces
-have no egress" or as a chain that counts packets and never takes effect. The
-full list is in docs/cluster-setup.md, "The CNI gate".
-
-## Managed-cloud portability
-
-netd is the same everywhere; what varies is who runs the policy engine.
-
-| Platform | Policy engine | Notes |
-|---|---|---|
-| local kind | **our Calico** (CNI + policy) | what `yaac cluster install` installs |
-| GKE Standard, Dataplane V1 | **Google-managed Calico** (`--enable-network-policy`) | don't install our own. Dataplane V2 is opt-in at cluster creation, so a Standard cluster created without it uses the netfilter dataplane and works as-is |
-| AKS (Azure CNI, non-Cilium) | **Microsoft-managed Calico** (`--network-policy calico`) | plain NetworkPolicy enforced natively |
-| GKE Dataplane V2 / Autopilot, AKS-Cilium, DOKS | none | **out of scope**: they require Cilium (DOKS's cannot be replaced), which breaks the veth redirect. Autopilot also blocks the privileged DaemonSet netd needs |
-
-Every row but the first is a `--byo` install, which leaves the cluster's CNI
-alone after verifying the dataplane it will depend on (docs/cluster-setup.md).
-
 ## Plain NetworkPolicy only
 
-yaac installs no Calico custom resources and depends on no CRD-based policy.
-The provider-managed Calicos above treat Calico CRDs as unsupported, so relying
-on one would split the policy model per provider.
+yaac depends on no CRD-based policy: every policy is plain
+`networking.k8s.io/v1` NetworkPolicy, which every engine enforces, Cilium
+and provider-managed Calicos included. A `--byo` cluster needs only that
+NetworkPolicy be enforced, which `yaac cluster check` probes
+(docs/cluster-setup.md).
 
 Where plain NetworkPolicy cannot select a peer by label, it uses an `ipBlock`
 CIDR resolved at apply time (`cluster-cidrs.ts`):
 
-- "the node", for anything arriving from the host network namespace (netd's
-  Envoy, kubelet probes, containerd registry pulls);
+- "the node", for anything arriving from the host network namespace
+  (kubelet probes, containerd registry pulls);
 - the apiserver's real **endpoint** addresses, never its Service VIP, because
   NetworkPolicy matches the destination after DNAT.
 
 ## Operational notes
 
-- **Pod CIDRs are discovered, not assumed.** `clusterPodCidrs()` unions
-  explicit config (`YAAC_POD_CIDRS`), Calico's IPPools, and every node's
-  `spec.podCIDR`, and passes the list to netd. IPPools matter because Calico
-  allocates /26 blocks anywhere in its pool, so a pod's IP is often outside its
-  node's `spec.podCIDR`; the config source is for a foreign IPAM that
-  publishes neither. Too narrow is the dangerous direction (a pod IP outside the
-  list has its pod-to-pod 443/80 redirected into the proxy), so sources are
-  unioned, `disabled` IPPools are included (their pods keep their addresses),
-  an unusable `YAAC_POD_CIDRS` entry is reported rather than dropped, and netd
-  refuses an empty list. CIDRs are resolved at apply time, so one added to a
-  live cluster needs a re-apply.
-- **iptables backend.** netd detects at startup which backend (legacy or nft)
-  holds Calico's chains; a kind node's `iptables` points at **legacy**. Writing
-  to the wrong backend produces a chain that exists and counts packets but is
-  never consulted, which looks exactly like a broken redirect.
-- **Readiness means programmed.** netd writes its readiness marker only after a
-  reconcile reaches the dataplane, and removes it on failure, so
-  `yaac cluster check`'s `datapath` check cannot pass while netd is failing.
-- **Several installs can share a node** (the real `yaac` install and each e2e
-  run's `yaac-test-<run-id>` install each run a netd). Each owns its own nat
-  chain (`YAAC_RDR_<hash of namespace>`, logged at startup) and PREROUTING
-  jump, so they never flush each other's rules. Their Envoys use
-  `--use-dynamic-base-id` and a unix-socket admin endpoint in their own config
-  volume, since host-network siblings cannot all claim base-id 0 or one
-  loopback port. Listener trios are bind-probed with
-  `enable_reuse_port: false` (Envoy defaults to true, which would let two
-  installs bind one trio and split its connections); a rejected listener is
-  caught by the check below, and netd probes for another trio.
-- **Reconcile is stateless.** Every pass recomputes the whole chain and Envoy
-  config from cluster state and writes only on change, so there is no
-  incremental state to drift, and a deleted pod simply stops appearing. The
-  write-on-change memo records what netd *wrote*, not what the kernel *kept*,
-  so a pass every 30 seconds discards it and rewrites. That, plus re-checking
-  the PREROUTING jump every pass, repairs an external flush or deleted jump.
-- **Envoy confirms before traffic moves.** Each pass reads `/config_dump` on the
-  admin socket and waits until `ListenersConfigDump.version_info` (the version
-  Envoy last applied) equals the one netd wrote and every listener on the trio
-  is bound; only then does it touch netfilter and write the readiness marker.
-  The per-listener `active_state.version_info` is not used: Envoy updates filter
-  chains in place and leaves it at the creation version, so it would stall on
-  every later pod change. A rejected listener is reported with Envoy's
-  `error_state` details.
-- **Triage.** `kubectl -n <ns> logs ds/yaac-netd -c netd` shows each
-  pass's changes, the chain name and watch errors. On the node,
-  `iptables-legacy -t nat -S <chain>` shows what is actually programmed, and
-  `-S PREROUTING` shows which chain this install jumps to.
+- **Several installs can share a node** (the real `yaac` install and each
+  e2e run's `yaac-test-<run-id>` install). Each has its own socket root
+  (`/var/lib/yaac/sockets/<install key>`) and its own netd, whose relay
+  binds sockets only beneath it and whose listeners are pod ports, not node
+  ports, so installs never see each other's sandboxes.
+- **Triage.** `kubectl -n <ns> logs ds/yaac-netd -c relay` shows refused
+  headers, proxy dial failures and reconcile errors; `-c netd` the swap
+  bounds and pressure kills. On the node, `ls -l
+  /var/lib/yaac/sockets/<install key>/*` shows each sandbox's sockets. Inside
+  a sandbox, `ip route` shows `0.0.0.0/0 dev lo`, and netshim's container
+  logs show its setup commands.

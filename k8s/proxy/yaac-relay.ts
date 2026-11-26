@@ -10,7 +10,7 @@ import type http from 'node:http'
 
 /**
  * Hostname and path the in-workspace `yaac-mama` script POSTs to. It reaches
- * the transparent HTTP listener like any external name, and the proxy routes
+ * the proxy as plain HTTP like any external name, and the proxy routes
  * on the Host header. Keep in sync with workspace-bin/yaac-mama.
  */
 export const MAMA_MAGIC_HOST = 'yaac.internal'

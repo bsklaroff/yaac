@@ -42,9 +42,9 @@ is a name it passes to containerd, and a mount annotation is a string it
 copies. The test of this is a second user: a pool of machines running CI
 jobs in sandboxes should need nothing from yaac.
 
-**Units have no network. They have sockets.** After
-docs/plans/socket-egress.md a sandbox's only links to the outside are unix
-sockets in a directory on its node. Pamir makes that its model of
+**Units have no network. They have sockets.** A yaac sandbox's only links
+to the outside are unix sockets in a directory on its node
+(docs/workspace-egress.md "The contract"). Pamir makes that its model of
 connectivity: a unit declares sockets, and Pamir carries a connection
 between a unit's socket on one machine and a program on another, saying
 which unit it came from. That is what netd's relay does today, made
@@ -217,7 +217,8 @@ reachable. Start with the first.
 **Where yaac's own node programs live.** netd's relay becomes Pamir's
 socket carrying, so it leaves yaac. Its core is written for that: a Go
 package that imports nothing of yaac or Kubernetes
-(docs/plans/socket-egress.md "The relay, and what is left of netd"). What stays yaac's on every node is the
+(`k8s/mountd/internal/sockets`; docs/workspace-egress.md "The relay, and
+the rest of netd"). What stays yaac's on every node is the
 mountd, the arborist, the swap bound and the pressure kill.
 They can run as units Pamir starts on every node, as DaemonSets do today,
 or be compiled into yaac's own build of the node program through the

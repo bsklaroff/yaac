@@ -1,5 +1,5 @@
 /**
- * Where a workspace's connection goes once the transparent listeners know
+ * Where a workspace's connection goes once the socket ingress handlers know
  * its workspace and destination: checked against the allowlist and the
  * non-public guard (upstream.ts), then MITM'd, tunneled, ended here as an
  * ssh session, or (plain HTTP) forwarded. Every upstream dial a workspace
@@ -20,6 +20,7 @@ import {
   UpstreamRefused,
   dialOptions,
   failFastIfNonPublic,
+  isInstallServiceName,
   isInternalUpstream,
   resolveUpstream,
   upstreamHost,
@@ -30,8 +31,11 @@ import { MAMA_MAGIC_HOST, MAMA_PATH } from './yaac-relay'
 export interface DispatchContext extends MitmContext {
   liveTunnels: LiveTunnels
   recordBlockedHost: (workspaceId: string, hostname: string) => void
-  /** Whether an id is an image build's (pod-watch.ts `isBuild`). */
+  /** Whether an id is an image build's. */
   isBuild: (id: string) => boolean
+  /** The namespaces whose Services only `clusterServices` reaches: the
+   *  install's own and the main registry's (`isInstallServiceName`). */
+  installNamespaces: string[]
   /** Every IPv4 address of a name (dns.lookup); stubbed by tests. */
   lookup: (hostname: string) => Promise<LookupAddress[]>
   /** The proxy's private ssh host key (ssh-session.ts). */
@@ -44,6 +48,10 @@ export interface DispatchContext extends MitmContext {
  * and resolving here would leak the name to the local resolver.
  */
 function directUpstream(ctx: DispatchContext, workspaceId: string, hostname: string): Promise<DirectUpstream | null> {
+  if (isInstallServiceName(hostname, ctx.installNamespaces)) {
+    return Promise.reject(new UpstreamRefused(`${hostname} names one of the install's own services, `
+      + 'which a workspace reaches only where the server hands it one'))
+  }
   if (ctx.torAgent !== null && !isInternalUpstream(hostname)) return Promise.resolve(null)
   return resolveUpstream(hostname, isHostNamedExactly(ctx.objects, workspaceId, hostname), ctx.lookup)
 }
@@ -68,7 +76,7 @@ function dialRedirect(redirect: UpstreamRedirect): Promise<net.Socket> {
  * Check `requested` against the workspace's allowlist and the guard, and
  * hand the socket to the MITM or tunnel path. With `writeConnectOk` (a
  * CONNECT tunnel) the client gets an HTTP 200, or a 403 or 502 with the
- * reason; a refused transparent TLS socket is destroyed. A tunnel's 200
+ * reason; a refused TLS socket is destroyed. A tunnel's 200
  * waits for upstream to connect, so a dial that fails is answered too.
  *
  * MITM applies when the workspace has rules for the host, the proxy injects
@@ -95,7 +103,7 @@ export async function dispatchToUpstream(
   // (the ClientHello) wait for the pipe instead of being dropped.
   clientSocket.pause()
 
-  const label = opts.writeConnectOk ? 'CONNECT' : 'transparent HTTPS'
+  const label = opts.writeConnectOk ? 'CONNECT' : 'TLS'
   const refuse = (status: number, reason: string): void => {
     if (opts.writeConnectOk) {
       clientSocket.end(`HTTP/1.1 ${status} ${STATUS_TEXT[status]}\r\nContent-Type: text/plain\r\n\r\n${reason}\n`)
@@ -184,8 +192,10 @@ export async function dispatchToUpstream(
 }
 
 /**
- * Forward a plain-HTTP request from the transparent HTTP listener. No
- * credentials are ever injected here, since they would travel unencrypted.
+ * Forward a plain-HTTP request. No credentials are ever injected here, since
+ * they would travel unencrypted. A destination in the registration's
+ * `clusterServices` was named by the server, so it skips the allowlist and
+ * the guard.
  */
 export async function forwardPlainHttp(
   ctx: DispatchContext,
@@ -204,6 +214,10 @@ export async function forwardPlainHttp(
     hostname = upstreamHost(target.hostname)
   } catch (err) {
     refuse(403, (err as Error).message)
+    return
+  }
+  if (ctx.objects.registration(workspaceId)?.clusterServices?.includes(`${hostname}:${String(target.port)}`)) {
+    forward(req, res, hostname, target, {})
     return
   }
   const admission = admissionFor(ctx.objects, workspaceId, hostname)
@@ -229,7 +243,23 @@ export async function forwardPlainHttp(
   }
   // The client hung up, or a registration change dropped it, meanwhile.
   if (req.destroyed || res.destroyed) return
+  forward(req, res, hostname, target,
+    direct !== null ? dialOptions(direct) : { agent: ctx.torAgent ?? undefined }, direct)
+}
 
+/**
+ * Send `req` on to `hostname`, with `dial` choosing how the connection is
+ * made, and relay the answer. `direct`, when given, is the guard's checked
+ * dial, whose non-public connect fails fast.
+ */
+function forward(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  hostname: string,
+  target: { port: number; path: string },
+  dial: Pick<http.RequestOptions, 'lookup' | 'agent'>,
+  direct: DirectUpstream | null = null,
+): void {
   const headers: http.OutgoingHttpHeaders = { ...req.headers }
   delete headers['proxy-connection']
 
@@ -239,7 +269,7 @@ export async function forwardPlainHttp(
     path: target.path,
     method: req.method,
     headers,
-    ...(direct !== null ? dialOptions(direct) : { agent: ctx.torAgent ?? undefined }),
+    ...dial,
   }, (upstreamRes) => {
     res.writeHead(upstreamRes.statusCode ?? 200, upstreamRes.headers)
     upstreamRes.pipe(res)

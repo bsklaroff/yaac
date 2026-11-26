@@ -42,11 +42,10 @@ import {
   runSecretsName,
 } from './proxy-manifests'
 import {
+  RETIRED_POLICY_NAMES,
   buildEgressWorldDenyNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
-  buildWorkspaceEgressNpManifest,
-  buildWorkspaceIngressLockNpManifest,
 } from './policy-manifests'
 import { apiserverEndpoints, clusterDnsCidrs, nodeAddressBlocks, nodeIpBlocks } from './cluster-cidrs'
 import { ensureNetd } from './netd'
@@ -94,29 +93,6 @@ export async function ensureProxyAuthSecret(): Promise<string> {
   return secret
 }
 
-let cachedProxyClusterIp: string | null = null
-
-/**
- * The proxy Service's ClusterIP: workspace pods' DNS server and redirect
- * target. Cached, since the Service is never recreated while in use.
- */
-export async function proxyServiceClusterIp(): Promise<string> {
-  if (cachedProxyClusterIp) return cachedProxyClusterIp
-  const svc = await readObject<{ spec?: { clusterIP?: string } }>({
-    apiVersion: 'v1', kind: 'Service', name: PROXY_APP_NAME, namespace: k8sNamespace(),
-  })
-  const ip = svc?.spec?.clusterIP
-  if (!ip) throw new Error('proxy Service has no ClusterIP yet')
-  cachedProxyClusterIp = ip
-  return ip
-}
-
-/** Forget the cached ClusterIP (after the Service is deleted, and in
- *  tests). */
-export function resetProxyClusterIpCache(): void {
-  cachedProxyClusterIp = null
-}
-
 export async function ensureProxyResources(imageRef: string): Promise<void> {
   // The objects the proxy writes, created empty (so its Role can name them)
   // only if absent, since applying over them would wipe its output.
@@ -126,6 +102,7 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
     })
   }
   const nodeCidrs = await nodeIpBlocks()
+  const [dnsCidrs, apiserver] = await Promise.all([clusterDnsCidrs(), apiserverEndpoints()])
   // In order: RBAC before the Deployment that uses it, and the policies
   // with the proxy, before any workspace pod can exist.
   for (const manifest of [
@@ -135,12 +112,15 @@ export async function ensureProxyResources(imageRef: string): Promise<void> {
     buildProxyDeploymentManifest(imageRef),
     buildProxyServiceManifest(),
     buildServerMamaServiceManifest(),
-    buildWorkspaceEgressNpManifest(nodeCidrs),
-    buildWorkspaceIngressLockNpManifest(),
     buildProxyIngressNpManifest(nodeCidrs),
-    buildProxyEgressNpManifest(await nodeAddressBlocks(), await clusterDnsCidrs(), await apiserverEndpoints()),
+    buildProxyEgressNpManifest(await nodeAddressBlocks(), dnsCidrs, apiserver),
     buildEgressWorldDenyNpManifest(),
   ]) await applyObject(manifest)
+  // The redirect's policies, which nothing writes any more
+  // (docs/legacy-compat-shims.md "The redirect's policies").
+  for (const name of RETIRED_POLICY_NAMES) {
+    await deleteObject({ apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', name, namespace: k8sNamespace() })
+  }
   await ensureNetd()
   await waitForRollout({
     workload: `deployment/${PROXY_APP_NAME}`, namespace: k8sNamespace(), timeoutMs: 180_000,

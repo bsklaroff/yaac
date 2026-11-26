@@ -13,6 +13,7 @@ export {
   ClusterCache,
   getActiveClusterCache,
   readWorkspaceJobs,
+  readNetdPods,
   readWorkspacePods,
   setActiveClusterCache,
 } from './cluster-cache'
@@ -44,6 +45,7 @@ export { legacyHashOf, relabelLegacyObjects } from './legacy-labels'
 export {
   nodeLocalNodePath,
   nodeMountsNodePath,
+  socketsNodePath,
   storageTierOf,
   resolveMountSource,
 } from './mount-sources'
@@ -61,6 +63,10 @@ export {
   sentryTmpfsAnnotations,
   installSecurityContext,
   processIdentity,
+  netshimContainer,
+  socketVolume,
+  SANDBOX_DNS,
+  SOCKET_MOUNT_DIR,
 } from './pod-spec'
 export type { InstallIdentity, MountSource, PodMount } from './pod-spec'
 export {
@@ -108,7 +114,6 @@ export {
 export type { PodInfo } from './pods'
 export {
   BUILDER_ROLE_GUARD_NAME,
-  DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
   LABEL_PROXY_INPUT,
   LABEL_PROXY_OUTPUT,
@@ -119,12 +124,8 @@ export {
   MOUNTD_APP_NAME,
   MOUNTD_PORT,
   ARBORIST_PORT,
-  NETD_LISTENER_PORT_BASE,
-  NETD_LISTENER_PORT_END,
-  NETD_LISTENER_SLOTS,
   NETD_SA_NAME,
   NFS_PORT,
-  LABEL_NPM_CACHE,
   NPM_CACHE_APP_NAME,
   NPM_CACHE_PORT,
   POD_STREAM_PORT,
@@ -142,7 +143,6 @@ export {
   PROXY_REGISTRATION_PREFIX,
   PROXY_SA_NAME,
   PROXY_STATE_CONFIGMAP_NAME,
-  RELAY_PORT,
   ROLE_BUILDER,
   ROLE_SERVER,
   SERVER_APP_NAME,
@@ -174,15 +174,19 @@ export {
   TAILSCALE_OPERATOR_NAMESPACE,
   TAILSCALE_PARENT_NAMESPACE_LABEL,
   TAILSCALE_PARENT_RESOURCE_LABEL,
-  WORKSPACE_EGRESS_NP_NAME,
-  WORKSPACE_INGRESS_LOCK_NP_NAME,
+  NETD_EGRESS_NP_NAME,
+  NETD_INGRESS_NP_NAME,
   SSH_HOST_KEY_ALIAS,
   SSH_TUNNEL_SENTINEL,
   DNS_SINKHOLE,
-  TRANSPARENT_HTTPS_PORT,
-  TRANSPARENT_HTTP_PORT,
-  TRANSPARENT_TUNNEL_PORT,
   TUNNEL_INGRESS_PORT,
+  SOCKET_EGRESS_PORT,
+  NETD_STREAM_PORT,
+  NETD_SITE_PORT,
+  NETSHIM_TCP_PORT,
+  NETSHIM_DNS_PORT,
+  PP2_TLV_ID,
+  PP2_TLV_SECRET,
   proxyServiceHost,
 } from './proxy-constants'
 export {

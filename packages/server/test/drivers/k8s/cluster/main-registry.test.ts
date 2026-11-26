@@ -41,8 +41,8 @@ import {
   LABEL_REGISTRY_SERVES,
   REGISTRY_UPSTREAM_IMAGE,
 } from '#drivers/k8s/cluster/main-registry'
-import { ROLE_BUILDER } from '#drivers/k8s/substrate/proxy-constants'
-import { ENVOY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/netd'
+import { PROXY_APP_NAME } from '#drivers/k8s/substrate/proxy-constants'
+import { ENVOY_UPSTREAM_IMAGE } from '#drivers/k8s/cluster/envoy-image'
 import { registryAuthFile } from '#drivers/k8s/cluster'
 import { _resetRegistryGrantKeyForTests, mintRegistryGrant } from '#drivers/k8s/cluster/registry-grant'
 import { installId } from '#drivers/k8s/substrate'
@@ -491,7 +491,7 @@ describe('ensureMainRegistry', () => {
       .toEqual(cases.map(([, , , want]) => want))
   })
 
-  it('gives the node the node port, and builder and server pods in any namespace the pod port', async () => {
+  it('gives the node the node port, and the proxy and server pods in any namespace the pod port', async () => {
     answersAfterFirstPing()
     await ensureMainRegistry()
 
@@ -506,10 +506,11 @@ describe('ensureMainRegistry', () => {
     // come from the node's network namespace, which only an ipBlock names.
     expect(rules[0].from).toEqual([{ ipBlock: { cidr: '10.89.0.7/32' } }])
     expect(rules[0].ports).toEqual([{ protocol: 'TCP', port: 5000 }])
-    // Builder pods live in per-run namespaces during e2e, so a bare
-    // podSelector (this namespace only) would lock them out.
+    // Builds reach it through the proxy, which lives in a per-run namespace
+    // during e2e, so a bare podSelector (this namespace only) would lock it
+    // out. No builder pod is admitted: it has no interface to dial from.
     expect(rules[1].from).toEqual([
-      { namespaceSelector: {}, podSelector: { matchLabels: { 'yaac.role': ROLE_BUILDER } } },
+      { namespaceSelector: {}, podSelector: { matchLabels: { app: PROXY_APP_NAME } } },
       { namespaceSelector: {}, podSelector: { matchLabels: { app: 'yaac-server' } } },
     ])
     expect(rules[1].ports).toEqual([{ protocol: 'TCP', port: 5002 }])

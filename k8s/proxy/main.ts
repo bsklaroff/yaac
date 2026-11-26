@@ -28,7 +28,6 @@
 
 import http from 'node:http'
 import net from 'node:net'
-import dgram from 'node:dgram'
 import dns from 'node:dns'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -36,7 +35,6 @@ import path from 'node:path'
 import forge from 'node-forge'
 import { SocksProxyAgent } from 'socks-proxy-agent'
 import { peekClientHelloSni, splitHostHeader } from './transparent'
-import { parsePp2Header } from './pp2'
 import {
   CA_SECRET_NAME,
   REFRESHED_SECRET_NAME,
@@ -60,12 +58,10 @@ import {
   writeRefreshed,
   writeState,
 } from './object-watch'
-import { DNS_QTYPE_A, buildDnsResponse, isInternalName, parseDnsQuery } from './dns-stub'
-import {
-  PodWorkspaceIndex, fetchPodIpByWorkspaceId, fetchWorkspaceByPodIp, inClusterClient, startPodWatch,
-} from './pod-watch'
+import { handleSocketIngress } from './socket-ingress'
+import { inClusterClient } from './k8s-client'
+import { MAIN_REGISTRY_NAMESPACE } from './upstream'
 import { SYSTEM_ROOTS_PATH, combineCaBundle } from './ca-bundle'
-import { timingSafeStrEqual } from './secure-compare'
 import { RefreshFlights } from './refresh-flight'
 import { LiveTunnels } from './live-tunnels'
 import { admissionFor, isHostAllowed } from './injection'
@@ -80,29 +76,13 @@ import { MAMA_MAGIC_HOST, MAMA_PATH, relayHeaders, relayTarget } from './yaac-re
 // objects (object-watch.ts).
 const API_PORT = process.env.API_PORT
 const PROXY_AUTH_SECRET = process.env.PROXY_AUTH_SECRET
-// Transparent egress listeners. netd's Envoy forwards redirected 443/80
-// here with a PP2 header (destination from SNI / Host), and SSH CONNECTs to
-// the tunnel listener.
-const TRANSPARENT_HTTPS_PORT = process.env.TRANSPARENT_HTTPS_PORT
-const TRANSPARENT_HTTP_PORT = process.env.TRANSPARENT_HTTP_PORT
-const TRANSPARENT_TUNNEL_PORT = process.env.TRANSPARENT_TUNNEL_PORT
-// Stream relay from the yaac server into a workspace pod's streamd
-// (docs/stream-relay.md).
-const RELAY_PORT = process.env.RELAY_PORT
-const POD_STREAM_PORT = process.env.POD_STREAM_PORT
-// UDP/53 DNS stub (see dns-stub.ts) for workspace pods.
-const DNS_STUB_PORT = process.env.DNS_STUB_PORT
-// The answer for external names. The address is never dialed through; see
-// dns-stub.ts.
-const DNS_SINKHOLE = process.env.DNS_SINKHOLE
+// netd's relay carries every sandbox connection here (socket-ingress.ts).
+const SOCKET_EGRESS_PORT = process.env.SOCKET_EGRESS_PORT
 // The server's yaac-mama listener, which workspaces' calls are relayed to.
 const MAMA_RELAY_URL = process.env.MAMA_RELAY_URL
-if (!API_PORT || !PROXY_AUTH_SECRET || !TRANSPARENT_HTTPS_PORT || !TRANSPARENT_HTTP_PORT
-  || !TRANSPARENT_TUNNEL_PORT || !RELAY_PORT || !POD_STREAM_PORT || !DNS_STUB_PORT || !DNS_SINKHOLE
-  || !MAMA_RELAY_URL) {
-  console.error('[proxy] API_PORT, PROXY_AUTH_SECRET, TRANSPARENT_HTTPS_PORT, '
-    + 'TRANSPARENT_HTTP_PORT, TRANSPARENT_TUNNEL_PORT, RELAY_PORT, POD_STREAM_PORT, '
-    + 'DNS_STUB_PORT, DNS_SINKHOLE and MAMA_RELAY_URL environment variables are required')
+if (!API_PORT || !PROXY_AUTH_SECRET || !SOCKET_EGRESS_PORT || !MAMA_RELAY_URL) {
+  console.error('[proxy] API_PORT, PROXY_AUTH_SECRET, SOCKET_EGRESS_PORT and MAMA_RELAY_URL '
+    + 'environment variables are required')
   process.exit(1)
 }
 
@@ -114,45 +94,9 @@ const MAMA_RELAY_TIMEOUT_MS = 240_000
 // Pod-local scratch (an emptyDir): Tor's state and its readiness marker.
 const DATA_DIR = '/data'
 
-/**
- * Resolve an internal name's first IPv4 address via the proxy's own resolver
- * (the cluster DNS). Callers pass only names that pass isInternalName.
- * Returns null on any failure, so the caller answers with an empty NOERROR.
- */
-async function resolveInternalA(name: string): Promise<string | null> {
-  try {
-    const addrs = await dns.promises.resolve4(name)
-    return addrs.length > 0 ? addrs[0] : null
-  } catch {
-    return null
-  }
-}
-
-// Pod IP to workspace id, kept current by a pod watch. The transparent
-// listeners look up the source IP from the PP2 header here.
-const podIndex = new PodWorkspaceIndex()
-
-/**
- * The workspace a pod IP belongs to. Falls back to a direct lookup when a new
- * pod's first connection beats its watch event, and likewise fetches a
- * registration ConfigMap the watch has not delivered yet.
- */
-async function resolveWorkspace(ip: string): Promise<string | undefined> {
-  let workspaceId = podIndex.resolve(ip)
-  if (!workspaceId) {
-    try {
-      workspaceId = await fetchWorkspaceByPodIp(podIndex, ip) ?? undefined
-    } catch { return undefined }
-  }
-  if (workspaceId && !objects.registration(workspaceId)) {
-    try {
-      await fetchRegistration(objects, workspaceId)
-    } catch (err) {
-      console.error(`[proxy] registration lookup failed for ${workspaceId.slice(0, 8)}...:`, (err as Error).message)
-    }
-  }
-  return workspaceId
-}
+// Whether an id is a build's or a site release's, from its registration.
+const isBuild = (id: string): boolean => objects.registration(id)?.build === true
+const isRelease = (id: string): boolean => objects.registration(id)?.release === true
 
 // USE_TOR=1 routes every upstream connection through the Tor SOCKS listener
 // entrypoint.sh starts. socks5h:// resolves DNS at the Tor exit, so lookups
@@ -289,7 +233,8 @@ const dispatchContext: DispatchContext = {
     objects.registration(workspaceId)?.projectId, hostname, requestPath, status),
   liveTunnels,
   recordBlockedHost: (workspaceId, hostname) => observed.recordBlockedHost(workspaceId, hostname),
-  isBuild: (id) => podIndex.isBuild(id),
+  isBuild,
+  installNamespaces: [inClusterClient().namespace, MAIN_REGISTRY_NAMESPACE],
   lookup: (hostname) => dns.promises.lookup(hostname, { all: true, family: 4 }),
 }
 // Restore what the previous pod left: its observed state, and any token
@@ -301,8 +246,8 @@ for (const [owner, bundles] of decodeRefreshed(await readOutputObject('secret', 
 
 // ── Server ─────────────────────────────────────────────────────────────
 
-// The control API. Workspace egress never reaches it; it arrives on the
-// transparent listeners below.
+// The control API. Sandbox egress never reaches it; it arrives on the
+// socket ingress port below.
 const server = http.createServer(handleApiRequest)
 
 server.on('error', (err: Error) => {
@@ -313,87 +258,22 @@ server.listen(parseInt(API_PORT, 10), '0.0.0.0', () => {
   console.log(`[proxy] control API listening on port ${API_PORT}${USE_TOR ? ' (Tor: enabled)' : ''}`)
 })
 
-// ── Transparent listeners ──────────────────────────────────────────────
+// ── Socket ingress ─────────────────────────────────────────────────────────
 //
-// netd redirects workspace pods' outbound 443/80 and SSH tunnels to netd's
-// Envoy, which forwards each connection here behind a PP2 header carrying
-// the source pod IP. That IP identifies the workspace; the destination
-// comes from the SNI or Host header. The listeners fail closed: a missing
-// or invalid PP2 header, an unknown pod, or an SNI-less ClientHello drops
-// the connection. See docs/workspace-egress.md.
+// netd's relay carries each sandbox connection to SOCKET_EGRESS_PORT behind
+// a header naming the sandbox and the address it dialed (socket-ingress.ts).
+// The handlers below fail closed: an SNI-less ClientHello, a malformed
+// CONNECT or a missing Host header drops the connection or refuses the
+// request. See docs/workspace-egress.md.
 
 /** Cap on bytes buffered while waiting for a parseable ClientHello. */
 const SNI_PEEK_MAX_BYTES = 64 * 1024
 /** How long to wait for the ClientHello before dropping the socket. */
 const SNI_PEEK_TIMEOUT_MS = 10_000
-/** Size cap and deadline for the PP2 header. */
-const PP2_MAX_BYTES = 4 * 1024
-const PP2_TIMEOUT_MS = 10_000
-
-/**
- * Read the PP2 header on a new transparent socket, map its source pod IP to
- * a workspace, and pass the workspace id and remaining bytes to `next`. Any
- * failure destroys the socket.
- *
- * The source IP is trustworthy: Envoy takes it from the real peer address,
- * pods cannot spoof their source, and the proxy's ingress policy admits these
- * ports only from node CIDRs, so a pod cannot dial in with a forged header.
- */
-function resolveWorkspaceBySourceIp(
-  socket: net.Socket,
-  label: string,
-  next: (workspaceId: string, leftover: Buffer) => void,
-): void {
-  socket.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code !== 'ECONNRESET') {
-      console.error(`[proxy] Transparent ${label} socket error:`, err.message)
-    }
-  })
-
-  const peer = socket.remoteAddress ?? '(unknown)'
-  let buf = Buffer.alloc(0)
-  const timer = setTimeout(() => {
-    console.log(`[proxy] Transparent ${label} from ${peer}: no PROXY header within ${PP2_TIMEOUT_MS}ms`)
-    socket.destroy()
-  }, PP2_TIMEOUT_MS)
-
-  const onData = (chunk: Buffer): void => {
-    buf = Buffer.concat([buf, chunk])
-    const res = parsePp2Header(buf)
-    if (res.kind === 'need-more') {
-      if (buf.length > PP2_MAX_BYTES) { clearTimeout(timer); socket.destroy() }
-      return
-    }
-    clearTimeout(timer)
-    socket.removeListener('data', onData)
-    if (res.kind === 'invalid' || !res.srcIp) {
-      console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: no valid PROXY header`)
-      socket.destroy()
-      return
-    }
-    const srcIp = res.srcIp
-    // Keep bytes that arrive during the async lookup.
-    let leftover = buf.subarray(res.bytesConsumed)
-    const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
-    socket.on('data', buffer)
-    void resolveWorkspace(srcIp).then((workspaceId) => {
-      socket.removeListener('data', buffer)
-      if (!workspaceId) {
-        console.log(`[proxy] BLOCKED transparent ${label} from ${peer}: source ${srcIp} is not a known workspace pod`)
-        socket.destroy()
-        return
-      }
-      // Passed directly, not unshifted: each `next` unshifts once itself, and
-      // a second unshift does not reliably reach a new 'data' listener.
-      next(workspaceId, leftover)
-    })
-  }
-  socket.on('data', onData)
-}
 
 /**
  * Read the SNI from the ClientHello without terminating TLS, then dispatch.
- * `initial` holds bytes already read after the PP2 header.
+ * `initial` holds bytes already read after the relay's header.
  */
 function peekSniAndDispatch(socket: net.Socket, workspaceId: string, initial: Buffer): void {
   const peer = socket.remoteAddress ?? '(unknown)'
@@ -401,7 +281,7 @@ function peekSniAndDispatch(socket: net.Socket, workspaceId: string, initial: Bu
   let settled = false
   const timer = setTimeout(() => {
     if (settled) return
-    console.log(`[proxy] Transparent HTTPS from ${peer}: no ClientHello within ${SNI_PEEK_TIMEOUT_MS}ms`)
+    console.log(`[proxy] TLS from ${peer}: no ClientHello within ${SNI_PEEK_TIMEOUT_MS}ms`)
     socket.destroy()
   }, SNI_PEEK_TIMEOUT_MS)
 
@@ -416,7 +296,7 @@ function peekSniAndDispatch(socket: net.Socket, workspaceId: string, initial: Bu
     clearTimeout(timer)
     socket.removeListener('data', onData)
     if (peek.kind !== 'found') {
-      console.log(`[proxy] BLOCKED transparent HTTPS from ${peer}: no parseable SNI`)
+      console.log(`[proxy] BLOCKED TLS from ${peer}: no parseable SNI`)
       socket.destroy()
       return true
     }
@@ -424,7 +304,7 @@ function peekSniAndDispatch(socket: net.Socket, workspaceId: string, initial: Bu
     // TLSSocket or tunnel pipe is attached, and the handshake stalls.
     socket.pause()
     if (buf.length > 0) socket.unshift(buf)
-    // Only port-443 traffic is redirected to this listener.
+    // Only connections to port 443 come here (socket-ingress.ts).
     void dispatchToUpstream(dispatchContext, socket, peek.serverName, '443', workspaceId, { writeConnectOk: false })
     return true
   }
@@ -439,19 +319,14 @@ function peekSniAndDispatch(socket: net.Socket, workspaceId: string, initial: Bu
   socket.on('data', onData)
 }
 
-const transparentHttpsServer = net.createServer((socket) => {
-  resolveWorkspaceBySourceIp(socket, 'HTTPS', (workspaceId, leftover) =>
-    peekSniAndDispatch(socket, workspaceId, leftover))
-})
-
-// The transparent HTTP listener hands sockets to an internal http.Server,
-// carrying the resolved workspace id on the socket.
+// Plain-HTTP connections go to an internal http.Server, carrying the
+// sandbox's id on the socket.
 type IdentifiedSocket = net.Socket & { yaacWorkspaceId?: string }
 
 /**
  * Relay a workspace's call to `yaac.internal` (yaac-mama, or a hosted git
- * remote) to the server's mama listener, naming the workspace the source pod
- * IP resolved to and authenticating as the proxy. Runs before the allowlist
+ * remote) to the server's mama listener, naming the workspace the relay's
+ * header did and authenticating as the proxy. Runs before the allowlist
  * check, so it always works.
  */
 function relayMamaRequest(
@@ -462,9 +337,9 @@ function relayMamaRequest(
   // A public site's release faces the internet, so it never reaches the
   // server at all (docs/public-sites.md); the server refuses it too. Nor
   // does an image build, whose RUN steps are no workspace.
-  if (podIndex.isRelease(workspaceId) || podIndex.isBuild(workspaceId)) {
+  if (isRelease(workspaceId) || isBuild(workspaceId)) {
     res.writeHead(403, { 'Content-Type': 'text/plain' })
-    res.end(podIndex.isBuild(workspaceId)
+    res.end(isBuild(workspaceId)
       ? 'an image build may not call yaac'
       : 'a public site\'s release may not call yaac')
     return
@@ -526,14 +401,6 @@ const internalHttpServer = http.createServer({ requestTimeout: 0 }, (req, res) =
   })
 })
 
-const transparentHttpServer = net.createServer((socket) => {
-  resolveWorkspaceBySourceIp(socket, 'HTTP', (workspaceId, leftover) => {
-    ;(socket as IdentifiedSocket).yaacWorkspaceId = workspaceId
-    if (leftover.length > 0) socket.unshift(leftover)
-    internalHttpServer.emit('connection', socket)
-  })
-})
-
 /** Size cap and deadline for the tunnel listener's CONNECT request. */
 const CONNECT_MAX_BYTES = 8 * 1024
 const CONNECT_TIMEOUT_MS = 10_000
@@ -550,7 +417,7 @@ function readConnectAndDispatch(socket: net.Socket, workspaceId: string, initial
   let settled = false
   const timer = setTimeout(() => {
     if (settled) return
-    console.log(`[proxy] Transparent TUNNEL from ${peer}: no CONNECT within ${CONNECT_TIMEOUT_MS}ms`)
+    console.log(`[proxy] TUNNEL from ${peer}: no CONNECT within ${CONNECT_TIMEOUT_MS}ms`)
     socket.destroy()
   }, CONNECT_TIMEOUT_MS)
 
@@ -566,7 +433,7 @@ function readConnectAndDispatch(socket: net.Socket, workspaceId: string, initial
     const firstLine = buf.subarray(0, buf.indexOf('\r\n')).toString('utf8')
     const m = /^CONNECT\s+(\S+):(\d+)\s+HTTP\/\d/i.exec(firstLine)
     if (!m) {
-      console.log(`[proxy] BLOCKED transparent TUNNEL from ${peer}: bad CONNECT line`)
+      console.log(`[proxy] BLOCKED TUNNEL from ${peer}: bad CONNECT line`)
       socket.destroy()
       return true
     }
@@ -588,191 +455,36 @@ function readConnectAndDispatch(socket: net.Socket, workspaceId: string, initial
   socket.on('data', onData)
 }
 
-const transparentTunnelServer = net.createServer((socket) => {
-  resolveWorkspaceBySourceIp(socket, 'TUNNEL', (workspaceId, leftover) =>
-    readConnectAndDispatch(socket, workspaceId, leftover))
-})
-
-for (const [srv, portStr, label] of [
-  [transparentHttpsServer, TRANSPARENT_HTTPS_PORT, 'HTTPS'],
-  [transparentHttpServer, TRANSPARENT_HTTP_PORT, 'HTTP'],
-  [transparentTunnelServer, TRANSPARENT_TUNNEL_PORT, 'TUNNEL'],
-] as Array<[net.Server, string, string]>) {
-  srv.on('error', (err: Error) => {
-    console.error(`[proxy] Transparent ${label} server error:`, err)
-  })
-  srv.listen(parseInt(portStr, 10), '0.0.0.0', () => {
-    console.log(`[proxy] Transparent ${label} listener on port ${portStr}`)
-  })
-}
-
-// ── Stream relay (server to workspace streamd) ────────────────────────────
-//
-// The server sends one JSON auth line, `{token, workspaceId}`; the relay
-// dials that workspace's pod at POD_STREAM_PORT and splices the rest of the
-// stream through untouched. Per-stream failures get an `{ok:false}` line,
-// since the server reads a silent close as a dead peer. Only a bad auth line
-// closes silently. See docs/stream-relay.md.
-
-const RELAY_HANDSHAKE_MAX_BYTES = 4 * 1024
-/**
- * Deadline for everything before the splice: auth line, pod IP lookup, and
- * pod dial. A pod whose ingress policy does not yet admit the proxy drops the
- * SYN, and an unbounded dial would hang for minutes. Generous enough for an
- * apiserver lookup, but under the server's 15s dial deadline so the server
- * sees the refusal.
- */
-const RELAY_PRESPLICE_TIMEOUT_MS = 6_000
-/**
- * Idle time before TCP keepalive probes start on each leg of a splice. A
- * spliced stream can sit idle for days, and the cluster's connection
- * tracking forgets an idle flow, after which one end's close never reaches
- * the other. Probes keep both legs known; the server probes its own leg too.
- */
-const RELAY_KEEPALIVE_MS = 60_000
-
-function handleRelayConnection(socket: net.Socket, podStreamPort: number): void {
-  socket.on('error', () => { /* per-connection; close tears down the splice */ })
-  // Traffic is already batched at each end, so Nagle only adds delay.
-  socket.setNoDelay(true)
-  socket.setKeepAlive(true, RELAY_KEEPALIVE_MS)
-  let buf = Buffer.alloc(0)
-  // Until authenticated, a timeout closes silently.
-  let authed = false
-  // Idempotent: the deadline and a failed dial can both call it.
-  function refuse(error: string): void {
-    clearTimeout(deadline)
-    if (socket.destroyed || socket.writableEnded) return
-    socket.end(JSON.stringify({ ok: false, error: `relay: ${error}` }) + '\n')
-  }
-  const deadline = setTimeout(() => {
-    if (authed) refuse('timed out resolving the workspace pod')
-    else socket.destroy()
-  }, RELAY_PRESPLICE_TIMEOUT_MS)
-
-  const onData = (chunk: Buffer): void => {
-    buf = Buffer.concat([buf, chunk])
-    const nl = buf.indexOf(0x0a)
-    if (nl < 0) {
-      if (buf.length > RELAY_HANDSHAKE_MAX_BYTES) { clearTimeout(deadline); socket.destroy() }
-      return
-    }
-    socket.removeListener('data', onData)
-
-    let params: { token?: unknown; workspaceId?: unknown }
+const socketIngressServer = net.createServer((socket) => handleSocketIngress(socket, {
+  secret: PROXY_AUTH_SECRET,
+  registered: async (id) => {
+    if (objects.registration(id)) return true
     try {
-      params = JSON.parse(buf.subarray(0, nl).toString('utf8')) as typeof params
-    } catch {
-      clearTimeout(deadline)
-      socket.destroy()
-      return
+      return (await fetchRegistration(objects, id)) !== undefined
+    } catch (err) {
+      console.error(`[proxy] registration lookup failed for ${id.slice(0, 8)}...:`, (err as Error).message)
+      return false
     }
-    const dialled = params.workspaceId
-    if (
-      typeof params.token !== 'string' || typeof dialled !== 'string'
-      || !timingSafeStrEqual(params.token, PROXY_AUTH_SECRET!)
-    ) {
-      console.log('[proxy] BLOCKED relay dial: bad auth line')
-      clearTimeout(deadline)
-      socket.destroy()
-      return
-    }
-    authed = true
-    const workspaceId = dialled
-
-    // Buffer bytes (the pipelined streamd handshake) until the splice. The
-    // socket is flowing, so data with no listener would be discarded.
-    let leftover = buf.subarray(nl + 1)
-    const buffer = (chunk2: Buffer): void => { leftover = Buffer.concat([leftover, chunk2]) }
-    socket.on('data', buffer)
-    void (async () => {
-      let ip = podIndex.resolveIp(workspaceId)
-      if (!ip) {
-        try {
-          ip = await fetchPodIpByWorkspaceId(podIndex, workspaceId)
-        } catch (err) {
-          console.error(`[proxy] relay pod lookup failed for ${workspaceId.slice(0, 8)}...:`, (err as Error).message)
-        }
-      }
-      // A refusal only ends the socket, so check `writableEnded` too.
-      if (socket.destroyed || socket.writableEnded) return
-      if (!ip) {
-        console.log(`[proxy] BLOCKED relay dial: unknown workspace ${workspaceId.slice(0, 8)}...`)
-        refuse('unknown workspace')
-        return
-      }
-      // allowHalfOpen lets an EOF from either end pass through the splice.
-      const target = net.connect({ port: podStreamPort, host: ip, allowHalfOpen: true })
-      target.setNoDelay(true)
-      target.setKeepAlive(true, RELAY_KEEPALIVE_MS)
-      // The dial gets its own timeout on the target socket, the only handle
-      // that can abort a hung connect. It lands in the error handler, so a
-      // hung dial is refused like a failed one.
-      clearTimeout(deadline)
-      target.setTimeout(RELAY_PRESPLICE_TIMEOUT_MS, () => {
-        target.destroy(Object.assign(new Error('pod dial timeout'), { code: 'ETIMEDOUT' }))
-      })
-      let spliced = false
-      target.on('connect', () => {
-        spliced = true
-        target.setTimeout(0)
-        socket.removeListener('data', buffer)
-        if (leftover.length > 0) target.write(leftover)
-        socket.pipe(target)
-        target.pipe(socket)
-      })
-      target.on('error', (err: NodeJS.ErrnoException) => {
-        if (!spliced) refuse(`pod dial failed: ${err.code ?? err.message}`)
-        else socket.destroy()
-      })
-      target.on('close', () => {
-        if (spliced) socket.destroy()
-      })
-      socket.on('close', () => target.destroy())
-    })()
-  }
-  socket.on('data', onData)
-}
-
-const relayServer = net.createServer(
-  { allowHalfOpen: true },
-  (socket) => handleRelayConnection(socket, parseInt(POD_STREAM_PORT, 10)),
-)
-relayServer.on('error', (err: Error) => {
-  console.error('[proxy] Relay server error:', err)
+  },
+  handlers: {
+    tls: (s, id, leftover) => peekSniAndDispatch(s, id, leftover),
+    tunnel: (s, id, leftover) => readConnectAndDispatch(s, id, leftover),
+    http: (s, id, leftover) => {
+      ;(s as IdentifiedSocket).yaacWorkspaceId = id
+      if (leftover.length > 0) s.unshift(leftover)
+      internalHttpServer.emit('connection', s)
+    },
+  },
+}))
+socketIngressServer.on('error', (err: Error) => {
+  console.error('[proxy] socket ingress server error:', err)
 })
-relayServer.listen(parseInt(RELAY_PORT, 10), '0.0.0.0', () => {
-  console.log(`[proxy] stream relay listener on port ${RELAY_PORT}`)
+socketIngressServer.listen(parseInt(SOCKET_EGRESS_PORT, 10), '0.0.0.0', () => {
+  console.log(`[proxy] socket ingress listener on port ${SOCKET_EGRESS_PORT}`)
 })
 
-// ── DNS stub (UDP/53), split-horizon ───────────────────────────────────────
-// See dns-stub.ts: Services in this install's namespace resolve against the
-// cluster DNS, every other name gets the sinkhole address.
-const dnsServer = dgram.createSocket('udp4')
-dnsServer.on('message', (msg, rinfo) => {
-  const query = parseDnsQuery(msg)
-  if (!query) return
-  const reply = (ip: string | null): void => {
-    dnsServer.send(buildDnsResponse(query, ip), rinfo.port, rinfo.address)
-  }
-  if (!isInternalName(query.name, inClusterClient().namespace)) {
-    reply(DNS_SINKHOLE)
-    return
-  }
-  if (query.qtype !== DNS_QTYPE_A) {
-    reply(null)
-    return
-  }
-  void resolveInternalA(query.name).then(reply)
-})
-dnsServer.on('error', (err) => console.error('[proxy] DNS stub error:', err))
-dnsServer.bind(parseInt(DNS_STUB_PORT, 10), () => {
-  console.log(`[proxy] DNS stub listener on udp/${DNS_STUB_PORT}`)
-})
-
-// ── Watches (pods and input objects) ───────────────────────────────────────
+// ── Watches (input objects) ────────────────────────────────────────────────
 try {
-  startPodWatch(podIndex)
   startObjectWatch(objects)
 } catch (err) {
   console.error('[proxy] watches failed to start:', (err as Error).message)
@@ -781,10 +493,6 @@ try {
 
 process.on('SIGTERM', () => {
   console.log('[proxy] Shutting down...')
-  transparentHttpsServer.close()
-  transparentHttpServer.close()
-  transparentTunnelServer.close()
-  relayServer.close()
-  dnsServer.close()
+  socketIngressServer.close()
   server.close(() => process.exit(0))
 })

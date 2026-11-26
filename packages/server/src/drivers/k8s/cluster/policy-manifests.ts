@@ -4,20 +4,20 @@ import {
   DISK_PORT,
   MOUNTD_APP_NAME,
   MOUNTD_PORT,
-  DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
   LABEL_ROLE,
-  LABEL_WORKSPACE_ID,
-  NETD_LISTENER_PORT_BASE,
-  NETD_LISTENER_PORT_END,
+  NETD_APP_NAME,
+  NETD_EGRESS_NP_NAME,
+  NETD_INGRESS_NP_NAME,
+  NETD_SITE_PORT,
+  NETD_STREAM_PORT,
   NFS_PORT,
-  POD_STREAM_PORT,
+  NPM_CACHE_APP_NAME,
+  NPM_CACHE_PORT,
   PROXY_APP_NAME,
   PROXY_EGRESS_NP_NAME,
   PROXY_INGRESS_NP_NAME,
   PROXY_PORT,
-  RELAY_PORT,
-  ROLE_BUILDER,
   ROLE_SERVER,
   SERVER_APP_NAME,
   SERVER_EGRESS_NP_NAME,
@@ -28,11 +28,8 @@ import {
   SERVER_TOKEN_INGRESS_NP_NAME,
   SERVER_TOKEN_PORT,
   SERVER_POD_PORT,
-  WORKSPACE_EGRESS_NP_NAME,
-  WORKSPACE_INGRESS_LOCK_NP_NAME,
-  TRANSPARENT_HTTPS_PORT,
-  TRANSPARENT_HTTP_PORT,
-  TRANSPARENT_TUNNEL_PORT,
+  SITE_ROUTER_APP_NAME,
+  SOCKET_EGRESS_PORT,
   k8sNamespace,
 } from '#drivers/k8s/substrate'
 import { MAIN_REGISTRY_APP_LABEL } from './main-registry'
@@ -43,10 +40,14 @@ import { REGISTRY_NAMESPACE, REGISTRY_POD_PORT } from './registry'
  * (docs/workspace-egress.md). Plain NP because every backend enforces it,
  * including managed clusters where Calico CRDs are unavailable.
  *
- * Traffic to or from the node (netd's Envoy, kubelet probes, containerd
- * pulls) uses an `ipBlock` of node addresses (`nodeIpBlocks()`), since NP
- * has no selector for the host network namespace. The builders are pure;
- * CIDRs are passed in.
+ * Workspace and builder pods have no network interface and so no policy
+ * of their own: the world-deny policy covers them, and everything they
+ * send crosses netd's relay and the proxy, whose policies are below.
+ *
+ * Traffic to or from the node (kubelet probes, containerd pulls) uses an
+ * `ipBlock` of node addresses (`nodeIpBlocks()`), since NP has no selector
+ * for the host network namespace. The builders are pure; CIDRs are passed
+ * in.
  */
 
 /** `to`/`from` peer for a set of CIDRs. */
@@ -71,109 +72,72 @@ function np(
   }
 }
 
-/** Selector matching every workspace pod. */
-const workspacePodSelector = {
-  matchExpressions: [{ key: LABEL_WORKSPACE_ID, operator: 'Exists' }],
-}
-
 /**
- * The egress every proxied pod has (workspaces and builders): the node on
- * netd's listener range, so a pod whose redirect netd has not programmed
- * has no egress at all, and the proxy pod's DNS stub (53/udp).
+ * The policies the redirect datapath wrote, which the server deletes by
+ * name at start (docs/legacy-compat-shims.md "The redirect's policies").
+ * Per-site policies go with the site sync's prune.
  */
-function proxiedEgress(nodeCidrs: string[]): Array<Record<string, unknown>> {
-  return [
-    {
-      to: ipBlocks(nodeCidrs),
-      ports: [{
-        protocol: 'TCP',
-        port: NETD_LISTENER_PORT_BASE,
-        endPort: NETD_LISTENER_PORT_END,
-      }],
-    },
-    {
-      to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
-      ports: [udp(DNS_STUB_PORT)],
-    },
-  ]
-}
+export const RETIRED_POLICY_NAMES = [
+  'yaac-workspace-egress', 'yaac-workspace-ingress-lock', 'yaac-builder-egress', 'yaac-npm-cache-workspace-egress',
+]
 
 /**
- * Workspace-pod egress: the containment floor. The only outbound rule is
- * the node on netd's listener range, so if netd has not programmed a pod's
- * redirect, its traffic is dropped. A broken netd cuts egress; it never
- * grants it.
- *
- * Dialing a listener directly is harmless: Envoy records the real source
- * address in the PROXY-protocol header, and the proxy's transparent ports
- * are node-only (buildProxyIngressNpManifest).
- *
- * Also allowed: the proxy pod's DNS stub (53/udp).
- *
- * The npm cache is allowed by its own label-scoped policies.
- */
-export function buildWorkspaceEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
-  return np(WORKSPACE_EGRESS_NP_NAME, k8sNamespace(), {
-    podSelector: workspacePodSelector,
-    policyTypes: ['Egress'],
-    egress: proxiedEgress(nodeCidrs),
-  })
-}
-
-/**
- * Workspace-pod ingress: only the proxy's relay may dial in (to streamd).
- * Having any ingress rule makes everything else default-deny.
- */
-export function buildWorkspaceIngressLockNpManifest(): Record<string, unknown> {
-  return np(WORKSPACE_INGRESS_LOCK_NP_NAME, k8sNamespace(), {
-    podSelector: workspacePodSelector,
-    policyTypes: ['Ingress'],
-    ingress: [
-      {
-        from: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
-        ports: [tcp(POD_STREAM_PORT)],
-      },
-    ],
-  })
-}
-
-/**
- * Proxy ingress. The transparent ports are open only to node addresses,
- * where netd's Envoy delivers from, so no pod can forge a PROXY-protocol
- * source. Workspace and builder pods may reach only the DNS stub.
- * The control API and relay are open to the node and to the in-cluster
- * server pod.
+ * Proxy ingress: netd's relay on the socket egress port, where every
+ * sandbox's traffic arrives, and the control API from the in-cluster
+ * server and from the node, for the kubelet's readiness probe. The relay
+ * sends the proxy auth secret on every connection, so the port admits no
+ * one by position alone.
  */
 export function buildProxyIngressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
   return np(PROXY_INGRESS_NP_NAME, k8sNamespace(), {
     podSelector: { matchLabels: { app: PROXY_APP_NAME } },
     policyTypes: ['Ingress'],
     ingress: [
+      { from: [{ podSelector: { matchLabels: { app: NETD_APP_NAME } } }], ports: [tcp(SOCKET_EGRESS_PORT)] },
       {
-        // netd's Envoy, the kubelet probe, and any node-local server.
-        from: ipBlocks(nodeCidrs),
-        ports: [
-          tcp(TRANSPARENT_HTTPS_PORT),
-          tcp(TRANSPARENT_HTTP_PORT),
-          tcp(TRANSPARENT_TUNNEL_PORT),
-          tcp(PROXY_PORT),
-          tcp(RELAY_PORT),
-        ],
-      },
-      {
-        from: [
-          { podSelector: workspacePodSelector },
-          { podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } } },
-        ],
-        ports: [udp(DNS_STUB_PORT)],
-      },
-      {
-        // The in-cluster server (docs/server-in-cluster.md), by label.
-        from: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }],
-        ports: [tcp(PROXY_PORT), tcp(RELAY_PORT)],
+        from: [...ipBlocks(nodeCidrs), { podSelector: { matchLabels: { app: SERVER_APP_NAME } } }],
+        ports: [tcp(PROXY_PORT)],
       },
     ],
   })
+}
+
+/**
+ * netd ingress: the server's stream dials into workspaces on the relay's
+ * stream port, and the site router's requests to releases on its site port
+ * (docs/stream-relay.md, docs/public-sites.md "The router"). The site port
+ * takes no secret, so this policy is what keeps everything but the router
+ * off it.
+ */
+export function buildNetdIngressNpManifest(): Record<string, unknown> {
+  return np(NETD_INGRESS_NP_NAME, k8sNamespace(), {
+    podSelector: { matchLabels: { app: NETD_APP_NAME } },
+    policyTypes: ['Ingress'],
+    ingress: [
+      { from: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [tcp(NETD_STREAM_PORT)] },
+      { from: [{ podSelector: { matchLabels: { app: SITE_ROUTER_APP_NAME } } }], ports: [tcp(NETD_SITE_PORT)] },
+    ],
+  }, { app: NETD_APP_NAME })
+}
+
+/**
+ * netd egress: the proxy's socket egress port, which the relay hands every
+ * sandbox connection to, the apiserver its pod and Service watches read,
+ * and DNS for the proxy's name.
+ */
+export function buildNetdEgressNpManifest(
+  dnsCidrs: string[],
+  apiserver: { cidrs: string[]; ports: number[] },
+): Record<string, unknown> {
+  return np(NETD_EGRESS_NP_NAME, k8sNamespace(), {
+    podSelector: { matchLabels: { app: NETD_APP_NAME } },
+    policyTypes: ['Egress'],
+    egress: [
+      { to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }], ports: [tcp(SOCKET_EGRESS_PORT)] },
+      dnsEgress(dnsCidrs),
+      ...(apiserver.cidrs.length > 0 ? [{ to: ipBlocks(apiserver.cidrs), ports: apiserver.ports.map(tcp) }] : []),
+    ],
+  }, { app: NETD_APP_NAME })
 }
 
 /**
@@ -196,8 +160,6 @@ export const NON_PUBLIC_V4 = [
  * link-local included.
  */
 export const PUBLIC_V6 = { cidr: '2000::/3', except: ['2001::/23', '2001:db8::/32', '2002::/16', '3fff::/20'] }
-
-const BUILDER_EGRESS_NP_NAME = 'yaac-builder-egress'
 
 /** Where NodeLocal DNSCache listens in IPVS mode (typically 169.254.20.10). */
 const LINK_LOCAL_V4 = '169.254.0.0/16'
@@ -264,9 +226,11 @@ export function wideEgress(nodeAddrs: string[], dnsCidrs: string[]): Array<Recor
 
 /**
  * Proxy EGRESS: its upstream dials, anywhere `wideEgress` allows, plus its
- * in-cluster peers: the server's mama listener, workspace pods' streamd
- * (the stream relay), and the apiserver its watches read, at its real
- * endpoints (`apiserverEndpoints`).
+ * in-cluster peers: the server's mama listener, the apiserver its watches
+ * read, at its real endpoints (`apiserverEndpoints`), and the two install
+ * services a registration may name as `clusterServices`, the npm cache and
+ * the main registry's pod port. The proxy refuses either by name unless the
+ * registration holds it (k8s/proxy/upstream.ts `isInstallServiceName`).
  *
  * It also reaches every node address, since a project's allowlist may name
  * one exactly and the proxy dials it for the workspace. Two ports are cut.
@@ -293,7 +257,8 @@ export function buildProxyEgressNpManifest(
         ports: [...portsExcept('TCP', [NFS_PORT, SERVER_FRONT_PORT]), ...portsExcept('UDP', [NFS_PORT])],
       },
       { to: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [tcp(SERVER_MAMA_PORT)] },
-      { to: [{ podSelector: workspacePodSelector }], ports: [tcp(POD_STREAM_PORT)] },
+      { to: [{ podSelector: { matchLabels: { app: NPM_CACHE_APP_NAME } } }], ports: [tcp(NPM_CACHE_PORT)] },
+      registryEgress(),
       ...(apiserver.cidrs.length > 0 ? [{ to: ipBlocks(apiserver.cidrs), ports: apiserver.ports.map(tcp) }] : []),
     ],
   })
@@ -308,23 +273,6 @@ function registryEgress(): Record<string, unknown> {
     }],
     ports: [tcp(REGISTRY_POD_PORT)],
   }
-}
-
-/**
- * Builder egress (docs/image-builds.md "Build egress"): what a workspace
- * pod has (`proxiedEgress`), so every build fetch goes through the proxy
- * under the project's allowlist, plus the main registry's pod port its
- * builds pull parents from and push layers to. A builder whose redirect
- * netd has not programmed has no egress. The world-deny policy excludes
- * builders, so this is the policy that applies to them. Applied before
- * each build and by `reconcileNodeSet` as nodes join.
- */
-export function buildBuilderEgressNpManifest(nodeCidrs: string[]): Record<string, unknown> {
-  return np(BUILDER_EGRESS_NP_NAME, k8sNamespace(), {
-    podSelector: { matchLabels: { [LABEL_ROLE]: ROLE_BUILDER } },
-    policyTypes: ['Egress'],
-    egress: [...proxiedEgress(nodeCidrs), registryEgress()],
-  }, {})
 }
 
 /**
@@ -346,8 +294,8 @@ function torEgress(socksUrl: string | null): Array<Record<string, unknown>> {
 /**
  * Server-pod egress (docs/server-in-cluster.md "The server's own egress"):
  * public addresses, DNS and the main registry's pod port, plus the server's
- * own in-cluster peers. Those are the proxy's
- * control and relay ports, the apiserver at its real endpoints, and under
+ * own in-cluster peers. Those are the proxy's control port, netd's stream
+ * port (docs/stream-relay.md), the apiserver at its real endpoints, and under
  * `YAAC_USE_TOR` the host's Tor listener (`torSocksUrl`, null without Tor).
  * It keeps a git remote or endpoint URL a user names off the cluster's
  * internal addresses.
@@ -371,7 +319,8 @@ export function buildServerEgressNpManifest(
     egress: [
       ...wideEgress(nodeAddrs, dnsCidrs),
       registryEgress(),
-      { to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }], ports: [tcp(PROXY_PORT), tcp(RELAY_PORT)] },
+      { to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }], ports: [tcp(PROXY_PORT)] },
+      { to: [{ podSelector: { matchLabels: { app: NETD_APP_NAME } } }], ports: [tcp(NETD_STREAM_PORT)] },
       // Each node's disk pod (disk-pod.ts), asked for its free space.
       { to: [{ podSelector: { matchLabels: { app: DISK_APP_NAME } } }], ports: [tcp(DISK_PORT)] },
       // Each node's agent (mountd.ts), which binds workspaces.
@@ -389,8 +338,7 @@ export function buildServerEgressNpManifest(
  *
  * Essential for security: the server binds `0.0.0.0` and treats a
  * loopback-Host request as its owner (docs/remote-hosting.md), so these
- * policies, with the workspace, proxy and builder egress policies, keep
- * untrusted pods out. `yaac cluster check` verifies this. The proxy is
+ * policies, with the proxy's egress policy, keep untrusted traffic out. `yaac cluster check` verifies this. The proxy is
  * admitted only to SERVER_MAMA_PORT, never to the API: it forwards workspace
  * traffic, so a workspace could otherwise reach the API through it.
  *
@@ -464,21 +412,18 @@ export function buildServerFrontIngressNpManifest(
  *  - the proxy, which dials upstream under each workspace's allowlist (it
  *    can read every Secret in this namespace, so keep only yaac objects
  *    here);
- *  - the server, workspace and builder pods, which have their own policies.
- *    The server stays excluded so this policy can never cut it off the
- *    apiserver before its own egress policy exists.
+ *  - the server, which has its own policy, and stays excluded so this one
+ *    can never cut it off the apiserver before its own exists.
  *
- * Pods without these labels (registries, mocks, future pods) are covered by
- * default. Other policies' allows still apply, e.g. the npm cache's 443
- * (docs/workspace-egress.md).
+ * Every other pod is covered, workspace and builder pods included, which
+ * have no interface to send from anyway. Other policies' allows still
+ * apply, e.g. the npm cache's 443 (docs/workspace-egress.md).
  */
 export function buildEgressWorldDenyNpManifest(): Record<string, unknown> {
   return np(EGRESS_WORLD_DENY_NAME, k8sNamespace(), {
     podSelector: {
       matchExpressions: [
         { key: 'app', operator: 'NotIn', values: [PROXY_APP_NAME, SERVER_APP_NAME] },
-        { key: LABEL_WORKSPACE_ID, operator: 'DoesNotExist' },
-        { key: LABEL_ROLE, operator: 'NotIn', values: [ROLE_BUILDER] },
       ],
     },
     policyTypes: ['Egress'],

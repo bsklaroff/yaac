@@ -859,8 +859,11 @@ be a channel between workspaces.
 So every install is a full fetch, which goes to the install's **npm cache**,
 one Verdaccio
 (`drivers/k8s/cluster/npm-cache.ts`). A package is downloaded from npmjs once
-per cluster, and installs keep working while npmjs is slow or down. The cache is
-read-only to workspaces, and pnpm checks every tarball against the lockfile's
+per cluster, and installs keep working while npmjs is slow or down. A
+workspace reaches it through the egress proxy, which forwards to it only for
+a workspace whose registration names it in `clusterServices`
+(docs/workspace-egress.md "The npm cache and the main registry"). The cache
+is read-only to workspaces, and pnpm checks every tarball against the lockfile's
 integrity hash regardless of source.
 
 Verdaccio sits behind an nginx sidecar that owns the cache port. Verdaccio is a
@@ -896,7 +899,8 @@ authenticates to npmjs with a token in that file needs it, because the cache
 fetches anonymously and never serves private packages.
 
 A workspace cannot use the cache at all (it is neither pointed at it nor
-allowed by NetworkPolicy) when any of these hold:
+named in its registration, so the proxy refuses the cache's name) when any
+of these hold:
 
 - its project sets `npmCache: false`;
 - its allowlist leaves out `registry.npmjs.org` (the cache fetches outside the

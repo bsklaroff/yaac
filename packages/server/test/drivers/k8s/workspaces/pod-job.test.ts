@@ -5,6 +5,7 @@ import {
   installSecurityContext,
   nodeMountsNodePath,
   sentryTmpfsAnnotations,
+  socketsNodePath,
 } from '#drivers/k8s/substrate'
 import { buildPodJobManifest } from '#drivers/k8s/workspaces'
 // Internals, for fixtures and bounds only.
@@ -41,8 +42,7 @@ function params(overrides: Partial<PodJobParams> = {}): PodJobParams {
     cpuLimitMillis: 8000,
     ephemeralStorageRequestBytes: 2 * GiB,
     ephemeralStorageLimitBytes: 16 * GiB,
-    // The proxy Service's ClusterIP, never a DNS name.
-    proxyHost: '10.96.0.179',
+    netshimImage: 'registry.local/yaac-mountd:abc',
     treeImage: 'registry.local/yaac-base:abc',
     nodeNames: ['n1', 'n2'],
     ...overrides,
@@ -120,8 +120,9 @@ describe('buildPodJobManifest', () => {
     expect(workspace.env).toEqual([{ name: 'YAAC_WORKSPACE_ID', value: 'abcd' }, { name: 'X', value: 'a=b' }])
 
     // Every volume is the same for any workspace: the pod's own node-mounts
-    // directory, this build's helpers, CA trust and pod-local scratch. No
-    // other hostPath, so nothing of a project's is reachable at creation.
+    // and socket directories, this build's helpers, CA trust and pod-local
+    // scratch. No other hostPath, so nothing of a project's is reachable at
+    // creation.
     expect(pod.volumes).toEqual([
       { name: 'node-mounts', hostPath: { path: `${nodeMountsNodePath()}/abcd.0f0f0f0f`, type: 'DirectoryOrCreate' } },
       { name: 'helpers', persistentVolumeClaim: { claimName: 'yaac-global' } },
@@ -130,7 +131,10 @@ describe('buildPodJobManifest', () => {
       { name: 'local', emptyDir: {} },
       { name: 'tree-trigger', emptyDir: { sizeLimit: '1Mi' } },
       { name: 'scratch', emptyDir: { sizeLimit: String(32 * GiB + SCRATCH_SIZELIMIT_SLACK_BYTES) } },
+      { name: 'sockets', hostPath: { path: `${socketsNodePath()}/abcd.0f0f0f0f`, type: 'DirectoryOrCreate' } },
     ])
+    // The socket directory is netshim's alone: nothing the workspace runs
+    // sees `egress.sock` or can plant a link where the relay connects.
     expect(workspace.volumeMounts).toEqual([
       // Read-only, and receiving what mountd mounts beneath it later.
       { name: 'node-mounts', mountPath: '/node-mounts', readOnly: true, mountPropagation: 'HostToContainer' },
@@ -174,14 +178,18 @@ describe('buildPodJobManifest', () => {
     })
   })
 
-  it('hardens the pod, resolves through the proxy, and runs it only on the nodes it is given', () => {
+  it('hardens the pod, gives it no interface, resolves through netshim, and runs it only on the nodes it is given', () => {
     const pod = build().spec.template.spec
     expect(pod.automountServiceAccountToken).toBe(false)
     expect(pod.enableServiceLinks).toBe(false)
     expect(pod.securityContext).toEqual({ seccompProfile: { type: 'RuntimeDefault' }, ...installSecurityContext() })
-    expect(pod.runtimeClassName).toBe('gvisor')
+    expect(pod.runtimeClassName).toBe('gvisor-nonet')
+    // netshim's stub, at the sinkhole, answers every name.
     expect(pod.dnsPolicy).toBe('None')
-    expect(pod.dnsConfig).toEqual({ nameservers: ['10.96.0.179'] })
+    expect(pod.dnsConfig).toEqual({ nameservers: ['198.18.0.1'] })
+    // The sandbox keeps raw sockets for netshim's iptables, so the
+    // workspace drops its own.
+    expect(pod.containers[0].securityContext).toEqual({ capabilities: { drop: ['NET_RAW'] } })
     expect(pod.hostAliases).toBeUndefined()
     expect(pod.priorityClassName).toBe('yaac-workspace')
     expect(build({ priorityClassName: 'yaac-release' }).spec.template.spec.priorityClassName).toBe('yaac-release')
@@ -205,10 +213,22 @@ describe('buildPodJobManifest', () => {
     }])
   })
 
-  it('runs the tree container as a native sidecar that may bind its entries, and gives it the final pass\'s grace', () => {
+  it('runs netshim first, then the tree container, as native sidecars, and gives the tree the final pass\'s grace', () => {
     const pod = build().spec.template.spec
-    expect(pod.initContainers).toHaveLength(1)
-    const [tree] = pod.initContainers ?? []
+    expect(pod.initContainers?.map((c) => c.name)).toEqual(['netshim', 'tree'])
+    const [netshim, tree] = pod.initContainers ?? []
+    // Up before anything else in the pod starts, restarted if it exits,
+    // with only what routing every address to it takes.
+    expect(netshim).toMatchObject({
+      image: 'registry.local/yaac-mountd:abc',
+      restartPolicy: 'Always',
+      command: ['/usr/local/bin/netshim'],
+      env: [{ name: 'POD_IP', valueFrom: { fieldRef: { fieldPath: 'status.podIP' } } }],
+      securityContext: { runAsUser: 0, runAsGroup: 0, capabilities: { drop: ['ALL'], add: ['NET_ADMIN', 'NET_RAW'] } },
+      startupProbe: { exec: { command: ['test', '-S', '/run/yaac/ingress.sock'] } },
+      resources: { limits: { cpu: '1', memory: '128Mi' } },
+    })
+    expect(netshim.volumeMounts).toEqual([{ name: 'sockets', mountPath: '/run/yaac' }])
     expect(tree).toMatchObject({
       name: 'tree',
       image: 'registry.local/yaac-base:abc',
@@ -236,7 +256,7 @@ describe('buildPodJobManifest', () => {
 
     // A site release keeps its files on the shared tier: no tree container.
     const release = build({ treeImage: undefined }).spec.template.spec
-    expect(release.initContainers).toBeUndefined()
+    expect(release.initContainers?.map((c) => c.name)).toEqual(['netshim'])
     expect(release.terminationGracePeriodSeconds).toBe(PRE_STOP_GRACE_SECONDS)
   })
 
@@ -248,7 +268,7 @@ describe('buildPodJobManifest', () => {
       ],
       utilityImage: 'registry.local/podman-stable:v5.5',
     }).spec.template.spec
-    expect(pod.volumes.slice(-2)).toEqual([
+    expect(pod.volumes.filter((v) => v.name.startsWith('pv-'))).toEqual([
       { name: 'pv-0', persistentVolumeClaim: { claimName: 'yaac-vol-v1' } },
       { name: 'pv-1', persistentVolumeClaim: { claimName: 'yaac-vol-v2' } },
     ])
@@ -258,8 +278,8 @@ describe('buildPodJobManifest', () => {
     ])
     // Before the tree container, so the root is the workspace's by the
     // time anything writes there.
-    expect(pod.initContainers?.map((c) => c.name)).toEqual(['volume-root', 'tree'])
-    const [volumeRoot] = pod.initContainers ?? []
+    expect(pod.initContainers?.map((c) => c.name)).toEqual(['netshim', 'volume-root', 'tree'])
+    const [, volumeRoot] = pod.initContainers ?? []
     const { runAsUser, runAsGroup } = installSecurityContext()
     expect(volumeRoot).toMatchObject({
       image: 'registry.local/podman-stable:v5.5',

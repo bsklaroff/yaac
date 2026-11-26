@@ -23,7 +23,8 @@ export const SENSITIVE_PORTS: ReadonlySet<number> = new Set([
 ])
 
 /** yaac's own in-workspace infra range (the pod driver's stream daemon on
- *  10300, its relay on 10260, …). */
+ *  10300, netshim's listeners on 10301 and 10302, netd's relay on 10262,
+ *  …). */
 const INFRA_PORT_MIN = 10250
 const INFRA_PORT_MAX = 10350
 

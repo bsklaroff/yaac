@@ -23,24 +23,24 @@ import {
   ensureNamespace,
   ensureProxyAuthSecret,
   ensureProxyResources,
-  proxyServiceClusterIp,
   removeProjectSecrets,
-  resetProxyClusterIpCache,
   syncProjectSecrets,
   syncProxyCredentials,
   vapAvailable,
-  ENVOY_MIRROR_TAG,
+  resolveMountdImageTag,
   resolveNetdImageTag,
 } from '#drivers/k8s/cluster'
+// Setup values, not units under test.
+import { RETIRED_POLICY_NAMES } from '#drivers/k8s/cluster/policy-manifests'
 import { globalRoot } from '@yaac/shared/project-paths'
 import { resetClusterCidrCache } from '#drivers/k8s/cluster/cluster-cidrs'
 import {
-  DNS_STUB_PORT,
   EGRESS_WORLD_DENY_NAME,
   NETD_APP_NAME,
-  NETD_LISTENER_PORT_BASE,
-  NETD_LISTENER_PORT_END,
-  POD_STREAM_PORT,
+  NETD_EGRESS_NP_NAME,
+  NETD_INGRESS_NP_NAME,
+  NETD_SITE_PORT,
+  NETD_STREAM_PORT,
   PROXY_APP_NAME,
   PROXY_AUTH_SECRET_NAME,
   PROXY_EGRESS_NP_NAME,
@@ -48,18 +48,13 @@ import {
   SERVER_FRONT_PORT,
   PROXY_PORT,
   PROXY_SA_NAME,
-  RELAY_PORT,
-  WORKSPACE_EGRESS_NP_NAME,
-  WORKSPACE_INGRESS_LOCK_NP_NAME,
-  TRANSPARENT_HTTPS_PORT,
-  TRANSPARENT_HTTP_PORT,
-  TRANSPARENT_TUNNEL_PORT,
+  SERVER_APP_NAME,
+  SITE_ROUTER_APP_NAME,
+  SOCKET_EGRESS_PORT,
 } from '#drivers/k8s/substrate/proxy-constants'
-import { LABEL_WORKSPACE_ID } from '#drivers/k8s/substrate/pods'
 import { LABEL_INSTALL_ID, installId } from '#drivers/k8s/substrate'
 import { apiError, fakeCluster } from '@yaac/test-utils/k8s-stub'
 import { fakeRegistry } from '#test/support/fake-registry'
-import { registryHost } from '#drivers/k8s/cluster'
 import { serverLog } from '#lib/log'
 import { createTempDataDir, cleanupTempDir } from '@yaac/test-utils/setup'
 import { execFile } from 'node:child_process'
@@ -91,22 +86,16 @@ interface Rule {
 
 let tmpDir: string
 
-/** A node with an address (for policy ipBlocks) and, optionally, pod CIDRs. */
-const node = (spec: Record<string, unknown> = {}) => ({
+/** A node with an address, for policy ipBlocks. */
+const node = () => ({
   apiVersion: 'v1', kind: 'Node', metadata: { name: 'n1' },
   status: { addresses: [{ type: 'InternalIP', address: NODE_IP }] },
-  spec,
 })
 
-/**
- * Stage the cluster `ensureProxyResources` reads: the node and the Calico
- * pool (netd's exclusion set), with no proxy objects yet.
- */
+/** Stage the cluster `ensureProxyResources` reads: the node, with no proxy
+ *  objects yet. */
 function stageClusterReads(): void {
-  fakeCluster.seed(
-    node({ podCIDR: '10.244.0.0/24' }),
-    { apiVersion: 'crd.projectcalico.org/v1', kind: 'IPPool', metadata: { name: 'default' }, spec: { cidr: '192.168.0.0/16' } },
-  )
+  fakeCluster.seed(node())
 }
 
 /** Each object written (applied or created), in order. */
@@ -126,7 +115,6 @@ beforeEach(async () => {
   fakeRegistry.install()
   fakeRegistry.holdsAll = true
   resetClusterCidrCache()
-  resetProxyClusterIpCache()
   vi.stubEnv('YAAC_USE_TOR', '')
 })
 
@@ -139,7 +127,7 @@ afterEach(async () => {
 describe('ensureNamespace', () => {
   it('applies a Namespace manifest labelled for the privileged Pod Security Standard', async () => {
     // kind enforces no Pod Security, but an adopted cluster often defaults
-    // to baseline, which would block netd (hostNetwork, NET_ADMIN) entirely.
+    // to baseline, which would block mountd (privileged, hostPID) entirely.
     await ensureNamespace()
     expect(applied()).toEqual([{
       apiVersion: 'v1',
@@ -182,38 +170,6 @@ describe('ensureProxyAuthSecret', () => {
   })
 })
 
-/** The proxy Service as the API server holds it. */
-const proxyService = (clusterIP?: string) => ({
-  apiVersion: 'v1', kind: 'Service', metadata: { name: PROXY_APP_NAME, namespace: 'test-ns' },
-  spec: clusterIP ? { clusterIP } : {},
-})
-
-describe('proxyServiceClusterIp', () => {
-  it('returns the live ClusterIP, caching it but never a failed read', async () => {
-    await expect(proxyServiceClusterIp()).rejects.toThrow(/ClusterIP/)
-    fakeCluster.seed(proxyService())
-    await expect(proxyServiceClusterIp()).rejects.toThrow(/ClusterIP/)
-    fakeCluster.seed(proxyService('10.96.92.236'))
-    expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
-
-    // The Service is never recreated while in use, so later calls are free.
-    const reads = fakeCluster.callsOf('read', 'Service').length
-    expect(await proxyServiceClusterIp()).toBe('10.96.92.236')
-    expect(fakeCluster.callsOf('read', 'Service')).toHaveLength(reads)
-  })
-})
-
-describe('resetProxyClusterIpCache', () => {
-  it('forces the next call to re-read the Service', async () => {
-    fakeCluster.seed(proxyService('10.96.0.1'))
-    await proxyServiceClusterIp()
-
-    resetProxyClusterIpCache()
-    fakeCluster.seed(proxyService('10.96.0.2'))
-    expect(await proxyServiceClusterIp()).toBe('10.96.0.2')
-  })
-})
-
 describe('ensureProxyResources', () => {
   it('creates no host dir, applies the whole set in order, and waits for both rollouts', async () => {
     stageClusterReads()
@@ -230,12 +186,14 @@ describe('ensureProxyResources', () => {
       // proxy's Service and the server's mama Service the proxy relays to.
       'ServiceAccount', 'Role', 'RoleBinding',
       'Deployment', 'Service', 'Service',
-      // Workspace egress, workspace ingress lock, proxy ingress and egress,
-      // world-deny.
-      'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
-      // netd: SA, Role, RoleBinding, DaemonSet.
-      'ServiceAccount', 'Role', 'RoleBinding', 'DaemonSet',
+      // Proxy ingress and egress, world-deny.
+      'NetworkPolicy', 'NetworkPolicy', 'NetworkPolicy',
+      // netd: SA, Role, RoleBinding, its ingress and egress, DaemonSet.
+      'ServiceAccount', 'Role', 'RoleBinding', 'NetworkPolicy', 'NetworkPolicy', 'DaemonSet',
     ])
+    // The redirect's policies, deleted by name before netd rolls
+    // (docs/legacy-compat-shims.md "The redirect's policies").
+    expect(fakeCluster.callsOf('delete', 'NetworkPolicy').map((c) => c.name)).toEqual(RETIRED_POLICY_NAMES)
     expect(byName('yaac-proxy-refreshed')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'refreshed' })
     expect(byName('yaac-proxy-ca')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'ca' })
     expect(byName('yaac-proxy-state')?.metadata.labels).toEqual({ app: 'yaac-proxy', 'yaac.proxy-output': 'state' })
@@ -271,7 +229,7 @@ describe('ensureProxyResources', () => {
     // `list`/`watch` and `create` cannot be scoped by name, so reads are
     // namespace-wide and the outputs are pre-created for the proxy to patch.
     expect(role?.rules).toEqual([
-      { apiGroups: [''], resources: ['pods', 'secrets', 'configmaps'], verbs: ['get', 'list', 'watch'] },
+      { apiGroups: [''], resources: ['secrets', 'configmaps'], verbs: ['get', 'list', 'watch'] },
       { apiGroups: [''], resources: ['secrets'], resourceNames: ['yaac-proxy-refreshed', 'yaac-proxy-ca'], verbs: ['update', 'patch'] },
       { apiGroups: [''], resources: ['configmaps'], resourceNames: ['yaac-proxy-state'], verbs: ['update', 'patch'] },
     ])
@@ -343,18 +301,11 @@ describe('ensureProxyResources', () => {
 
     const c = pod.containers[0]
     expect(c.image).toBe('localhost:5000/yaac-proxy:abc')
-    expect(c.ports).toEqual([
-      { containerPort: PROXY_PORT },
-      { containerPort: TRANSPARENT_HTTPS_PORT },
-      { containerPort: TRANSPARENT_HTTP_PORT },
-      { containerPort: TRANSPARENT_TUNNEL_PORT },
-      { containerPort: RELAY_PORT },
-      { containerPort: DNS_STUB_PORT, protocol: 'UDP' },
-    ])
-    // NET_BIND_SERVICE lets the non-root proxy bind udp/53 for the DNS stub.
-    expect(c.securityContext?.capabilities?.add).toEqual(['NET_BIND_SERVICE'])
-    expect(c.env).toContainEqual({ name: 'RELAY_PORT', value: String(RELAY_PORT) })
-    expect(c.env).toContainEqual({ name: 'POD_STREAM_PORT', value: String(POD_STREAM_PORT) })
+    // The control API and the one port netd's relay hands it sandbox
+    // traffic on; it binds nothing privileged.
+    expect(c.ports).toEqual([{ containerPort: PROXY_PORT }, { containerPort: SOCKET_EGRESS_PORT }])
+    expect(c.securityContext).toBeUndefined()
+    expect(c.env).toContainEqual({ name: 'SOCKET_EGRESS_PORT', value: String(SOCKET_EGRESS_PORT) })
     expect(c.env).toContainEqual({
       name: 'MAMA_RELAY_URL', value: 'http://yaac-server-mama.test-ns.svc.cluster.local:8788/api/workspace/mama',
     })
@@ -385,44 +336,33 @@ describe('ensureProxyResources', () => {
       .toContainEqual({ name: 'USE_TOR', value: '1' })
   })
 
-  it('locks the datapath: session egress to the node range, ingress to the proxy, world default-deny', async () => {
+  it('admits only netd to the proxy\'s egress port, and only the server and the router to netd', async () => {
     stageClusterReads()
     await ensureProxyResources('img')
+    const peers = (r: Rule): string => JSON.stringify(r.from ?? r.to)
 
-    // Workspace egress reaches the internet only through netd's listener
-    // range on the node, so a missing redirect fails closed.
-    const egress = specOf(byName(WORKSPACE_EGRESS_NP_NAME)) as { egress: Rule[] }
-    const nodeRule = egress.egress.find((r) =>
-      r.to?.some((p) => JSON.stringify(p).includes(NODE_IP)))
-    expect(nodeRule).toBeDefined()
-    const rangePorts = egress.egress.flatMap((r) => r.ports ?? [])
-      .find((p) => p.port === NETD_LISTENER_PORT_BASE)
-    expect(rangePorts?.endPort).toBe(NETD_LISTENER_PORT_END)
-
-    // Workspace ingress lock: only the proxy's relay reaches streamd.
-    const lock = specOf(byName(WORKSPACE_INGRESS_LOCK_NP_NAME)) as { ingress: Rule[] }
-    expect(lock.ingress.flatMap((r) => (r.ports ?? []).map((p) => p.port)))
-      .toContain(POD_STREAM_PORT)
-
-    // The transparent ports admit only node addresses, so only netd's Envoy
-    // can send a PROXY-protocol header claiming a pod's identity.
+    // Every sandbox connection arrives from netd's relay; no sandbox has an
+    // address to dial the proxy from.
     const proxyIngress = specOf(byName(PROXY_INGRESS_NP_NAME)) as { ingress: Rule[] }
-    const transparent = proxyIngress.ingress.find((r) =>
-      (r.ports ?? []).some((p) => p.port === TRANSPARENT_HTTPS_PORT))
-    expect(JSON.stringify(transparent?.from)).toContain(NODE_IP)
+    const socketRule = proxyIngress.ingress.find((r) => (r.ports ?? []).some((p) => p.port === SOCKET_EGRESS_PORT))
+    expect(peers(socketRule!)).toBe(JSON.stringify([{ podSelector: { matchLabels: { app: NETD_APP_NAME } } }]))
+    expect(socketRule?.ports).toHaveLength(1)
 
-    // The DNS stub is the one proxy port a workspace pod dials directly,
-    // and it admits only workspace pods, never node addresses.
-    const dnsEgress = egress.egress.find((r) =>
-      (r.ports ?? []).some((p) => p.port === DNS_STUB_PORT))
-    expect(JSON.stringify(dnsEgress?.to)).toContain(PROXY_APP_NAME)
-    expect(dnsEgress?.ports).toHaveLength(1)
-    const dnsIngress = proxyIngress.ingress.filter((r) =>
-      (r.ports ?? []).some((p) => p.port === DNS_STUB_PORT))
-    expect(dnsIngress).toHaveLength(1)
-    expect(dnsIngress[0].ports).toHaveLength(1)
-    expect(JSON.stringify(dnsIngress[0].from)).toContain(LABEL_WORKSPACE_ID)
-    expect(JSON.stringify(dnsIngress[0].from)).not.toContain(NODE_IP)
+    // The server dials streams through netd, the router sites; nothing else
+    // reaches either port.
+    const netdIngress = specOf(byName(NETD_INGRESS_NP_NAME)) as { podSelector: unknown; ingress: Rule[] }
+    expect(netdIngress.podSelector).toEqual({ matchLabels: { app: NETD_APP_NAME } })
+    expect(netdIngress.ingress).toEqual([
+      { from: [{ podSelector: { matchLabels: { app: SERVER_APP_NAME } } }], ports: [{ protocol: 'TCP', port: NETD_STREAM_PORT }] },
+      { from: [{ podSelector: { matchLabels: { app: SITE_ROUTER_APP_NAME } } }], ports: [{ protocol: 'TCP', port: NETD_SITE_PORT }] },
+    ])
+    // netd reaches the proxy's egress port, DNS, and nothing world-ward.
+    const netdEgress = specOf(byName(NETD_EGRESS_NP_NAME)) as { egress: Rule[] }
+    expect(netdEgress.egress[0]).toEqual({
+      to: [{ podSelector: { matchLabels: { app: PROXY_APP_NAME } } }],
+      ports: [{ protocol: 'TCP', port: SOCKET_EGRESS_PORT }],
+    })
+    expect(JSON.stringify(netdEgress)).not.toContain('0.0.0.0/0')
 
     // Proxy egress never reaches the kind fronting's node port, where a
     // CONNECT would reach the server as if it were the node.
@@ -439,101 +379,26 @@ describe('ensureProxyResources', () => {
     expect(worldDeny.policyTypes).toEqual(['Egress'])
   })
 
-  it('gives netd the union of Calico pools and node podCIDRs as its redirect exclusion set', async () => {
-    stageClusterReads()
-    await ensureProxyResources('img')
-
-    const ds = applied().find((m) => m.kind === 'DaemonSet') as unknown as {
-      metadata: { name: string; namespace: string }
-      spec: { template: { spec: {
-        hostNetwork?: boolean
-        serviceAccountName: string
-        containers: Array<{ image: string; env: Array<{ name: string; value: string }> }>
-      } } }
-    }
-    expect(ds.metadata.name).toBe(NETD_APP_NAME)
-    const pod = ds.spec.template.spec
-    expect(pod.serviceAccountName).toBe(NETD_APP_NAME)
-    // Both sources are merged: a pod IP missing from the set is treated as
-    // external and redirected.
-    const podCidrEnv = pod.containers
-      .flatMap((c) => c.env)
-      .find((e) => e.value?.includes('10.244.0.0/24'))
-    expect(podCidrEnv?.value).toContain('192.168.0.0/16')
-    // Calico's veth prefix by default, passed explicitly because another
-    // CNI may name veths differently.
-    const vethEnv = pod.containers
-      .flatMap((c) => c.env)
-      .find((e) => e.name === 'NETD_VETH_PREFIX')
-    expect(vethEnv?.value).toBe('cali')
-    // Both images resolve through the local registry, never upstream.
-    for (const c of pod.containers) expect(c.image.startsWith(`${registryHost()}/`)).toBe(true)
-  })
-
-  it('adds the configured pod CIDRs and veth prefix for an adopted CNI', async () => {
-    // An adopted cluster may use pod IPs in no IPPool or podCIDR (e.g. a
-    // VPC CNI) and non-`cali` veths. Configured CIDRs are merged with the
-    // discovered ones, since a missing pod IP would be treated as external.
-    vi.stubEnv('YAAC_POD_CIDRS', '172.31.0.0/16, 10.1.0.0/16 , not-a-cidr')
-    vi.stubEnv('YAAC_CNI_VETH_PREFIX', 'eni')
-    resetClusterCidrCache()
-    stageClusterReads()
-    await ensureProxyResources('img')
-
-    const env = (applied().find((m) => m.kind === 'DaemonSet') as unknown as {
-      spec: { template: { spec: { containers: Array<{ env: Array<{ name: string; value: string }> }> } } }
-    }).spec.template.spec.containers.flatMap((c) => c.env)
-    const cidrs = env.find((e) => e.name === 'CLUSTER_POD_CIDRS')?.value?.split(',')
-    expect(cidrs).toEqual(['10.1.0.0/16', '10.244.0.0/24', '172.31.0.0/16', '192.168.0.0/16'])
-    // A malformed entry is dropped; iptables-restore would reject it and
-    // stall every redirect update.
-    expect(cidrs).not.toContain('not-a-cidr')
-    expect(env.find((e) => e.name === 'NETD_VETH_PREFIX')?.value).toBe('eni')
-  })
-
-  it('refuses with the install pointer when netd or Envoy is missing from the registry', async () => {
+  it('refuses with the install pointer when netd or the relay\'s image is missing from the registry', async () => {
     // `yaac cluster install` produces both images; the server only looks
     // them up and never needs a container engine.
     stageClusterReads()
-    const netdTag = await resolveNetdImageTag()
+    const [netdTag, mountdTag] = await Promise.all([resolveNetdImageTag(), resolveMountdImageTag()])
     fakeRegistry.holdsAll = false
 
-    // Envoy mirrored, netd not: the missing one is the one named.
-    fakeRegistry.tags.add(ENVOY_MIRROR_TAG)
+    // mountd's image (the relay's) present, netd's not: the missing one is
+    // the one named.
+    fakeRegistry.tags.add(mountdTag)
     await expect(ensureProxyResources('img'))
       .rejects.toThrow(/netd image .* is missing.*yaac cluster install/s)
 
-    // netd present, Envoy absent.
     fakeRegistry.tags.clear()
     fakeRegistry.tags.add(netdTag)
     await expect(ensureProxyResources('img'))
-      .rejects.toThrow(/Envoy image .* is missing.*yaac cluster install/s)
+      .rejects.toThrow(/mountd image .* is missing.*yaac cluster install/s)
 
     // Nothing pulled or built.
     expect(childArgs().filter((a) => a[0] !== 'rollout')).toEqual([])
-  })
-
-  it('resolves netd\'s pod-CIDR exclusions from every source, and falls back when none answer', async () => {
-    // Without Calico there are no IPPools; node podCIDRs still count.
-    fakeCluster.removeKind('IPPool')
-    fakeCluster.seed(node({ podCIDRs: ['10.244.0.0/24'] }))
-    await ensureProxyResources('img')
-    expect(JSON.stringify(applied().find((m) => m.kind === 'DaemonSet')))
-      .toContain('10.244.0.0/24')
-
-    // No source answers: fall back to kind's default rather than an empty
-    // set, which would redirect pod-to-pod traffic into the proxy.
-    resetClusterCidrCache()
-    fakeCluster.reset()
-    fakeCluster.seed(node())
-    await ensureProxyResources('img')
-    expect(JSON.stringify(applied().find((m) => m.kind === 'DaemonSet')))
-      .toContain('10.244.0.0/16')
-
-    // The pod CIDRs are cached for the process.
-    const poolReads = fakeCluster.callsOf('list', 'IPPool').length
-    await ensureProxyResources('img')
-    expect(fakeCluster.callsOf('list', 'IPPool')).toHaveLength(poolReads)
   })
 
 })

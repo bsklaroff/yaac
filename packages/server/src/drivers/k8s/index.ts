@@ -25,6 +25,7 @@ import {
   salvageTree,
   importTree,
   listWorkspaces,
+  outdatedWorkspaces,
   pinVolumes,
   prepareWorkspaceSubstrate,
   reapNodeLocal,
@@ -129,6 +130,7 @@ export function createK8sDriver(): WorkspaceDriver {
     awaitReady: (handle, opts) => awaitWorkspaceReady(handle, opts),
     salvageTree: (target) => salvageTree(target),
     importTree: (target) => importTree(target),
+    outdatedWorkspaces: () => outdatedWorkspaces(),
     declareForwards: (workspaceId, forwards) => Promise.resolve(declareWorkspaceForwards(workspaceId, forwards)),
     dialPort: (workspaceId, containerPort) => dialWorkspacePort(workspaceId, containerPort),
 

@@ -15,7 +15,7 @@ import {
   deregisterWorkspaceEgress,
 } from '@yaac/server/drivers/k8s/egress/proxy-registration'
 import { workspaceSshEnv } from '@yaac/server/drivers/k8s/egress/ssh-transport'
-import { proxyServiceClusterIp, syncProxyCredentials } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
+import { syncProxyCredentials } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import { deleteObject, k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
 import { kubectl } from '@yaac/test-utils/kubectl'
 
@@ -24,8 +24,8 @@ import { kubectl } from '@yaac/test-utils/kubectl'
  * (docs/workspace-egress.md "Git over SSH"). A real ssh client in the pod,
  * holding no key and trusting only the proxy's host key from the ConfigMap
  * every pod mounts, reaches the proxy through the tunnel sentinel. This
- * covers the chain a unit test cannot: netd's redirect, the pod's identity
- * by source address, the host key the proxy published, and the grants it
+ * covers the chain a unit test cannot: netshim and netd's relay, the pod's
+ * identity by its socket directory, the host key the proxy published, and the grants it
  * reads from the credentials Secret.
  *
  * The git host is a redirect to a port nothing listens on, so a command the
@@ -85,7 +85,6 @@ beforeAll(async () => {
   keyDir = await e2eMkdtemp('yaac-ssh-session-')
 
   await client.ensureRunning()
-  const proxyHost = await proxyServiceClusterIp()
 
   const keyPath = path.join(keyDir, 'id')
   await execFileAsync('ssh-keygen', ['-t', 'ed25519', '-f', keyPath, '-N', '', '-q'])
@@ -98,7 +97,7 @@ beforeAll(async () => {
     rules: [], allowedHosts: [SSH_HOST], projectId: PROJECT, owner: 'e2e',
     upstreamRedirects: { [SSH_HOST]: { host: '127.0.0.1', port: 9 } },
   })
-  await startWorkspacePod(pod, workspaceId, proxyHost, {
+  await startWorkspacePod(pod, workspaceId, {
     env: workspaceSshEnv().map((entry) => {
       const at = entry.indexOf('=')
       return { name: entry.slice(0, at), value: entry.slice(at + 1) }

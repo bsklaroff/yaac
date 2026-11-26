@@ -1,3 +1,7 @@
+import path from 'node:path'
+import { DNS_SINKHOLE } from './proxy-constants'
+import { socketsNodePath } from './mount-sources'
+
 /** ConfigMap (cluster-scoped to the yaac namespace) holding the proxy CA. */
 export const CA_CONFIGMAP_NAME = 'yaac-proxy-ca'
 /** Key inside the CA ConfigMap / filename inside the mount dir. */
@@ -119,9 +123,67 @@ export function installSecurityContext(identity: InstallIdentity = processIdenti
 
 /**
  * The RuntimeClass every untrusted pod sets: the gVisor sandbox (runsc with
- * systrap). Infra pods set none and get runc.
+ * systrap) with no network interface but loopback, whose traffic goes
+ * through netshim's sockets (docs/workspace-egress.md). Infra pods set none
+ * and get runc.
  */
-export const RUNTIME_CLASS_GVISOR = 'gvisor'
+export const RUNTIME_CLASS_GVISOR = 'gvisor-nonet'
+
+/** Where a sandbox's netshim container sees its socket directory. */
+export const SOCKET_MOUNT_DIR = '/run/yaac'
+
+/**
+ * A sandbox's socket directory on its node, `<socket root>/<dir>`, as the
+ * `sockets` volume netd's relay finds it by. Only the netshim container
+ * mounts it: code a project wrote never sees `egress.sock`, nor can it
+ * plant a link where the relay connects.
+ */
+export function socketVolume(dir: string): Record<string, unknown> {
+  return { name: 'sockets', hostPath: { path: path.posix.join(socketsNodePath(), dir), type: 'DirectoryOrCreate' } }
+}
+
+/**
+ * The netshim container (docs/workspace-egress.md "netshim"): an init
+ * container with `restartPolicy: Always`, placed first, so it is up before
+ * anything else in the pod starts and kubelet restarts it if it exits. It
+ * routes every address to loopback, takes every TCP dial and DNS query
+ * there, and carries them through its socket directory, which needs
+ * `NET_ADMIN` and `NET_RAW` and nothing else. Its root stays writable, since
+ * `iptables` takes a lock under `/run`. It declares limits like every
+ * container in the pod, since kubelet sets the pod's memory cap only when
+ * all of them do.
+ */
+export function netshimContainer(image: string): Record<string, unknown> {
+  return {
+    name: 'netshim',
+    image,
+    imagePullPolicy: 'IfNotPresent',
+    restartPolicy: 'Always',
+    command: ['/usr/local/bin/netshim'],
+    env: [{ name: 'POD_IP', valueFrom: { fieldRef: { fieldPath: 'status.podIP' } } }],
+    securityContext: {
+      runAsUser: 0,
+      runAsGroup: 0,
+      capabilities: { drop: ['ALL'], add: ['NET_ADMIN', 'NET_RAW'] },
+    },
+    startupProbe: {
+      exec: { command: ['test', '-S', `${SOCKET_MOUNT_DIR}/ingress.sock`] },
+      periodSeconds: 1,
+      failureThreshold: 30,
+    },
+    resources: {
+      requests: { cpu: '10m', memory: '16Mi' },
+      limits: { cpu: '1', memory: '128Mi' },
+    },
+    volumeMounts: [{ name: 'sockets', mountPath: SOCKET_MOUNT_DIR }],
+  }
+}
+
+/**
+ * The DNS a sandbox resolves through: netshim's stub, at the sinkhole
+ * address, which answers every name with the sinkhole.
+ */
+export const SANDBOX_DNS = { dnsPolicy: 'None', dnsConfig: { nameservers: [DNS_SINKHOLE] } }
 
 /**
  * Node label the gVisor installer sets once the runtime works on a node;

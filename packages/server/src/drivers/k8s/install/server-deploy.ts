@@ -227,11 +227,9 @@ export function buildServerClusterRoleManifest(opts: { byoVolumes?: boolean } = 
         resources: ['storageclasses'],
         verbs: ['get', 'list', 'watch'],
       },
-      {
-        apiGroups: ['discovery.k8s.io'],
-        resources: ['endpointslices'],
-        verbs: ['get', 'list', 'watch'],
-      },
+      // A site's EndpointSlice, which points its Service at netd on the
+      // live release's node (docs/public-sites.md "The router").
+      { apiGroups: ['discovery.k8s.io'], resources: ['endpointslices'], verbs: ['*'] },
     ],
   }
 }
@@ -343,10 +341,6 @@ function buildServerEnv(opts: ServerEnvOptions = {}): ServerEnvVar[] {
     ['YAAC_SITE_DOMAIN', opts.siteDomain],
     ['YAAC_USE_TOR', env.useTor ? '1' : undefined],
     ['YAAC_HOST_TOR_SOCKS_URL', env.useTor ? torSocksUrlForPod(opts.torHostAddr) : undefined],
-    // Datapath settings the server applies on every start.
-    ['YAAC_CNI_VETH_PREFIX', env.cniVethPrefix],
-    ['YAAC_POD_CIDRS', env.podCidrs.length > 0 ? env.podCidrs.join(',') : undefined],
-    ['YAAC_KUBE_PROXY_EXTERNAL', env.kubeProxyExternal ? '1' : undefined],
     // The full-node guard's floors (docs/node-local-workspaces.md
     // "A full node"), as this machine's environment sets them.
     ['YAAC_DISK_WARN_FLOOR_GIB', String(env.diskWarnFloorGiB)],

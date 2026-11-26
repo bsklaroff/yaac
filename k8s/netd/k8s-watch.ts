@@ -1,17 +1,13 @@
 /**
- * The pod and Service watches that feed netd's reconcile and its swap
- * bounds, all scoped to the install namespace so netd needs only a
- * namespaced Role.
+ * The watch of this install's pods on netd's node, which feeds its swap
+ * bounds and its pressure kill, scoped to the install namespace so netd
+ * needs only a namespaced Role.
  *
  * Built on `@kubernetes/client-node` informers, which handle list/watch,
  * relist on 410, and keep the object store; netd maps that store on each
  * read instead of keeping its own cache. The in-cluster config re-reads
  * the rotated ServiceAccount token, so a long-lived netd keeps its
  * credentials.
- *
- * A delete missed while a watch was down leaves a stale pod in the store,
- * but it renders no rules because it no longer has a veth in the node's
- * route table.
  */
 
 import {
@@ -25,53 +21,17 @@ import {
 } from '@kubernetes/client-node'
 import { podMemoryRequestBytes, type NodePod } from 'yaac-netd/swap'
 
-/**
- * The pods netd redirects: workspace pods, never the proxy itself (a
- * self-redirect would loop), and image builder pods, whose builds go
- * through the proxy too (docs/image-builds.md). A selector cannot OR two
- * labels, so each is its own watch. The labels must match the server's
- * LABEL_WORKSPACE_ID and LABEL_BUILD_ID (netd can't import src/).
- */
-export const WORKSPACE_POD_SELECTOR = 'yaac.workspace-id,app!=yaac-proxy'
-export const BUILDER_POD_SELECTOR = 'yaac.build-id'
-
-/** The fields netd reads off a Pod. */
-export interface NetdPod {
-  name: string
-  namespace: string
-  podIp: string
-}
-
-/** The fields netd reads off a Service. */
-export interface NetdService {
-  name: string
-  clusterIp: string
-}
-
 interface RawObject {
-  metadata?: { name?: string; namespace?: string; uid?: string; labels?: Record<string, string> }
-  status?: { podIP?: string; phase?: string }
-  spec?: { clusterIP?: string } & Parameters<typeof podMemoryRequestBytes>[0]
-}
-
-/**
- * Map one API Pod object to netd's shape; null when it lacks a name,
- * namespace or IP, so a half-built pod produces no rules.
- */
-export function mapPod(raw: unknown): NetdPod | null {
-  const { metadata, status } = raw as RawObject
-  const name = metadata?.name
-  const namespace = metadata?.namespace
-  const podIp = status?.podIP
-  if (!name || !namespace || !podIp) return null
-  return { name, namespace, podIp }
+  metadata?: { name?: string; uid?: string; labels?: Record<string, string> }
+  status?: { phase?: string }
+  spec?: Parameters<typeof podMemoryRequestBytes>[0]
 }
 
 /**
  * Map one API Pod on netd's node to the shape the swap bound and the
  * pressure kill read; null unless it is running, since only a running pod
- * is sure to have its cgroup. A workspace is what WORKSPACE_POD_SELECTOR
- * matches.
+ * is sure to have its cgroup. A workspace carries the server's
+ * `yaac.workspace-id` label (netd can't import src/).
  */
 export function mapNodePod(raw: unknown): NodePod | null {
   const { metadata, status, spec } = raw as RawObject
@@ -85,15 +45,6 @@ export function mapNodePod(raw: unknown): NodePod | null {
     memoryRequestBytes: podMemoryRequestBytes(spec ?? {}),
     workspace: 'yaac.workspace-id' in labels && labels.app !== 'yaac-proxy',
   }
-}
-
-/** Map one API Service object to netd's shape; null when unusable. */
-export function mapService(raw: unknown): NetdService | null {
-  const { metadata, spec } = raw as RawObject
-  const name = metadata?.name
-  const clusterIp = spec?.clusterIP
-  if (!name || !clusterIp) return null
-  return { name, clusterIp }
 }
 
 /** An in-cluster API client for one namespace. */
@@ -110,15 +61,6 @@ export function inClusterClient(namespace: string): WatchClient {
   return { kubeConfig, core: kubeConfig.makeApiClient(CoreV1Api), namespace }
 }
 
-/** Watch this namespace's redirected pods; returns a reader of the stores. */
-export function watchPods(client: WatchClient, onChange: () => void): () => NetdPod[] {
-  const { core, namespace } = client
-  const stores = [WORKSPACE_POD_SELECTOR, BUILDER_POD_SELECTOR].map((labelSelector) =>
-    watch(client, 'pods', { labelSelector }, mapPod, onChange,
-      () => core.listNamespacedPod({ namespace, labelSelector })))
-  return () => stores.flatMap((store) => store())
-}
-
 /**
  * Watch every pod of this install on one node, builders and infrastructure
  * included, for their swap bounds (swap.ts) and the pressure kill
@@ -129,13 +71,6 @@ export function watchNodePods(client: WatchClient, nodeName: string, onChange: (
   const fieldSelector = `spec.nodeName=${nodeName}`
   return watch(client, 'pods', { fieldSelector }, mapNodePod, onChange,
     () => core.listNamespacedPod({ namespace, fieldSelector }))
-}
-
-/** Watch this namespace's Services, where the proxy's ClusterIP lives. */
-export function watchServices(client: WatchClient, onChange: () => void): () => NetdService[] {
-  const { core, namespace } = client
-  return watch(client, 'services', {}, mapService, onChange,
-    () => core.listNamespacedService({ namespace }))
 }
 
 function watch<T>(
@@ -166,7 +101,7 @@ function watch<T>(
  * Run an informer for the process's lifetime. On any error other than 410
  * (including a failed initial list) client-node's informer emits `error` and
  * stops, so this restarts it with backoff. Same pattern as the proxy's
- * superviseInformer (k8s/proxy/pod-watch.ts).
+ * superviseInformer (k8s/proxy/object-watch.ts).
  */
 function superviseInformer(
   informer: Pick<Informer<KubernetesObject>, 'on' | 'start'>,

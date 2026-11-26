@@ -4,7 +4,7 @@ A proposal for a later step, not built and not scheduled. Nothing here
 starts until the plans under "What this builds on" have shipped. It
 replaces the `k8s` driver with a `pamir` driver: each workspace is a
 gVisor sandbox that Pamir (docs/plans/pamir.md) starts on a machine's
-containerd, with the egress of docs/plans/socket-egress.md. Like `k8s`, a
+containerd, with the socket egress of docs/workspace-egress.md. Like `k8s`, a
 workspace gets an image, a sandbox and mediated egress, so credentials
 stay sentinels and `bypass` stays the default permission mode. Unlike it,
 there is no cluster, CNI, registry or kind to install.
@@ -27,10 +27,11 @@ follow-up, described last.
   owns. A mountd makes a pod a workspace's by mounting on the node and
   entering the sandbox with `runsc exec`, and builds working trees
   natively. Identity arrives at the claim through one streamd call.
-- **docs/plans/socket-egress.md has shipped.** A workspace or builder pod
-  has no network interface. Its egress and its streams cross two sockets
-  in a directory on its node, which netd relays to the proxy and from the
-  server. kind runs its default CNI.
+- **Socket egress has shipped** (docs/workspace-egress.md). A workspace or
+  builder pod has no network interface. Its egress and its streams cross
+  two sockets in a directory on its node, which netd relays to the proxy
+  and from the server. kind running its default CNI is
+  docs/plans/socket-egress.md, which is not built yet.
 - **BuildKit builds have shipped** (docs/image-builds.md). An untrusted layer
   is built by a BuildKit daemon in a sandbox of its own, behind the proxy.
 - **Pamir runs one node** (docs/plans/pamir.md "Milestones"): it starts,
@@ -220,7 +221,8 @@ change: only named directories are mounted, read-only holds against root
 inside, and every path is opened by descriptor. Two more apply here:
 
 - **No host socket in a mounted dir except the workspace's own**
-  (docs/plans/socket-egress.md "Risks").
+  (docs/workspace-egress.md "The contract": only netshim's container
+  mounts the socket directory).
 - **What an agent writes through `sudo` is root's on the host**, as it is
   on the claim today, and is removed the same way: by a one-shot root unit
   that mounts that one directory (`root-pod.ts`).

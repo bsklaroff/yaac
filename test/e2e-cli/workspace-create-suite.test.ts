@@ -19,7 +19,7 @@ import { asTailnet, assignTestGitCredential, registerTestProject, setTestProject
 import { requireCluster } from '@yaac/test-utils/setup'
 import { requirePodman, execInJob, cleanupWorkspaceJobs } from '#support/cluster'
 import { k8sNamespace, readObject } from '@yaac/server/drivers/k8s/substrate/api'
-import { nodeLocalNodePath, nodeMountsNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
+import { nodeLocalNodePath, nodeMountsNodePath, socketsNodePath } from '@yaac/server/drivers/k8s/substrate/mount-sources'
 import { CONTAINER_TMUX_SOCK } from '@yaac/shared/paths'
 import { AGENT_CLIS, promptFits } from '@yaac/shared/types'
 import type { ProjectConfig, ProjectSummary, ResourceReport, SessionEntry } from '@yaac/shared/types'
@@ -528,8 +528,8 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       ])).rejects.toThrow()
 
       // The pod's spec holds nothing of its project's: every volume is the
-      // global claim (this build's helpers), its node-mounts directory, an
-      // emptyDir or the CA ConfigMap, and nothing is a hostPath into the data
+      // global claim (this build's helpers), its node-mounts or socket
+      // directory, an emptyDir or the CA ConfigMap, and nothing is a hostPath into the data
       // dir (docs/generic-workspace-pods.md). The workspace's files are its
       // tree on the node, with its `.git` from the global claim, bound in at
       // claim.
@@ -543,6 +543,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       for (const v of volumes.volumes) {
         const ok = v.persistentVolumeClaim?.claimName === 'yaac-global'
           || v.hostPath?.path.startsWith(`${nodeMountsNodePath()}/`) === true
+          || v.hostPath?.path.startsWith(`${socketsNodePath()}/`) === true
           || v.emptyDir !== undefined || v.configMap !== undefined
         expect(ok, `volume ${v.name}: ${JSON.stringify(v)}`).toBe(true)
         expect(v.hostPath?.path.startsWith(testEnv.dataDir)).not.toBe(true)
@@ -553,9 +554,10 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(mountPoints).toEqual(expect.arrayContaining(['/workspace', '/workspace/.git']))
       // The workspace's own git writes big checkouts in parallel.
       expect((await execInJob(jobName, ['git', 'config', '--global', 'checkout.workers'])).stdout.trim()).toBe('8')
-      // The tree container is the pod's one init container, and has handed
-      // the node-local folders kubelet made as root to the pod's own uid.
-      expect(volumes.initContainers?.map((c) => c.name)).toEqual(['tree'])
+      // netshim and the tree container are the pod's init containers, and
+      // the tree container has handed the node-local folders kubelet made as
+      // root to the pod's own uid.
+      expect(volumes.initContainers?.map((c) => c.name)).toEqual(['netshim', 'tree'])
       const { stdout: owners } = await execInJob(jobName, [
         'sh', '-c', 'id -u && stat -c %u /workspace /home/yaac/.local/share/opencode && test -w /workspace -a -w /home/yaac/.local/share/opencode',
       ])
@@ -1241,7 +1243,7 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       expect(cmdlines.filter((l) => /kubectl\s+port-forward\b/.test(l))).toEqual([])
     })
 
-    it('locks streamd ingress to the proxy (session ingress lock policy)', async () => {
+    it('answers nothing at the pod\'s address: a sandbox has no interface', async () => {
       const ns = k8sNamespace()
       const { stdout: ipOut } = await kubectl([
         'get', 'pods', '-n', ns, '-l', `yaac.workspace-id=${workspaceId}`,
@@ -1250,25 +1252,24 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       const podIp = ipOut.trim()
       expect(podIp).toMatch(/^\d+\.\d+\.\d+\.\d+$/)
 
-      // The proxy can dial streamd, so the negative case below measures the
-      // policy, not a dead daemon.
+      // streamd listens, and answers over the relay (every command above
+      // ran through it), but the address the CNI gave the pod reaches no
+      // listener, from the proxy or from any other pod.
       const dialScript =
         `const s=require('net').connect(10300,'${podIp}');`
         + "s.on('connect',()=>{console.log('CONNECTED');process.exit(0)});"
         + "s.on('error',(e)=>{console.log('ERR:'+e.code);process.exit(1)});"
         + "setTimeout(()=>{console.log('TIMEOUT');process.exit(1)},5000);"
-      const { stdout: fromProxy } = await kubectl([
+      const fromProxy = await kubectl([
         'exec', '-n', ns, 'deploy/yaac-proxy', '--', 'node', '-e', dialScript,
-      ], { timeout: 30_000 })
-      expect(fromProxy).toContain('CONNECTED')
+      ], { timeout: 30_000 }).then((r) => r.stdout, (err: { stdout?: string }) => err.stdout ?? '')
+      expect(fromProxy).not.toContain('CONNECTED')
 
-      // Any other pod is dropped (nc times out). The probe uses the
-      // workspace image, which is on the node and has nc.
       const { stdout: imgOut } = await kubectl([
         'get', 'pods', '-n', ns, '-l', `yaac.workspace-id=${workspaceId}`,
         '-o', 'jsonpath={.items[0].spec.containers[0].image}',
       ])
-      const probeName = `streamd-lock-probe-${randomUUID().slice(0, 8)}`
+      const probeName = `streamd-dial-probe-${randomUUID().slice(0, 8)}`
       try {
         const { stdout: probeOut } = await kubectl([
           'run', probeName, '-n', ns, `--image=${imgOut.trim()}`,
@@ -1550,12 +1551,13 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await expect(execInJob(jobName, ['test', '-e', '/workspace/node_modules'])).rejects.toThrow()
       const { stdout: registry } = await execInJob(jobName, ['pnpm', 'config', 'get', 'registry'])
       expect(registry.trim()).toBe('https://registry.npmjs.org/')
-      // The pod lacks the label the cache's policy admits.
+      // Its registration names no cluster service, so the proxy refuses the
+      // cache's name.
       const { stdout: dial } = await execInJob(jobName, [
         'sh', '-c',
-        `curl -s -o /dev/null --connect-timeout 2 -w '%{http_code}' http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/-/ping || true`,
+        `curl -s -o /dev/null --max-time 10 -w '%{http_code}' http://yaac-npm-cache.${k8sNamespace()}.svc.cluster.local:4873/-/ping || true`,
       ])
-      expect(dial.trim()).toBe('000')
+      expect(dial.trim()).toBe('403')
     }, 60_000)
 
     it('boots codex-cli and round-trips a prompt through the mock LLM', async () => {

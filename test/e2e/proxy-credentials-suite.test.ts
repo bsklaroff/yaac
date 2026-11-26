@@ -10,7 +10,7 @@ import {
   deregisterWorkspaceEgress,
   type ProxyRegistration,
 } from '@yaac/server/drivers/k8s/egress/proxy-registration'
-import { ensureNamespace, proxyServiceClusterIp, syncProxyCredentials } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
+import { ensureNamespace, syncProxyCredentials } from '@yaac/server/drivers/k8s/cluster/proxy-apply'
 import {
   PROXY_APP_NAME,
   PROXY_CA_SECRET_NAME,
@@ -228,7 +228,6 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       git: GIT_TOKENS,
     })
     await client.ensureRunning()
-    const proxyHost = await proxyServiceClusterIp()
     await openTestPodsToProxy()
     const echo = await startEchoPod(echoName)
     echoHost = echo.host
@@ -243,7 +242,7 @@ describe('proxy credentials suite (objects in, objects out)', () => {
       },
     }
     await applyProxyRegistration(workspaceId, registration)
-    await startWorkspacePod(podName, workspaceId, proxyHost)
+    await startWorkspacePod(podName, workspaceId)
   }, 600_000)
 
   afterAll(async () => {

@@ -1,32 +1,34 @@
 // The client side of the stream relay, against an in-process fake speaking
 // the wire protocol (relay auth line, streamd handshake line, {ok} reply,
-// payload). The real relay and streamd have their own tests
-// (docs/stream-relay.md).
+// payload). The real relay (k8s/mountd/cmd/relay) and streamd have their
+// own tests (docs/stream-relay.md).
 import net from 'node:net'
 import crypto from 'node:crypto'
 import type * as childProcess from 'node:child_process'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type * as netModule from 'node:net'
 
-// The socket is a real listener. The proxy auth Secret is read from the
-// fake cluster, and the kubectl exec boot is a mocked child process.
+// The socket is a real listener. The proxy auth Secret, the workspace's pod
+// and each node's netd pod are read from the fake cluster, and the kubectl
+// exec boot is a mocked child process.
 type ExecResult = { stdout: string; stderr: string }
 type ExecCallback = (err: unknown, res?: ExecResult) => void
 const execMock = vi.fn<(command: string) => Promise<ExecResult>>()
 const spawnMock = vi.fn<(file: string, args: readonly string[]) => unknown>()
 /** Where nothing listens, so a dial is refused at once. */
 const NO_RELAY = '127.0.0.1:1'
-/** Where a dial to the proxy Service lands: the fake relay's `host:port`.
- *  The Service's cluster DNS name is never resolved, since what a lookup of
- *  it answers depends on the network the tests run in. */
+/** netd's stream port, which every relay dial targets. */
+const NETD_STREAM_PORT = 10262
+/** Where a dial to a netd pod lands: the fake relay's `host:port`. A pod
+ *  address is never dialed, since none exists outside a cluster. */
 let relayHost = NO_RELAY
-/** The host the last dial asked for. */
-let dialedHost: string | undefined
+/** The address the last relay dial asked for. */
+let dialed: string | undefined
 vi.mock('node:net', async (importOriginal) => {
   const real = await importOriginal<typeof netModule>()
   const connect = (port: number, host: string): netModule.Socket => {
-    dialedHost = host
-    if (!host.endsWith('.svc.cluster.local')) return real.connect(port, host)
+    if (port !== NETD_STREAM_PORT) return real.connect(port, host)
+    dialed = `${host}:${String(port)}`
     const [h, p] = relayHost.split(':')
     return real.connect(Number(p), h)
   }
@@ -64,6 +66,7 @@ import {
 import { FRAME_DATA, FRAME_EXIT, FRAME_RESIZE, FrameParser, encodeFrame } from '@yaac/shared/stream-frames'
 import { WorkspaceExecError } from '#drivers/contract'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
+import { installId } from '#drivers/k8s/substrate'
 
 const SECRET = 'relay-secret-0123456789abcdef'
 const SID = '0f9b2c4d-1111-2222-3333-444455556666'
@@ -77,6 +80,34 @@ function seedSecret(): void {
     metadata: { name: 'yaac-proxy-auth', namespace: 'test-ns' },
     data: { secret: Buffer.from(SECRET).toString('base64') },
   })
+}
+
+/** The workspace's pod, on `node` (none for a pod not yet scheduled). */
+function seedWorkspacePod(node: string | undefined): void {
+  fakeCluster.seed({
+    apiVersion: 'v1', kind: 'Pod',
+    metadata: {
+      name: `${JOB}-x`, namespace: 'test-ns', creationTimestamp: '2026-01-01T00:00:00Z',
+      labels: {
+        'batch.kubernetes.io/job-name': JOB, 'yaac.workspace-id': SID, 'yaac.project-id': 'demo',
+        'yaac.install-id': installId(),
+      },
+    },
+    spec: node !== undefined ? { nodeName: node } : {},
+    status: { phase: 'Running' },
+  })
+}
+
+/** netd on two nodes, as the DaemonSet runs it. */
+function seedNetd(): void {
+  for (const [node, ip] of [['n1', '10.244.1.7'], ['n2', '10.244.2.8']]) {
+    fakeCluster.seed({
+      apiVersion: 'v1', kind: 'Pod',
+      metadata: { name: `yaac-netd-${node}`, namespace: 'test-ns', labels: { app: 'yaac-netd' } },
+      spec: { nodeName: node },
+      status: { phase: 'Running', podIP: ip },
+    })
+  }
 }
 
 interface Received {
@@ -130,6 +161,9 @@ beforeEach(() => {
   spawnMock.mockReset()
   vi.stubEnv('YAAC_K8S_NAMESPACE', 'test-ns')
   seedSecret()
+  seedNetd()
+  seedWorkspacePod('n2')
+  dialed = undefined
 })
 
 afterEach(() => {
@@ -211,12 +245,22 @@ describe('relayDial', () => {
       .rejects.toBeInstanceOf(RelayDialError)
   })
 
-  it('dials the proxy Service', async () => {
-    // The server pod shares the proxy's namespace, so it dials the Service.
+  it('dials netd on the node the workspace\'s pod runs on, and fails as transport where there is none', async () => {
     await withRelay((r) => r.socket.destroy())
     await expect(relayDial(SID, { kind: 'tcp', port: 80 })).rejects.toBeInstanceOf(RelayDialError)
-    expect(dialedHost).toBe('yaac-proxy.test-ns.svc.cluster.local')
+    expect(dialed).toBe(`10.244.2.8:${String(NETD_STREAM_PORT)}`)
     expect(spawnMock).not.toHaveBeenCalled()
+
+    // A pod the scheduler has not placed, and a node with no running netd:
+    // nothing to dial, so the caller reads it as `unknown`.
+    for (const [node, why] of [[undefined, /on no node yet/], ['n3', /no running netd on node n3/]] as const) {
+      dialed = undefined
+      seedWorkspacePod(node)
+      const err = await relayDial(SID, { kind: 'tcp', port: 80 }).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(RelayDialError)
+      expect(String(err)).toMatch(why)
+      expect(dialed).toBeUndefined()
+    }
   })
 })
 

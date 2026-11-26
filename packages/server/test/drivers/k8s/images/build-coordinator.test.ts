@@ -159,7 +159,7 @@ import {
   missingImageLayers,
   resolveChain,
 } from '#drivers/k8s/images/build-coordinator'
-import { buildBuilderEgressNpManifest, resolveTrustedLayers, stringHash } from '#drivers/k8s/cluster'
+import { resolveMountdImageTag, resolveTrustedLayers, stringHash } from '#drivers/k8s/cluster'
 import { fakeRegistry } from '#test/support/fake-registry'
 // Setup values, not units under test.
 import {
@@ -180,9 +180,8 @@ import { resolveBuilderImageTag } from '#drivers/k8s/cluster/builder-image'
 import { NORMALIZE_STEP } from '#drivers/k8s/cluster/normalize-step'
 import { BUILDER_CONTEXT_MAX_BYTES } from '#lib/build-context'
 import { _resetRegistryGrantKeyForTests } from '#drivers/k8s/cluster/registry-grant'
-import { resetProxyClusterIpCache } from '#drivers/k8s/cluster/proxy-apply'
 import { proxyClient } from '#drivers/k8s/egress'
-import { installId, k8sNamespace } from '#drivers/k8s/substrate'
+import { installId, k8sNamespace, socketsNodePath } from '#drivers/k8s/substrate'
 import { fakeCluster } from '@yaac/test-utils/k8s-stub'
 import type { ImageBuildRequest, ImageChainSpec, ImageLayerSource } from '#drivers/contract'
 import type { ImageLayerName } from '@yaac/shared/types'
@@ -214,7 +213,6 @@ const PROJ = '3f2c9a1e-5b7d-4c8e-9f01-2a3b4c5d6e7f'
 const PROJ_B = 'c1d2e3f4-a5b6-4c7d-8e9f-a0b1c2d3e4f5'
 /** The build's egress registration id, which labels its pod. */
 const EGRESS_ID = '7d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6'
-const PROXY_IP = '10.96.7.7'
 let ensureProxy: ReturnType<typeof vi.spyOn>
 const LAYERED_DOCKERFILE = 'ARG BASE_IMAGE\nFROM ${BASE_IMAGE}\n'
 
@@ -293,19 +291,20 @@ interface PodManifest {
     securityContext: { seccompProfile: { type: string } }
     dnsPolicy: string
     dnsConfig: { nameservers: string[] }
+    initContainers: Array<{ name: string; image: string; restartPolicy: string; volumeMounts: Array<{ name: string; mountPath: string }> }>
     containers: Array<{
       image: string
       imagePullPolicy: string
       command: string[]
       env: Array<{ name: string; value: string }>
-      securityContext: { capabilities: { add: string[] } }
+      securityContext: { capabilities: { add: string[]; drop?: string[] } }
       resources: {
         requests: Record<string, string>
         limits: { memory: string }
       }
       volumeMounts: Array<{ name: string; mountPath: string }>
     }>
-    volumes: Array<{ name: string; emptyDir: { sizeLimit: string } }>
+    volumes: Array<{ name: string; emptyDir?: { sizeLimit: string }; hostPath?: { path: string; type: string } }>
   }
 }
 
@@ -364,6 +363,8 @@ beforeEach(async () => {
   // it, so `ensureBuilderImage` resolves without building.
   fakeRegistry.install()
   fakeRegistry.mirror(await resolveBuilderImageTag())
+  // netshim's image, which every builder pod runs beside buildkitd.
+  fakeRegistry.tags.add(await resolveMountdImageTag())
   mockEnsureMainRegistry.mockResolvedValue(undefined)
   execState.calls.length = 0
   execState.error = null
@@ -373,15 +374,9 @@ beforeEach(async () => {
     data: { 'key.pem': Buffer.from(GRANT_KEY.export({ type: 'pkcs8', format: 'pem' })).toString('base64') },
   })
   _resetRegistryGrantKeyForTests()
-  // The proxy, which builder pods resolve names through, as its bootstrap
+  // The proxy, which carries every builder pod's traffic, as its bootstrap
   // (a sibling feature, faked here) leaves it.
   ensureProxy = vi.spyOn(proxyClient, 'ensureRunning').mockResolvedValue()
-  fakeCluster.seed({
-    apiVersion: 'v1', kind: 'Service',
-    metadata: { name: 'yaac-proxy', namespace: k8sNamespace() },
-    spec: { clusterIP: PROXY_IP },
-  })
-  resetProxyClusterIpCache()
 })
 
 afterEach(async () => {
@@ -489,16 +484,19 @@ describe('buildImageLayers', () => {
     // The proxy is brought up first: a server that has launched no
     // workspace has none.
     expect(ensureProxy).toHaveBeenCalled()
-    expect(appliedKinds()).toEqual(expect.arrayContaining([
-      'ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding', 'NetworkPolicy', 'ConfigMap', 'Pod',
-    ]))
+    // No policy of its own: the pod has no interface, and the
+    // namespace's world-deny covers it.
+    expect(appliedKinds()).toEqual([
+      'ValidatingAdmissionPolicy', 'ValidatingAdmissionPolicyBinding', 'ConfigMap', 'Pod',
+    ])
     // The proxy knows the build before its pod dials: by build id, with
-    // the project's allowed hosts and no owner.
+    // the project's allowed hosts, no owner, and the registry's pod port by
+    // name.
     expect(appliedKinds().indexOf('ConfigMap')).toBeLessThan(appliedKinds().indexOf('Pod'))
     const registration = appliedOfKind<{ metadata: { name: string; labels: Record<string, string> }; data: Record<string, string> }>('ConfigMap')
     expect(registration.metadata.labels['yaac.build-id']).toBe(EGRESS_ID)
     expect(JSON.parse(registration.data['registration.json'])).toEqual({
-      rules: [], allowedHosts: ['deb.debian.org'], projectId: PROJ, owner: 'none',
+      rules: [], allowedHosts: ['deb.debian.org'], projectId: PROJ, owner: 'none', clusterServices: [POD_HOST],
     })
 
     const pod = appliedOfKind<PodManifest>('Pod')
@@ -510,7 +508,7 @@ describe('buildImageLayers', () => {
       'yaac.project-id': PROJ,
       'yaac.build-id': EGRESS_ID,
     })
-    expect(pod.spec.runtimeClassName).toBe('gvisor')
+    expect(pod.spec.runtimeClassName).toBe('gvisor-nonet')
     // Outranks workspaces for eviction, but never preempts a running one.
     expect(pod.spec.priorityClassName).toBe('yaac-builder')
     expect(pod.spec.restartPolicy).toBe('Never')
@@ -518,9 +516,15 @@ describe('buildImageLayers', () => {
     expect(pod.spec.automountServiceAccountToken).toBe(false)
     expect(pod.spec.enableServiceLinks).toBe(false)
     expect(pod.spec.securityContext.seccompProfile.type).toBe('RuntimeDefault')
-    // Names resolve through the proxy's DNS stub, which knows the registry.
+    // netshim's stub answers every name, the registry's included, with the
+    // sinkhole, and carries every dial through its socket directory, named
+    // for the build and mounted in netshim alone.
     expect(pod.spec.dnsPolicy).toBe('None')
-    expect(pod.spec.dnsConfig).toEqual({ nameservers: [PROXY_IP] })
+    expect(pod.spec.dnsConfig).toEqual({ nameservers: ['198.18.0.1'] })
+    expect(pod.spec.initContainers.map((c) => [c.name, c.image, c.restartPolicy])).toEqual([
+      ['netshim', `${CLUSTER_HOST}/${await resolveMountdImageTag()}`, 'Always'],
+    ])
+    expect(pod.spec.initContainers[0].volumeMounts).toEqual([{ name: 'sockets', mountPath: '/run/yaac' }])
     const container = pod.spec.containers[0]
     expect(container.resources.limits.memory).toBe(String(BUILDER_MEMORY_LIMIT_BYTES))
     // An explicit request well under the limit; Kubernetes would otherwise
@@ -546,22 +550,19 @@ describe('buildImageLayers', () => {
       .toBe(`${CLUSTER_HOST}/${builderTag.slice(0, builderTag.indexOf(':'))}@${fakeRegistry.digestOf(builderTag)}`)
     expect(container.imagePullPolicy).toBe('IfNotPresent')
     expect(container.securityContext.capabilities.add).toContain('SETFCAP')
+    // The sandbox keeps whatever raw-socket grant a spec makes, since
+    // netshim needs one; the build gets none.
+    expect(container.securityContext.capabilities.add).not.toContain('NET_RAW')
+    expect(container.securityContext.capabilities.drop).toEqual(['NET_RAW'])
     // State on a gVisor tmpfs emptyDir.
     expect(pod.metadata.annotations['dev.gvisor.spec.mount.buildkit-state.type']).toBe('bind')
     expect(pod.metadata.annotations['dev.gvisor.spec.mount.buildkit-state.options'])
       .toBe(`rw,size=${BUILDER_STATE_TMPFS_BYTES}`)
-    expect(pod.spec.volumes).toEqual([{
-      name: 'buildkit-state',
-      emptyDir: { sizeLimit: String(BUILDER_STATE_SIZELIMIT_BYTES) },
-    }])
+    expect(pod.spec.volumes).toEqual([
+      { name: 'buildkit-state', emptyDir: { sizeLimit: String(BUILDER_STATE_SIZELIMIT_BYTES) } },
+      { name: 'sockets', hostPath: { path: expect.stringMatching(new RegExp(`^${socketsNodePath()}/${EGRESS_ID}\\.[0-9a-f]{8}$`)) as string, type: 'DirectoryOrCreate' } },
+    ])
     expect(container.volumeMounts).toEqual([{ name: 'buildkit-state', mountPath: '/var/lib/buildkit' }])
-
-    const np = appliedOfKind<{
-      spec: { podSelector: { matchLabels: Record<string, string> }; policyTypes: string[]; egress: unknown[] }
-    }>('NetworkPolicy')
-    expect(np.spec.podSelector.matchLabels).toEqual({ 'yaac.role': 'builder' })
-    expect(np.spec.policyTypes).toEqual(['Egress'])
-    expect(np.spec.egress).toEqual((buildBuilderEgressNpManifest(['10.89.0.7/32']) as { spec: { egress: unknown } }).spec.egress)
 
     // Daemon wait, context, Dockerfile, policy, grant, build: in order.
     const remote = remoteCommands()

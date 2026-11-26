@@ -2,19 +2,13 @@
 export const PROXY_APP_NAME = 'yaac-proxy'
 /**
  * Name and port of the install's npm registry cache
- * (drivers/k8s/cluster/npm-cache.ts). Workspace pods dial it directly, not
- * through netd's redirect.
+ * (drivers/k8s/cluster/npm-cache.ts), which the proxy dials for a workspace
+ * whose registration names it.
  */
 export const NPM_CACHE_APP_NAME = 'yaac-npm-cache'
 export const NPM_CACHE_PORT = 4873
 /**
- * Workspace-pod label that lets the pod reach the npm cache. The server
- * sets it at launch from the project's `npmCache` setting; pods have no API
- * credential, so they cannot add it themselves.
- */
-export const LABEL_NPM_CACHE = 'yaac.npm-cache'
-/**
- * Name of netd, the per-node egress redirect DaemonSet
+ * Name of netd, the per-node DaemonSet whose relay carries sandbox traffic
  * (drivers/k8s/cluster/netd.ts).
  */
 export const NETD_APP_NAME = 'yaac-netd'
@@ -38,43 +32,25 @@ export const PROXY_AUTH_SECRET_NAME = 'yaac-proxy-auth'
 /** Port the proxy serves inside the cluster (container + Service port). */
 export const PROXY_PORT = 10255
 /**
- * Transparent egress listeners. netd redirects workspace pods' outbound
- * 443/80 here, routed by TLS SNI or Host header, with the source pod
- * identified by IP (k8s/proxy/transparent.ts).
- */
-export const TRANSPARENT_HTTPS_PORT = 10256
-export const TRANSPARENT_HTTP_PORT = 10257
-/**
- * Transparent tunnel listener for git over SSH. netd forwards the pod's
- * `CONNECT host:port` here with a PROXY-protocol (PP2) header identifying
- * the source pod, so SSH gets the same per-pod identity as HTTP(S).
- */
-export const TRANSPARENT_TUNNEL_PORT = 10258
-/**
- * Port git's SSH `ncat` ProxyCommand dials on SSH_TUNNEL_SENTINEL. netd
- * redirects it through the node Envoy to the proxy's tunnel listener.
- * ncat sends `CONNECT host:22`, so the proxy learns the real hostname for
- * the allowlist (DNS in the pod is a stub, so a raw port-22 redirect
- * would lose it).
+ * Port git's SSH `ncat` ProxyCommand dials on SSH_TUNNEL_SENTINEL. netshim
+ * carries it to the proxy like any dial, and the proxy reads it as git's
+ * `CONNECT host:22`, so it learns the real hostname for the allowlist
+ * (every name in the sandbox resolves to the sinkhole, so a raw port-22
+ * dial would lose it). k8s/proxy/socket-ingress.ts holds the same values.
  */
 export const TUNNEL_INGRESS_PORT = 10259
 /**
- * Address the SSH ncat ProxyCommand dials, only for netd to match and
- * redirect. It is in the RFC 2544 benchmark range, so it never routes. It
- * must stay outside every pod CIDR: netd skips pod-CIDR destinations before
- * it reaches the sentinel rule.
+ * Address the SSH ncat ProxyCommand dials, only for the proxy to tell git's
+ * tunnel apart. It is in the RFC 2544 benchmark range, so it names nothing.
  */
 export const SSH_TUNNEL_SENTINEL = '198.18.0.2'
 /**
- * The address the proxy's DNS stub answers every outside name with, so a
- * workspace never learns a real one. netd sends TCP bound for it, on any
- * port but 443 and 80, to the proxy's plain-HTTP listener, which routes by
- * the Host header (docs/workspace-egress.md). In the benchmark range like
- * the SSH sentinel, and for the same reason outside every pod CIDR.
+ * The address a sandbox's DNS stub (netshim) answers every name with, and
+ * the address its pods name as their resolver, so a sandbox never learns a
+ * real address (docs/workspace-egress.md). In the benchmark range like the
+ * SSH sentinel, so it names nothing. k8s/mountd/cmd/netshim holds it too.
  */
 export const DNS_SINKHOLE = '198.18.0.1'
-/** UDP port of the proxy's DNS stub (needs CAP_NET_BIND_SERVICE). */
-export const DNS_STUB_PORT = 53
 /**
  * The name a workspace's ssh knows the proxy's host key under
  * (`HostKeyAlias`), whichever git host it dials: the proxy ends every ssh
@@ -83,39 +59,42 @@ export const DNS_STUB_PORT = 53
  */
 export const SSH_HOST_KEY_ALIAS = 'yaac-proxy'
 /**
- * Relay listener: the server dials it through the proxy's Service, sends
- * one auth line (`{token, workspaceId}`), and the proxy splices the rest of
- * the stream to the pod's streamd (docs/stream-relay.md).
- */
-export const RELAY_PORT = 10260
-/**
- * TCP port of streamd, the in-pod stream daemon (dockerfiles/streamd).
- * Only the proxy may dial it (buildWorkspaceIngressLockNpManifest).
+ * TCP port of streamd, the in-pod stream daemon (dockerfiles/streamd),
+ * which netd's relay reaches through the pod's `ingress.sock`.
  */
 export const POD_STREAM_PORT = 10300
 /**
- * Node port range where netd's Envoy binds one listener trio per install
- * (k8s/netd/ports.ts reads the base and slot count from the DaemonSet env).
- * This range is the only outbound egress workspace pods' NetworkPolicy
- * allows, so a missing redirect fails closed. Dialing a listener directly
- * gains nothing: Envoy always stamps the real peer address in the
- * PROXY-protocol header.
+ * The socket datapath (docs/workspace-egress.md). A sandbox's netshim takes
+ * every TCP dial on NETSHIM_TCP_PORT and every DNS query on
+ * NETSHIM_DNS_PORT, both on the sandbox's loopback, and carries each
+ * connection to netd's relay through `egress.sock`. The relay hands it to
+ * the proxy on SOCKET_EGRESS_PORT behind a PROXY protocol v2 header that
+ * names the sandbox. The server reaches a workspace's streamd through the
+ * relay on NETD_STREAM_PORT, and the site router a release on
+ * NETD_SITE_PORT. k8s/proxy and k8s/mountd mirror these values.
  */
-export const NETD_LISTENER_PORT_BASE = 15100
-export const NETD_LISTENER_PORT_END = 15999
-/** Trios the range holds; must satisfy BASE + SLOTS*3 - 1 <= END. */
-export const NETD_LISTENER_SLOTS = 300
+export const SOCKET_EGRESS_PORT = 10261
+export const NETD_STREAM_PORT = 10262
+export const NETD_SITE_PORT = 10263
+export const NETSHIM_TCP_PORT = 10301
+export const NETSHIM_DNS_PORT = 10302
+/**
+ * PROXY protocol v2 TLV types the relay adds on its header to the proxy:
+ * the workspace or build id, and the proxy auth secret. The router's header
+ * to the relay carries the site id under PP2_TLV_ID.
+ */
+export const PP2_TLV_ID = 0xe0
+export const PP2_TLV_SECRET = 0xe1
 
 /** NetworkPolicy default-denying world egress across the install namespace. */
 export const EGRESS_WORLD_DENY_NAME = 'yaac-egress-world-deny'
-/** NetworkPolicy granting workspace pods their redirect egress. */
-export const WORKSPACE_EGRESS_NP_NAME = 'yaac-workspace-egress'
-/** NetworkPolicy locking the proxy's ingress (transparent ports = node only). */
+/** NetworkPolicy locking the proxy's ingress to netd's relay and the server. */
 export const PROXY_INGRESS_NP_NAME = 'yaac-proxy-ingress'
 /** NetworkPolicy keeping the proxy off non-public addresses but its peers, and off the kind fronting's node port and node NFS. */
 export const PROXY_EGRESS_NP_NAME = 'yaac-proxy-egress'
-/** NetworkPolicy locking workspace-pod ingress to the proxy's relay dials. */
-export const WORKSPACE_INGRESS_LOCK_NP_NAME = 'yaac-workspace-ingress-lock'
+/** NetworkPolicies admitting netd's relay its callers and its peers. */
+export const NETD_INGRESS_NP_NAME = 'yaac-netd-ingress'
+export const NETD_EGRESS_NP_NAME = 'yaac-netd-egress'
 /** Role label pods carry so policy and sweeps can select on what they are. */
 export const LABEL_ROLE = 'yaac.role'
 /**
@@ -244,8 +223,8 @@ export const TAILSCALE_PARENT_NAMESPACE_LABEL = 'tailscale.com/parent-resource-n
 
 /**
  * `host:port` of the proxy's Service in cluster DNS, used for the server's
- * control API and stream relay dials. The name is fully qualified so it
- * resolves whatever the dialing pod's DNS search path.
+ * control API dials. The name is fully qualified so it resolves whatever
+ * the dialing pod's DNS search path.
  */
 export function proxyServiceHost(namespace: string, port: number): string {
   return `${PROXY_APP_NAME}.${namespace}.svc.cluster.local:${String(port)}`
@@ -286,15 +265,15 @@ export const SITE_ROUTER_ADMIN_PORT = 9901
 /** The ConfigMap of the router's route table, which the server writes. */
 export const SITE_ROUTES_CONFIGMAP_NAME = 'yaac-site-routes'
 /**
- * Label every release pod of a site carries from launch, naming the site.
- * The site's ingress policy admits the router to pods with it, the router
- * may dial only pods with it, and the proxy refuses `yaac.internal` to
- * them (k8s/proxy/pod-watch.ts reads the same name).
+ * Label every release pod of a site carries from launch, naming the site,
+ * which tells the server a release apart (its handle's `siteId`, and the
+ * ports it may forward). The proxy knows a release by its registration's
+ * `release` instead.
  */
 export const LABEL_SITE_ID = 'yaac.site-id'
 
-/** A site's headless Service (and its ingress policy), selecting its live
- *  release. */
+/** A site's headless Service, which names its live release and resolves
+ *  to netd on that release's node (cluster/site-edge.ts). */
 export function siteServiceName(siteId: string): string {
   return `yaac-site-${siteId}`
 }

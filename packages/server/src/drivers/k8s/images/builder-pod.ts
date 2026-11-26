@@ -28,6 +28,7 @@ import {
   PRIORITY_CLASS_BUILDER,
   ROLE_BUILDER,
   RUNTIME_CLASS_GVISOR,
+  SANDBOX_DNS,
   applyObject,
   buildContextFiles,
   installId,
@@ -37,23 +38,23 @@ import {
   execFileAsync,
   sentryTmpfsAnnotations,
   k8sNamespace,
+  netshimContainer,
   readObject,
   runStreamingProcess,
+  socketVolume,
   streamBuildContext,
 } from '#drivers/k8s/substrate'
 import {
   BUILDKITD_ENV,
   NORMALIZE_STEP,
   buildBuildRegistrationConfigMapManifest,
-  buildBuilderEgressNpManifest,
   buildkitdConfig,
   dockerfileFrontendArgs,
   ensureBuilderImage,
   ensureBuilderRoleGuard,
   ensureMainRegistry,
-  nodeIpBlocks,
+  mountdImage,
   proxyRegistrationName,
-  proxyServiceClusterIp,
   registryAuthFile,
   registryHost,
   registryPodHost,
@@ -109,12 +110,14 @@ const BUILDER_STATE_VOLUME = 'buildkit-state'
  *  - SYS_ADMIN, SYS_CHROOT: the snapshot mounts and each step's container.
  *  - MKNOD: device nodes in image layers.
  *  - SETFCAP: `setcap` in build steps.
- *  - NET_RAW, NET_ADMIN: raw sockets and route config in RUN steps.
+ *  - NET_ADMIN: route config in RUN steps. BuildKit gives a step none, and
+ *    a step that had it could only cut its own network.
  *  - SYS_PTRACE, SYS_RESOURCE: debuggers and rlimit raises.
+ * Not NET_RAW, which the container drops (a build needs no raw socket).
  */
 const BUILDER_ENGINE_CAPS = [
   'SYS_ADMIN', 'SYS_CHROOT', 'MKNOD', 'SETFCAP',
-  'NET_RAW', 'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
+  'NET_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE',
 ]
 
 /**
@@ -244,16 +247,19 @@ function builderPodName(seedTag: string): string {
 }
 
 /**
- * Builder pod manifest: the `gvisor` runtime, the engine capabilities, no
- * service account token, and buildkitd's state on a sentry-internal tmpfs.
- * buildkitd is the entrypoint, with its config written from the env at
- * start; the server drives it with `kubectl exec … buildctl`.
+ * Builder pod manifest: the gVisor runtime with no network interface, the
+ * engine capabilities, no service account token, and buildkitd's state on
+ * a sentry-internal tmpfs. Its egress goes through netshim's sockets
+ * (`socketDir`), like a workspace's. buildkitd is the entrypoint, with its
+ * config written from the env at start; the server drives it with
+ * `kubectl exec … buildctl`.
  */
 function buildBuilderPodManifest(
   name: string,
   imageRef: string,
+  netshimRef: string,
+  socketDir: string,
   identity: BuilderPodIdentity,
-  proxyIp: string,
 ): Record<string, unknown> {
   const config = buildkitdConfig({ plainHttp: [registryPodHost()] })
   return {
@@ -278,14 +284,14 @@ function buildBuilderPodManifest(
       runtimeClassName: RUNTIME_CLASS_GVISOR,
       // Outranks workspaces but never preempts one (see priority-classes.ts).
       priorityClassName: PRIORITY_CLASS_BUILDER,
-      // The proxy's DNS stub, as a workspace's: it resolves the registry
-      // and sinkholes every other name, since netd redirects the build's
-      // egress and the proxy routes by SNI/Host.
-      dnsPolicy: 'None',
-      dnsConfig: { nameservers: [proxyIp] },
+      // netshim's stub, as a workspace's: every name resolves to the
+      // sinkhole, and the proxy routes by SNI/Host, the registry's name
+      // included.
+      ...SANDBOX_DNS,
       securityContext: {
         seccompProfile: { type: 'RuntimeDefault' },
       },
+      initContainers: [netshimContainer(netshimRef)],
       containers: [{
         name: 'builder',
         image: imageRef,
@@ -300,7 +306,10 @@ function buildBuilderPodManifest(
           ...Object.entries(BUILDKITD_ENV).map(([key, value]) => ({ name: key, value })),
         ],
         securityContext: {
-          capabilities: { add: BUILDER_ENGINE_CAPS },
+          // NET_RAW is in the runtime's default set, and the sandbox keeps
+          // every grant a spec makes (netshim needs one), so it is dropped
+          // here, as the workspace container drops it.
+          capabilities: { add: BUILDER_ENGINE_CAPS, drop: ['NET_RAW'] },
         },
         resources: {
           requests: {
@@ -314,10 +323,13 @@ function buildBuilderPodManifest(
           mountPath: BUILDER_STATE_PATH,
         }],
       }],
-      volumes: [{
-        name: BUILDER_STATE_VOLUME,
-        emptyDir: { sizeLimit: String(BUILDER_STATE_SIZELIMIT_BYTES) },
-      }],
+      volumes: [
+        {
+          name: BUILDER_STATE_VOLUME,
+          emptyDir: { sizeLimit: String(BUILDER_STATE_SIZELIMIT_BYTES) },
+        },
+        socketVolume(socketDir),
+      ],
     },
   }
 }
@@ -418,12 +430,6 @@ async function streamContextToPod(
     }))
 }
 
-/** Apply the builder-role admission guard and egress policy. */
-async function ensureBuilderNetworkPolicies(): Promise<void> {
-  await ensureBuilderRoleGuard()
-  await applyObject(buildBuilderEgressNpManifest(await nodeIpBlocks()))
-}
-
 /**
  * One builder pod, created on first `acquire` and shared by the untrusted
  * layers of one `buildImageLayers` call, which calls `release` to delete it.
@@ -463,15 +469,18 @@ export class BuilderPodLease {
     // server that has launched no workspace yet has not deployed.
     await ensureMainRegistry()
     await proxyClient.ensureRunning()
-    const imageRef = await ensureBuilderImage()
-    await ensureBuilderNetworkPolicies()
+    const [imageRef, netshimRef] = await Promise.all([ensureBuilderImage(), mountdImage()])
+    await ensureBuilderRoleGuard()
 
     const name = builderPodName(seedTag)
     serverLog(`[builder] creating builder pod ${name}`)
     // Before the pod, so its first dial finds it (the proxy fails closed).
-    await applyObject(buildBuildRegistrationConfigMapManifest(identity.buildId, identity.projectId, identity.allowedHosts))
+    // It reaches the main registry's pod port by name, through the proxy.
+    await applyObject(buildBuildRegistrationConfigMapManifest(
+      identity.buildId, identity.projectId, identity.allowedHosts, [registryPodHost()]))
     this.buildId = identity.buildId
-    await applyObject(buildBuilderPodManifest(name, imageRef, identity, await proxyServiceClusterIp()))
+    const socketDir = `${identity.buildId}.${crypto.randomBytes(4).toString('hex')}`
+    await applyObject(buildBuilderPodManifest(name, imageRef, netshimRef, socketDir, identity))
     try {
       // `kubectl wait`: the substrate's watch-based wait is for Job pods.
       await execFileAsync('kubectl', [

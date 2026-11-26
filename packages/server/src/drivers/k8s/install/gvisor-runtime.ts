@@ -56,8 +56,13 @@ export function gvisorNodeLabels(): Record<string, string> {
   }
 }
 
-/** containerd runtime handler name the RuntimeClass maps to. */
-const RUNSC_HANDLER = 'runsc'
+/**
+ * The containerd handler the RuntimeClass maps to. Its sandboxes have no
+ * network interface (docs/workspace-egress.md). It is a handler of its own,
+ * not the `runsc` one an older release registered with other flags, since
+ * a handler is node-wide and installs on other releases share nodes.
+ */
+const RUNSC_HANDLER = 'runsc-nonet'
 
 /** Node directories the installer writes, and where its pod sees them. */
 const INSTALLER_HOST_PREFIX = '/host'
@@ -67,8 +72,8 @@ export const NODE_CONTAINERD_DIR = '/etc/containerd'
  *  marker, so a restarted installer need not download again. */
 export const NODE_GVISOR_CACHE_DIR = '/var/lib/yaac/gvisor'
 
-/** Node path the runsc config lands at. */
-export const NODE_RUNSC_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/runsc.toml`
+/** Node path the handler's runsc config lands at. */
+export const NODE_RUNSC_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/runsc-nonet.toml`
 export const NODE_CONTAINERD_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/config.toml`
 
 /** Readiness marker in a pod-local emptyDir: written after a successful
@@ -76,8 +81,12 @@ export const NODE_CONTAINERD_CONFIG_PATH = `${NODE_CONTAINERD_DIR}/config.toml`
 const GVISOR_INSTALLER_STATE_DIR = '/run/yaac-gvisor'
 export const GVISOR_INSTALLER_READY_FILE = `${GVISOR_INSTALLER_STATE_DIR}/.ready`
 
-/** Idempotence marker for the containerd config.toml runtime block. */
-export const GVISOR_CONTAINERD_MARKER = '# yaac-gvisor-runtimes'
+/**
+ * Idempotence marker for the containerd config.toml runtime block. A node
+ * that already has a block is never rewritten, so it is not the
+ * `# yaac-gvisor-runtimes` marker of the `runsc` block before it.
+ */
+export const GVISOR_CONTAINERD_MARKER = '# yaac-gvisor-nonet-runtime'
 
 /**
  * Where containerd reads per-registry `hosts.toml` files. yaac's main
@@ -155,6 +164,11 @@ export const SANDBOX_DENTRY_CACHE = 200_000
  *    `git status` would look each file up through the file proxy again
  *    (docs/nfs-checkout-performance.md). The value is a string: the shim
  *    rejects a TOML integer.
+ *  - network none: a netstack with loopback only, so nothing in the
+ *    sandbox is routable (docs/workspace-egress.md).
+ *  - net-raw: netshim's `iptables` writes its rules through a raw socket,
+ *    and without the flag runsc takes `CAP_NET_RAW` from every container.
+ *    With no interface a raw socket reaches only the sandbox's loopback.
  */
 function runscShimConfigToml(): string {
   return [
@@ -166,6 +180,8 @@ function runscShimConfigToml(): string {
     '  allow-suid = "true"',
     '  overlay2 = "root:self"',
     `  dcache = "${String(SANDBOX_DENTRY_CACHE)}"`,
+    '  network = "none"',
+    '  net-raw = "true"',
   ].join('\n') + '\n'
 }
 

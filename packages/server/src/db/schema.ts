@@ -373,7 +373,8 @@ export const workspaces = snakeCase.table('workspaces', {
   /**
    * SHA-256 of the bearer token this workspace's `yaac-mama` presents, for
    * containerless workspaces that reach the server directly. Null under k8s,
-   * where the proxy identifies a pod by source IP.
+   * where the proxy knows a pod by the socket directory its traffic arrives
+   * in, which netd's relay names.
    *
    * Not re-minted on server restart, since the tmux server holding the token
    * outlives the server process; a workspace restart gets a new one.

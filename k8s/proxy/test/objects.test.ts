@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  LABEL_BUILD_ID,
   LABEL_WORKSPACE_ID,
   decodeCa,
   EMPTY_CREDENTIALS,
@@ -206,6 +207,19 @@ describe('decodeRegistration', () => {
       owner: 'alice',
       upstreamRedirects: { 'api.anthropic.com': { host: 'mock', port: 8080, tls: false } },
     })
+  })
+
+  it('reads a build from its label, and a release and cluster services from the payload', () => {
+    const base = { rules: [], allowedHosts: [], projectId: 'demo', owner: 'o' }
+    const build = decodeRegistration(cm({ ...base, clusterServices: ['yaac-registry.yaac.svc.cluster.local:5000', 3] },
+      { [LABEL_BUILD_ID]: 'b1' }))
+    expect(build?.workspaceId).toBe('b1')
+    expect(build?.registration).toMatchObject({ build: true, clusterServices: ['yaac-registry.yaac.svc.cluster.local:5000'] })
+    expect(build?.registration.release).toBeUndefined()
+    const release = decodeRegistration(cm({ ...base, release: true }))
+    expect(release?.registration).toMatchObject({ release: true })
+    expect(release?.registration.build).toBeUndefined()
+    expect(decodeRegistration(cm({ ...base, release: 'yes' }))?.registration.release).toBeUndefined()
   })
 
   it('drops a registration without a project, an owner, its lists, or its label', () => {

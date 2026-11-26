@@ -19,13 +19,13 @@ import {
 } from '@yaac/server/drivers/k8s/substrate/api'
 import {
   buildEgressWorldDenyNpManifest,
+  buildNetdEgressNpManifest,
+  buildNetdIngressNpManifest,
   buildProxyEgressNpManifest,
   buildProxyIngressNpManifest,
   buildServerEgressNpManifest,
   buildServerFrontIngressNpManifest,
   buildServerIngressNpManifest,
-  buildWorkspaceEgressNpManifest,
-  buildWorkspaceIngressLockNpManifest,
 } from '@yaac/server/drivers/k8s/cluster/policy-manifests'
 import { PROXY_APP_NAME, PROXY_EGRESS_NP_NAME } from '@yaac/server/drivers/k8s/substrate/proxy-constants'
 
@@ -54,9 +54,9 @@ describe('object writes and reads', () => {
   it('stores every NetworkPolicy peer yaac sends, and reads it back in wire shape', async () => {
     const cidrs = ['172.18.0.2/32']
     const policies = [
-      buildWorkspaceEgressNpManifest(cidrs),
-      buildWorkspaceIngressLockNpManifest(),
       buildProxyIngressNpManifest(cidrs),
+      buildNetdIngressNpManifest(),
+      buildNetdEgressNpManifest(['10.96.0.10/32'], { cidrs: ['172.18.0.3/32'], ports: [6443] }),
       buildProxyEgressNpManifest(cidrs, ['10.96.0.10/32'], { cidrs: ['172.18.0.3/32'], ports: [6443] }),
       buildServerIngressNpManifest(cidrs),
       buildServerEgressNpManifest(cidrs, ['10.96.0.10/32'], { cidrs: ['172.18.0.3/32'], ports: [6443] }, 'socks5h://172.18.0.1:9050'),
@@ -77,6 +77,45 @@ describe('object writes and reads', () => {
       expect(peers(read!), name).toEqual(peers(manifest))
       expect(JSON.stringify(read)).not.toContain('"_from"')
     }
+  })
+
+  // A site's Service has no selector; the server writes its EndpointSlice,
+  // pointed at netd on the live release's node (docs/public-sites.md "The
+  // router"), and clears its address while no release is live.
+  it('stores a site\'s selectorless Service and the EndpointSlice the server writes for it', async () => {
+    const service = {
+      apiVersion: 'v1', kind: 'Service',
+      metadata: { name: 'yaac-site-blog', namespace: NS, labels: { app: 'yaac-site' }, annotations: { 'yaac.live-workspace-id': 'ws-1' } },
+      spec: { clusterIP: 'None', ports: [{ name: 'site', port: 10263, targetPort: 3000, protocol: 'TCP' }] },
+    }
+    const slice = (addresses: string[]) => ({
+      apiVersion: 'discovery.k8s.io/v1', kind: 'EndpointSlice',
+      metadata: {
+        name: 'yaac-site-blog', namespace: NS,
+        labels: { app: 'yaac-site', 'kubernetes.io/service-name': 'yaac-site-blog', 'endpointslice.kubernetes.io/managed-by': 'yaac' },
+      },
+      addressType: 'IPv4',
+      endpoints: addresses.length > 0 ? [{ addresses, conditions: { ready: true } }] : [],
+      ports: [{ name: 'site', port: 10263, protocol: 'TCP' }],
+    })
+    await applyObject(service)
+    await applyObject(slice(['10.244.1.7']))
+    type Svc = { metadata: { annotations: Record<string, string> }; spec: { selector?: unknown; ports: Array<{ targetPort: number }> } }
+    const svc = stored<Svc>('service', 'yaac-site-blog')
+    expect(svc.spec.selector).toBeUndefined()
+    expect(svc.spec.ports[0].targetPort).toBe(3000)
+    expect(svc.metadata.annotations['yaac.live-workspace-id']).toBe('ws-1')
+    type Slice = { endpoints?: Array<{ addresses: string[] }>; metadata: { labels: Record<string, string> } }
+    expect(stored<Slice>('endpointslice', 'yaac-site-blog').endpoints).toEqual([
+      expect.objectContaining({ addresses: ['10.244.1.7'] }),
+    ])
+    // A flip to another node moves the address; no live release clears it.
+    await applyObject(slice(['10.244.2.4']))
+    expect(stored<Slice>('endpointslice', 'yaac-site-blog').endpoints?.[0].addresses).toEqual(['10.244.2.4'])
+    await applyObject(slice([]))
+    expect(stored<Slice>('endpointslice', 'yaac-site-blog').endpoints ?? []).toEqual([])
+    const listed = await listObjects('discovery.k8s.io/v1', 'EndpointSlice', { namespace: NS, labelSelector: 'app=yaac-site' })
+    expect(listed.map((o) => o.metadata?.name)).toEqual(['yaac-site-blog'])
   })
 
   // An internal destination is opened by the network operator's own policy

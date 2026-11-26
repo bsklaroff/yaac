@@ -45,7 +45,8 @@ fresh snapshot.
   restart);
 - sensitive ports (node `--inspect`, sshd, common databases), since
   one-click exposure of these risks code execution or data exposure;
-- yaac's own in-pod infra port range.
+- yaac's own in-pod infra port range (10250 to 10350), which holds streamd
+  and netshim's listeners.
 
 ## The forward action
 

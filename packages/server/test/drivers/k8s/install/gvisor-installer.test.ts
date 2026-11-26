@@ -257,7 +257,7 @@ describe('ensureGvisorRuntime', () => {
       scheduling: { nodeSelector: Record<string, string> }
     }>
     expect(classes.map((c) => c.metadata.name)).toEqual([RUNTIME_CLASS_GVISOR])
-    expect(classes.map((c) => c.handler)).toEqual(['runsc'])
+    expect(classes.map((c) => c.handler)).toEqual(['runsc-nonet'])
     for (const c of classes) {
       expect(c.scheduling.nodeSelector).toEqual({ [GVISOR_NODE_LABEL]: 'true' })
     }
@@ -307,7 +307,7 @@ describe('ensureGvisorRuntime', () => {
     }>
 
     expect(manifests.map((m) => m.metadata.name)).toEqual([RUNTIME_CLASS_GVISOR])
-    expect(manifests.map((m) => m.handler)).toEqual(['runsc'])
+    expect(manifests.map((m) => m.handler)).toEqual(['runsc-nonet'])
     expect(manifests.every((m) => m.apiVersion === 'node.k8s.io/v1' && m.kind === 'RuntimeClass'))
       .toBe(true)
     // Admission adds both to every pod using the class: a sandboxed pod
@@ -405,7 +405,8 @@ describe('ensureGvisorRuntime', () => {
       // The handler's flag file: systrap, host-uds for hostPath unix
       // sockets, suid, a rootfs-only overlay (overlay on everything would
       // drop workspace dir writes) and a dentry cache bigger than a checkout,
-      // written as the string the shim requires. No raw sockets.
+      // written as the string the shim requires. No interface but loopback,
+      // and raw sockets for netshim's iptables.
       const cfg = shellLiteralAfter(script, `write_if_changed '/host${NODE_RUNSC_CONFIG_PATH}' `)
       expect(cfg).toContain('[runsc_config]')
       expect(cfg).toContain('platform = "systrap"')
@@ -413,7 +414,8 @@ describe('ensureGvisorRuntime', () => {
       expect(cfg).toContain('allow-suid = "true"')
       expect(cfg).toContain('overlay2 = "root:self"')
       expect(cfg).toContain(`dcache = "${String(SANDBOX_DENTRY_CACHE)}"`)
-      expect(cfg).not.toContain('net-raw')
+      expect(cfg).toContain('network = "none"')
+      expect(cfg).toContain('net-raw = "true"')
 
       // A marker-guarded append to the node's containerd config, choosing the
       // plugin key from the config's version (kind uses 2; containerd 2.x
@@ -436,7 +438,7 @@ describe('ensureGvisorRuntime', () => {
       for (const key of [CRI_PLUGIN_KEY_V2, CRI_PLUGIN_KEY_V3]) {
         const block = appended.find((b) => b.includes(`plugins."${key}"`))!
         expect(block).toContain(GVISOR_CONTAINERD_MARKER)
-        expect(block).toContain(`[plugins."${key}".containerd.runtimes.runsc]`)
+        expect(block).toContain(`[plugins."${key}".containerd.runtimes.runsc-nonet]`)
         expect(block).toContain(`ConfigPath = "${NODE_RUNSC_CONFIG_PATH}"`)
         // dev.gvisor.* annotations pass through for scratch-dir mount options.
         expect(block).toContain('pod_annotations = ["dev.gvisor.*"]')
