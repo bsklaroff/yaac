@@ -5,7 +5,6 @@ import {
   ACP_ADAPTERS,
   AGENT_CLIS,
   AGENT_TOOLS,
-  BUN_RUNTIME,
   customEndpointCreateSchema,
   defaultPermissionMode,
   normalizeTool,
@@ -151,34 +150,27 @@ describe('resolveToolCreateDefaults', () => {
 describe('AGENT_CLIS', () => {
   it('names the version the workspace image installs', () => {
     // yaac's posture flags were verified against this release, so the image
-    // must run the same one a host install gets from npm.
+    // must run the same one a host install gets.
     const dockerfile = fs.readFileSync(
       path.resolve(import.meta.dirname, '../../../dockerfiles/Dockerfile.tools'),
       'utf8',
     )
+    // claude and omp are their release binaries, downloaded by version.
+    const releases: Partial<Record<string, RegExp>> = {
+      claude: /claude-code-releases\/([^/]+)\//,
+      omp: /oh-my-pi\/releases\/download\/v([^/]+)\//,
+    }
     for (const tool of AGENT_TOOLS) {
       const { package: pkg, version } = AGENT_CLIS[tool]
-      // claude is its release binary, downloaded by version.
-      const installed = tool === 'claude'
-        ? /claude-code-releases\/([^/]+)\//.exec(dockerfile)?.[1]
-        : new RegExp(`${pkg.replace(/[/@.]/g, '\\$&')}@(\\S+)`).exec(dockerfile)?.[1]
-      expect(installed, `${tool}: ${pkg} is not pinned in Dockerfile.tools`).toBe(version)
+      const pinned = releases[tool] ?? new RegExp(`${pkg.replace(/[/@.]/g, '\\$&')}@(\\S+)`)
+      expect(pinned.exec(dockerfile)?.[1], `${tool}: ${pkg} is not pinned in Dockerfile.tools`).toBe(version)
     }
-    // The image checks claude's binary against the same SHA-256s.
-    const { binarySha256 } = AGENT_CLIS.claude
-    for (const platform of ['linux-x64', 'linux-arm64']) {
-      expect(dockerfile).toContain(`PLATFORM=${platform} SHA256=${binarySha256[platform] ?? '(unpinned)'} `)
+    // The image checks those binaries against the same SHA-256s.
+    for (const { binarySha256 } of [AGENT_CLIS.claude, AGENT_CLIS.omp]) {
+      for (const platform of ['linux-x64', 'linux-arm64']) {
+        expect(dockerfile).toContain(`PLATFORM=${platform} SHA256=${binarySha256[platform] ?? '(unpinned)'} `)
+      }
     }
-  })
-})
-
-describe('BUN_RUNTIME', () => {
-  it('names the bun the workspace image installs', () => {
-    const dockerfile = fs.readFileSync(
-      path.resolve(import.meta.dirname, '../../../dockerfiles/Dockerfile.tools'),
-      'utf8',
-    )
-    expect(/npm install -g bun@(\S+)/.exec(dockerfile)?.[1]).toBe(BUN_RUNTIME.version)
   })
 })
 
@@ -194,7 +186,9 @@ describe('ACP_ADAPTERS', () => {
       'utf8',
     )
     for (const tool of AGENT_TOOLS) {
-      const { package: pkg, verified } = ACP_ADAPTERS[tool]
+      const { binary, package: pkg, verified } = ACP_ADAPTERS[tool]
+      // opencode's and omp's adapters are their CLIs, pinned by `AGENT_CLIS`.
+      if (binary === tool) continue
       const installed = new RegExp(`${pkg.replace(/[/@.]/g, '\\$&')}@(\\S+)`).exec(dockerfile)?.[1]
       expect(installed, `${tool}: ${pkg} is not pinned in Dockerfile.tools`).toBe(verified)
     }

@@ -715,10 +715,9 @@ startup.
   Ubuntu 24.04's (3.4) pass. Only a snapshot's cursor shape needs a newer
   tmux still, 3.6, and goes without on an older one
   (docs/terminal-mirror.md "Limits").
-- **node** 22+ **with npm**: required. npm installs every agent, codex and
-  pi are node scripts, and `--mode acp` runs yaac's acpd under `node`. omp
-  is a bun script; yaac installs its pinned bun from npm beside it
-  (`BUN_RUNTIME`), so bun needs no host install. The pinned agents need 22;
+- **node** 22+ **with npm**: required. npm installs every agent but omp;
+  codex and pi are node scripts; and `--mode acp` runs yaac's acpd under
+  `node`. The pinned agents need 22;
   Debian and Ubuntu `apt install nodejs` is older and lacks npm. A server started by a node not on `PATH` (like the desktop
   app's bundled one) is the usual way to be missing it.
 - **socat**: required for `--mode acp`, whose chat transport uses it to dial
@@ -727,7 +726,7 @@ startup.
 - **A systemd user session** (Linux): optional, and not checked. With one,
   a stop also ends what a workspace's processes detached from it; without
   one it ends the tmux server only ("Stopping one").
-- **curl**: used by `yaac-mama`.
+- **curl**: used by `yaac-mama`, and to download omp.
 
 Tools the agents themselves use (`ripgrep`, `fd`, `gh`, `jq`) are not
 checked, matching what the builtin skills assume; pi downloads its own `fd`
@@ -752,7 +751,12 @@ install must leave nothing that looks complete. `--engine-strict` makes npm
 fail on a too-old node instead of warning. Staging dirs older than the
 install timeout are deleted before the next install. npm runs without the
 server's `YAAC_*` settings, and lifecycle scripts run only for claude and
-opencode, whose postinstall places their native binary. Prefixes are named
+opencode, whose postinstall places their native binary. omp is the
+exception to npm: like the image, yaac downloads its release binary for the
+host's platform with curl into the staging dir's `lib/omp/`, checks it
+against `AGENT_CLIS.omp.binarySha256`, and runs `omp-homes.js`, which writes
+the `bin/omp` wrapper and unpacks the binary's native add-on beside it.
+Prefixes are named
 by version and never change, so a pin bump installs alongside and running
 workspaces keep their version. Old prefixes are never removed.
 

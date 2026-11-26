@@ -1,7 +1,8 @@
 /**
  * The agent binaries the containerless driver runs, each from yaac's own
- * install of its package. The driver installs a package the first time a
- * create needs it and puts every package's bin dir ahead of the host's PATH.
+ * install of its package (or, for omp, its release binary). The driver
+ * installs one the first time a create needs it and puts every install's
+ * bin dir ahead of the host's PATH.
  * This lives in shared because the e2e tier stages stand-in agents at these
  * paths.
  *
@@ -13,22 +14,30 @@
  */
 import path from 'node:path'
 import { nodeLocalPath } from '#project-paths'
-import { ACP_ADAPTERS, AGENT_CLIS, AGENT_TOOLS, BUN_RUNTIME } from '#types'
+import { ACP_ADAPTERS, AGENT_CLIS, AGENT_TOOLS } from '#types'
 
 export interface AgentPackage {
   package: string
   version: string
   /**
    * Whether npm runs the package's lifecycle scripts. Opt-in, so no
-   * third-party script runs unreviewed. Only claude, opencode and bun need
+   * third-party script runs unreviewed. Only claude and opencode need
    * theirs, to put their native binary in place.
    */
   runScripts: boolean
   /**
+   * A release binary installed in place of the npm package, as the image
+   * does: the asset `<urlBase><platform>` for the host's platform
+   * (`<os>[-musl]-<arch>`, in Node's names), checked against its `sha256`
+   * and saved as `<prefix>/lib/<binary>/<binary>`.
+   */
+  release?: { urlBase: string; sha256: Partial<Record<string, string>> }
+  /**
    * A script in `dockerfiles/agent-patches/` the install runs on the package
-   * after npm, as the image build does, given the path of `entry`. `revision` names the patched install
-   * apart from an unpatched or older one, so bump it whenever the script
-   * changes.
+   * once it is in place, as the image build does, given the path of `entry`
+   * in the package's dir (`lib/<binary>/` for a release). `revision` names
+   * the patched install apart from an unpatched or older one, so bump it
+   * whenever the script changes.
    */
   patch?: { script: string; entry: string; revision: number }
 }
@@ -36,14 +45,14 @@ export interface AgentPackage {
 /** Packages yaac patches after installing; see `AgentPackage.patch`. */
 const PATCHES: Record<string, AgentPackage['patch']> = {
   'claude-agent-acp': { script: 'claude-agent-acp.js', entry: 'dist/idle-compaction.js', revision: 1 },
-  'pi-acp': { script: 'pi-acp.js', entry: 'dist/index.js', revision: 6 },
-  omp: { script: 'omp-homes.js', entry: 'dist/cli.js', revision: 2 },
+  'pi-acp': { script: 'pi-acp.js', entry: 'dist/index.js', revision: 7 },
+  omp: { script: 'omp-homes.js', entry: 'omp', revision: 3 },
 }
 
 /**
- * Keyed by the binary a launch execs: an agent CLI, an ACP adapter that is
- * a separate program, or bun, which omp runs under. opencode's and omp's
- * adapters are their CLIs (`opencode acp`, `omp acp`).
+ * Keyed by the binary a launch execs: an agent CLI, or an ACP adapter that
+ * is a separate program. opencode's and omp's adapters are their CLIs
+ * (`opencode acp`, `omp acp`).
  */
 export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
   ...AGENT_TOOLS.map((tool): [string, AgentPackage] => {
@@ -52,6 +61,12 @@ export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
       package: AGENT_CLIS[tool].package,
       version: AGENT_CLIS[tool].version,
       runScripts: tool === 'claude' || tool === 'opencode',
+      ...(tool === 'omp' ? {
+        release: {
+          urlBase: `https://github.com/can1357/oh-my-pi/releases/download/v${AGENT_CLIS.omp.version}/omp-`,
+          sha256: AGENT_CLIS.omp.binarySha256,
+        },
+      } : {}),
       ...(patch ? { patch } : {}),
     }]
   }),
@@ -62,7 +77,6 @@ export const AGENT_PACKAGES: Record<string, AgentPackage> = Object.fromEntries([
       const patch = PATCHES[binary]
       return [binary, { package: pkg, version: verified, runScripts: false, ...(patch ? { patch } : {}) }]
     }),
-  ['bun', { package: BUN_RUNTIME.package, version: BUN_RUNTIME.version, runScripts: true }],
 ])
 
 /**

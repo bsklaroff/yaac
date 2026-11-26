@@ -49,7 +49,7 @@ const SETTINGS_FILE = 'yaac.yml'
  * Settings every launch loads over the user's own `config.yml`: no setup
  * wizard (it would hold the first launch on a provider login), and no
  * update, marketplace or issue-report traffic. No auto-update either, which
- * would also relink `bin/omp` past yaac's wrapper.
+ * would also replace yaac's wrapper, the `omp` on PATH, with omp's binary.
  */
 const SETTINGS = {
   startup: { setupWizard: false, checkUpdate: false },

@@ -132,7 +132,7 @@ export const managedBin = (binary: string): string =>
  *
  * ACP adapters are faked too (`fakeAcpAdapter`), one per adapter binary.
  * opencode's and omp's adapters are their CLI's `acp` subcommand, so each
- * fake is both. omp runs under bun, whose install a launch also checks for.
+ * fake is both.
  */
 export async function installFakeAgents(): Promise<void> {
   await fs.mkdir(agentEnvDir(), { recursive: true })
@@ -156,7 +156,6 @@ export async function installFakeAgents(): Promise<void> {
   for (const tool of ['claude', 'pi']) {
     await write(tool, `#!/bin/sh\n${OPENING_GUARD}\nexec sleep 2147483647\n`)
   }
-  await write('bun', '#!/bin/sh\nexec sleep 2147483647\n')
   await write('codex', FAKE_CODEX)
 
   for (const tool of AGENT_TOOLS) {

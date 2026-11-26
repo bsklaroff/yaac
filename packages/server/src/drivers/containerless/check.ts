@@ -1,9 +1,10 @@
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { ServerError } from '@yaac/shared/errors'
 import { PACKAGE_ROOT } from '@yaac/shared/paths'
-import { AGENT_PACKAGES, agentPackagePrefix } from '@yaac/shared/tool-install'
+import { AGENT_PACKAGES, agentPackagePrefix, type AgentPackage } from '@yaac/shared/tool-install'
 import {
   ACP_ADAPTERS,
   type AgentMode,
@@ -20,7 +21,7 @@ import { overriddenToolHomeVars } from './tool-homes'
  * `yaac host check` and the per-create launch check: whether this machine can
  * run workspaces without containers (the counterpart of `yaac cluster
  * check`). With no image, the system tools must already be on the host;
- * yaac installs the agents itself with npm.
+ * yaac installs the agents itself, with npm (omp with curl).
  */
 
 /** Install hint for node 22+ with npm (the pinned agents require both). */
@@ -41,7 +42,7 @@ const REQUIRED: Array<{ binary: string; why: string; fix: string }> = [
   },
   {
     binary: 'node',
-    why: 'runs acpd, the npm that installs each agent, and the agents that are node scripts',
+    why: 'runs acpd, the npm that installs every agent but omp, and the agents that are node scripts',
     fix: `Install ${NODE_INSTALL}. A yaac started by a bundled interpreter (the `
       + 'desktop app stages one) is the usual reason this is missing.',
   },
@@ -72,8 +73,8 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
   },
   {
     binary: 'curl',
-    why: 'yaac-mama, the in-session helper, reaches this server with it',
-    fix: 'Install curl (apt install curl) so a session can run yaac-mama; '
+    why: 'yaac-mama, the in-session helper, reaches this server with it, and yaac downloads omp with it',
+    fix: 'Install curl (apt install curl) so a session can run yaac-mama and yaac can install omp; '
       + 'everything else works without it.',
   },
 ]
@@ -87,7 +88,7 @@ const OPTIONAL: Array<{ binary: string; why: string; fix: string }> = [
  * would succeed and its webapp terminal stay blank. `acp` also needs socat, which the chat transport uses to reach
  * acpd's socket; without it the pane just hangs. The agent CLI (or ACP
  * adapter, plus the CLI it drives) is installed on first use
- * (`ensureAgentBinary`), and so is bun for omp, which runs under it. `onPath` uses the same environment the workspace's
+ * (`ensureAgentBinary`). `onPath` uses the same environment the workspace's
  * tmux gets.
  */
 export async function assertHostCanLaunch(opts: {
@@ -105,14 +106,13 @@ export async function assertHostCanLaunch(opts: {
   }
   await requireBinary('git', "it makes and reads the workspace's checkout",
     'apt install git / brew install git', null)
-  await requireBinary('node', 'npm installs the agents under it, and acpd, codex and pi run under it',
+  await requireBinary('node', 'npm installs every agent but omp under it, and acpd, codex and pi run under it',
     NODE_INSTALL, null)
   if (mode === 'acp') {
     // Before installing anything, so the refusal is immediate.
     await requireBinary('socat', "the chat transport dials acpd's socket with it",
       'apt install socat / brew install socat', 'create the workspace with --mode tui')
   }
-  if (tool === 'omp') await ensureAgentBinary('bun', onProgress)
   if (mode === 'acp') {
     const adapter = ACP_ADAPTERS[tool]
     await ensureAgentBinary(adapter.binary, onProgress)
@@ -176,9 +176,9 @@ async function sweepAbandonedStaging(dir: string): Promise<void> {
 
 /**
  * Install the pinned package that ships `binary`, unless already installed.
- * npm installs into a staging prefix that is renamed into place only once
- * the binary exists (and any patch is applied, as the image does), since the
- * prefix's existence means "installed". If
+ * npm (or the release download) installs into a staging prefix that is
+ * renamed into place only once any patch is applied, as the image does, and
+ * the binary exists, since the prefix's existence means "installed". If
  * another server wins the rename race, its identical copy is kept.
  */
 async function ensureAgentBinary(
@@ -197,44 +197,55 @@ async function ensureAgentBinary(
     return
   }
   const run = (async () => {
-    if (!(await onPath('npm'))) {
+    const installer = pkg.release === undefined ? 'npm' : 'curl'
+    if (!(await onPath(installer))) {
       throw new ServerError(
         'MISSING_TOOL',
-        `yaac installs ${spec} with npm, and "npm" is not on this host's PATH. `
-        + `Install ${NODE_INSTALL}, and retry.`,
+        `yaac installs ${spec} with ${installer}, and "${installer}" is not on this host's PATH. `
+        + `Install ${installer === 'npm' ? NODE_INSTALL : 'curl'}, and retry.`,
       )
     }
     const staging = `${prefix}${STAGING_INFIX}${randomBytes(4).toString('hex')}`
+    const pkgDir = pkg.release === undefined
+      ? path.join(staging, 'lib', 'node_modules', pkg.package)
+      : path.join(staging, 'lib', binary)
     const discard = (): Promise<void> => fs.rm(staging, { recursive: true, force: true })
+    const requireInstalled = async (): Promise<void> => {
+      if (await fs.access(path.join(staging, 'bin', binary)).then(() => true, () => false)) return
+      await discard()
+      throw new ServerError('MISSING_TOOL', `installing ${spec} left no "${binary}" binary behind`)
+    }
     await fs.mkdir(path.dirname(prefix), { recursive: true })
     await sweepAbandonedStaging(path.dirname(prefix))
     try {
-      // `--engine-strict`: npm otherwise only warns about a too-old node.
-      // Runs in the user's environment, like a workspace, since this is
-      // third-party code.
-      await runHost([
-        'npm', 'install', '--global', '--engine-strict', '--prefix', staging,
-        ...(pkg.runScripts ? [] : ['--ignore-scripts']),
-        spec,
-      ], { timeoutMs: INSTALL_TIMEOUT_MS, env: userEnvironment() })
+      if (pkg.release !== undefined) await downloadRelease(pkg.release, path.join(pkgDir, binary))
+      else {
+        // `--engine-strict`: npm otherwise only warns about a too-old node.
+        // Runs in the user's environment, like a workspace, since this is
+        // third-party code.
+        await runHost([
+          'npm', 'install', '--global', '--engine-strict', '--prefix', staging,
+          ...(pkg.runScripts ? [] : ['--ignore-scripts']),
+          spec,
+        ], { timeoutMs: INSTALL_TIMEOUT_MS, env: userEnvironment() })
+      }
     } catch (err) {
       await discard()
       throw new ServerError('MISSING_TOOL', `installing ${spec} failed${installerDetail(err)}`)
     }
-    if (!(await fs.access(path.join(staging, 'bin', binary)).then(() => true, () => false))) {
-      await discard()
-      throw new ServerError('MISSING_TOOL', `installing ${spec} left no "${binary}" binary behind`)
-    }
+    // A release's `bin/` is the patch's to write.
+    if (pkg.release === undefined) await requireInstalled()
     if (pkg.patch !== undefined) {
       const script = path.join(PACKAGE_ROOT, 'dockerfiles', 'agent-patches', pkg.patch.script)
-      const entry = path.join(staging, 'lib', 'node_modules', pkg.package, pkg.patch.entry)
       try {
-        await runHost(['node', script, entry], { timeoutMs: 60_000 })
+        // omp's patch runs the downloaded binary, third-party code like npm's.
+        await runHost(['node', script, path.join(pkgDir, pkg.patch.entry)], { timeoutMs: 60_000, env: userEnvironment() })
       } catch (err) {
         await discard()
         throw new ServerError('MISSING_TOOL', `patching ${spec} failed${installerDetail(err)}`)
       }
     }
+    if (pkg.release !== undefined) await requireInstalled()
     // A failed rename usually means another install won the race.
     await fs.rename(staging, prefix).catch(discard)
     if (!(await agentBinaryInstalled(binary))) {
@@ -246,6 +257,43 @@ async function ensureAgentBinary(
     await run
   } finally {
     installsInFlight.delete(prefix)
+  }
+}
+
+/**
+ * Download this host's asset of `release` to `file`, checked against its
+ * pinned SHA-256. curl runs in the user's environment, like npm, so a proxy
+ * the user set applies.
+ */
+async function downloadRelease(release: NonNullable<AgentPackage['release']>, file: string): Promise<void> {
+  const platform = `${process.platform}${hostIsMusl() ? '-musl' : ''}-${process.arch}`
+  const pinned = release.sha256[platform]
+  if (pinned === undefined) throw new Error(`no release binary is pinned for ${platform}`)
+  await runHost(['curl', '-fsSL', '--create-dirs', '-o', file, `${release.urlBase}${platform}`],
+    { timeoutMs: INSTALL_TIMEOUT_MS, env: userEnvironment() })
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer)
+  const actual = hash.digest('hex')
+  if (actual !== pinned) throw new Error(`the download's SHA-256 is ${actual}, not the pinned ${pinned}`)
+  await fs.chmod(file, 0o755)
+}
+
+/**
+ * Whether this host's libc is musl: a Linux whose runtime reports no glibc.
+ * A glibc host can have musl's loader installed too, so its files decide
+ * nothing. The report would otherwise resolve the name of every socket's
+ * peer, synchronously, in this long-lived server (`excludeNetwork`, which
+ * node before 22.13 ignores).
+ */
+function hostIsMusl(): boolean {
+  if (process.platform !== 'linux') return false
+  const report = process.report as typeof process.report & { excludeNetwork: boolean }
+  const excludeNetwork = report.excludeNetwork
+  report.excludeNetwork = true
+  try {
+    return (report.getReport() as { header: { glibcVersionRuntime?: string } }).header.glibcVersionRuntime === undefined
+  } finally {
+    report.excludeNetwork = excludeNetwork
   }
 }
 
@@ -327,7 +375,7 @@ export async function runHostCheck(): Promise<CheckResult[]> {
     })
   }
 
-  // yaac installs the agents with npm; list those already installed.
+  // yaac installs the agents with npm (omp with curl); list those already installed.
   const installed: string[] = []
   for (const [binary, { version }] of Object.entries(AGENT_PACKAGES)) {
     if (await agentBinaryInstalled(binary)) installed.push(`${binary} ${version}`)
@@ -341,7 +389,7 @@ export async function runHostCheck(): Promise<CheckResult[]> {
       + (complete ? '' : ' — yaac installs each at its pinned version the first time a workspace needs it'),
     ...(npm ? {} : {
       fix: 'Install node (apt install nodejs / brew install node): yaac installs '
-        + 'each agent CLI and ACP adapter with npm.',
+        + 'every agent CLI and ACP adapter but omp with npm.',
     }),
   })
 
