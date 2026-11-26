@@ -49,10 +49,10 @@ starts with one JSON handshake line (`{token, kind, …params}`) and gets one
   forwarded; dialing `podIP:port` from the proxy could not reach it.
 - `ctrl {cmd}`: run a command with piped stdio and splice stdin/stdout raw
   (tmux control mode is a line protocol). Closing the socket kills the
-  process. ACP uses this too: an `acp` workspace runs `socat -
-  UNIX-CONNECT:/tmp/yaac-acp/<window>.sock` here and JSON-RPC rides the
-  raw duplex. Because closing the socket kills the child, the ACP agent
-  itself runs under acpd in a tmux window, not as this stream's child
+  process. ACP uses this too: an `acp` workspace runs `acpd dial
+  /tmp/yaac-acp/<window>.sock` here and JSON-RPC rides the raw duplex.
+  Because closing the socket kills the child, the ACP agent itself runs
+  under acpd in a tmux window, not as this stream's child
   (docs/agent-modes.md).
 - `exec {cmd, stdin?}`: run a command once, reply with one JSON line
   `{exitCode, stdout, stderr}` (size-bounded), and close. This is what

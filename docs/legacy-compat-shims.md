@@ -704,6 +704,25 @@ socket the proxy no longer serves, and both are fixed at launch.
   it.
 - **When this note can go.** Once no such pod is running.
 
+## Pods whose image has the Node acpd
+
+No code: a note for an upgrade. The server launches an acp agent as
+`/opt/yaac/acpd/acpd` and attaches to it with `acpd dial`, both the Go
+binary the base image now carries. A workspace pod keeps the image it was
+claimed with across an upgrade (docs/generic-workspace-pods.md "Server
+restarts and upgrades"), and an older image has only the Node acpd
+(`/opt/yaac/acpd/main.js`, dialed with socat).
+
+- **What it reads.** Nothing; no shim covers it.
+- **What breaks.** In a k8s workspace that has run since before the
+  upgrade, every attach to an acp conversation fails, and the driver keeps
+  re-dialing. The old acpd keeps the agent running and recording, so a
+  running turn still shows, but nothing can be sent to it and a permission
+  ask cannot be answered. Restarting the agent, or opening a new acp agent
+  in that workspace, exits 127. Restarting the workspace fixes it, since it
+  gets a new pod; new workspaces are unaffected.
+- **When this note can go.** Once no such pod is running.
+
 ## Hosted URLs naming a share
 
 A hosted repo's remote is `http://yaac.internal/api/workspace/git/<repo

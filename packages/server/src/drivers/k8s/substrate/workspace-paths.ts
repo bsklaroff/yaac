@@ -13,7 +13,7 @@ import type { WorkspacePaths } from '#drivers/contract'
  * uses the same constant paths.
  *
  * The constants live in `@yaac/shared/paths` because the image's scripts
- * (`workspace-bin/yaac-workspace-init`, the acpd COPY target) use them too.
+ * (`workspace-bin/yaac-workspace-init`) use them too.
  */
 export function k8sWorkspacePaths(): WorkspacePaths {
   return {
@@ -27,7 +27,7 @@ export function k8sWorkspacePaths(): WorkspacePaths {
     acpLogDir: CONTAINER_ACP_LOG_DIR,
     terminalLogDir: CONTAINER_TERMINAL_LOG_DIR,
     attachmentsDir: CONTAINER_ATTACHMENTS_DIR,
-    acpdEntry: '/opt/yaac/acpd/main.js',
+    acpd: '/opt/yaac/acpd/acpd',
     // On a volume the tree container shares (workspaces/pod-job.ts).
     treeTrigger: '/yaac-trigger/save',
   }

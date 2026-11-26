@@ -133,17 +133,21 @@ export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
     acpLogDir: acpLogDir(projectId, workspaceId),
     terminalLogDir: terminalLogDir(projectId, workspaceId),
     attachmentsDir: workspaceAttachmentsDir(projectId, workspaceId),
-    acpdEntry: acpdEntry(),
+    acpd: acpdBinary(),
   }
 }
 
 /**
- * acpd's entry module as shipped with yaac (the image bakes the same
- * `dockerfiles/acpd` source in at `/opt/yaac/acpd`). `PACKAGE_ROOT` is the
- * repo root in dev and `dist/` when built.
+ * The acpd binary for this host as shipped with yaac: `pnpm build:acpd`
+ * cross-compiles one per supported platform into `dockerfiles/acpd/bin`,
+ * which the build copies into dist/ (the image builds its own from the same
+ * source). `PACKAGE_ROOT` is the repo root in dev and `dist/` when built. On
+ * a platform yaac ships none for, this names a file that does not exist,
+ * which the launch check reports.
  */
-export function acpdEntry(): string {
-  return path.join(PACKAGE_ROOT, 'dockerfiles', 'acpd', 'main.js')
+export function acpdBinary(): string {
+  const arch = process.arch === 'x64' ? 'amd64' : process.arch
+  return path.join(PACKAGE_ROOT, 'dockerfiles', 'acpd', 'bin', `acpd-${process.platform}-${arch}`)
 }
 
 /** The shell startup files shipped with yaac (`host-shell/`), which a

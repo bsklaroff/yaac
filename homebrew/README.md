@@ -52,9 +52,10 @@ replaced by the next newer tap version or removed by `brew uninstall --cask`.
   so a brew install gets the versions and integrity hashes the repo locked
   under its release-age gate, never a fresh resolution.
   - Depends on core `node`, plus what the containerless driver needs on the
-    host, which has no session image: `tmux` (runs each workspace) and
-    `socat` (the ACP chat transport), which a create refuses to run without,
-    plus `fd` and `ripgrep` for the agents' file search.
+    host, which has no session image: `tmux` (runs each workspace), which a
+    create refuses to run without, plus `fd` and `ripgrep` for the agents'
+    file search. acpd, the ACP agent supervisor, ships in the tarball as a
+    prebuilt binary per platform.
   - `git`, `curl` and `lsof` are `uses_from_macos`: provided by macOS,
     installed on Linux.
 - **`Formula/yaac-cluster.rb`** installs nothing of its own. It depends on

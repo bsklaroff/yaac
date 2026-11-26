@@ -35,8 +35,8 @@ export const TEST_CLI_ENTRY = path.join(TEST_CLI_DIR, 'cli.js')
  * never test a stale bundle.
  *
  * The assets are copied too: in bundled mode PACKAGE_ROOT is the directory
- * holding cli.js, so the migrations, k8s manifests, builtin skills and
- * workspace-bin scripts must sit beside it. The SPA is built only if it
+ * holding cli.js, so the migrations, k8s manifests, builtin skills,
+ * workspace-bin scripts and acpd binaries must sit beside it. The SPA is built only if it
  * never has been, since it is slow and no suite reads it.
  */
 export async function buildCliBundle(): Promise<void> {
@@ -44,7 +44,7 @@ export async function buildCliBundle(): Promise<void> {
   if (!await fs.access(path.join(REPO_ROOT, 'packages', 'frontend', 'dist', 'index.html')).then(() => true, () => false)) {
     await run('build:frontend')
   }
-  for (const script of ['build:cli', 'build:assets', 'build:id']) await run(script)
+  for (const script of ['build:acpd', 'build:cli', 'build:assets', 'build:id']) await run(script)
   // Copy out of dist/, which `pnpm watch` wipes on every save. Replace the
   // copy wholesale so no stale file survives a rename or deletion.
   await fs.rm(TEST_CLI_DIR, { recursive: true, force: true })

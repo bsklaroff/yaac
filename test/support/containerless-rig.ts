@@ -65,11 +65,12 @@ export async function hostReady(): Promise<boolean> {
 export const CAN_RUN = await hostReady()
 
 /**
- * Whether this host can run the acp cases. The adapter is faked, but the
- * chat transport needs a real `socat` to reach acpd's socket.
+ * Whether this host can run the acp cases: the adapter is faked, but acpd
+ * is the bundle's real binary, which yaac ships for Linux and macOS on x64
+ * and arm64.
  */
 export const CAN_RUN_ACP = CAN_RUN
-  && await execFileAsync('sh', ['-c', 'command -v socat']).then(() => true, () => false)
+  && ['linux', 'darwin'].includes(process.platform) && ['x64', 'arm64'].includes(process.arch)
 
 /** A loopback address other than 127.0.0.1. macOS routes only 127.0.0.1 of
  *  127.0.0.0/8, so it uses the IPv6 loopback. */

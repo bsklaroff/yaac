@@ -12,15 +12,14 @@ class YaacServer < Formula
   # The containerless driver (`yaac server start`, which is what a host
   # server is) runs workspaces as host processes, so what a session image
   # would have supplied has to be on this machine instead. macOS ships none
-  # of these. tmux supervises every workspace and socat carries the ACP chat
-  # transport; `yaac host check` reports both, and a create refuses without
-  # them. fd and ripgrep are the agents' file-search tools, the same pair the
-  # session images carry. Nothing gates on them: pi downloads its own fd when
-  # none is on PATH, and an agent without ripgrep just searches more slowly.
+  # of these. tmux supervises every workspace; `yaac host check` reports it,
+  # and a create refuses without it. fd and ripgrep are the agents'
+  # file-search tools, the same pair the session images carry. Nothing gates
+  # on them: pi downloads its own fd when none is on PATH, and an agent
+  # without ripgrep just searches more slowly.
   depends_on "fd"
   depends_on "node"
   depends_on "ripgrep"
-  depends_on "socat"
   depends_on "tmux"
 
   # Provided by macOS, installed on Linux. git arrives with the Command Line
