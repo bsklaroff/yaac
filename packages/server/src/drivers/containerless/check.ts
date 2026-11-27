@@ -145,7 +145,7 @@ async function acpdShipped(): Promise<boolean> {
 
 function acpdMissing(): string {
   return `this install has no acpd for ${process.platform}-${process.arch} (${acpdBinary()}). `
-    + 'yaac ships it for Linux and macOS on x64 and arm64, and a source checkout builds it with `pnpm build:acpd`'
+    + 'yaac ships it for Linux and macOS on x64 and arm64, and a source checkout builds it with `pnpm build:daemons`'
 }
 
 /** Whether `binary` is in its pinned package's install. */

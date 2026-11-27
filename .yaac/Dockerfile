@@ -1,5 +1,6 @@
 # This project's own workspace image (docs/image-builds.md), layered on the
-# stock one: it adds Go, which `pnpm build` needs to cross-compile acpd.
+# stock one: it adds Go, which `pnpm build` needs to cross-compile yaac's
+# daemons (daemons/).
 # Applied like the init steps: `yaac image create <project> dev --file
 # .yaac/Dockerfile` then `yaac image default <project> dev`, or `yaac image
 # edit <project> dev --file .yaac/Dockerfile` once it exists.

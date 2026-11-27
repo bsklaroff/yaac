@@ -59,7 +59,7 @@ export const DNS_SINKHOLE = '198.18.0.1'
  */
 export const SSH_HOST_KEY_ALIAS = 'yaac-proxy'
 /**
- * TCP port of streamd, the in-pod stream daemon (dockerfiles/streamd),
+ * TCP port of streamd, the in-pod stream daemon (daemons/streamd),
  * which netd's relay reaches through the pod's `ingress.sock`.
  */
 export const POD_STREAM_PORT = 10300

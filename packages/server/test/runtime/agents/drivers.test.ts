@@ -392,11 +392,11 @@ describe('agentDriver', () => {
 
     // ACP: acpd supervising the adapter, its socket named for the window.
     const acp = agentDriver('acp').launchCmd(spec)
-    expect(acp).toContain('exec /opt/yaac/acpd/acpd --sock')
+    expect(acp).toContain('exec /opt/yaac/helpers/daemons/acpd --sock')
     // The protocol reports the conversation, so the pane reporters skip.
     // Artifact tools are opted in, since the CLI withholds them from SDK
     // sessions.
-    expect(acp).toMatch(/^CLAUDE_CODE_ARTIFACT=1 YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/acpd\/acpd /)
+    expect(acp).toMatch(/^CLAUDE_CODE_ARTIFACT=1 YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/helpers\/daemons\/acpd /)
     expect(agentDriver('tui').launchCmd(spec)).not.toContain('YAAC_NO_PANE_REPORT')
     expect(acp).toContain('--sock /tmp/yaac-acp/claude-2.sock')
     expect(acp).toContain('-- claude-agent-acp')
@@ -412,11 +412,11 @@ describe('agentDriver', () => {
     expect(acp).not.toContain("'")
     // The adapter takes no flags, so the model goes in an env var.
     const withModel = agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5' })
-    expect(withModel).toMatch(/^CLAUDE_CODE_ARTIFACT=1 ANTHROPIC_MODEL=claude-opus-5-5 YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/acpd\/acpd /)
+    expect(withModel).toMatch(/^CLAUDE_CODE_ARTIFACT=1 ANTHROPIC_MODEL=claude-opus-5-5 YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/helpers\/daemons\/acpd /)
     expect(withModel).not.toContain('--model')
     // A 1M-context model is quoted, since a bare `[1m]` is a shell glob.
     expect(agentDriver('acp').launchCmd({ ...spec, model: 'claude-opus-5-5[1m]' }))
-      .toMatch(/^CLAUDE_CODE_ARTIFACT=1 ANTHROPIC_MODEL="claude-opus-5-5\[1m\]" YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/acpd\/acpd /)
+      .toMatch(/^CLAUDE_CODE_ARTIFACT=1 ANTHROPIC_MODEL="claude-opus-5-5\[1m\]" YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/helpers\/daemons\/acpd /)
     // A model reaches here from a request, a queued child's parent or a
     // restarted conversation's report, which anything in the workspace can
     // set; every launch refuses one it cannot carry.
@@ -466,7 +466,7 @@ describe('agentDriver', () => {
       JSON.parse(/CODEX_CONFIG="((?:[^"\\]|\\.)*)"/.exec(cmd)![1].replace(/\\(.)/g, '$1'))
     const codex = spec('codex')
     expect(codex).toContain('-- codex-acp')
-    expect(codex).toMatch(/NO_BROWSER=1 CODEX_PATH=codex CODEX_ACP_PROMPT_SUGGESTIONS=false CODEX_CONFIG=\S+ YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/acpd\/acpd /)
+    expect(codex).toMatch(/NO_BROWSER=1 CODEX_PATH=codex CODEX_ACP_PROMPT_SUGGESTIONS=false CODEX_CONFIG=\S+ YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/helpers\/daemons\/acpd /)
     expect(codexConfig(codex))
       .toEqual({ approval_policy: 'never', approvals_reviewer: 'user', sandbox_mode: 'danger-full-access' })
     expect(codexConfig(spec('codex', { permissionMode: 'auto' })))
@@ -491,12 +491,12 @@ describe('agentDriver', () => {
     // pi-acp takes neither; its model is set after the handshake.
     const pi = spec('pi')
     expect(pi).toContain('-- pi-acp')
-    expect(pi.slice(0, pi.indexOf('exec /opt/yaac/acpd/acpd '))).toBe('YAAC_NO_PANE_REPORT=1 ')
+    expect(pi.slice(0, pi.indexOf('exec /opt/yaac/helpers/daemons/acpd '))).toBe('YAAC_NO_PANE_REPORT=1 ')
 
     // omp is its own adapter and takes the TUI's flags, the model included.
     // Plan mode is sent as a session mode, not set by the extension.
     const omp = spec('omp', { permissionMode: 'plan', model: 'openrouter/openai/gpt-5.5' })
-    expect(omp).toMatch(/^YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/acpd\/acpd /)
+    expect(omp).toMatch(/^YAAC_NO_PANE_REPORT=1 exec \/opt\/yaac\/helpers\/daemons\/acpd /)
     expect(omp).toContain('-- omp acp --config "$YAAC_OMP_AGENT_DIR/yaac.yml" --approval-mode always-ask --model openrouter/openai/gpt-5.5')
     expect(omp).not.toContain('YAAC_OMP_PLAN')
     expect(spec('omp', { permissionMode: 'bypass' })).toContain('--approval-mode yolo')

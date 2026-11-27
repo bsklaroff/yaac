@@ -4,17 +4,19 @@
  *
  * A pod gets them from its server build's folder (`stageHelpers`), each
  * mounted read-only at `/usr/local/bin/<name>`, so they match the yaac
- * version that started it and the workspace cannot modify them.
- * Containerless copies them per workspace (`stageWorkspaceBin`) and
+ * version that started it and the workspace cannot modify them. The same
+ * folder carries the Go daemons a pod runs, streamd and acpd.
+ * Containerless copies the commands per workspace (`stageWorkspaceBin`) and
  * symlinks them into the workspace's bin dir, so callers refer to them by
  * bare name.
  */
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { PACKAGE_ROOT } from '@yaac/shared/project-paths'
+import { DAEMONS_DIR, PACKAGE_ROOT } from '@yaac/shared/project-paths'
 import { globalPath } from '@yaac/shared/paths'
 import { readBuildId } from '@yaac/shared/build-id'
+import { env } from '@yaac/shared/env'
 import { builtinSkillsDir, stageBuiltinSkills } from '#domain/skills'
 import type { WorkspaceMount } from '#drivers/contract'
 
@@ -63,6 +65,31 @@ export function workspaceBinMounts(stagingDir: string, names: string[]): Workspa
   }))
 }
 
+/**
+ * Copy the Linux builds of the Go daemons for this server's architecture
+ * into `destDir`, as `streamd` and `acpd`, where the k8s driver starts them
+ * (`HELPERS_DIR` in drivers/k8s/substrate/workspace-paths.ts). An install
+ * builds its images on one machine for that machine's architecture, so its
+ * nodes have the server's. A bundle without them fails here, by name, since
+ * its pods would never answer; only a run from source, whose tiers start no
+ * pod, may have none.
+ */
+async function stageDaemons(destDir: string): Promise<void> {
+  const arch = process.arch === 'x64' ? 'amd64' : process.arch
+  await fs.mkdir(destDir, { recursive: true })
+  for (const name of ['streamd', 'acpd']) {
+    const src = path.join(DAEMONS_DIR, name, 'bin', `${name}-linux-${arch}`)
+    const dest = path.join(destDir, name)
+    await fs.copyFile(src, dest).then(
+      () => fs.chmod(dest, 0o755),
+      (err: NodeJS.ErrnoException) => {
+        if (err.code !== 'ENOENT') throw err
+        if (env.bundled) throw new Error(`this build has no ${name} for linux-${arch} (${src}); \`pnpm build:daemons\` builds it`)
+      },
+    )
+  }
+}
+
 /** What `stageHelpers` staged: its folder and what is in it. */
 export interface StagedHelpers {
   binDir: string
@@ -79,12 +106,12 @@ export function clearStagedHelpersForTests(): void {
 }
 
 /**
- * Stage this server build's helper commands and bundled skills once, in a
- * folder of the shared tier named for the build (`run/helpers/<build>`),
- * which every pod the build makes mounts read-only from its creation, a
- * spare included (docs/generic-workspace-pods.md "The pod"). Running
- * workspaces keep mounting the folder of the build that made them, so it
- * is written once and never changed.
+ * Stage this server build's helper commands, daemons and bundled skills
+ * once, in a folder of the shared tier named for the build
+ * (`run/helpers/<build>`), which every pod the build makes mounts read-only
+ * from its creation, a spare included (docs/generic-workspace-pods.md "The
+ * pod"). Running workspaces keep mounting the folder of the build that made
+ * them, so it is written once and never changed.
  */
 export function stageHelpers(): Promise<StagedHelpers> {
   staged ??= (async () => {
@@ -97,6 +124,7 @@ export function stageHelpers(): Promise<StagedHelpers> {
       const tmp = `${dir}.tmp-${String(process.pid)}`
       await fs.rm(tmp, { recursive: true, force: true })
       await stageWorkspaceBin(workspaceBinDir(), path.join(tmp, 'bin'))
+      await stageDaemons(path.join(tmp, 'daemons'))
       await stageBuiltinSkills(builtinSkillsDir(), path.join(tmp, 'skills'))
       await fs.writeFile(path.join(tmp, '.staged'), '')
       await fs.rm(dir, { recursive: true, force: true })

@@ -183,7 +183,7 @@ async function workspaceNode(workspaceId: string): Promise<string | undefined> {
 
 /**
  * What a pod is told when it becomes its workspace's: streamd's `claim`
- * request (dockerfiles/streamd/claim.js). The caller's variables go into
+ * request (daemons/streamd/claim.go). The caller's variables go into
  * the tmux server's environment, so every window inherits them and no
  * object in the cluster holds them; the identity, trusted checkouts, cwd
  * and status line are read from them, as the containerless driver does.

@@ -3,6 +3,7 @@ import { CONTAINER_TMUX_DIR } from '@yaac/shared/paths'
 import {
   CA_CONFIGMAP_NAME,
   GLOBAL_CLAIM_NAME,
+  HELPERS_DIR,
   LABEL_INSTALL_ID,
   PRIORITY_CLASS_WORKSPACE,
   RUNTIME_CLASS_GVISOR,
@@ -39,9 +40,6 @@ export const WORKSPACE_POD_ANNOTATIONS: Record<string, string> = {
 
 /** Where both containers see the pod's node-mounts directory. */
 export const NODE_MOUNTS_DIR = '/node-mounts'
-/** Where both containers see this server build's helper commands and
- *  bundled skills (`helpersSubPath`). */
-export const HELPERS_DIR = '/opt/yaac/helpers'
 /** The pod's scratch volume, divided among the workspace's scratch dirs at
  *  the claim (docs/generic-workspace-pods.md "Scratch dirs"). */
 export const SCRATCH_ROOT = '/yaac-scratch'

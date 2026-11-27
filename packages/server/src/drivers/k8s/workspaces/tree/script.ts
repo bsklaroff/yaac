@@ -123,7 +123,7 @@ async function start(trigger: string): Promise<void> {
 
 /** Fill or restore the tree, once per life, then report the files ready
  *  beside the trigger file, which the claim call waits for
- *  (dockerfiles/streamd/claim.js; keep the name in sync with
+ *  (daemons/streamd/claim.go; keep the name in sync with
  *  `treeStartedMarker` in pod-job.ts). A restore that cannot read its chain
  *  says so beside the instruction and never reports ready, so the server can
  *  offer a restore from what does verify. */

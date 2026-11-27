@@ -8,6 +8,17 @@ import {
 import type { WorkspacePaths } from '#drivers/contract'
 
 /**
+ * Where every workspace pod sees its server build's helpers folder: helper
+ * commands, bundled skills and the Go daemons (`stageHelpers` in
+ * packages/server/src/domain/workspaces/workspace-bin.ts, which stages the
+ * daemons in its `daemons/`).
+ */
+export const HELPERS_DIR = '/opt/yaac/helpers'
+
+/** streamd's binary, which `yaac-workspace-init` and `bootStreamd` start. */
+export const STREAMD_BIN = `${HELPERS_DIR}/daemons/streamd`
+
+/**
  * The k8s answer to `WorkspaceDriver.workspacePaths`: paths as seen inside
  * a workspace pod. Each pod has its own mount namespace, so every workspace
  * uses the same constant paths.
@@ -27,7 +38,7 @@ export function k8sWorkspacePaths(): WorkspacePaths {
     acpLogDir: CONTAINER_ACP_LOG_DIR,
     terminalLogDir: CONTAINER_TERMINAL_LOG_DIR,
     attachmentsDir: CONTAINER_ATTACHMENTS_DIR,
-    acpd: '/opt/yaac/acpd/acpd',
+    acpd: `${HELPERS_DIR}/daemons/acpd`,
     // On a volume the tree container shares (workspaces/pod-job.ts).
     treeTrigger: '/yaac-trigger/save',
   }

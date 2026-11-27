@@ -34,13 +34,22 @@ browser ── WS ── server ──(A)── netd pod on the ──(B)── 
 server = a pod of the install namespace, dialing the netd pod's address
 ```
 
-### streamd (`dockerfiles/streamd/`)
+### streamd (`daemons/streamd/`)
 
-A small plain-JS Node daemon, baked into the base image at
-`/opt/yaac/streamd` with a prebuilt `@lydell/node-pty`. The postStart setup
-script starts it last, so a successful relay exec also proves the earlier
-setup (the passwd entry, the tmux server) is done. Its source is part of the
-base image's content hash, so editing it changes the image tag.
+A static Go binary, one per pod and spare, so it is built to cost little:
+in a gVisor pod it rests at about 16 MB and starts in about 25 ms. Each
+stream runs on its own goroutines, so starting a command, which takes a few
+milliseconds in a sandbox, holds up only that stream, never another
+terminal's echo.
+
+`pnpm build:daemons` cross-compiles it for Linux on x64 and arm64, and the
+server stages the build for its own architecture in its helpers folder,
+which every pod it makes mounts at `/opt/yaac/helpers`
+(docs/generic-workspace-pods.md "The pod"). No image carries it, so a change
+to it rebuilds no image, and a pod always runs the streamd of the server
+build that made it. The postStart setup script (`yaac-workspace-init`, from
+the same folder) starts it last, so a successful relay exec also proves the
+earlier setup (the passwd entry, the tmux server) is done.
 
 It listens on `0.0.0.0:10300`, which in a sandbox with no interface is
 reachable from its loopback alone: netshim dials it for each connection the
@@ -52,8 +61,8 @@ starts with one JSON handshake line (`{token, kind, …params}`) and gets one
   from inside the pod is what lets a dev server bound only to localhost be
   forwarded.
 - `ctrl {cmd}`: run a command with piped stdio and splice stdin/stdout raw
-  (tmux control mode is a line protocol). Closing the socket kills the
-  process.
+  (tmux control mode is a line protocol). The client's EOF closes the
+  command's stdin; a stream that can no longer take its output ends it.
 - `unix {path}`: raw splice to a UNIX socket inside the pod, connected in
   streamd's own process and retried for about two seconds while the socket
   is not bound yet. ACP uses this: the server dials
@@ -65,14 +74,17 @@ starts with one JSON handshake line (`{token, kind, …params}`) and gets one
   `{exitCode, stdout, stderr}` (size-bounded), and close. This is what
   `podExec` uses. With `stdin: n`, the next n bytes the client sends are the
   command's standard input; a long prompt's delivery script travels this
-  way, since the handshake line is capped at 16 KiB and a command line at
-  128 KiB. The command leads its own process group, and a stream the
-  client closes before it finishes (a timed-out exec) kills the whole
-  group, so nothing the command started keeps running.
+  way, since a command line is capped at 128 KiB (the handshake line's
+  cap is twice that). Input cut short is never
+  handed on, so a script never runs its first half. The command leads its
+  own process group, and a stream the client closes before it finishes (a
+  timed-out exec) kills the whole group, so nothing the command started
+  keeps running.
 - `pty {cmd, cols, rows}`: run a command under a PTY. Both directions are
   framed as `[1B type][4B BE length][payload]` (codec shared with
   `@yaac/shared/stream-frames`): data, resize and signal frames in; data and
-  exit frames out. Output pauses when the socket applies backpressure.
+  exit frames out. Writes block, so a client that reads slowly stops the
+  terminal and, through it, the program.
 - `ports {}`: stream the pod's listening TCP ports (read from
   `/proc/net/tcp{,6}`, loopback and wildcard binds only, streamd's own port
   left out) as JSON lines: once on connect, on every change, and
@@ -80,7 +92,7 @@ starts with one JSON handshake line (`{token, kind, …params}`) and gets one
   (docs/auto-forward-ports.md). The scan runs only while a ports stream is
   open.
 - `claim {bytes}`: make the pod one workspace's from the JSON request in
-  the bytes that follow, inside streamd's own process (`claim.js`), since
+  the bytes that follow, inside streamd's own process (`claim.go`), since
   each process started in the sandbox costs tens of milliseconds: wait for
   the tree container's started marker, write `~/.gitconfig` and `~/.npmrc`,
   restore opencode's history, and open the tmux session with the
@@ -90,10 +102,12 @@ PTY output is micro-batched. The first write goes out at once; later writes
 within the next ~8ms are merged into one frame, with a size cap. A tmux
 redraw therefore reaches the browser as one message it can paint in one go,
 which avoids cursor flicker from half-drawn screens, while a single
-keystroke echo is not delayed. The server's PTY adapter delivers
+keystroke echo is not delayed. A frame never ends inside a UTF-8 character,
+since the server decodes each one by itself. The server's PTY adapter delivers
 consecutive data frames from one chunk as a single WebSocket message, and
 `bridge()` runs the same batcher again before the socket
-(`@yaac/shared/batcher`; streamd's `batcher.js` is a copy of it). That last
+(`@yaac/shared/batcher`; streamd's batcher in `pty.go` follows the same
+policy). That last
 step gives the containerless driver, which has no streamd, the same
 coalescing.
 

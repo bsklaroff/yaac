@@ -1,10 +1,5 @@
 # Dev-only files excluded from the dockerfiles/ build context (base and
-# tools layers). Must mirror dockerfiles/streamd/.containerignore and
-# dockerfiles/acpd/.containerignore, which baseImageHash() reads through
-# contextHash(), and dockerfiles/agent-patches/.containerignore, which
-# toolsContentHash() reads — keep them in sync (literal paths only).
-streamd/test
-streamd/node_modules
-acpd/acpd_test.go
-acpd/bin
+# tools layers). Must mirror dockerfiles/agent-patches/.containerignore,
+# which toolsContentHash() reads through contextHash(); keep them in sync
+# (literal paths only).
 agent-patches/test

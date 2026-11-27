@@ -99,9 +99,10 @@ env COLORTERM=truecolor tmux -S /tmp/yaac-tmux/server -u start-server \; \
 
 # streamd LAST: its reachability over the stream relay is the server's
 # "in-pod setup done" signal, so anything the relay runs sees the tmux server
-# above. Idempotent (a second daemon exits on EADDRINUSE); the status
-# watcher's self-heal re-runs the same command via kubectl exec if it ever
-# dies.
-setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &
+# above. It comes from this script's own helpers folder, so the two are
+# always one build's. Idempotent (a second daemon exits on EADDRINUSE); the
+# status watcher's self-heal re-runs the same command via kubectl exec if it
+# ever dies (`bootStreamd`).
+setsid /opt/yaac/helpers/daemons/streamd >>/tmp/streamd.log 2>&1 </dev/null &
 
 exit 0

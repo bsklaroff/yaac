@@ -60,7 +60,7 @@ export const ACP = {
   opencodeChildUpdate: 'opencode/session/child_update',
 } as const
 
-/** acpd's own control notifications (see dockerfiles/acpd/daemon.go). */
+/** acpd's own control notifications (see daemons/acpd/daemon.go). */
 export const ACPD = {
   hello: '_acpd/hello',
   exit: '_acpd/exit',
@@ -284,7 +284,7 @@ export function toStopReason(value: unknown): AcpStopReason {
 }
 
 /** An image's `data` as acpd records it once it has stored the image beside
- *  the record (dockerfiles/acpd/images.go). */
+ *  the record (daemons/acpd/images.go). */
 const STORED_IMAGE = /^yaac-image:([0-9a-f]{64})$/
 
 /**

@@ -16,7 +16,7 @@ refilling) creates the same pod on demand and binds it as soon as it is up.
 | Mounted at creation | Source | Notes |
 |---|---|---|
 | `/node-mounts`, in both containers | `<node-mounts root>/<workspace id>.<random>`, a hostPath | read-only, `HostToContainer`; empty until the claim |
-| `/opt/yaac/helpers`, in both containers | the shared tier's `run/helpers/<server build>` | helper commands and bundled skills, read-only |
+| `/opt/yaac/helpers`, in both containers | the shared tier's `run/helpers/<server build>` | helper commands, bundled skills and the Go daemons (streamd, acpd), read-only |
 | `/yaac-scratch` | one `emptyDir` with the sentry tmpfs annotations | divided among the workspace's scratch dirs at the claim |
 | `/yaac-local` | an `emptyDir` | folders bound where a workspace asks for an `emptyDir` (codex's `tmp`) |
 | the tmux socket dir, the tree trigger dir | `emptyDir` | |
@@ -160,7 +160,7 @@ pod's part:
    folders owned by the install uid, mounts every entry under the pod's
    node-mounts directory, writes the list the tree container binds from, and
    enters the workspace container once to bind its entries.
-4. **Claim call.** One streamd request (`dockerfiles/streamd/claim.js`)
+4. **Claim call.** One streamd request (`daemons/streamd/claim.go`)
    handled in streamd's own process: restore opencode's history, wait for
    the tree container's started marker on the trigger volume, write
    `~/.gitconfig` and `~/.npmrc`, and run one tmux that sets the workspace's
@@ -267,9 +267,10 @@ inside the sandbox.
 
 ## Server restarts and upgrades
 
-A spare carries its build's streamd, tree program and helpers folder, so the
-server reaps every spare older than itself and the pool refills. A claimed
-workspace runs on across restarts and upgrades; its helpers folder stays
+A spare carries its build's helpers folder, with its streamd, acpd and tree
+program, so the server reaps every spare older than itself and the pool
+refills. A claimed workspace runs on across restarts and upgrades, with the
+daemons of the build that made its pod; its helpers folder stays
 until no pod mounts it (the `helpers-gc` step). mountd reports the build
 it was applied with, and the server applies the DaemonSet with its own build
 when it starts, so a node whose mountd is on another build takes no new start

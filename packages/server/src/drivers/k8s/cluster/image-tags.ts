@@ -31,19 +31,14 @@ export async function fileHash(filePath: string): Promise<string> {
 }
 
 /**
- * Content hash of the base image layer: its Dockerfile plus the in-pod
- * daemons it COPYs (dockerfiles/streamd/ and dockerfiles/acpd/), and the
- * normalize step every build appends (which the tools tag inherits through
- * this one). Shared with the test global setup so both derive identical
- * tags. No uid goes
- * in, since the images work under any uid (docs/arbitrary-uid-images.md).
+ * Content hash of the base image layer: its Dockerfile, which copies
+ * nothing from its context, and the normalize step every build appends
+ * (which the tools tag inherits through this one). Shared with the test
+ * global setup so both derive identical tags. No uid goes in, since the
+ * images work under any uid (docs/arbitrary-uid-images.md).
  */
 export async function baseImageHash(dockerfilePath: string): Promise<string> {
-  const streamdHash = await contextHash(path.join(DOCKERFILES_DIR, 'streamd'))
-  const acpdHash = await contextHash(path.join(DOCKERFILES_DIR, 'acpd'))
-  return stringHash(
-    `${await fileHash(dockerfilePath)}:streamd=${streamdHash}:acpd=${acpdHash}:normalize=${stringHash(NORMALIZE_STEP)}`,
-  )
+  return stringHash(`${await fileHash(dockerfilePath)}:normalize=${stringHash(NORMALIZE_STEP)}`)
 }
 
 /** Content hash of the tools layer's Dockerfile and the patches folder it

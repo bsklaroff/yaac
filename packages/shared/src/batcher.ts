@@ -13,9 +13,8 @@
  *    when the window ends;
  *  - once maxChars are held they flush at once.
  *
- * `dockerfiles/streamd/batcher.js` is the in-pod copy of this module (plain
- * JS over Buffers) with the same policy and constants; change both
- * together.
+ * streamd's `batcher` (daemons/streamd/pty.go) is the in-pod copy of this
+ * policy, over bytes, with the same constants; change both together.
  */
 
 /** One flush window: well under a 60Hz frame, but long enough to span one

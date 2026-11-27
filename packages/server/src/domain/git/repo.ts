@@ -438,7 +438,7 @@ async function writeCheckoutRefs(gitDir: string, main: MainRefs): Promise<void> 
 }
 
 /** How many processes write a checkout's files; a pod's claim
- *  (dockerfiles/streamd/claim.js) sets the same for the workspace's own git.
+ *  (daemons/streamd/claim.go) sets the same for the workspace's own git.
  *  More than 8 measured no faster. */
 const CHECKOUT_WORKERS = 8
 
