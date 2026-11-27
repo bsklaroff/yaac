@@ -8,13 +8,13 @@ import { kubectl } from '@yaac/test-utils/kubectl'
 import { cloneRepo } from '@yaac/server/domain/git'
 import { listWorkspacePods, type PodInfo } from '@yaac/server/drivers/k8s/substrate/pods'
 import { k8sNamespace } from '@yaac/server/drivers/k8s/substrate/api'
-import { NODE_LOCAL_NODE_ROOT } from '@yaac/server/drivers/k8s/substrate/storage-constants'
-import { createYaacTestEnv, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
+import { createYaacTestEnv, respawnYaacServer, spawnYaacServer, setTestGitIdentity, runYaac, type YaacTestEnv } from '#support/cli'
 import { assignTestGitCredential, registerTestProject, signInTestTool, type SpawnedServer } from '@yaac/test-utils/api'
 import { requireCluster } from '@yaac/test-utils/setup'
 import { requirePodman, cleanupWorkspaceJobs, execInJob } from '#support/cluster'
 import { startMockLLM, startMockGit, seedMockGitRepo, cleanupMocks, type MockLLM, type MockGit } from '#support/mock-remotes'
 import type { ResourceReport } from '@yaac/shared/types'
+import { LARGE_TREE_BYTES } from '@yaac/server/domain/workspaces/disk-guard'
 
 const execFileAsync = promisify(execFile)
 
@@ -23,29 +23,21 @@ const execFileAsync = promisify(execFile)
  * the tree container fills `/workspace` there with each checkout's `.git`
  * on the shared tier, checkpoints unsaved work, and a restart restores it,
  * after a clean stop or after the sandbox was killed and its tree salvaged.
- * Last, the full-node guard: its stop floor is set just under the node's
- * free space, so one workspace writing past it is stopped for it.
+ * Last, the full-node guard, which stops the workspace filling the largest
+ * tree on a node under its stop floor.
  *
  * One server and one project for the file; the cases share one workspace,
  * in order, and the guard's case, which stops it, runs last.
  */
-const GiB = 1024 ** 3
 
 /**
- * The least free space of any node's node-local root, read on each kind
- * node. This install's trees go under that root, so it is the disk the guard
- * measures, which need not be the host's `/`: a rig may keep its node
- * containers' storage on a disk of its own.
+ * A stop floor no node's disk is above, and one every node's is. The
+ * node-local root is on a disk other tenants share (other rigs' runs, image
+ * builds, prunes), which free or fill gigabytes while the suite runs, so no
+ * floor near its free space stays on one side of it.
  */
-async function nodeFreeGiB(): Promise<number> {
-  const nodes = (await kubectl(['get', 'nodes', '-o', 'jsonpath={.items[*].metadata.name}'])).stdout.split(' ').filter(Boolean)
-  const free = await Promise.all(nodes.map(async (node) => {
-    const { stdout } = await execFileAsync('podman', ['exec', node, 'stat', '-f', '-c', '%a %S', NODE_LOCAL_NODE_ROOT])
-    const [blocks, size] = stdout.trim().split(' ').map(Number)
-    return (blocks * size) / GiB
-  }))
-  return Math.min(...free)
-}
+const FLOOR_ABOVE_ANY_DISK_GIB = 1024 ** 2
+const FLOOR_UNDER_EVERY_DISK_GIB = 0.5
 
 describe('workspace trees on the node', () => {
   let testEnv: YaacTestEnv
@@ -71,17 +63,13 @@ describe('workspace trees on the node', () => {
     await fs.mkdir(path.join(testEnv.dataDir, 'global', 'projects', PROJECT_ID, 'claude'), { recursive: true })
     await cloneRepo(path.join(mockGit.reposDir, 'tree-demo.git'), repoDir, null)
     await git(repoDir, ['remote', 'set-url', 'origin', REMOTE])
-    // The guard stops a workspace once free space falls under the stop
-    // floor: set it 1.5 GiB under what the nodes have now, so the cases
-    // before the last never cross it.
-    const freeGiB = await nodeFreeGiB()
-    const stopFloorGiB = Math.max(0, freeGiB - 1.5)
+    // Under the stop floor a node takes no new start, which the cases
+    // before the last need.
     const gitTarget = { host: mockGit.host, port: mockGit.port, tls: false }
     const llmTarget = { host: mockLLM.host, port: mockLLM.port, tls: false }
     serverEnv = {
       ...testEnv.env,
-      YAAC_DISK_STOP_FLOOR_GIB: String(stopFloorGiB),
-      YAAC_DISK_WARN_FLOOR_GIB: String(freeGiB + 50),
+      YAAC_DISK_STOP_FLOOR_GIB: String(FLOOR_UNDER_EVERY_DISK_GIB),
       YAAC_E2E_UPSTREAM_REDIRECTS: JSON.stringify({ 'github.com': gitTarget, 'api.github.com': gitTarget, 'api.anthropic.com': llmTarget }),
       YAAC_E2E_SKIP_FETCH: '1',
       YAAC_E2E_NO_ATTACH: '1',
@@ -217,23 +205,37 @@ describe('workspace trees on the node', () => {
     await expect(fs.stat(`${last}.unreadable`)).resolves.toBeDefined()
   }, 900_000)
 
-  it('stops the workspace that fills its node past the stop floor, naming the disk it used', async () => {
+  it('stops the workspace that fills a large tree on a node under its stop floor, naming the disk it used', async () => {
+    // Every node is under the floor from here on, whatever the disk's other
+    // tenants do, so the workspace's own tree decides what the guard does.
+    // The warn floor makes the server check the disks every few seconds.
+    // The bound covers the server's rollout plus each wait below.
+    const logFile = path.join(testEnv.dataDir, 'server-local', 'server.log')
+    const logStart = (await fs.stat(logFile)).size
+    server = await respawnYaacServer(server, {
+      ...serverEnv,
+      YAAC_DISK_STOP_FLOOR_GIB: String(FLOOR_ABOVE_ANY_DISK_GIB),
+      YAAC_DISK_WARN_FLOOR_GIB: String(FLOOR_ABOVE_ANY_DISK_GIB),
+    })
     const usage = await (await api('/server/usage')).json() as ResourceReport
     expect(usage.nodeDisks?.length).toBeGreaterThan(0)
-    expect(usage.nodeDisks?.every((d) => d.error === undefined && d.totalBytes > 0), JSON.stringify(usage.nodeDisks)).toBe(true)
-    // Other users of the disk move its free space during the suite, so
-    // take what crosses the floor now on the workspace's node, as the
-    // guard reads it, plus a margin.
+    expect(usage.nodeDisks?.every((d) => d.error === undefined && d.totalBytes > 0 && d.freeBytes < d.stopBytes),
+      JSON.stringify(usage.nodeDisks)).toBe(true)
     const { node } = await pod()
-    const disk = usage.nodeDisks!.find((d) => d.node === node)
-    if (!disk) throw new Error(`no disk reading for node ${String(node)}: ${JSON.stringify(usage.nodeDisks)}`)
-    const fillMiB = Math.ceil(((disk.freeBytes - disk.stopBytes) / GiB + 0.75) * 1024)
-    expect(fillMiB, 'the node freed too much disk since the suite started').toBeLessThan(6 * 1024)
-    // Allocated rather than written. Writing gigabytes fills the host's
+
+    // A tree under LARGE_TREE_BYTES is never the reason a node is full, so
+    // the guard passes over the node and the workspace runs on.
+    await vi.waitFor(async () => {
+      const log = (await fs.readFile(logFile)).subarray(logStart).toString()
+      expect(log).toMatch(new RegExp(`\\[disk-guard\\] node ${String(node)} has .* no running workspace there fills a tree of 1\\.0 GiB or more; nothing is stopped`))
+    }, { timeout: 120_000, interval: 2_000 })
+    expect((await pod()).workspaceId).toBe(workspaceId)
+
+    // Allocated rather than written. Writing a gigabyte fills the host's
     // page cache, and on a host short of free memory that stalls the node
     // long enough for netd's memory-pressure kill to take the workspace
     // before the guard stops it (docs/cluster-setup.md "Memory pressure").
-    await sh(`fallocate -l ${String(Math.max(fillMiB, 1100))}M /workspace/big.bin`)
+    await sh(`fallocate -l ${String(LARGE_TREE_BYTES / 1024 ** 2 + 100)}M /workspace/big.bin`)
     // Gone, not just terminating: the stop's final pass over that file
     // spends up to its whole grace period, and only then is the workspace
     // listed as stopped.
@@ -251,5 +253,5 @@ describe('workspace trees on the node', () => {
     }, { timeout: 60_000, interval: 2_000 })
     expect(detail.deathReason).toBe('disk-full')
     expect(detail.deathDetail).toMatch(/held \d+\.\d GiB on node/)
-  }, 400_000)
+  }, 900_000)
 })

@@ -2,9 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   _resetAcpRegistryForTests,
   acpHandshakeHold,
+  acpRefusal,
   dropAcpQueues,
   holdAcpHandshakes,
   parkAcpQueue,
+  refuseAcpHandle,
   registerAcpConversation,
   takeAcpQueue,
   unregisterAcpConversation,
@@ -67,6 +69,26 @@ describe('whenAcpConversation', () => {
     const waited = whenAcpConversation('demo', 'wt-1', 'claude', 5_000)
     await vi.advanceTimersByTimeAsync(5_000)
     await expect(waited).resolves.toBeUndefined()
+  })
+})
+
+describe('acpRefusal', () => {
+  // An agent that will not start a conversation (its tool is not signed in)
+  // answers whoever waits for one at once, until a new agent on its handle
+  // registers one.
+  it('says why a handle will not start a conversation, and wakes its waiters, until one registers there', async () => {
+    const waited = whenAcpConversation('demo', 'wt-1', 'codex', 60_000)
+    refuseAcpHandle('demo', 'wt-1', 'codex', 'codex is not signed in')
+    await expect(waited).resolves.toBeUndefined()
+    await expect(whenAcpConversation('demo', 'wt-1', 'codex', 60_000)).resolves.toBeUndefined()
+    expect(acpRefusal('demo', 'wt-1', 'codex')).toBe('codex is not signed in')
+    expect(acpRefusal('demo', 'wt-2', 'codex')).toBeUndefined()
+
+    registerAcpConversation('demo', 'wt-1', { handle: 'codex' }, fake('resumed'))
+    expect(acpRefusal('demo', 'wt-1', 'codex')).toBeUndefined()
+    refuseAcpHandle('demo', 'wt-1', 'codex', 'again')
+    refuseAcpHandle('demo', 'wt-1', 'codex', undefined)
+    expect(acpRefusal('demo', 'wt-1', 'codex')).toBeUndefined()
   })
 })
 

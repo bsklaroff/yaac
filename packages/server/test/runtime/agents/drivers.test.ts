@@ -2556,6 +2556,63 @@ describe('agentDriver', () => {
     }
   })
 
+  /** Answer `initialize`, then refuse the `session/new` that follows as
+   *  codex's adapter does with no login. */
+  async function refuseSessionNew(stream: FakeStream): Promise<void> {
+    stream.feed(helloLine(true))
+    await vi.advanceTimersByTimeAsync(0)
+    const init = stream.sent().find((m) => m.method === 'initialize')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: init.id, result: {
+      protocolVersion: 1, agentCapabilities: {},
+    } })}\n`)
+    await vi.advanceTimersByTimeAsync(0)
+    const created = stream.sent().find((m) => m.method === 'session/new')!
+    stream.feed(`${JSON.stringify({ jsonrpc: '2.0', id: created.id, error: { code: -32000, message: 'Authentication required' } })}\n`)
+    await vi.advanceTimersByTimeAsync(0)
+  }
+
+  // With no login the adapter would refuse every re-dial the same.
+  it('stops an agent whose tool is not signed in, says why, and dials its resumed window', async () => {
+    const streams: FakeStream[] = []
+    tmuxWindows = 'codex\n'
+    vi.useFakeTimers()
+    try {
+      connections.push(agentDriver('acp').connect(session, () => {}, withSessions('acp', {
+        heartbeatIntervalMs: 20_000,
+        log: () => {},
+        dial: acpDial(() => {
+          const stream = new FakeStream()
+          streams.push(stream)
+          return stream
+        }),
+      })))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(streams).toHaveLength(1)
+      const stream = streams[0]
+      await refuseSessionNew(stream)
+
+      // Its acpd is stopped, the window told why, and a send refused at once.
+      expect(lastTmux!.writes.join('')).toContain(
+        "run-shell -t %0 'echo \"[yaac] the agent stopped: its tool is not signed in. "
+        + "Sign it in (yaac auth update), then resume this session.\" >#{pane_tty}; kill 100'")
+      await expect(agentDriver('acp').deliverPrompt(session, 'codex', 'hello', { tool: 'codex', conversationId: 'x' }))
+        .rejects.toThrow(/^codex is not signed in: its ACP adapter refused to start a conversation \(handshake failed: Authentication required \(code -32000\)\)/)
+
+      // Never dialed again while that agent's pane lingers, re-lists included.
+      lastTmux!.feed('%window-add @1\n')
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(streams).toHaveLength(1)
+
+      // A resume runs a new agent in the window, which is dialed.
+      panePids.set('codex', '200')
+      lastTmux!.feed('%window-add @1\n')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(streams).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the queue across the whole connection going down, for the reconnect to send', async () => {
     // A dropped tmux client takes the connection down and the watcher
     // reconnects; acpd kept every agent meanwhile. (A stop is the watcher's

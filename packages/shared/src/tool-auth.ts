@@ -248,6 +248,19 @@ export async function writeProjectCodexPlaceholder(
 }
 
 /**
+ * Write an API-key Codex `auth.json` into a project's codex dir. codex reads
+ * no key from its environment, so this file is what signs it in. `apiKey`
+ * is the real key, or the placeholder a proxy swaps.
+ */
+export async function writeProjectCodexApiKey(projectId: string, apiKey: string): Promise<void> {
+  await fs.mkdir(codexDir(projectId), { recursive: true })
+  await writeCredentialsFileAtomic(
+    projectCodexAuthFile(projectId),
+    JSON.stringify({ OPENAI_API_KEY: apiKey, auth_mode: 'apikey' }, null, 2) + '\n',
+  )
+}
+
+/**
  * Write the real Codex `auth.json` into a project's codex dir, for a runtime
  * with no proxy (see `writeProjectClaudeCredentials`).
  */

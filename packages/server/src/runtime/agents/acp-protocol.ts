@@ -60,6 +60,13 @@ export const ACP = {
   opencodeChildUpdate: 'opencode/session/child_update',
 } as const
 
+/**
+ * The JSON-RPC error code ACP reserves for "Authentication required"
+ * (`RequestError.authRequired` in the SDK the adapters are built on): the
+ * adapter is up, but its tool is not signed in.
+ */
+export const ACP_AUTH_REQUIRED = -32000
+
 /** acpd's own control notifications (see daemons/acpd/daemon.go). */
 export const ACPD = {
   hello: '_acpd/hello',

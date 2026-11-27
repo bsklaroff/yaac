@@ -177,6 +177,22 @@ export async function spawnYaacServer(env: NodeJS.ProcessEnv, opts: { token?: Te
   }
 }
 
+/**
+ * Stop a file's server and start it again on `env`, holding the server
+ * mutex throughout. Stopping and spawning separately would let another
+ * file's server take the mutex between the two, and this file would wait
+ * out that whole file.
+ */
+export async function respawnYaacServer(server: SpawnedServer, env: NodeJS.ProcessEnv): Promise<SpawnedServer> {
+  const releaseMutex = await acquireServerMutex()
+  try {
+    await server.stop()
+    return await spawnYaacServer(env)
+  } finally {
+    await releaseMutex()
+  }
+}
+
 /** How much of a test server's stderr is kept for an unexpected exit. */
 const SERVER_LOG_TAIL_CHARS = 20_000
 

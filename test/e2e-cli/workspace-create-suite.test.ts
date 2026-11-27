@@ -485,6 +485,14 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       // Held for the whole describe; every HTTP test dials through it.
       forwarder = startForwardCli(workspaceId)
       await forwarder.ready(PORT_FORWARD.length)
+
+      // The secret check stats each of the ~29k files in the image's home,
+      // nearly all installed tools. Under gVisor the first stat of each is a
+      // round trip to the gofer: 8 s on a quiet rig, many times that on a
+      // loaded host. This walk does that once, in the background, while the
+      // cases before the check run; the sandbox keeps the metadata, so the
+      // check's own walk takes about 2 s.
+      await execInJob(jobName, ['sh', '-c', 'nohup find /home/yaac -xdev -newerct @0 >/dev/null 2>&1 </dev/null &'])
     }, 240_000)
 
     afterAll(async () => {
@@ -583,27 +591,6 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
     it('puts a plain project variable in the container', async () => {
       const { stdout } = await execInJob(jobName, ['env'])
       expect(stdout).toContain('YAAC_TEST_VAR=hello-from-host')
-    }, 60_000)
-
-    it('keeps a proxied secret out of the container entirely', async () => {
-      // The workspace holds a placeholder; the proxy swaps in the real value.
-      const { stdout } = await execInJob(jobName, ['env'])
-      expect(stdout).toContain('KITCHEN_SECRET=placeholder')
-      expect(stdout).not.toContain('the-real-secret')
-      // Every file on a mount is searched, and every file of the image's own
-      // filesystem changed after the pod was created, by ctime, which unlike
-      // mtime cannot be set back. An older one came from the image, which is
-      // built without project secrets; skipping those spares reading the
-      // gigabytes of tools the image keeps in the home dir, which takes over
-      // a minute under gVisor on a slow disk.
-      const pod = (await listWorkspacePods(idOf('kitchen'))).find((p) => p.workspaceId === workspaceId)!
-      const since = Math.floor(pod.createdAtMs / 1000) - 5
-      const { stdout: grepped } = await execInJob(jobName, ['sh', '-c', [
-        'set -- $(awk \'$2 ~ /^\\/(workspace|home\\/yaac)(\\/|$)/ { print $2 }\' /proc/mounts)',
-        '{ [ $# -eq 0 ] || grep -rlF the-real-secret "$@"',
-        `find /workspace /home/yaac -xdev -type f -newerct @${String(since)} -exec grep -lF the-real-secret {} +; } 2>/dev/null || true`,
-      ].join('; ')])
-      expect(grepped.trim()).toBe('')
     }, 60_000)
 
     it('mounts named cacheVolumes from config', async () => {
@@ -1339,6 +1326,29 @@ describe('yaac workspace create suite (real CLI + real server + mocked remotes)'
       await setTitle('✳ marker-done')
       await waitForListStatus('waiting', 30_000)
     }, 240_000)
+
+    // After the cases that run the agent and swap credentials, so what they
+    // wrote is searched too.
+    it('keeps a proxied secret out of the container entirely', async () => {
+      // The workspace holds a placeholder; the proxy swaps in the real value.
+      const { stdout } = await execInJob(jobName, ['env'])
+      expect(stdout).toContain('KITCHEN_SECRET=placeholder')
+      expect(stdout).not.toContain('the-real-secret')
+      // Every file on a mount is searched, and every file of the image's own
+      // filesystem changed after the pod was created, by ctime, which unlike
+      // mtime cannot be set back. An older one came from the image, which is
+      // built without project secrets; skipping those spares reading the
+      // gigabytes of tools the image keeps in the home dir. Telling them
+      // apart still stats every file there, which `beforeAll` has done once.
+      const pod = (await listWorkspacePods(idOf('kitchen'))).find((p) => p.workspaceId === workspaceId)!
+      const since = Math.floor(pod.createdAtMs / 1000) - 5
+      const { stdout: grepped } = await execInJob(jobName, ['sh', '-c', [
+        'set -- $(awk \'$2 ~ /^\\/(workspace|home\\/yaac)(\\/|$)/ { print $2 }\' /proc/mounts)',
+        '{ [ $# -eq 0 ] || grep -rlF the-real-secret "$@"',
+        `find /workspace /home/yaac -xdev -type f -newerct @${String(since)} -exec grep -lF the-real-secret {} +; } 2>/dev/null || true`,
+      ].join('; ')])
+      expect(grepped.trim()).toBe('')
+    }, 60_000)
 
     it('keeps each scratch dir and pnpm\'s store on the pod\'s scratch volume, installing through the npm cache', async () => {
       // Last kitchen test: it stops the workspace.

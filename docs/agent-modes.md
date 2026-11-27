@@ -753,6 +753,25 @@ can die before that (claude's fails at `session/new` on a bad login), and
 one that does is reported as a failed create naming the adapter, as a `tui`
 agent that dies at launch is, with the prompt beside it.
 
+An adapter can also stay up and refuse instead: codex's answers
+`session/new` with ACP's auth-required error (`ACP_AUTH_REQUIRED`) when
+codex is not signed in, and would answer every re-dial the same. So a
+handshake refused with that code is not re-dialed. The driver writes a line
+saying the tool is not signed in to the window, which its log keeps, and
+stops acpd. Its pane stays dead, and the session lists as exited, which
+alerts the user. A sign-in writes codex's credential into the project's
+codex home, an API key as much as a ChatGPT login (codex reads no key from
+its environment), so Resume afterwards starts an agent that is signed in.
+Whoever waits for the conversation is told why at once (`acpRefusal`): a
+fresh create reports the refusal as its failure, and a send is refused
+with it. The refusal is held in memory, so after a server restart a send
+to that agent fails as one to any exited agent does. The opening prompt
+stays on the session row for the resumed agent. pi's adapter also answers
+with this code when an error from pi merely mentions a denied permission
+or a missing configuration, so for pi the stop can name a sign-in that is
+not the problem. Any other refused handshake is re-dialed like a dropped
+stream.
+
 Until its conversation is named, an ACP session's pane is drawn as the
 agent starting (`SessionPane`). Once its agent exits, whether or not it
 named a conversation, the bar under the pane offers acpd's log

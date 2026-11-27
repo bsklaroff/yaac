@@ -1,6 +1,6 @@
 import { getWorkspaceRow, listWorkspaceSessions, type SessionRow } from '#db'
 import { actorLabel, authorizeProject, requireWithinCeiling, type Actor } from '#domain/access'
-import { agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
+import { acpRefusal, agentDriver, resolveAgentPermissionMode } from '#runtime/agents'
 import { liveAgents } from '#runtime/status'
 import { stripControlChars } from '@yaac/shared/ansi'
 import { ServerError } from '@yaac/shared/errors'
@@ -69,7 +69,11 @@ export async function sendMessage(
   const [session] = matches
   const { conversationId } = session
   const label = `${short}'s ${session.tool} agent ${session.id.slice(0, 8)}`
-  if (conversationId === undefined) throw new ServerError('CONFLICT', `${label} has no conversation yet; try again once its agent is up`)
+  if (conversationId === undefined) {
+    const refused = acpRefusal(projectId, workspaceId, session.window)
+    throw new ServerError('CONFLICT', refused !== undefined ? `${label}: ${refused}`
+      : `${label} has no conversation yet; try again once its agent is up`)
+  }
 
   // The row follows what the agent reports; its latest report is checked
   // too, in case it moved since the last pass recorded it.

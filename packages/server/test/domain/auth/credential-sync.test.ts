@@ -318,6 +318,17 @@ describe('seedProjectToolHome', () => {
     expect(await readProjectClaudeBundle(P.flipped)).toMatchObject({ accessToken: 'claude-access-host' })
   })
 
+  it('writes a codex API key into the project, the placeholder where egress is mediated', async () => {
+    const authJson = async (): Promise<unknown> => JSON.parse(await fs.readFile(projectCodexAuthFile(P.alpha), 'utf8'))
+    await setToolCredential(OWNER, 'codex', { kind: 'api-key', savedAt: 'x', apiKey: 'sk-key' })
+    await seedProjectToolHome(P.alpha, OWNER)
+    expect(await authJson()).toEqual({ OPENAI_API_KEY: 'sk-key', auth_mode: 'apikey' })
+
+    installFakeWorkspaceDriver({ kind: 'k8s' })
+    await seedProjectToolHome(P.alpha, OWNER)
+    expect(await authJson()).toEqual({ OPENAI_API_KEY: 'yaac-ph-api-key', auth_mode: 'apikey' })
+  })
+
   it('keeps a chained install seeded with the sentinel its outer proxy swaps', async () => {
     // In yaac-in-yaac, the inner install's credential is the outer proxy's
     // placeholder, and a workspace still needs it on disk.

@@ -38,7 +38,7 @@ import type { StartWorkspaceRequest } from '#domain/workspaces/start'
 import type { WorkspaceCreateResult } from '#domain/workspaces/create'
 import { createWorkflow, resolveWorkflow, setProjectEnvVar, setRunSecret, setScratchDirs, showWorkflow } from '#domain/projects'
 import { _clearTmuxAliveCacheForTests } from '#runtime/status/liveness'
-import { _resetAcpRegistryForTests, acpHandshakeHold, registerAcpConversation } from '#runtime/agents/acp-registry'
+import { _resetAcpRegistryForTests, acpHandshakeHold, refuseAcpHandle, registerAcpConversation } from '#runtime/agents/acp-registry'
 import { workspaceDriver } from '#drivers/driver'
 import type { AcpConversation } from '#runtime/agents'
 import { serverLog } from '#lib/log'
@@ -1233,6 +1233,26 @@ describe('prepareStart', () => {
         expect(listProvisioning()).toMatchObject([{ workspaceId: 'wt-acp-dead', kind: 'create', prompt: 'go' }])
         expect(listProvisioning()[0]?.error).toMatch(/acp agent "claude-[0-9a-f]{8}" exited .*before its handshake.*@agentclientprotocol\/claude-agent-acp@/)
       }, { timeout: 30_000 })
+    })
+
+    // An adapter that refuses until its tool is signed in stays up (codex's
+    // answers `session/new` with an error), so the refusal is what reports.
+    it('reports a chat agent whose tool is not signed in as a failed create, saying so', async () => {
+      let window: string | undefined
+      installDriver({
+        kind: 'containerless',
+        exec: (jobName, cmd) => {
+          execs.push({ jobName, cmd })
+          window ??= / -n ((?:claude|codex|opencode|pi)-[0-9a-f]{8}) /.exec(cmd)?.[1]
+          return Promise.resolve({ stdout: '', stderr: '' })
+        },
+      })
+      await start({ workspaceId: 'wt-acp-signed-out', mode: 'acp', prompt: 'go' })
+      await vi.waitFor(() => expect(window).toBeDefined())
+      refuseAcpHandle(DEMO_PROJECT_ID, 'wt-acp-signed-out', window!, 'claude is not signed in')
+      await vi.waitFor(() => {
+        expect(listProvisioning()).toMatchObject([{ workspaceId: 'wt-acp-signed-out', kind: 'create', prompt: 'go', error: 'claude is not signed in' }])
+      })
     })
 
     // The user's stop takes the agent's window down too, and its teardown

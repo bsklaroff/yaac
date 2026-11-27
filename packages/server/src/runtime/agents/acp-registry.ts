@@ -20,7 +20,11 @@ const panePids = new Map<string, string>()
 /** Callers waiting on a handle key (`whenAcpConversation`) or a session key
  *  (`whenAcpSession`), each for any conversation or only one attached to a
  *  given pane pid. */
-const waiters = new Map<string, Set<{ panePid?: string; wake: (conversation: AcpConversation) => void }>>()
+const waiters = new Map<string, Set<{ panePid?: string; wake: (conversation: AcpConversation | undefined) => void }>>()
+
+/** Handle keys whose agent will not start a conversation, with why
+ *  (`refuseAcpHandle`). */
+const refusals = new Map<string, string>()
 
 /** Workspaces whose start is still setting up, each with the promise that
  *  settles when it lets go (`holdAcpHandshakes`). */
@@ -71,6 +75,7 @@ export function registerAcpConversation(
 ): void {
   const handle = handleKey(projectId, workspaceId, names.handle)
   byName.set(handle, conversation)
+  refusals.delete(handle)
   if (names.panePid !== undefined) panePids.set(handle, names.panePid)
   else panePids.delete(handle)
   if (names.conversationId === undefined) return
@@ -97,6 +102,27 @@ export function unregisterAcpConversation(
   }
 }
 
+/**
+ * Record that the agent on `handle` will not start a conversation, and why,
+ * or with `reason` undefined forget it (its window is gone or runs a new
+ * agent). Whoever waits for a conversation there (`whenAcpConversation`)
+ * is answered at once with none, and may ask `acpRefusal` why.
+ */
+export function refuseAcpHandle(projectId: string, workspaceId: string, handle: string, reason: string | undefined): void {
+  const key = handleKey(projectId, workspaceId, handle)
+  if (reason === undefined) {
+    refusals.delete(key)
+    return
+  }
+  refusals.set(key, reason)
+  for (const waiter of [...waiters.get(key) ?? []]) waiter.wake(undefined)
+}
+
+/** Why the agent on `handle` will not start a conversation, if it will not. */
+export function acpRefusal(projectId: string, workspaceId: string, handle: string): string | undefined {
+  return refusals.get(handleKey(projectId, workspaceId, handle))
+}
+
 /** The live conversation for a pane's `acp:<id>` target, or undefined when
  *  none is connected (booting, or reconnecting). */
 export function acpConversation(
@@ -120,7 +146,8 @@ export function acpConversationByHandle(
 /**
  * The conversation on `handle` once it has a session id: at once for a
  * resumed one, after `session/new` for a fresh one. Resolves `undefined`
- * if none is registered within `timeoutMs`.
+ * if none is registered within `timeoutMs`, or as soon as the agent there
+ * refuses to start one (`refuseAcpHandle`).
  *
  * With `panePid`, only a conversation attached to that pane process counts.
  * A respawn replaces the process, and the conversation it ended stays
@@ -138,6 +165,7 @@ export function whenAcpConversation(
   if (found !== undefined && named.has(key) && (panePid === undefined || panePids.get(key) === panePid)) {
     return Promise.resolve(found)
   }
+  if (refusals.has(key)) return Promise.resolve(undefined)
   return nextRegistered(key, timeoutMs, { panePid })
 }
 
@@ -194,6 +222,7 @@ export function _resetAcpRegistryForTests(): void {
   waiters.clear()
   parkedQueues.clear()
   holds.clear()
+  refusals.clear()
 }
 
 /**
