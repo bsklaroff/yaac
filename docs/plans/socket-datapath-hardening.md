@@ -402,9 +402,12 @@ TLS handshake, and the request travels inside it.
   certificate is (`@yaac/shared/token-tls`), and kept in two Secrets so
   neither pod holds the other's key: the relay's pair with the router's
   certificate, which netd mounts, and the router's pair with the relay's
-  certificate, which the router mounts. `ensureNetd` and `ensureSiteEdge`
-  create them when absent. Neither is derived from the master secret,
-  which the router, facing the internet, never holds.
+  certificate, which the router mounts. One helper makes both pairs and
+  both Secrets together when they are absent, and `ensureNetd` and
+  `ensureSiteEdge` each call it. So netd, which rolls first, has the
+  router's certificate from its first mount, and nothing has to reload a
+  file later. Neither pair is derived from the master secret, which the
+  router, facing the internet, never holds.
 - **The router.** Each site cluster's transport socket becomes the PROXY
   header over TLS: Envoy presents the router's certificate and trusts only
   the relay's. The table names files, so it stays a ConfigMap with no
