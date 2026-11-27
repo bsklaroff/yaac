@@ -1,24 +1,41 @@
 # Hardening the socket egress datapath
 
 A proposal, not built. The socket datapath (docs/workspace-egress.md) left
-four gaps. This plan gives a fix for each, ordered by value for cost, so
-that any prefix of the list can ship and the rest wait. Whatever is chosen
-ships as one PR.
+five gaps:
+
+1. The server sends the master proxy secret to a netd pod IP from its
+   cache, to a relay that proves nothing.
+2. The relay routes site traffic by a Service annotation alone, and its
+   site port takes no secret.
+3. A site release sees every visitor as `127.0.0.1`.
+4. Nothing ties the workspace and build labels to the no-network runtime.
+5. The router sends a visitor's request to a netd pod IP from that same
+   cache: a site's EndpointSlice holds one address, which the server takes
+   from the informer the stream dial uses.
+
+This plan gives a fix for each, ordered by value for cost, so that any
+prefix of the list can ship and the rest wait. Whatever is chosen ships as
+one PR.
 
 ## Where each gap stands
 
-kind and `infra/hetzner-k3s` run Calico, which enforces a policy from a
-pod's first packet and does not pass traffic when it fails. Under it, three
-of the gaps are a second barrier that is missing behind a policy that
-holds. Gap 3 is different: no policy was ever in front of it.
+kind and `infra/hetzner-k3s` run Calico. The ordering below rests on two
+properties of it: it enforces a policy from a pod's first packet, and it
+does not pass traffic when its daemon fails. Neither is recorded in yaac's
+docs, so both are on the list to confirm at the end. If either is wrong, D
+and E move up beside A.
+
+Under those properties, gaps 1, 2, 4 and 5 are each a second barrier that
+is missing behind a policy that holds. Gap 3 is different: no policy was
+ever in front of it.
 
 | # | Fix | Gap | What stands in front today | Cost | Under Pamir |
 |---|---|---|---|---|---|
-| A | netshim connects into the sandbox from the pod's address | 3: a release sees every visitor as `127.0.0.1` | nothing, on any CNI | a few lines of Go, docs | carries: netshim is reused |
-| B | the relay checks a unit's shape | 2: site traffic follows an annotation alone; 4: the relay serves a labelled pod on any runtime | the server writing the right objects | about 30 lines of Go, no rollout step | gone with the relay |
+| A | netshim connects into the sandbox from the pod's address | 3 | nothing, on any CNI | a few lines of Go, docs | carries: netshim is reused |
+| B | the relay checks a unit's shape | 2 (the annotation), 4 (the relay half) | the server writing the right objects | about 30 lines of Go, no rollout step | gone with the relay |
 | C | admission ties the sandbox labels to `gvisor-nonet` | 4 | the server never making such a pod | one policy, an apiserver test | gone: a unit has no network by construction |
-| D | the stream dial proves both ends | 1: the server sends the master secret to a cached pod IP | `yaac-server-egress` | about 150 lines of Go and TypeScript, a round trip per dial, one shim | gone: Pamir carries streams |
-| E | the router authenticates to the relay | 2: the site port takes no secret | `yaac-netd-ingress` | the largest: the route table splits, install reorders, one shim | gone: Pamir names the caller |
+| D | the stream dial proves both ends | 1 | `yaac-server-egress` | about 150 lines of Go and TypeScript, a round trip per dial, one shim | gone: Pamir carries streams |
+| E | mutual TLS between the router and the relay | 2 (the site port), 5 | `yaac-netd-ingress` for the port, `yaac-site-router-egress` for the dial | the largest: two key pairs, TLS in the relay and the route table, one shim | gone: Pamir names the caller |
 
 **Recommendation.** Do A and B now. A closes the one gap that is open
 today, and B is cheap and needs no rollout step. C is worth doing with
@@ -32,9 +49,9 @@ wait for one of the triggers below.
 - **A CNI that lets a pod's first packets through, or passes traffic while
   its daemon is down** (the default CNIs of docs/plans/socket-egress.md).
   D and E then stop being second barriers. netd's site port is open at
-  every netd restart, and the server's first dials after a restart leave
-  before its egress policy applies. Gap 4 gets worse too: a sandbox the
-  server made on runc by mistake has a real interface, and
+  every netd restart, and the first dials of a restarted server or router
+  leave before its egress policy applies. Gap 4 gets worse too: a sandbox
+  the server made on runc by mistake has a real interface, and
   `yaac-egress-world-deny` is all that holds it. Gap 3 and the label half
   of gap 2 do not move with the CNI.
 - **A byo cluster shared with other workloads.** Foreign pods have
@@ -62,6 +79,10 @@ the other.
 These windows are crossed only by an install that already runs the socket
 datapath. No release carries it yet (v0.1.5 predates it), so today that
 means installs tracking main.
+
+**A rollback** is the older install run over the newer one, in the same
+order, so the old relay rolls first and meets the new server and its route
+table. A and B need nothing. What C, D and E do then is in each section.
 
 ## A. Site connections come from the pod's address (gap 3)
 
@@ -192,13 +213,24 @@ the builder guard. A pod that carries `yaac.workspace-id` or
   class, with the label) could otherwise never finish terminating when the
   `outdated-workspaces` step stops it (docs/legacy-compat-shims.md
   "Workspaces on the gvisor class").
-- **Scoped to namespaces that opt in.** The builder guard is cluster-wide,
-  and an older install sharing the cluster still makes labelled pods on
-  `gvisor`. So `ensureNamespace` labels the install's namespace, and the
-  binding's `namespaceSelector` matches that label. The relay reads only
-  its own namespace, so this covers exactly the pods it could serve. The
-  e2e tiers make their namespaces with `ensureNamespace` too, so the guard
-  is live there.
+- **Scoped to namespaces that opt in.** The binding's `namespaceSelector`
+  matches a label yaac puts on its own namespace. The relay reads only its
+  own namespace, so this covers exactly the pods it could serve.
+- **Every writer of the Namespace carries the label.** `applyObject` is a
+  forced apply under one field manager, so a writer that leaves the label
+  out removes it. Two functions write the install's Namespace:
+  `ensureNamespace`, and `ensureMainRegistry`, whose registry namespace
+  (`yaac`) is also the default install namespace. Both take their labels
+  from one shared set, which holds the opt-in beside the Pod Security
+  labels. `ensureBuilderRoleGuard` calls `ensureNamespace` itself, so the
+  label and the binding land together, before install rolls netd.
+
+Neither rule is a shim, though older installs are part of why each exists.
+Checking only label changes is the right width in any case: controllers
+update pods all the time, and `runtimeClassName` cannot change after
+create. The opt-in keeps a cluster-wide rule on two label keys off
+namespaces yaac does not own, which a shared byo cluster needs whatever
+version its other installs run.
 
 Every pod yaac labels this way already names the class: workspace Jobs,
 builders, the check's sandbox probe (`install/check.ts`), the mountd gate
@@ -206,22 +238,35 @@ and the e2e test pods. The startup relabel of older objects adds only
 `yaac.install-id`, so it is an update the guard does not check.
 
 **Files.** `cluster/proxy-manifests.ts` (the policy and binding),
-`cluster/proxy-apply.ts` (`ensureBuilderRoleGuard` applies both,
-`ensureNamespace` adds the label), the `vap` gate's wording in
-`install/check.ts`, docs/workspace-egress.md "The runtime".
+`cluster/proxy-apply.ts` (`ensureBuilderRoleGuard`, `ensureNamespace`),
+`cluster/main-registry.ts` (the shared label set), the `vap` gate's
+wording in `install/check.ts`, docs/workspace-egress.md "The runtime".
 
-**Rollout.** Install applies the guard before it rolls netd, the site edge
-or the server. Nothing running is refused. A server from before the socket
-datapath that creates a workspace in the minutes before it is replaced has
-that pod refused; the new server stops those workspaces anyway.
+**Rollout.** Install applies the guard, with the namespace label, before
+it rolls netd, the site edge or the server. Nothing running is refused. A
+server from before the socket datapath that creates a workspace in the
+minutes before it is replaced has that pod refused; the new server stops
+those workspaces anyway.
+
+**Rollback.** An older install removes the label the first time it writes
+the Namespace, which turns the guard off for that namespace. In the default
+namespace that is its registry step, ahead of everything else. Until then
+the guard refuses a labelled pod on `gvisor`, which matters only for a
+rollback to a release from before the socket datapath. If workspaces fail
+to start after one, remove the label by hand; the rollback note names the
+command.
 
 **Tests.** `test/apiserver/` gets a file that runs the policy on the real
 apiserver (the pinned envtest serves the v1 API): a labelled pod with no
 class or another class is refused, one on `gvisor-nonet` is admitted, a
 label added to a runc pod is refused, an update of a labelled `gvisor` pod
 that keeps its labels is admitted, and a pod in a namespace without the
-opt-in label is untouched. `proxy-apply.test.ts` covers that both guards
-are applied. `socket-egress-suite`: applying a labelled pod with no
+opt-in label is untouched. One case writes the Namespace the way
+`ensureMainRegistry` does, after the guard, and then expects a labelled
+pod with no RuntimeClass to be refused. Only this tier can catch a lost
+label: the e2e tiers run in `yaac-test-<run id>` namespaces, which are
+never the registry's. `proxy-apply.test.ts` covers that both guards and
+the label are applied. `socket-egress-suite`: applying a labelled pod with no
 RuntimeClass fails.
 
 ## D. The stream dial proves both ends (gap 1)
@@ -229,12 +274,30 @@ RuntimeClass fails.
 `relayDial` takes the netd pod's address from the server's informer and
 writes `{token: <master secret>, workspaceId}` and the workspace's streamd
 token in one go. The relay proves nothing. Whatever holds that address
-gets the secret that is also the relay's key to the proxy, the proxy's
-control key, and the HMAC key behind every streamd token.
+gets the secret that is also the relay's key to the proxy, the proxy's key
+to the server's mama listener, and the HMAC key behind every streamd
+token.
 
 Today `yaac-server-egress` is the barrier: inside the cluster the server
 may dial only pods labelled as netd on the stream port, and its floor cuts
 non-public ranges.
+
+**D removes one of three paths the master secret travels as a bearer.**
+
+| Hop | How it is sent | Peer chosen by | In front |
+|---|---|---|---|
+| server to relay | first line of every stream dial | the server's informer, a pod IP | `yaac-server-egress` |
+| relay to proxy | TLV `0xE1` on every sandbox connection | the proxy's Service | `yaac-netd-egress` |
+| proxy to the server's mama listener | `Authorization: Bearer` on every relayed call | the mama Service | `yaac-proxy-egress` |
+
+The two Service dials are not safe, only narrower. Their peer is whatever
+the endpoints controller and kube-proxy last programmed, so the stale
+window is the cluster's own, not that of a cache yaac keeps, and the
+address behind each changes only when the proxy or the server is replaced.
+Under the triggers above they are the same kind of exposure, and the
+relay's hop is the busiest of the three. They stay open in this plan. Closing them
+means a key per hop and a peer that proves itself on each, and the proxy
+would have to roll before netd, which install's order does not give.
 
 **Design.**
 
@@ -259,7 +322,9 @@ non-public ranges.
   proof is what "check the pod on each dial" comes to, with no API call: a
   stale entry names a UID nobody at that address can sign for, and a pod
   that forwards the exchange to a real relay gets a proof for the wrong
-  UID.
+  UID. The readiness half also narrows gap 5, since a site's EndpointSlice
+  is written from the same entries, and it is a few lines that can ship
+  without the rest of D.
 
 **What each part costs and leaves open.**
 
@@ -274,9 +339,7 @@ non-public ranges.
   the apiserver on a path built to avoid it, and still leaves a gap
   between the read and the dial.
 - netd still mounts the master secret on every node, since the relay
-  presents it to the proxy. That hop is a Service dial and is unchanged.
-  Giving it a derived key needs the proxy to roll before netd, which
-  install's order does not give.
+  presents it to the proxy (the table above).
 - Nothing is encrypted, here or on any other hop, so a party on the path
   can still read and alter a stream after the handshake. TLS on this hop
   alone would not change that while the relay sends the master secret to
@@ -289,21 +352,25 @@ from the new shape), docs/stream-relay.md, docs/workspace-egress.md.
 
 **Rollout.** The relay rolls first, so it keeps accepting the old first
 line, a `token` equal to the master secret. That costs no security: who
-holds the master secret can derive the key. A new server should never meet
-an old relay, since install waits for netd's rollout before it deploys the
-server. If it does, its dials fail closed, as transport failures that reap
-nothing, until netd is rolled: by the next install, or by the server
-itself if it also finds the proxy out of date.
+holds the master secret can derive the key. On an upgrade a new server
+does not meet an old relay, since install waits for netd's rollout before
+it deploys the server.
+
+**Rollback.** Every rollback has the new server meet the old relay, from
+netd's roll until the server's. The old relay closes silently on a first
+line with no `token`, so the server sees transport failures for those
+minutes, which read as `unknown` and reap nothing.
 
 Entry for docs/legacy-compat-shims.md, "The stream dial's bearer line":
 
-- *Reads:* a `token` field in a stream dial's first line.
-- *Breaks silently if removed early:* from netd's roll to the server's in
-  one upgrade, every stream dial of the old server is closed. Terminals,
-  status streams and workspace creates fail as `unknown` for those minutes,
-  and nothing is reaped.
-- *Safe to remove:* once no supported upgrade starts from a server that
-  sends the bearer line.
+- **What it reads.** A `token` field in a stream dial's first line.
+- **What breaks silently if it goes too early.** From netd's roll to the
+  server's in one upgrade, every stream dial of the old server is closed.
+  Terminals, status streams and workspace creates fail as `unknown` for
+  those minutes, and nothing is reaped.
+- **When it is safe to remove.** Once no supported upgrade starts from a
+  server that sends the bearer line. It is a wire format, so no object on
+  a cluster shows whether it is still needed.
 
 **Tests.** `relay_test.go` `TestStreams`: the exchange, a wrong HMAC closed
 silently, the old line accepted. `stream-relay.test.ts` `relayDial`: the
@@ -312,69 +379,115 @@ wrong HMAC or another pod's UID fails the dial. `cluster-cache.test.ts`:
 UID and readiness. `socket-egress-suite`: the stream-refusal case speaks
 the new exchange and checks the proof names the netd pod's UID.
 
-## E. The router authenticates to the relay (gap 2, router half)
+## E. Mutual TLS between the router and the relay (gaps 2 and 5)
 
-netd's site port takes a PROXY header naming a site and no secret. Only
-`yaac-netd-ingress` keeps everything but the router off it, and that
-policy admits by label. Whoever reaches the port can send a site any
-headers, `Tailscale-User-Login` included, so the promise of
-docs/public-sites.md "Headers an app may trust" rests on that policy
-alone.
+Two things are open on the router's hop to the relay.
 
-**Design.** `siteKey = HKDF-SHA256(master, "yaac site router")`. Each site
-cluster's `added_tlvs` gains TLV `0xE1` carrying it, and the relay
-requires it, compared in constant time, before it reads the Service. The
-router faces the internet, so it never holds the master secret.
+- **The site port takes no secret** (gap 2). It reads a PROXY header naming
+  a site and nothing else. `yaac-netd-ingress` keeps everything but the
+  router off it, and admits by label. Whoever reaches the port can send a
+  site any headers, `Tailscale-User-Login` included, so the promise of
+  docs/public-sites.md "Headers an app may trust" rests on that policy
+  alone.
+- **The router dials a cached pod IP** (gap 5). A site's EndpointSlice
+  holds the netd pod address the server last read from its informer. If
+  that address goes stale and is reused, a visitor's request, with its
+  cookies and the tailnet login headers, goes to whatever holds it now.
+  Only `yaac-site-router-egress` stands in front.
 
-The key is then part of the route table, which is a ConfigMap. `cds.json`
-moves to a Secret, `yaac-site-clusters`, and the router mounts it with the
-route files through one projected volume. Two things to check before
-building it:
+**Design.** The router and the relay each prove a key to the other in a
+TLS handshake, and the request travels inside it.
 
-- that a projected volume swaps as one, the way the ConfigMap mount does,
-  so Envoy's `watched_directory` still sees each change;
-- whether a newer Envoy makes the move unnecessary. `TlvEntry` has a
-  `format_string` on Envoy's main branch. If a pin newer than v1.34.0 has
-  it and it can read an environment variable, the key comes from a Secret
-  the router mounts as a variable, and the table stays a ConfigMap.
+- **Two key pairs, made once.** Self-signed, as the token endpoint's
+  certificate is (`@yaac/shared/token-tls`), and kept in two Secrets so
+  neither pod holds the other's key: the relay's pair with the router's
+  certificate, which netd mounts, and the router's pair with the relay's
+  certificate, which the router mounts. `ensureNetd` and `ensureSiteEdge`
+  create them when absent. Neither is derived from the master secret,
+  which the router, facing the internet, never holds.
+- **The router.** Each site cluster's transport socket becomes the PROXY
+  header over TLS: Envoy presents the router's certificate and trusts only
+  the relay's. The table names files, so it stays a ConfigMap with no
+  secret in it.
+- **The relay.** After the header it runs the handshake, requires the
+  router's certificate, and only then reads the Service.
 
-**Rollout.** This is the one fix where a plain cutover drops every site:
-the relay would demand the TLV before the new server has written a table
-that sends it. So install does two things, in this order:
+The header still crosses in the clear ahead of the handshake, and carries
+only the site id. A pod at a stale address gets that and a ClientHello,
+never the request. A caller without the router's key cannot finish the
+handshake.
 
-1. It applies the site edge before netd. `ensureRouteFiles` creates the
-   Secret from the ConfigMap's `cds.json` with the TLV added to every
-   cluster, and the router rolls onto it. The old relay ignores the extra
-   TLV.
-2. It rolls netd. The new relay requires the TLV, which the router already
-   sends.
+A bearer secret in the header is rejected. It would be sent to a relay that
+has proved nothing, so under this fix's own triggers the pod at a stale
+address would collect the key and the request together, and could then
+reach the site port as the router. It would also put a secret in the route
+table. Checking readiness when the EndpointSlice is written (see D) narrows
+gap 5 and does not close it.
 
-The new server then owns the Secret and stops writing `cds.json` to the
-ConfigMap. Until it is up, the old server's cluster writes are not read: a
-site created in those minutes answers 503 until the server rolls. Route
-changes, an unpublish included, still apply.
+**What it costs and leaves open.** TLS on every site connection at the
+relay. A compromised router is still the router. As a side effect this hop
+is encrypted, which no other hop is.
 
-Entry for docs/legacy-compat-shims.md, "Site clusters in the routes
-ConfigMap":
+**Rollout.** The route table is written by the server, and the relay rolls
+before the server does. So the relay accepts both forms for a window: a
+connection whose first byte after the header opens a TLS handshake must
+complete it, and anything else is spliced as today.
 
-- *Reads:* `cds.json` in the `yaac-site-routes` ConfigMap, when the Secret
-  is absent.
-- *Breaks silently if removed early:* the first install over an older one
-  rolls the router onto an empty cluster table, and every site answers 503
-  until the new server's first site sync.
-- *Safe to remove:* once every install's server has written the Secret; on
-  a given cluster, once the ConfigMap holds no `cds.json`.
+1. Install rolls netd. The new relay speaks both forms.
+2. Install applies the site edge. The router gains its key mount; its
+   table is unchanged, so it goes on sending plaintext.
+3. The new server writes the clusters with TLS. Each cluster changes over
+   when Envoy loads it, with no moment when the two sides disagree.
 
-**Files.** `cluster/site-edge.ts` (the route tables, `ensureRouteFiles`,
-the router's volume), `install/install.ts` (the order), `cmd/relay`
-(`site`), `substrate/proxy-constants.ts`, docs/public-sites.md ("The
-router", the objects table, "Network policy") and docs/workspace-egress.md
-("Wire formats", "Policies").
+No site drops. Gap 5 is closed from step 3. The site port goes on accepting
+plaintext from whatever the policy admits until the shim is removed, so
+that half of gap 2 closes one release later. Closing it sooner needs a
+signal that Envoy has loaded the new table, which the server does not
+have; marking each site's Service instead would drop each site for the
+seconds between the mark and the load.
 
-**Tests.** `site-edge.test.ts`: `syncSiteObjects` writes the clusters to
-the Secret with the TLV, and `ensureSiteEdge` seeds it from an older
-table. `relay_test.go` `TestSites`: a header with no secret, or a wrong
-one, is closed. `test/e2e-cli/site-suite.test.ts` already reaches a
-release through the real router, so it proves Envoy writes the TLV.
-`socket-egress-suite` builds its header by hand, so it gains the TLV and a
-case without it.
+**Rollback.** The old relay rolls first and knows no TLS, so it splices
+the router's handshake into the app. Every site fails from netd's roll
+until the old server's first site sync rewrites the table, a matter of
+minutes. The rollback note says to expect it.
+
+Entry for docs/legacy-compat-shims.md, "Plaintext on netd's site port":
+
+- **What it reads.** The first byte after the router's header on a site
+  connection.
+- **What breaks silently if it goes too early.** On an upgrade from a
+  server that writes plaintext clusters, every site is refused from netd's
+  roll until the new server's first site sync.
+- **When it is safe to remove.** Once no supported upgrade starts from such
+  a server; on a given cluster, once every cluster in `kubectl get
+  configmap yaac-site-routes -o jsonpath='{.data.cds\.json}'` names a TLS
+  transport socket.
+
+**Files.** `cluster/site-edge.ts` (the clusters, the router's mount, the
+keys), `cluster/netd.ts` (the relay's mount and flags), the certificate
+helper in `@yaac/shared/token-tls`, `cmd/relay` (`site`, `main`),
+docs/public-sites.md ("The router", the objects table, "Network policy")
+and docs/workspace-egress.md ("Wire formats", "Policies").
+
+**Tests.** `site-edge.test.ts`: `syncSiteObjects` writes each cluster with
+TLS inside the PROXY transport, and `ensureSiteEdge` makes the keys once
+and keeps them. `netd.test.ts`: the relay's mount. `relay_test.go`
+`TestSites`: a handshake with the router's certificate passes, one with
+another certificate or none is closed, and plaintext passes while the shim
+stands. `test/e2e-cli/site-suite.test.ts` already reaches a release through
+the real router, so it proves Envoy and the relay agree.
+`socket-egress-suite` builds its connection by hand, so it speaks TLS with
+the router's key and gains a case with a key of its own.
+
+## To confirm before building
+
+- **Calico's two properties** (the premise of the ordering): that a
+  policy applies from a pod's first packet, in both directions, and that
+  rules stay in force while calico-node is down. Confirm against Calico's
+  documentation for the pinned version, and on a kind cluster by dialing
+  a new pod during its first second and with calico-node stopped.
+- **E:** that the pinned Envoy writes the PROXY header before the TLS
+  handshake when the PROXY transport wraps a TLS one, which is what the
+  relay's read order assumes.
+- **A:** the gunicorn, uvicorn and Express defaults, before the site docs
+  name them.
