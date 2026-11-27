@@ -66,7 +66,7 @@ import { getDefaultBranch, hasCommit, isGitAuthError, resolveRemoteRef, writeKno
 import { serverLog } from '#lib/log'
 import { ofCheckout, startTiming, type StartTiming } from '#lib/start-timing'
 import type { AcpConversation } from '#runtime/agents'
-import { acpAdapterFor, AgentLaunchDeadError, buildWindowsCommands, buildWindowsExec, ensureAgentReporters, ensureOmpSettings, ensureToolApiKeyConfig, finishSetupCommand, holdAcpHandshakes, verifyAgentWindowAlive, whenAcpConversation, openSandboxDir } from '#runtime/agents'
+import { acpAdapterFor, acpRefusal, AgentLaunchDeadError, buildWindowsCommands, buildWindowsExec, ensureAgentReporters, ensureOmpSettings, ensureToolApiKeyConfig, finishSetupCommand, holdAcpHandshakes, verifyAgentWindowAlive, whenAcpConversation, openSandboxDir } from '#runtime/agents'
 import { reconnectStatusWatcher } from '#runtime/status'
 import {
   applyWorkspaceEvent,
@@ -537,7 +537,7 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
         tool: l.tool,
         kind: 'create',
         ...(session.firstPrompt !== undefined ? { prompt: session.firstPrompt } : {}),
-        error: runtime.kind === 'containerless'
+        error: runtime.kind === 'containerless' && !(err instanceof AcpSignedOutError)
           ? `${message}. Check that "${installed.binary}" runs on this host `
             + `(yaac runs its own install of ${installed.package}@${installed.version}).`
           : message,
@@ -548,11 +548,15 @@ async function launchWithSetup(params: WorkspaceSetupParams): Promise<RuntimeHan
   return handle
 }
 
+/** An acp agent that refused to start until its tool is signed in. */
+class AcpSignedOutError extends AgentLaunchDeadError {}
+
 /**
  * Wait for an acp session's conversation to be named (`session/new`
  * answered). Rejects with `AgentLaunchDeadError` if its window's agent
  * exits first, which the window probe (an exec) checks every two seconds,
- * and resolves with undefined at the deadline.
+ * or refuses to start until its tool is signed in, and resolves with
+ * undefined at the deadline.
  */
 export async function whenAcpAgentUp(
   projectId: string,
@@ -574,6 +578,8 @@ export async function whenAcpAgentUp(
     throw new AgentLaunchDeadError(`acp agent "${window}" exited in ${jobName} before its handshake`)
   }
   if (outcome === undefined) {
+    const refused = acpRefusal(projectId, workspaceId, window)
+    if (refused !== undefined) throw new AcpSignedOutError(refused)
     serverLog(`[server] create ${workspaceId}: no acp conversation on ${window} after `
       + `${String(ACP_CONVERSATION_WAIT_MS / 1000)}s`)
   }

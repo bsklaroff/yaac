@@ -430,7 +430,11 @@ Under k8s a workspace holds only a sentinel value, and the egress proxy
 swaps in the real token on the way out. Here there is no proxy, so
 containerless workspaces get real OAuth bundles in the per-project tool
 homes and real API keys and `GH_TOKEN` in the environment (opencode's and
-pi's under variables of their own; see docs/workspace-egress.md). Nothing
+pi's under variables of their own; see docs/workspace-egress.md). codex
+reads no key from its environment, so its API key also goes in the
+project's codex home (`auth.json`), rewritten at every sign-in and create
+so a rotated key replaces the old one; under k8s that file holds the
+sentinel. Nothing
 separates the agent from this machine, so there is nothing to hide a secret
 from. A project that cannot accept that should use the k8s driver.
 

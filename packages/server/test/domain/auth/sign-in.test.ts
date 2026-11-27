@@ -7,7 +7,7 @@ import { addEndpoint, loadToolAuthEntry, signInTool } from '#domain/auth'
 import { BUILT_IN_USER_ID, closeDb, getToolCredential, recordProject, seeTailnetUser } from '#db'
 import { getDb } from '#db/client'
 import { customEndpoints, projects, toolCredentials } from '#db/schema'
-import { getProjectsDir } from '@yaac/shared/project-paths'
+import { getProjectsDir, projectCodexAuthFile } from '@yaac/shared/project-paths'
 import {
   PLACEHOLDER_ACCESS_TOKEN,
   readProjectClaudeBundle,
@@ -121,6 +121,23 @@ describe('signInTool', () => {
     // An api key for an OAuth-capable tool is stored as one.
     await signInTool(ME, 'claude', { kind: 'api-key', apiKey: 'sk-ant-api' })
     expect(await getToolCredential(ME, 'claude')).toMatchObject({ kind: 'api-key', apiKey: 'sk-ant-api' })
+  })
+
+  // codex reads no key from its environment, so its codex home's auth.json
+  // is what signs it in; a rotated key must replace the stored one.
+  it('writes a codex API key into each of the user\'s projects, replacing it at a rotation, the placeholder where egress is mediated', async () => {
+    const authJson = async (projectId: string): Promise<unknown> =>
+      JSON.parse(await fs.readFile(projectCodexAuthFile(projectId), 'utf8').catch(() => 'null'))
+    await signInTool(ME, 'codex', { kind: 'api-key', apiKey: 'sk-key-a' })
+    expect(await authJson(ALPHA)).toEqual({ OPENAI_API_KEY: 'sk-key-a', auth_mode: 'apikey' })
+    expect(await authJson(BOBS)).toBeNull()
+
+    await signInTool(ME, 'codex', { kind: 'api-key', apiKey: 'sk-key-b' })
+    expect(await authJson(BETA)).toEqual({ OPENAI_API_KEY: 'sk-key-b', auth_mode: 'apikey' })
+
+    installFakeWorkspaceDriver({ kind: 'k8s' })
+    await signInTool(ME, 'codex', { kind: 'api-key', apiKey: 'sk-key-c' })
+    expect(await authJson(ALPHA)).toEqual({ OPENAI_API_KEY: 'yaac-ph-api-key', auth_mode: 'apikey' })
   })
 
   it('signs a tool in with one of its user\'s custom endpoints, handing the proxy that endpoint\'s URL and key', async () => {

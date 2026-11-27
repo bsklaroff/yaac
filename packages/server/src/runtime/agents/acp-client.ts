@@ -48,6 +48,7 @@ import { JsonRpcCallError, JsonRpcPeer, type JsonRpcTransport } from './acp-json
 import {
   ACP,
   ACPD,
+  ACP_AUTH_REQUIRED,
   ACP_PROTOCOL_VERSION,
   acpModeOffered,
   chooseAllowOption,
@@ -230,7 +231,12 @@ export interface AcpConversationDeps {
    * task's output (`readTaskOutput`). Absent means unreadable.
    */
   tailFile?: (path: string, bytes: number) => Promise<string>
-  onDown: (reason: string) => void
+  /**
+   * The conversation is over. `signedOut` when the adapter answered its
+   * handshake that its tool must be signed in first, which it will answer
+   * again however often it is asked.
+   */
+  onDown: (reason: string, opts?: { signedOut?: true }) => void
   /** Messages the conversation this one replaces had queued (`takeQueue`),
    *  sent once this one knows no turn is running. */
   queue?: QueuedTurn[]
@@ -1027,7 +1033,8 @@ export class AcpConversation {
       const message = err instanceof Error ? err.message : String(err)
       this.log(`[server] acp: handshake failed: ${message}`)
       this.emit({ type: 'error', message: `ACP handshake failed: ${message}` })
-      this.deps.onDown(`handshake failed: ${message}`)
+      const signedOut = err instanceof JsonRpcCallError && err.rpc.code === ACP_AUTH_REQUIRED
+      this.deps.onDown(`handshake failed: ${message}`, signedOut ? { signedOut } : undefined)
     }
   }
 

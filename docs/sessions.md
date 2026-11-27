@@ -46,9 +46,10 @@ siblings.
   stop --agent`, or its window killed from inside tmux): the window is
   killed and the row keeps `closedAt`. Its conversations stay in the
   workspace's history and can be resumed into a new session.
-- **Exited**: the agent quit or crashed. Session windows are set
-  `remain-on-exit`, so the window stays with a dead pane, and the listing
-  marks the session `exited`. Its pane offers Resume (a fresh window on its
+- **Exited**: the agent quit or crashed, or, under `acp`, was stopped
+  because its tool is not signed in (docs/agent-modes.md). Session windows
+  are set `remain-on-exit`, so the window stays with a dead pane, and the
+  listing marks the session `exited`. Its pane offers Resume (a fresh window on its
   conversation) and Close. A restart resumes it like any open session.
 
 An `acp` session's opening message waits on its row (`pendingPrompt`) until

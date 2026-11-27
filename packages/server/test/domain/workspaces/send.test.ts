@@ -9,6 +9,7 @@ import { recordConversations } from '#db/conversation-store'
 import { BUILT_IN_USER_ID, insertSession } from '#db'
 import { sendMessage } from '#domain/workspaces'
 import type { WorkspaceDriver } from '#drivers/contract'
+import { _resetAcpRegistryForTests, refuseAcpHandle } from '#runtime/agents/acp-registry'
 
 const PROJ = '4dc844ab-ccfc-4d13-8d08-7c1c7fcec557'
 const local = { kind: 'local', userId: BUILT_IN_USER_ID } as const
@@ -57,6 +58,19 @@ describe('sendMessage', () => {
     const own = workspaceDelegate(BUILT_IN_USER_ID, 'target', { projectId: PROJ, sessionId: second.id })
     await expect(sendMessage(own, 'target', { message: 'x', session: second.id })).rejects.toMatchObject({ code: 'NOT_FOUND' })
     await expect(sendMessage(local, 'target', { message: ' \x07 ' })).rejects.toMatchObject({ code: 'VALIDATION' })
+  })
+
+  it('refuses an agent with no conversation, saying why when it will never start one', async () => {
+    await recordWorkspaceCreated({ projectId: PROJ, workspaceId: 'target' })
+    const session = await insertSession(PROJ, 'target', { cwd: '', tool: 'codex', mode: 'acp', permissionMode: 'bypass' })
+    await expect(sendMessage(local, 'target', { message: 'x' })).rejects.toThrow(/has no conversation yet; try again once its agent is up$/)
+    refuseAcpHandle(PROJ, 'target', session.window, 'codex is not signed in')
+    try {
+      await expect(sendMessage(local, 'target', { message: 'x' })).rejects.toThrow(/codex agent [0-9a-f]{8}: codex is not signed in$/)
+    } finally {
+      _resetAcpRegistryForTests()
+    }
+    expect(exec).not.toHaveBeenCalled()
   })
 
   it('refuses a workspace that is not running, saying whether it is stopped', async () => {

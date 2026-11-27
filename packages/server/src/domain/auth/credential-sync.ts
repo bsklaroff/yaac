@@ -1,8 +1,9 @@
-import { listProjectRows } from '#db'
+import { getToolCredential, listProjectRows } from '#db'
 import { workspaceDriver, workspacesSandboxed } from '#drivers/driver'
 import { serverLog } from '#lib/log'
 import { adoptNewest, OAUTH_TOOLS, type OAuthTool } from './oauth-tools'
 import { ownedProjectIds } from './store'
+import { PLACEHOLDER_API_KEY, writeProjectCodexApiKey } from '@yaac/shared/tool-auth'
 import type { AgentTool } from '@yaac/shared/types'
 
 /**
@@ -126,6 +127,7 @@ async function push<B extends { accessToken: string }>(
  * store), then pushes, so it never overwrites a newer credential.
  */
 export async function seedProjectToolHome(projectId: string, owner: string): Promise<void> {
+  await writeCodexApiKey(owner, [projectId])
   if (workspacesSandboxed()) {
     for (const t of OAUTH_TOOLS) await writePlaceholder(t, owner, projectId)
     return
@@ -174,6 +176,26 @@ export async function fanOutToolCredentials(owner: string, tool: AgentTool): Pro
   // opencode, pi and omp authenticate by env var and keep no project file.
   const t = OAUTH_TOOLS.find((o) => o.tool === tool)
   if (t) await fanOut(t, owner)
+  if (tool === 'codex') await writeCodexApiKey(owner, await ownedProjectIds(owner))
+}
+
+/**
+ * Write the owner's codex API key into each project's codex home: the real
+ * key, or the placeholder the proxy swaps where egress is mediated. A no-op
+ * unless codex is signed in with a key. Written at every sign-in, so a
+ * rotated key replaces the old one, and at every create.
+ */
+async function writeCodexApiKey(owner: string, projectIds: string[]): Promise<void> {
+  const stored = await getToolCredential(owner, 'codex')
+  if (stored?.kind !== 'api-key') return
+  const key = workspacesSandboxed() ? PLACEHOLDER_API_KEY : stored.apiKey
+  for (const projectId of projectIds) {
+    try {
+      await writeProjectCodexApiKey(projectId, key)
+    } catch (err) {
+      serverLog(`[server] credential-sync: codex api key to project "${projectId}" failed: ${String(err)}`)
+    }
+  }
 }
 
 async function fanOut<B extends { accessToken: string }>(t: OAuthTool<B>, owner: string): Promise<void> {

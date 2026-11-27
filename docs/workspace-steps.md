@@ -312,8 +312,9 @@ setting. A person has no ceiling.
 Every window that is not a `tui` session's is logged: steps (under their full
 names), the webapp's
 terminals, windows opened by hand inside tmux, and `acp` sessions' windows,
-which hold acpd's own lines (the agent's exits and restarts) and the
-adapter's whole stderr. The chat pane offers that log once its agent exits,
+which hold acpd's own lines (the agent's exits and restarts), the
+adapter's whole stderr, and yaac's line when it stops an agent whose tool
+is not signed in. The chat pane offers that log once its agent exits,
 and the listing below leaves it out (`isAgentWindow`), since it only
 explains an exit; it is still read by name, as `yaac workspace logs <id>
 <window>` does. A `tui` session's is not logged: its output is

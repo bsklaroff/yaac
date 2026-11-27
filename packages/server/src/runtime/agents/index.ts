@@ -32,7 +32,7 @@ export { ControlModeClient, listWindows, type ControlModeNotification } from './
 export { setAcpPermissionMode } from './acp-driver'
 export { acpAdapterFor, acpLaunchModel } from './acp-adapters'
 // The status watcher discards a stopped workspace's queued messages.
-export { acpConversation, dropAcpQueues, holdAcpHandshakes, whenAcpConversation } from './acp-registry'
+export { acpConversation, acpRefusal, dropAcpQueues, holdAcpHandshakes, whenAcpConversation } from './acp-registry'
 export {
   agentTitlesItself,
   getConversationFirstMessage,

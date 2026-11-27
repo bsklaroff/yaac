@@ -38,8 +38,10 @@ import { type JsonRpcTransport } from './acp-jsonrpc'
 import { ControlModeConnection } from './control-mode'
 import {
   acpHandshakeHold,
+  acpRefusal,
   dropAcpQueues,
   parkAcpQueue,
+  refuseAcpHandle,
   registerAcpConversation,
   takeAcpQueue,
   unregisterAcpConversation,
@@ -104,6 +106,14 @@ const PROMPT_ATTACH_TIMEOUT_MS = 60_000
  */
 const SESSION_PANE_OPTION = '@yaac-acp-session'
 
+/**
+ * What the window of an agent whose tool is not signed in prints as it is
+ * stopped, so its log, which its pane offers once the agent exits, says why.
+ * Fixed text, since it is passed through a shell.
+ */
+const SIGNED_OUT_NOTICE = '[yaac] the agent stopped: its tool is not signed in. '
+  + 'Sign it in (yaac auth update), then resume this session.'
+
 /** Every open connection, so a recorded posture change reaches the one
  *  driving that session. */
 const openConnections = new Set<AcpConnection>()
@@ -167,6 +177,9 @@ class AcpConnection extends ControlModeConnection {
   /** Consecutive attaches per handle that did not survive until the next
    *  re-list; see `MAX_FAST_ATTACH_ATTEMPTS`. */
   private readonly attachFailures = new Map<string, number>()
+  /** Windows whose agent is not signed in (`stopSignedOut`), by handle, with
+   *  the pane process that refused, so the window is not dialed again. */
+  private readonly signedOut = new Map<string, string>()
   private syncing: Promise<void> | null = null
   private syncAgain = false
   private readonly readSessions: () => Promise<WatchedSession[]>
@@ -252,6 +265,12 @@ class AcpConnection extends ControlModeConnection {
       else if (w.pid !== entry.panePid) this.detach(entry, 'agent respawned', { keepQueue: true })
       else entry.session = w.session
     }
+    // A resumed window runs a new agent, which may since have been signed in.
+    for (const [handle, pid] of [...this.signedOut]) {
+      if (live.get(handle)?.pid === pid) continue
+      this.signedOut.delete(handle)
+      refuseAcpHandle(this.session.projectId, this.session.workspaceId, handle, undefined)
+    }
     // A new window with a vanished one's name is a new conversation.
     for (const handle of [...this.attachFailures.keys()]) {
       if (live.has(handle)) continue
@@ -273,7 +292,7 @@ class AcpConnection extends ControlModeConnection {
       ))
     }
     for (const w of windows) {
-      if (w.dead || this.attached.has(w.handle) || this.retries.has(w.handle)) continue
+      if (w.dead || this.attached.has(w.handle) || this.retries.has(w.handle) || this.signedOut.has(w.handle)) continue
       this.attach(w.handle, w.session, w.session.conversationId ?? w.liveSession, { paneId: w.paneId, pid: w.pid })
     }
     this.publishAgents()
@@ -289,6 +308,25 @@ class AcpConnection extends ControlModeConnection {
       this.retries.delete(handle)
       void this.resync()
     }, ATTACH_RETRY_MS))
+  }
+
+  /**
+   * Stop an agent whose adapter answered its handshake that its tool must be
+   * signed in first. It would answer every re-dial the same, so its acpd is
+   * stopped instead: the pane stays dead and the session lists as exited,
+   * which alerts the user, and its Resume starts a new agent once the tool
+   * is signed in. Whoever waits for its conversation is told why at once.
+   */
+  private stopSignedOut(handle: string, tool: AgentTool, pane: { paneId: string; pid: string }, reason: string): void {
+    this.signedOut.set(handle, pane.pid)
+    refuseAcpHandle(this.session.projectId, this.session.workspaceId, handle,
+      `${tool} is not signed in: its ACP adapter refused to start a conversation (${reason.slice(0, 200)}). `
+      + 'Sign it in with `yaac auth update`, then start it again.')
+    if (!/^\d+$/.test(pane.pid)) return
+    void this.send(`run-shell -t ${pane.paneId} 'echo "${SIGNED_OUT_NOTICE}" >#{pane_tty}; kill ${pane.pid}'`)
+      .catch((err: unknown) => {
+        this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: could not stop the signed-out agent: ${String(err)}`)
+      })
   }
 
   private attach(
@@ -393,12 +431,14 @@ class AcpConnection extends ControlModeConnection {
         const status = entry.conversation?.status
         if (status !== undefined) this.sink({ kind: 'status', handle, status })
       },
-      onDown: (reason) => {
-        // Only this conversation's stream dropped, and acpd still holds its
-        // agent (or has yet to bind). A re-dial attaches without a handshake.
+      onDown: (reason, { signedOut = false } = {}) => {
+        // Unless the adapter refused, only this conversation's stream
+        // dropped, and acpd still holds its agent (or has yet to bind). A
+        // re-dial attaches without a handshake.
         this.log(`[server] acp-driver ${this.session.workspaceId}/${handle}: ${reason}`)
         this.detach(entry, reason, { keepQueue: true })
-        this.retry(handle)
+        if (signedOut) this.stopSignedOut(handle, tool, pane, reason)
+        else this.retry(handle)
       },
     })
     // A synchronous failure above already detached; do not re-publish it.
@@ -459,6 +499,7 @@ class AcpConnection extends ControlModeConnection {
     openConnections.delete(this)
     for (const timer of this.retries.values()) clearTimeout(timer)
     this.retries.clear()
+    for (const handle of this.signedOut.keys()) refuseAcpHandle(this.session.projectId, this.session.workspaceId, handle, undefined)
     // The watcher reconnects after a `down`, so this parks like a dropped
     // conversation; only the watcher knows whether the workspace stopped.
     for (const entry of [...this.attached.values()]) this.detach(entry, 'connection closed', { keepQueue: true })
@@ -552,7 +593,8 @@ export const acpDriver: AgentDriver = {
    * answers, so a send does not block for a turn. A connection that drops
    * before its handshake ends is replaced by a re-dial, so its replacement
    * is waited for too. Rejects if none is ready within
-   * `PROMPT_ATTACH_TIMEOUT_MS`: such a message would never be taken.
+   * `PROMPT_ATTACH_TIMEOUT_MS`: such a message would never be taken. Rejects
+   * at once, saying why, when the agent there is not signed in.
    */
   async deliverPrompt(session: DrivenWorkspace, handle: string, text: string): Promise<void> {
     const deadline = Date.now() + PROMPT_ATTACH_TIMEOUT_MS
@@ -562,6 +604,8 @@ export const acpDriver: AgentDriver = {
       const conversation = await whenAcpConversation(
         session.projectId, session.workspaceId, handle, Math.max(deadline - Date.now(), 0),
       )
+      const refused = acpRefusal(session.projectId, session.workspaceId, handle)
+      if (refused !== undefined) throw new Error(refused)
       if (conversation === undefined || conversation === failed) {
         throw new Error(`its chat connection did not come up within ${String(PROMPT_ATTACH_TIMEOUT_MS / 1000)}s (${why})`)
       }
