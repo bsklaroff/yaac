@@ -16,7 +16,7 @@ vi.mock('#drivers/containerless/host', async (importOriginal) => ({
   runHost: mockRunHost,
 }))
 /** Where the install's acpd is: an executable file in each case's data dir,
- *  since the real one exists only after `pnpm build:acpd`. */
+ *  since the real one exists only after `pnpm build:daemons`. */
 const acpd = vi.hoisted(() => ({ path: '' }))
 import type * as pathsModule from '#drivers/containerless/paths'
 vi.mock('#drivers/containerless/paths', async (importOriginal) => ({

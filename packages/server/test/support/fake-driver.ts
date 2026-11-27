@@ -43,7 +43,7 @@ export function workspacePathsFixture(
     acpLogDir: '/home/yaac/.yaac-acp',
     terminalLogDir: '/home/yaac/.yaac-logs',
     attachmentsDir: '/home/yaac/.yaac-attachments',
-    acpd: '/opt/yaac/acpd/acpd',
+    acpd: '/opt/yaac/helpers/daemons/acpd',
     ...overrides,
   }
 }

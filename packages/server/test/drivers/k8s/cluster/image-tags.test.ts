@@ -88,7 +88,7 @@ describe('baseImageHash', () => {
     vi.restoreAllMocks()
   })
 
-  it('folds the in-pod daemons into the content hash, and the uid into nothing', async () => {
+  it('folds the normalize step into the content hash, and the uid into nothing', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'yaac-bih-'))
     try {
       const dockerfile = path.join(tmpDir, 'Dockerfile')
@@ -103,7 +103,7 @@ describe('baseImageHash', () => {
       // A macOS host (uid 501) and a Linux host (uid 1000) get the same
       // tag, so one image set can be shared and shipped prebuilt.
       expect(onMac).toBe(onLinux)
-      // The hash covers the COPY'd streamd/acpd sources, not just the
+      // The hash covers the step every build appends, not just the
       // Dockerfile.
       expect(onLinux).not.toBe(await fileHash(dockerfile))
     } finally {

@@ -9,6 +9,7 @@ import { k8sNamespace, readObject } from './api'
 import { readNetdPods, readWorkspacePods } from './cluster-cache'
 import { workspaceIdFromJobName } from './pods'
 import { NETD_STREAM_PORT, PROXY_AUTH_SECRET_NAME } from './proxy-constants'
+import { STREAMD_BIN } from './workspace-paths'
 
 /**
  * Server side of the stream relay (docs/stream-relay.md). All steady-state
@@ -351,7 +352,7 @@ export async function podExec(
 
 /**
  * Make a pod one workspace's with streamd's `claim` stream
- * (dockerfiles/streamd/claim.js), `request` following the handshake as
+ * (daemons/streamd/claim.go), `request` following the handshake as
  * JSON. Only the dial is retried: once streamd has the request it may have
  * acted on it. Rejects with WorkspaceExecError when streamd refused or
  * failed it.
@@ -397,7 +398,7 @@ export function dialCtrlStream(workspaceId: string, argv: string[]): StreamChild
 /**
  * The contract's `StreamChild` over a `unix` stream: a raw duplex to a UNIX
  * socket in the pod, which streamd connects in its own process, waiting for
- * the socket to be bound (dockerfiles/streamd/streamd.js `handleUnix`).
+ * the socket to be bound (`unixKind` in daemons/streamd/streamd.go).
  */
 export function dialSocketStream(workspaceId: string, socketPath: string): StreamChild {
   return rawStream(workspaceId, { kind: 'unix', path: socketPath })
@@ -568,7 +569,7 @@ export function dialPtyStream(
  * Start (or restart) streamd in a workspace pod over kubectl exec, which
  * works even when no stream can reach the pod. Idempotent: a second daemon
  * exits on EADDRINUSE. Used by workspace setup and the status watcher's
- * self-heal.
+ * self-heal. The command is yaac-workspace-init's last line.
  */
 export async function bootStreamd(
   jobName: string,
@@ -578,7 +579,7 @@ export async function bootStreamd(
   // `job/<name>` lets kubectl resolve the Job's pod.
   await promisify(exec)(
     `kubectl exec -n ${k8sNamespace()} job/${jobName} -- `
-    + `sh -c 'setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &'`,
+    + `sh -c 'setsid ${STREAMD_BIN} >>/tmp/streamd.log 2>&1 </dev/null &'`,
     { timeout: opts.timeout ?? 15_000 },
   )
 }

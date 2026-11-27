@@ -3,8 +3,8 @@
  * webapp's keystroke path. `now` is injected and timers are faked, so a test
  * can state "8ms of quiet" exactly.
  *
- * The in-pod copy (dockerfiles/streamd/batcher.js) has its own tests over
- * Buffers; the two test files keep the copies from drifting apart.
+ * The in-pod copy (daemons/streamd/pty.go) has its own tests over bytes;
+ * the two test files keep the copies from drifting apart.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createOutputBatcher, BATCH_MS, MAX_BATCH_CHARS } from '@yaac/shared/batcher'

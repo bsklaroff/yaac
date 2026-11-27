@@ -5,9 +5,9 @@
 // The server starts it inside a tmux window (`acpDriver.launchCmd` in
 // packages/server/src/runtime/agents/acp-driver.ts), so tmux supervises it
 // like a TUI agent. It is a static binary so it starts at once and costs
-// a few megabytes per agent: the image builds it for its own platform, and
-// `pnpm build` cross-compiles one per supported host into
-// dockerfiles/acpd/bin for the containerless driver.
+// a few megabytes per agent: `pnpm build:daemons` cross-compiles one per
+// supported host into daemons/acpd/bin, which the containerless driver runs
+// on the host and the server stages in its helpers folder for k8s pods.
 package main
 
 import (

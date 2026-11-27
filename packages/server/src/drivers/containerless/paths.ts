@@ -2,6 +2,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { PACKAGE_ROOT, installTmpDir } from '@yaac/shared/paths'
 import {
+  DAEMONS_DIR,
   acpLogDir,
   terminalLogDir,
   workspaceAttachmentsDir,
@@ -138,16 +139,15 @@ export function containerlessWorkspacePaths(jobName: string): WorkspacePaths {
 }
 
 /**
- * The acpd binary for this host as shipped with yaac: `pnpm build:acpd`
- * cross-compiles one per supported platform into `dockerfiles/acpd/bin`,
- * which the build copies into dist/ (the image builds its own from the same
- * source). `PACKAGE_ROOT` is the repo root in dev and `dist/` when built. On
- * a platform yaac ships none for, this names a file that does not exist,
- * which the launch check reports.
+ * The acpd binary for this host as shipped with yaac: `pnpm build:daemons`
+ * cross-compiles one per supported platform into `daemons/acpd/bin`, which
+ * the build copies into dist/. `DAEMONS_DIR` is under the repo root in dev
+ * and under `dist/` when built. On a platform yaac ships none for, this
+ * names a file that does not exist, which the launch check reports.
  */
 export function acpdBinary(): string {
   const arch = process.arch === 'x64' ? 'amd64' : process.arch
-  return path.join(PACKAGE_ROOT, 'dockerfiles', 'acpd', 'bin', `acpd-${process.platform}-${arch}`)
+  return path.join(DAEMONS_DIR, 'acpd', 'bin', `acpd-${process.platform}-${arch}`)
 }
 
 /** The shell startup files shipped with yaac (`host-shell/`), which a

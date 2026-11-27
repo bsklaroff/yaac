@@ -63,7 +63,7 @@ dropped connection or a server restart must not kill a turn in progress.
 
 An ACP agent can't run under tmux directly: a PTY would corrupt the protocol,
 and a streamd `ctrl` stream kills its child when the socket closes. **acpd**
-(`dockerfiles/acpd/`) fills that gap. It runs inside the tmux window, owns the
+(`daemons/acpd/`) fills that gap. It runs inside the tmux window, owns the
 agent's stdio, and republishes it on a UNIX socket that clients can attach to
 and detach from freely.
 
@@ -1103,7 +1103,7 @@ image given by URL into text.
 | Pane bridge (`/acp/attach`, and `/acp/observe` for `acp`) | `packages/server/src/runtime/agents/acp-bridge.ts` |
 | A reader's follow of a `tui` conversation (`/acp/observe`) | `packages/server/src/domain/workspaces/history-tail.ts` |
 | TUI transcript replay (one per tool) | `packages/server/src/runtime/agents/*-acp-replay.ts` |
-| Agent supervisor | `dockerfiles/acpd/`, a Go binary (built into the base image; cross-compiled into the install for containerless) |
+| Agent supervisor | `daemons/acpd/`, a Go binary cross-compiled into the install (`pnpm build:daemons`): run from there on a containerless host, and from the server build's helpers folder in a pod |
 | Record location | `acpLogDir()` in `packages/shared/src/project-paths.ts` |
 | Wire types | `packages/shared/src/acp.ts` |
 | Chat pane | `packages/frontend/src/components/WorkspaceChat.tsx`, `src/lib/acp.ts` |

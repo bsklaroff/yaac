@@ -26,8 +26,7 @@
  *   - a flick glides well past a held drag of the same length, and a tap
  *     during the glide stops it without a click.
  *
- * Run (inside a yaac dev session; needs tmux and /opt/yaac/streamd for the
- * prebuilt node-pty):
+ * Run (inside a yaac dev session; needs tmux):
  *   node test-playwright-scripts/xterm-touch-scroll-test.js
  */
 import { execSync } from 'node:child_process'
@@ -52,8 +51,8 @@ const WORKSPACE = path.resolve(path.dirname(new URL(import.meta.url).pathname), 
 const FRONTEND = path.join(WORKSPACE, 'packages/frontend')
 const XTERM_DIR = path.dirname(require.resolve('@xterm/xterm/package.json', { paths: [FRONTEND] }))
 const FIT_DIR = path.dirname(require.resolve('@xterm/addon-fit/package.json', { paths: [FRONTEND] }))
-// node-pty prebuilt in the session image.
-const nodePty = require('/opt/yaac/streamd/node_modules/@lydell/node-pty')
+// pnpm strict node_modules: node-pty resolves only from the server package.
+const nodePty = require(require.resolve('@lydell/node-pty', { paths: [path.join(WORKSPACE, 'packages/server')] }))
 const { WebSocketServer } = require('ws')
 
 const HISTORY_LINES = 4000

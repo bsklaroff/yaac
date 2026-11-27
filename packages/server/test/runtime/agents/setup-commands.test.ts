@@ -10,7 +10,7 @@ import { KEEPER_STARTING, KEEPER_WINDOW } from '#drivers/contract'
 import { workspaceBinDir } from '#domain/workspaces/workspace-bin'
 
 import { workspacePathsFixture } from '#test/support/fake-driver'
-import { DOCKERFILES_DIR } from '@yaac/shared/project-paths'
+import { DAEMONS_DIR } from '@yaac/shared/project-paths'
 
 // The container paths these commands are written against.
 const PATHS = workspacePathsFixture()
@@ -128,13 +128,14 @@ describe('yaac-workspace-init script', () => {
     expect(body).not.toMatch(/YAAC_(GIT|STATUS|CWD|CHECKOUTS|NPM)/)
     expect(body).not.toMatch(/^\s*git /m)
     // The claim opens the session on the keeper, named for its start.
-    const claim = await fs.readFile(path.join(DOCKERFILES_DIR, 'streamd', 'claim.js'), 'utf8')
-    expect(claim).toContain(`'new-session', '-d', '-s', 'yaac', '-n', '${KEEPER_STARTING}'`)
+    const claim = await fs.readFile(path.join(DAEMONS_DIR, 'streamd', 'claim.go'), 'utf8')
+    expect(claim).toMatch(new RegExp(`keeperStarting\\s+=\\s+"${KEEPER_STARTING}"`))
+    expect(claim).toContain('"new-session", "-d", "-s", "yaac", "-n", keeperStarting')
   })
 
   it('starts streamd last, from the path the self-heal exec also uses', async () => {
     const body = await fs.readFile(scriptPath, 'utf8')
-    const streamdAt = body.indexOf('node /opt/yaac/streamd/main.js')
+    const streamdAt = body.indexOf('setsid /opt/yaac/helpers/daemons/streamd ')
     expect(streamdAt).toBeGreaterThan(-1)
     // streamd starts last: its reachability signals that setup is done.
     expect(body.indexOf('start-server')).toBeLessThan(streamdAt)

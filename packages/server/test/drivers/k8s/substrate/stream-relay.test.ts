@@ -684,7 +684,7 @@ describe('bootStreamd', () => {
     const [command] = execMock.mock.calls[0]
     expect(command).toBe(
       `kubectl exec -n test-ns job/${JOB} -- `
-      + "sh -c 'setsid node /opt/yaac/streamd/main.js >>/tmp/streamd.log 2>&1 </dev/null &'",
+      + "sh -c 'setsid /opt/yaac/helpers/daemons/streamd >>/tmp/streamd.log 2>&1 </dev/null &'",
     )
   })
 

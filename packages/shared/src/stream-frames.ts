@@ -4,8 +4,7 @@
  * client → pod: 0 data, 1 resize {cols,rows}, 2 signal {name}
  * pod → client: 0 data, 3 exit {code}
  *
- * dockerfiles/streamd/framing.js is the in-pod copy (plain JS, no build
- * step); keep the two in sync.
+ * daemons/streamd/pty.go is the in-pod copy; keep the two in sync.
  */
 
 export const FRAME_DATA = 0

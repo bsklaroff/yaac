@@ -55,7 +55,7 @@ replaced by the next newer tap version or removed by `brew uninstall --cask`.
     host, which has no session image: `tmux` (runs each workspace), which a
     create refuses to run without, plus `fd` and `ripgrep` for the agents'
     file search. acpd, the ACP agent supervisor, ships in the tarball as a
-    prebuilt binary per platform.
+    prebuilt binary per platform, beside streamd's Linux builds for k8s pods.
   - `git`, `curl` and `lsof` are `uses_from_macos`: provided by macOS,
     installed on Linux.
 - **`Formula/yaac-cluster.rb`** installs nothing of its own. It depends on

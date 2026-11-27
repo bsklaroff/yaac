@@ -123,10 +123,9 @@ export default defineConfig({
       unitProject('k8s/proxy'),
       unitProject('k8s/netd'),
       unitProject('k8s/tailgate'),
-      // streamd (in-pod stream daemon) and the agent patches are plain JS
-      // shipped in dockerfiles/ and outside the root tsconfig, so these
-      // tests are their only check. acpd is Go, tested by `pnpm test:acpd`.
-      unitProject('dockerfiles/streamd'),
+      // The agent patches are plain JS shipped in dockerfiles/ and outside
+      // the root tsconfig, so these tests are their only check. The daemons
+      // (daemons/) are Go, tested by `pnpm test:daemons`.
       unitProject('dockerfiles/agent-patches'),
       // api + e2e live in the root test/ tree. The api tier has one project
       // per driver, matching the route matrix's two columns. Neither needs

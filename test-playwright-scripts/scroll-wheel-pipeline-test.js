@@ -13,15 +13,15 @@
  * Pipeline: xterm.js (tmux `mouse on` sends SGR wheel reports) <-WS-> an
  * in-script bridge that forwards like the server and adds LINK_DELAY_MS of
  * one-way latency <-frame codec-> this checkout's streamd `pty` stream
- * (dockerfiles/streamd) -> `tmux attach`. Two configs, stock and paced
- * wheel, compared on the same pipeline. Output batching in streamd has its
- * own unit test (dockerfiles/streamd/test/batcher.test.ts).
+ * (daemons/streamd, built by `pnpm build:daemons`) -> `tmux attach`. Two
+ * configs, stock and paced wheel, compared on the same pipeline. Output
+ * batching in streamd has its own unit test (`TestBatcher` in
+ * daemons/streamd/streamd_test.go).
  *
- * Run (inside a yaac dev session; needs tmux, and /opt/yaac/streamd for its
- * prebuilt node-pty):
+ * Run (inside a yaac dev session on Linux; needs tmux and Go):
  *   node test-playwright-scripts/scroll-wheel-pipeline-test.js
  */
-import { execSync } from 'node:child_process'
+import { execSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
 import net from 'node:net'
@@ -53,11 +53,32 @@ const QUIET_MS = 1200
 const sh = (cmd) => execSync(cmd, { stdio: ['ignore', 'pipe', 'pipe'] }).toString()
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-// Stage this checkout's streamd beside the baked copy's prebuilt node-pty.
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'scroll-pipeline-'))
-const STREAMD = path.join(stage, 'streamd')
-fs.cpSync(path.join(WORKSPACE, 'dockerfiles/streamd'), STREAMD, { recursive: true })
-fs.symlinkSync('/opt/yaac/streamd/node_modules', path.join(STREAMD, 'node_modules'))
+sh(`sh ${path.join(WORKSPACE, 'scripts/build-daemons.sh')}`)
+const arch = process.arch === 'x64' ? 'amd64' : process.arch
+const STREAMD = path.join(WORKSPACE, `daemons/streamd/bin/streamd-linux-${arch}`)
+
+// The pty stream's frame codec (packages/shared/src/stream-frames.ts).
+const FRAME_DATA = 0
+const encodeFrame = (type, payload) => {
+  const header = Buffer.alloc(5)
+  header.writeUInt8(type, 0)
+  header.writeUInt32BE(payload.length, 1)
+  return Buffer.concat([header, payload])
+}
+class FrameParser {
+  buf = Buffer.alloc(0)
+  feed(chunk) {
+    this.buf = Buffer.concat([this.buf, chunk])
+    const frames = []
+    while (this.buf.length >= 5 && this.buf.length >= 5 + this.buf.readUInt32BE(1)) {
+      const length = this.buf.readUInt32BE(1)
+      frames.push({ type: this.buf[0], payload: this.buf.subarray(5, 5 + length) })
+      this.buf = this.buf.subarray(5 + length)
+    }
+    return frames
+  }
+}
 
 const esbuildDir = fs.readdirSync(path.join(WORKSPACE, 'node_modules/.pnpm'))
   .find((d) => d.startsWith('esbuild@'))
@@ -70,15 +91,22 @@ const pacingBundle = (await esbuild.build({
   globalName: 'WheelPacing',
 })).outputFiles[0].text
 
-const { createStreamd } = await import(path.join(STREAMD, 'streamd.js'))
-const { FrameParser, encodeFrame, FRAME_DATA } = await import(path.join(STREAMD, 'framing.js'))
 const sock = path.join(stage, 'tmux.sock')
 sh(`tmux -S ${sock} -f /dev/null new-session -d -s bench -x 200 -y 50`)
 sh(`tmux -S ${sock} set-option -g history-limit 50000 \\; set-option -g mouse on \\; set-option -g status off`)
 // No trailing `clear`: it would wipe the scrollback the test scrolls into.
 sh(`tmux -S ${sock} send-keys -t bench "seq -f 'history line %g :: abcdefghijklmnopqrstuvwxyz 0123456789' 1 ${HISTORY_LINES}" Enter`)
-const daemon = createStreamd({ token: 'bench', port: 0, host: '127.0.0.1' })
-const port = await daemon.listen()
+const port = await new Promise((resolve) => {
+  const probe = net.createServer().listen(0, '127.0.0.1', () => {
+    const { port: free } = probe.address()
+    probe.close(() => resolve(free))
+  })
+})
+const daemon = spawn(STREAMD, [], {
+  env: { ...process.env, YAAC_STREAM_TOKEN: 'bench', YAAC_STREAM_PORT: String(port) },
+  stdio: ['ignore', 'pipe', 'inherit'],
+})
+await new Promise((resolve) => daemon.stdout.once('data', resolve))
 await sleep(3000) // let the `seq` fill finish
 
 const PAGE = `<!doctype html><html><head><meta charset="utf-8">
@@ -327,7 +355,7 @@ try {
 } finally {
   await browser.close()
   server.close()
-  await daemon.close()
+  daemon.kill()
   try { sh(`tmux -S ${sock} kill-server`) } catch { /* already gone */ }
   fs.rmSync(stage, { recursive: true, force: true })
 }

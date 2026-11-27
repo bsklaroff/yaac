@@ -713,30 +713,29 @@ socket the proxy no longer serves, and both are fixed at launch.
   it.
 - **When this note can go.** Once no such pod is running.
 
-## Pods whose streamd lacks the `unix` stream
+## Pods whose image carries the daemons
 
-No code: a note for an upgrade. The server launches an acp agent as
-`/opt/yaac/acpd/acpd`, the Go binary the base image carries, and attaches
-to it through streamd's `unix` stream. A workspace pod keeps the image it
-was claimed with across an upgrade (docs/generic-workspace-pods.md "Server
-restarts and upgrades"), and two kinds of older image have a streamd
-without that stream, which answers `unknown kind "unix"`:
-
-- an image with the Go acpd, which the server attached to with `acpd dial`;
-- an older one still, with only the Node acpd (`/opt/yaac/acpd/main.js`).
+No code: a note for an upgrade. A pod gets streamd and acpd from its server
+build's helpers folder, `/opt/yaac/helpers/daemons/` (docs/stream-relay.md
+"streamd"), and the server launches an acp agent from there. A pod made
+before that keeps its image and its own build's helpers folder across the
+upgrade (docs/generic-workspace-pods.md "Server restarts and upgrades"),
+and has the daemons only in its image: a Node streamd at
+`/opt/yaac/streamd/main.js`, and acpd at `/opt/yaac/acpd/acpd`, or only a
+Node acpd in older images still.
 
 - **What it reads.** Nothing; no shim covers it.
 - **What breaks.** In a k8s workspace that has run since before the
-  upgrade, every attach to an acp conversation fails, and the driver keeps
-  re-dialing. The running acpd keeps its agent working and recording, so a
-  running turn still shows, but nothing can be sent to it and a permission
-  ask cannot be answered. What a new acp agent there does depends on the
-  image. With the Go acpd it starts, since the binary takes the new
-  launch's arguments, but it never attaches, so its opening prompt is never
-  delivered. With only the Node acpd, restarting an agent or opening a new
-  one exits 127. Restarting the workspace fixes both, since it gets a new
-  pod; new workspaces are unaffected.
-- **When this note can go.** Once no pod claimed before the upgrade is
+  upgrade, opening a new acp agent, or relaunching one that exited, exits
+  127, since the server names a path that pod lacks. Conversations already
+  running there carry on, though in the oldest images, whose streamd lacks
+  the `unix` stream, nothing can be sent to them. And a streamd that dies
+  there is not revived: `bootStreamd` starts the new path, its exec exits 0
+  because the failed start is in the background, and the workspace stays
+  unreachable, its liveness `unknown`, so the reaper leaves it. Restarting
+  the workspace fixes all of it, since it gets a new pod; new workspaces are
+  unaffected.
+- **When this note can go.** Once no pod made before the upgrade is
   running.
 
 ## Hosted URLs naming a share

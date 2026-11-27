@@ -1,8 +1,10 @@
 node_modules/
 dist/
 dist-test/
-# acpd, cross-compiled by `pnpm build:acpd`.
-/dockerfiles/acpd/bin/
+# The Go daemons, cross-compiled by `pnpm build:daemons`, and what a plain
+# `go build` in one of their folders writes.
+/daemons/*/bin/
+/daemons/*/yaac-*
 .env
 .eslintcache
 packages/desktop/dist-app/

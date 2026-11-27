@@ -49,7 +49,7 @@ export {
   storageTierOf,
   resolveMountSource,
 } from './mount-sources'
-export { k8sWorkspacePaths } from './workspace-paths'
+export { HELPERS_DIR, k8sWorkspacePaths } from './workspace-paths'
 export { invalidatePortForward, resolvePortForward } from './port-forward'
 export {
   CA_BUNDLE_KEY,

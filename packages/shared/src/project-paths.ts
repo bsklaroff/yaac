@@ -51,6 +51,8 @@ export {
  */
 
 export const DOCKERFILES_DIR = path.join(PACKAGE_ROOT, 'dockerfiles')
+/** yaac's Go daemons, each with the binaries `pnpm build:daemons` puts in its `bin/`. */
+export const DAEMONS_DIR = path.join(PACKAGE_ROOT, 'daemons')
 export const PROXY_DIR = path.join(PACKAGE_ROOT, 'k8s', 'proxy')
 /** Build context of the per-node network daemon (see k8s/netd/netd.ts). */
 export const NETD_DIR = path.join(PACKAGE_ROOT, 'k8s', 'netd')

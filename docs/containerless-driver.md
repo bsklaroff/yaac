@@ -721,7 +721,7 @@ startup.
   app's bundled one) is the usual way to be missing it.
 - **acpd**: shipped with yaac, not installed on the host. The build
   cross-compiles one static binary each for Linux and macOS on x64 and
-  arm64 (`dockerfiles/acpd/bin`, copied into `dist/`); `--mode acp` runs
+  arm64 (`daemons/acpd/bin`, copied into `dist/`); `--mode acp` runs
   the agent under it, and the server connects to its socket itself. On another
   platform `yaac host check` warns and an acp-mode create refuses.
 - **lsof**: port detection. Without it workspaces report no ports.
